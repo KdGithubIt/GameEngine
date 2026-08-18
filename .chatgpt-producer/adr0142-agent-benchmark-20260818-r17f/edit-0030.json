@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::agent_host::{\n","new":"use crate::agent_benchmark::{\n    agent_run_record, benchmark_task, read_question_record, BenchmarkRecord, BenchmarkStore,\n    BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog, BENCHMARK_CORPUS_VERSION,\n    BENCHMARK_TASKS,\n};\nuse crate::agent_host::{\n"}

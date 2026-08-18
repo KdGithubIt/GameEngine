@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md","old":"- available tool/permission budget; and\n","new":"- available tool/permission/work-claim budget; and\n"}

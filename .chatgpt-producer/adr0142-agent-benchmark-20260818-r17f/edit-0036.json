@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            last_captured_frame: None,\n            status: None,\n","new":"            last_captured_frame: None,\n            status: benchmark_status,\n"}
