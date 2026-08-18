@@ -294,6 +294,64 @@ fn show_motion_route_preview(
     });
 }
 
+#[cfg(feature = "visual-validation")]
+fn visual_validation_asset_id(suffix: &str) -> AssetId {
+    AssetId::from_stable_id(StableId::new(format!("asset_{suffix}")))
+        .expect("visual validation AssetId must use a fixed valid ULID suffix")
+}
+
+#[cfg(feature = "visual-validation")]
+fn show_adr0154_visual_validation_evidence(ui: &mut egui::Ui) {
+    use engine::motion_binding::{AnimationMotionFailure, AnimationMotionRoute};
+
+    let retarget_map = visual_validation_asset_id("00000000000000000000000003");
+    let humanoid_motion = visual_validation_asset_id("00000000000000000000000004");
+    ui.separator();
+    ui.heading("Selected animation target evidence");
+    ui.small(
+        "Candidate: [Model] Walk · selected imported animation skin resolves its actual source skeleton before target-aware routing.",
+    );
+    ui.group(|ui| {
+        ui.strong("Matching target skeleton");
+        show_motion_route_preview(ui, Some(&AnimationMotionRoute::Native), true);
+    });
+    ui.group(|ui| {
+        ui.strong("Different target · explicit Retarget Map available");
+        show_motion_route_preview(
+            ui,
+            Some(&AnimationMotionRoute::Retarget { map: retarget_map }),
+            true,
+        );
+    });
+    ui.group(|ui| {
+        ui.strong("Different target · import-owned Humanoid fallback available");
+        show_motion_route_preview(
+            ui,
+            Some(&AnimationMotionRoute::Humanoid {
+                motion: humanoid_motion,
+            }),
+            true,
+        );
+    });
+    ui.group(|ui| {
+        ui.strong("Different target · no compatible adaptation");
+        show_motion_route_preview(
+            ui,
+            Some(&AnimationMotionRoute::Failed {
+                reason: AnimationMotionFailure::NoCompatibleRoute,
+            }),
+            true,
+        );
+    });
+    ui.group(|ui| {
+        ui.strong("Imported source still resident-loading");
+        show_motion_route_preview(ui, None, true);
+    });
+    ui.small(
+        "Resolution order: Native → Retarget → Humanoid → Failed. Target Preview is transient and never persisted into the Animation Set.",
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,6 +705,17 @@ pub(in crate::ui) fn validate_animation_set_clip_references(
 }
 
 impl EditorApp {
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_animation_set_visual_validation(&mut self) {
+        let mut state = AnimationSetEditorState::new(
+            PathBuf::from("visual/adr0154.animset.json"),
+            PathBuf::from("visual/adr0154.animset.json"),
+            engine_authoring::AnimationSet::empty(),
+        );
+        state.target_preview_skeleton = Some(visual_validation_asset_id("00000000000000000000000002"));
+        self.animation_set_editor = Some(state);
+    }
+
     pub(in crate::ui) fn open_animation_set_editor(
         &mut self,
         relative_path: PathBuf,
@@ -810,6 +879,15 @@ impl EditorApp {
                             .map(|choice| choice.label.as_str())
                     })
                     .unwrap_or("No target - routing unresolved");
+                #[cfg(feature = "visual-validation")]
+                let visual_adr0154 =
+                    state.relative_path == Path::new("visual/adr0154.animset.json");
+                #[cfg(feature = "visual-validation")]
+                let target_preview_label = if visual_adr0154 {
+                    "ADR0154 Hero Target · imported skeleton"
+                } else {
+                    target_preview_label
+                };
                 control_row(ui, |ui| {
                     ui.label("Target Preview");
                     egui::ComboBox::from_id_salt("animation_set_target_preview")
@@ -830,6 +908,10 @@ impl EditorApp {
                         });
                 });
                 ui.small("Preview-only: this target is never saved into the Animation Set.");
+                #[cfg(feature = "visual-validation")]
+                if visual_adr0154 {
+                    show_adr0154_visual_validation_evidence(ui);
+                }
 
                 match &graph_model {
                     Some(Err(error)) => {

@@ -680,6 +680,10 @@ pub struct AiStudioPanel {
     presentation: AiStudioPresentationState,
     #[cfg(feature = "visual-validation")]
     detached_visual_frames: u8,
+    #[cfg(feature = "visual-validation")]
+    visual_scroll_offset: f32,
+    #[cfg(feature = "visual-validation")]
+    visual_external_provider_evidence: bool,
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
     process_purpose: Option<ExternalAgentPurpose>,
@@ -805,6 +809,10 @@ impl AiStudioPanel {
             presentation: AiStudioPresentationState::default(),
             #[cfg(feature = "visual-validation")]
             detached_visual_frames: 0,
+            #[cfg(feature = "visual-validation")]
+            visual_scroll_offset: 480.0,
+            #[cfg(feature = "visual-validation")]
+            visual_external_provider_evidence: false,
             active_run_id,
             process: None,
             process_purpose: None,
@@ -870,6 +878,35 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
         self.external_provider_status =
             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+        self.visual_scroll_offset = 480.0;
+        self.visual_external_provider_evidence = false;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Selects deterministic local-resource telemetry for ADR 0143 screenshot validation.
+    pub fn prepare_local_model_resources_visual_validation(&mut self) {
+        self.model_backend = ModelBackendPreference::Local;
+        self.local_model_endpoint = DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned();
+        self.local_model_name = "qwen2.5-coder:7b".to_owned();
+        self.last_model_resource_telemetry = ModelResourceTelemetry {
+            resident: TelemetryValue::Measured(true),
+            representation_size_bytes: TelemetryValue::Measured(4_700_000_000),
+            gpu_residency_bytes: TelemetryValue::Measured(3_200_000_000),
+            context_length_tokens: TelemetryValue::Measured(8_192),
+        };
+        self.visual_scroll_offset = 480.0;
+        self.visual_external_provider_evidence = false;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Selects deterministic external-provider state for ADR 0145 screenshot validation.
+    pub fn prepare_external_agent_visual_validation(&mut self) {
+        self.prepare_hosted_backend_visual_validation();
+        self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+        self.external_provider_status =
+            ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+        self.visual_scroll_offset = 1_600.0;
+        self.visual_external_provider_evidence = true;
     }
 
     #[cfg(feature = "visual-validation")]
@@ -1296,7 +1333,7 @@ impl AiStudioPanel {
                     .id_salt("ai_studio_detached_contents")
                     .auto_shrink([false, false]);
                 #[cfg(feature = "visual-validation")]
-                let scroll_area = scroll_area.vertical_scroll_offset(480.0);
+                let scroll_area = scroll_area.vertical_scroll_offset(self.visual_scroll_offset);
                 scroll_area.show(ui, |ui| self.show_contents(ui));
             },
         );
@@ -3388,6 +3425,30 @@ impl AiStudioPanel {
                 "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
             );
         });
+        #[cfg(feature = "visual-validation")]
+        if self.visual_external_provider_evidence {
+            ui.group(|ui| {
+                ui.strong("First-class AgentRuntime provider evidence");
+                for provider in ExternalAgentProviderKind::ALL {
+                    let status = ExternalAgentProviderStatus::visual_fixture(provider);
+                    ui.label(format!(
+                        "{} · discovery {} · authentication {}",
+                        provider.label(),
+                        status.discovery.label(),
+                        status.auth.label(),
+                    ));
+                }
+                ui.small(
+                    "Claude Code and Codex keep provider-owned credentials; Generic command remains the explicit compatibility fallback.",
+                );
+                ui.small(
+                    "MCP bearer: ephemeral environment reference only. Secret values are never displayed, serialized, or copied into provider arguments.",
+                );
+                ui.small(
+                    "Sanitized error presentation: provider failures report adapter/status context without credential or bearer contents.",
+                );
+            });
+        }
         if self.external_provider_kind == ExternalAgentProviderKind::Generic {
             ui.horizontal(|ui| {
                 ui.label("Compatible agent program");
