@@ -126,6 +126,8 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    outputs:
+      target: ${{ steps.target.outputs.target }}
 
     steps:
       - name: Check out exact visual-validation head
@@ -237,3 +239,103 @@ jobs:
           path: ${{ runner.temp }}/gameengine-editor-visual-validation/**
           if-no-files-found: warn
           retention-days: 30
+
+  report:
+    name: Report visual validation run
+    if: ${{ always() && needs.context.result == 'success' }}
+    needs: [context, capture]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Report run discovery metadata on pull request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          REQUESTED_TARGET: ${{ needs.context.outputs.target }}
+          RESOLVED_TARGET: ${{ needs.capture.outputs.target }}
+          CAPTURE_RESULT: ${{ needs.capture.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        with:
+          script: |
+            const marker = "<!-- gameengine-visual-validation-result -->";
+            const prNumber = Number(process.env.PR_NUMBER);
+            const headSha = (process.env.HEAD_SHA || "").toLowerCase();
+            const runId = Number(process.env.RUN_ID);
+            const runAttempt = Number(process.env.RUN_ATTEMPT);
+            if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+              core.setFailed("Visual validation result reporting requires a valid pull request number.");
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/.test(headSha)) {
+              core.setFailed("Visual validation result reporting requires an exact head SHA.");
+              return;
+            }
+            if (!Number.isSafeInteger(runId) || runId <= 0 || !Number.isSafeInteger(runAttempt) || runAttempt <= 0) {
+              core.setFailed("Visual validation result reporting requires valid run identity.");
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const currentHead = (pr.head?.sha || "").toLowerCase();
+            if (currentHead !== headSha) {
+              core.info(`Skipping stale visual-validation report for ${headSha}; current PR head is ${currentHead}.`);
+              return;
+            }
+
+            const requestedTarget = process.env.REQUESTED_TARGET || "unknown";
+            const resolvedTarget = process.env.RESOLVED_TARGET || "unknown";
+            const result = process.env.CAPTURE_RESULT || "unknown";
+            const artifactName = `gameengine-editor-visual-validation-${runId}-${runAttempt}`;
+            const body = [
+              marker,
+              "### GameEngine Visual Validation",
+              "",
+              `- Result: **${result}**`,
+              `- Head: \`${headSha}\``,
+              `- Requested target: \`${requestedTarget}\``,
+              `- Resolved target: \`${resolvedTarget}\``,
+              `- Run: \`${runId}\``,
+              `- Attempt: \`${runAttempt}\``,
+              `- Artifact lookup key: \`${artifactName}\``,
+            ].join("\n");
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const existing = comments.find(comment => comment.user?.type === "Bot" && comment.body?.includes(marker));
+            if (existing) {
+              const existingRunMatch = existing.body?.match(/^- Run: `(\d+)`$/m);
+              const existingAttemptMatch = existing.body?.match(/^- Attempt: `(\d+)`$/m);
+              const existingRunId = existingRunMatch ? Number(existingRunMatch[1]) : 0;
+              const existingAttempt = existingAttemptMatch ? Number(existingAttemptMatch[1]) : 0;
+              if (existingRunId > runId || (existingRunId === runId && existingAttempt > runAttempt)) {
+                core.info(`Keeping newer visual-validation report ${existingRunId}/${existingAttempt}.`);
+                return;
+              }
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
