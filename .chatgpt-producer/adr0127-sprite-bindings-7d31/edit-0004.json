@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge/asset_load.rs","old":"fn decode_material_texture(\n    material_id: &AssetId,","new":"pub(super) fn decode_material_texture(\n    material_id: &AssetId,"}
