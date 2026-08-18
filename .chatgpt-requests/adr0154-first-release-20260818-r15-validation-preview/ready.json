@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0154-first-release-20260818-r15-validation-preview",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "b3f2e19c92e10fda0c357213109d4cb5bf2a2eee",
+  "baseline_main_sha": "7394ed64f89f7310b53892c1b2d21d04432a4644",
+  "patch_sha256": "e208de2ed5f7d6000ab56a3690d7cdf5f529babdaa09333bddfcc9fdf3610638",
+  "patch_bytes": 20197,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Finish ADR0154 validation and multi-skeleton preview",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Completes the remaining ADR 0154 first-release repair work on the canonical Draft PR. Fixes the formal Windows Validation compile failure in package route planning, preserves current-main validation hygiene, resolves model-contained multi-skeleton Animation Set Target Preview routes from the selected animation's actual imported skin through the shared asynchronous preview residency/cache, distinguishes pending materialization from a real failed route, and shows Retarget map / Humanoid motion / Failed reason evidence next to the selected binding route. Adds synthetic multi-skeleton regression coverage and restores ADR 0154 as Accepted in the ADR index after syncing current main. Earlier commits in this PR already contain schema v3 candidate-only persistence, shared target-aware routing, import-owned portable HumanoidMotion provenance, Problems/build/play integration, packaging, mandatory AI-friendly authoring spec updates, and provenance/Target Preview contract tests. No third-party model or motion fixtures are introduced.\n\nThe PR remains Draft and must not be merged automatically."
+}
