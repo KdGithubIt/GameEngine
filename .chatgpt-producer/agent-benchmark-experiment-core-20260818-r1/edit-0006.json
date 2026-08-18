@@ -1,0 +1,5 @@
+{
+  "operation": "create_text",
+  "path": "crates/editor/resources/agent_benchmark_fixture_v1/game/src/lib.rs",
+  "content": "//! Repository-owned GameEngine Agent Benchmark fixture.\n\npub mod benchmark_target;\n\nengine::export_game_module!();\n"
+}
