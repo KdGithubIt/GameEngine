@@ -1,0 +1,1048 @@
+-    "Usage:\n  engine-cli authoring capabilities\n  engine-cli authoring describe <capability-id>\n  engine-cli authoring inspect|validate|preview|apply <capability-id> [capability arguments]\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli graph inspect <graph.json>\n  engine-cli graph validate <graph.json>\n  engine-cli graph preview <graph.json> <commands.json>\n  engine-cli graph apply <graph.json> <commands.json>\n  engine-cli graph layout inspect <graph.json> <graph.view.json>\n  engine-cli graph layout validate <graph.json> <graph.view.json>\n  engine-cli graph layout preview <graph.json> <graph.view.json> <commands.json>\n  engine-cli graph layout apply <graph.json> <graph.view.json> <commands.json>\n  engine-cli ui inspect <ui.json>\n  engine-cli ui validate <ui.json>\n  engine-cli ui preview <ui.json> <commands.json>\n  engine-cli ui apply <ui.json> <commands.json>\n  engine-cli material inspect <project-root> <asset-relative-path>\n  engine-cli material validate <project-root> <asset-relative-path>\n  engine-cli material preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli material apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli project_settings inspect <project-root>\n  engine-cli project_settings validate <project-root>\n  engine-cli project_settings preview <project-root> <replacement.json>\n  engine-cli project_settings apply <project-root> <replacement.json>\n  engine-cli animation_set inspect <project-root> <asset-relative-path>\n  engine-cli animation_set validate <project-root> <asset-relative-path>\n  engine-cli animation_set preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli animation_set apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli vfx schemas\n  engine-cli vfx inspect <effect.vfx.json>\n  engine-cli vfx validate <effect.vfx.json>\n  engine-cli vfx preview <effect.vfx.json> <commands.json>\n  engine-cli vfx apply <effect.vfx.json> <commands.json>\n  engine-cli vfx create <template> <effect.vfx.json>\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
++    "Usage:\n  engine-cli authoring capabilities\n  engine-cli authoring describe <capability-id>\n  engine-cli authoring inspect|validate|preview|apply <capability-id> [capability arguments]\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli graph inspect <graph.json>\n  engine-cli graph validate <graph.json>\n  engine-cli graph preview <graph.json> <commands.json>\n  engine-cli graph apply <graph.json> <commands.json>\n  engine-cli graph layout inspect <graph.json> <graph.view.json>\n  engine-cli graph layout validate <graph.json> <graph.view.json>\n  engine-cli graph layout preview <graph.json> <graph.view.json> <commands.json>\n  engine-cli graph layout apply <graph.json> <graph.view.json> <commands.json>\n  engine-cli ui inspect <ui.json>\n  engine-cli ui validate <ui.json>\n  engine-cli ui preview <ui.json> <commands.json>\n  engine-cli ui apply <ui.json> <commands.json>\n  engine-cli timeline inspect <timeline.json>\n  engine-cli timeline validate <timeline.json>\n  engine-cli timeline preview <timeline.json> <commands.json>\n  engine-cli timeline apply <timeline.json> <commands.json>\n  engine-cli material inspect <project-root> <asset-relative-path>\n  engine-cli material validate <project-root> <asset-relative-path>\n  engine-cli material preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli material apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli project_settings inspect <project-root>\n  engine-cli project_settings validate <project-root>\n  engine-cli project_settings preview <project-root> <replacement.json>\n  engine-cli project_settings apply <project-root> <replacement.json>\n  engine-cli animation_set inspect <project-root> <asset-relative-path>\n  engine-cli animation_set validate <project-root> <asset-relative-path>\n  engine-cli animation_set preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli animation_set apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli vfx schemas\n  engine-cli vfx inspect <effect.vfx.json>\n  engine-cli vfx validate <effect.vfx.json>\n  engine-cli vfx preview <effect.vfx.json> <commands.json>\n  engine-cli vfx apply <effect.vfx.json> <commands.json>\n  engine-cli vfx create <template> <effect.vfx.json>\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+index a9cf7000a3d5a96b39cf208bd2c330b5f8c42a46..8f77b6af3455274b43204cffed8ddcbb49026e83 100644
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -16,7 +16,7 @@ use crate::asset::{AssetServer, Assets};
+ use crate::audio::{
+     game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
+ };
+-use crate::camera::{camera_aspect_system, ViewportSize};
++use crate::camera::{camera_aspect_system, GameCameraSelectionOverride, ViewportSize};
+ use crate::game_module::{
+     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
+ };
+@@ -98,6 +98,7 @@ impl App {
+         let mut ecs = EcsApp::new();
+         ecs.insert_resource(Time::default());
+         ecs.insert_resource(ViewportSize::default());
++        ecs.insert_resource(GameCameraSelectionOverride::default());
+         ecs.insert_resource(Assets::<Mesh>::default());
+         ecs.insert_resource(Assets::<Material>::default());
+         ecs.insert_resource(Assets::<AudioAsset>::default());
+diff --git a/crates/engine/src/camera.rs b/crates/engine/src/camera.rs
+index a91d5c619035753b101821653986eeb806affb72..d0ae94c02a51b7bb77ab266410a4bc9b4de2d8bc 100644
+--- a/crates/engine/src/camera.rs
++++ b/crates/engine/src/camera.rs
+@@ -9,11 +9,14 @@ use glam::{Mat4, Quat, Vec3};
+ use hashbrown::HashMap;
+ 
+ pub use engine_render_runtime::camera::{
+-    camera_aspect_system, default_camera_transform, Camera3D, ViewportSize,
++    camera_aspect_system, default_camera_transform, Camera3D, GameCameraSelectionOverride,
++    ViewportSize,
+ };
+ pub(crate) use engine_render_runtime::camera::{
+-    camera_selection_key, select_active_game_camera,
++    camera_selection_key, select_active_game_camera_with_override,
+ };
++#[cfg(test)]
++use engine_render_runtime::camera::select_active_game_camera;
+ 
+ /// A camera that orbits around a fixed world-space target point.
+ ///
+diff --git a/crates/engine/src/lock_on.rs b/crates/engine/src/lock_on.rs
+index 3d106ac3213cf5dca75682a73bff79fd28c7dee1..1be020145ec469242587d388615007ac4151c902 100644
+--- a/crates/engine/src/lock_on.rs
++++ b/crates/engine/src/lock_on.rs
+@@ -8,11 +8,13 @@
+ //! frame the locked target and should be registered immediately after
+ //! [`lock_on_system`] in the frame schedule.
+ 
+-use engine_ecs::{Entity, Query, ResMut};
++use engine_ecs::{Entity, Query, Res, ResMut};
+ use glam::Vec3;
+ use hashbrown::HashMap;
+ 
+-use crate::camera::{select_active_game_camera, Camera3D, LockOnCamera};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, LockOnCamera,
++};
+ use crate::collision::{
+     segment_blocked_by_static, static_obstacle_aabbs, Collider, PhysicsBody, TriggerVolume,
+ };
+@@ -56,6 +58,7 @@ use engine_gameplay::lock_on::LockRequest;
+ /// configuration there is no `source` position or selection policy to use.
+ pub fn lock_on_system(
+     mut lock: ResMut<TargetLock>,
++    camera_override: Option<Res<GameCameraSelectionOverride>>,
+     cameras: Query<(&Camera3D, Option<&LockOnCamera>)>,
+     lock_targets: Query<&LockOnTarget>,
+     transforms: Query<&GlobalTransform>,
+@@ -68,7 +71,12 @@ pub fn lock_on_system(
+ ) {
+     let request = lock.pending.take();
+ 
+-    let Some((_, (_, Some(camera)))) = select_active_game_camera(cameras.iter()) else {
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let Some((_, (_, Some(camera)))) =
++        select_active_game_camera_with_override(cameras.iter(), override_target)
++    else {
+         log::debug!(
+             "lock_on_system: active camera has no LockOnCamera; lock-on request ignored"
+         );
+diff --git a/crates/engine/src/player.rs b/crates/engine/src/player.rs
+index de09a519fbadaba857e08aa420ed74538fcf94d2..03af122bb79bb4c2aa5070e84eb682e817d708c8 100644
+--- a/crates/engine/src/player.rs
++++ b/crates/engine/src/player.rs
+@@ -1,6 +1,8 @@
+ //! Player controller component and system.
+ 
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::game_io::GameInputActionState;
+ use crate::input::{GamepadAxis, GamepadAxisState, GamepadButton, Input, KeyCode, MouseButton};
+@@ -668,6 +670,7 @@ fn resolve_named_action(
+ pub fn player_character_motor_system(
+     fixed_time: engine_ecs::Res<FixedTime>,
+     intents: engine_ecs::Res<PlayerMovementIntents>,
++    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
+     cameras: engine_ecs::Query<(&Camera3D, &GlobalTransform)>,
+     mut players: engine_ecs::Query<
+         (
+@@ -678,10 +681,16 @@ pub fn player_character_motor_system(
+         engine_ecs::With<PlayerMarker>,
+     >,
+ ) {
+-    let camera_basis = select_active_game_camera(cameras.iter()).map(|(_, (_, global))| {
+-        let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
+-        planar_camera_basis(rotation)
+-    });
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let camera_basis =
++        select_active_game_camera_with_override(cameras.iter(), override_target).map(
++            |(_, (_, global))| {
++                let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
++                planar_camera_basis(rotation)
++            },
++        );
+ 
+     for (entity, (config, motor, transform)) in &mut players {
+         let intent = intents.get(entity).unwrap_or_default();
+diff --git a/crates/mcp/src/generic_authoring.rs b/crates/mcp/src/generic_authoring.rs
+index 3d22236d461b3947844db49ef53e8940356e2ed5..27f3a2e4fe6c8c2feeb3e05764c6978bd79debef 100644
+--- a/crates/mcp/src/generic_authoring.rs
++++ b/crates/mcp/src/generic_authoring.rs
+@@ -11,7 +11,9 @@ use engine_authoring::{
+     GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
+     GraphAuthoringValidation, GraphCommand, GraphView, GraphViewAuthoringError,
+     GraphViewAuthoringMutation, GraphViewAuthoringService, GraphViewAuthoringSnapshot,
+-    GraphViewAuthoringValidation, GraphViewCommand, UiAuthoringError, UiAuthoringMutation,
++    GraphViewAuthoringValidation, GraphViewCommand, TimelineAuthoringCommand,
++    TimelineAuthoringError, TimelineAuthoringMutation, TimelineAuthoringService,
++    TimelineAuthoringSnapshot, TimelineAuthoringValidation, UiAuthoringError, UiAuthoringMutation,
+     UiAuthoringService, UiAuthoringSession, UiAuthoringSnapshot, UiAuthoringValidation,
+     UiDocumentCommand, UnsupportedGraphKind,
+ };
+@@ -51,6 +53,17 @@ pub struct UiMutationInput {
+     pub commands: Vec<UiDocumentCommand>,
+ }
+ 
++/// Mutation request shared by Timeline preview and apply tools.
++#[derive(Debug, Deserialize)]
++pub struct TimelineMutationInput {
++    /// Authoritative Timeline revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative live-session generation observed by the caller.
++    pub expected_generation: u64,
++    /// Timeline commands to apply atomically.
++    pub commands: Vec<TimelineAuthoringCommand>,
++}
++
+ /// Whole-document replacement request shared by persisted typed-document tools.
+ ///
+ /// The active Editor supplies the authoritative document and revision state;
+@@ -76,6 +89,8 @@ pub enum GenericAuthoringMcpError {
+     GraphView(GraphViewAuthoringError),
+     /// Shared declarative UI authoring rejected the request.
+     Ui(UiAuthoringError),
++    /// Shared Timeline authoring rejected the request.
++    Timeline(TimelineAuthoringError),
+ }
+ 
+ impl GenericAuthoringMcpError {
+@@ -86,6 +101,7 @@ impl GenericAuthoringMcpError {
+             Self::Graph(error) => error.code(),
+             Self::GraphView(error) => error.code(),
+             Self::Ui(error) => error.code(),
++            Self::Timeline(error) => error.code(),
+         }
+     }
+ }
+@@ -97,6 +113,7 @@ impl fmt::Display for GenericAuthoringMcpError {
+             Self::Graph(error) => error.fmt(formatter),
+             Self::GraphView(error) => error.fmt(formatter),
+             Self::Ui(error) => error.fmt(formatter),
++            Self::Timeline(error) => error.fmt(formatter),
+         }
+     }
+ }
+@@ -108,6 +125,7 @@ impl std::error::Error for GenericAuthoringMcpError {
+             Self::Graph(error) => Some(error),
+             Self::GraphView(error) => Some(error),
+             Self::Ui(error) => Some(error),
++            Self::Timeline(error) => Some(error),
+         }
+     }
+ }
+@@ -136,7 +154,13 @@ impl From<UiAuthoringError> for GenericAuthoringMcpError {
+     }
+ }
+ 
+-/// Transport-neutral MCP handlers for generic Graph, GraphView, and UI authoring.
++impl From<TimelineAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: TimelineAuthoringError) -> Self {
++        Self::Timeline(error)
++    }
++}
++
++/// Transport-neutral MCP handlers for generic Graph, GraphView, UI, and Timeline authoring.
+ #[derive(Debug, Default, Clone, Copy)]
+ pub struct GenericAuthoringMcpTools;
+ 
+@@ -160,6 +184,7 @@ impl GenericAuthoringMcpTools {
+                 AuthoringDomain::Material,
+                 AuthoringDomain::ProjectSettings,
+                 AuthoringDomain::AnimationSet,
++                AuthoringDomain::Timeline,
+             ],
+         )
+     }
+@@ -323,6 +348,54 @@ impl GenericAuthoringMcpTools {
+             input.commands,
+         )?)
+     }
++
++    /// Inspects a live Timeline authoring session.
++    pub fn timeline_inspect(
++        &self,
++        session: &TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TimelineAuthoringSnapshot, GenericAuthoringMcpError> {
++        Ok(session.inspect(permissions)?)
++    }
++
++    /// Validates a live Timeline authoring session.
++    pub fn timeline_validate(
++        &self,
++        session: &TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TimelineAuthoringValidation, GenericAuthoringMcpError> {
++        Ok(session.validate(permissions)?)
++    }
++
++    /// Previews Timeline commands without mutation.
++    pub fn timeline_preview(
++        &self,
++        session: &TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++        input: TimelineMutationInput,
++    ) -> Result<TimelineAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(session.preview_commands(
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies Timeline commands to the authoritative live session.
++    pub fn timeline_apply(
++        &self,
++        session: &mut TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++        input: TimelineMutationInput,
++    ) -> Result<TimelineAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(session.apply_commands(
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -345,7 +418,9 @@ mod tests {
+         assert!(names.contains(&"material.inspect".to_owned()));
+         assert!(names.contains(&"project_settings.apply".to_owned()));
+         assert!(names.contains(&"animation_set.validate".to_owned()));
+-        assert_eq!(names.len(), 24);
++        assert!(names.contains(&"timeline.inspect".to_owned()));
++        assert!(names.contains(&"timeline.apply".to_owned()));
++        assert_eq!(names.len(), 28);
+     }
+ 
+     #[test]
+@@ -365,5 +440,18 @@ mod tests {
+             apply.input_schema["properties"]["commands"]["items"]["title"],
+             json!("UiDocumentCommand")
+         );
++
++        let timeline_apply = descriptors
++            .iter()
++            .find(|descriptor| descriptor.name == "timeline.apply")
++            .expect("timeline.apply must be advertised");
++        let timeline_capability = registry
++            .require(&AuthoringCapabilityId::new("timeline.apply"))
++            .expect("timeline.apply must be registered");
++        assert_eq!(timeline_apply.input_schema, timeline_capability.input.json_schema);
++        assert_eq!(
++            timeline_apply.input_schema["properties"]["commands"]["items"]["title"],
++            json!("TimelineAuthoringCommand")
++        );
+     }
+ }
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+index 3142338b0f6ec054842ade5804fd30097e5a7abc..19fdfd14444f3396f2c2f5050bb3889f46ee1f46 100644
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -36,7 +36,7 @@ pub use capability::{
+ };
+ pub use generic_authoring::{
+     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
+-    GraphViewMutationInput, TypedDocumentMutationInput, UiMutationInput,
++    GraphViewMutationInput, TimelineMutationInput, TypedDocumentMutationInput, UiMutationInput,
+ };
+ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+ pub use scene::{
+diff --git a/crates/render-runtime/src/camera.rs b/crates/render-runtime/src/camera.rs
+index 4ecee9c150549dcb0333982680e2f64a255af133..005efc57f23a9b00ec9ab78a86b43872a47e557d 100644
+--- a/crates/render-runtime/src/camera.rs
++++ b/crates/render-runtime/src/camera.rs
+@@ -65,6 +65,34 @@ impl Default for Camera3D {
+     }
+ }
+ 
++/// Transient runtime-only override for Game View camera selection.
++///
++/// Authoring never serializes this resource. Composition layers such as Timeline
++/// may point it at one live camera without rewriting [`Camera3D::enabled`] or
++/// [`Camera3D::priority`]. A missing target falls back to normal priority
++/// selection so stale runtime identities cannot black out the Game View.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct GameCameraSelectionOverride {
++    target: Option<engine_ecs::Entity>,
++}
++
++impl GameCameraSelectionOverride {
++    /// Returns the currently requested runtime camera entity.
++    pub fn target(&self) -> Option<engine_ecs::Entity> {
++        self.target
++    }
++
++    /// Replaces the transient camera target.
++    pub fn set_target(&mut self, target: engine_ecs::Entity) {
++        self.target = Some(target);
++    }
++
++    /// Removes the transient override and restores normal camera selection.
++    pub fn clear(&mut self) {
++        self.target = None;
++    }
++}
++
+ /// Builds the total ordering used by every Game View camera consumer.
+ ///
+ /// This is public only as a cross-crate runtime adapter contract; application
+@@ -80,6 +108,37 @@ pub fn camera_selection_key(
+         .then_some((Reverse(camera.priority), entity_id, entity_generation))
+ }
+ 
++/// Selects a transient override when it is live, otherwise the normal Game View camera.
++///
++/// The override intentionally bypasses [`Camera3D::enabled`] and priority: a
++/// Timeline-owned standby camera can therefore become active without changing
++/// persisted camera fields. If the requested entity is absent from `cameras`,
++/// normal enabled-camera ordering is used.
++#[doc(hidden)]
++pub fn select_active_game_camera_with_override<'camera, T>(
++    cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
++    override_target: Option<engine_ecs::Entity>,
++) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
++    let mut fallback = None;
++    for candidate in cameras {
++        let entity = candidate.0;
++        if override_target == Some(entity) {
++            return Some(candidate);
++        }
++        let camera = candidate.1.0;
++        let Some(key) = camera_selection_key(entity.id(), entity.generation(), camera) else {
++            continue;
++        };
++        let replace = fallback
++            .as_ref()
++            .is_none_or(|(best_key, _)| key < *best_key);
++        if replace {
++            fallback = Some((key, candidate));
++        }
++    }
++    fallback.map(|(_, candidate)| candidate)
++}
++
+ /// Selects the enabled Game View camera with the highest priority.
+ ///
+ /// The payload is generic so rendering, movement, LOD, and lock-on can attach
+@@ -89,15 +148,7 @@ pub fn camera_selection_key(
+ pub fn select_active_game_camera<'camera, T>(
+     cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
+ ) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
+-    cameras
+-        .filter_map(|candidate| {
+-            let entity = candidate.0;
+-            let camera = candidate.1.0;
+-            camera_selection_key(entity.id(), entity.generation(), camera)
+-                .map(|key| (key, candidate))
+-        })
+-        .min_by_key(|(key, _)| *key)
+-        .map(|(_, candidate)| candidate)
++    select_active_game_camera_with_override(cameras, None)
+ }
+ 
+ /// Stores the current viewport dimensions.
+@@ -148,3 +199,54 @@ pub fn default_camera_transform() -> Transform {
+         glam::Vec3::Y,
+     )
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn transient_override_can_select_a_disabled_standby_camera() {
++        let normal_entity = engine_ecs::Entity::from_raw(1, 0);
++        let standby_entity = engine_ecs::Entity::from_raw(2, 0);
++        let normal = Camera3D {
++            priority: 50,
++            ..Camera3D::default()
++        };
++        let standby = Camera3D {
++            enabled: false,
++            ..Camera3D::default()
++        };
++
++        let selected = select_active_game_camera_with_override(
++            [
++                (normal_entity, (&normal, ())),
++                (standby_entity, (&standby, ())),
++            ]
++            .into_iter(),
++            Some(standby_entity),
++        );
++
++        assert_eq!(selected.map(|(entity, _)| entity), Some(standby_entity));
++        assert!(!standby.enabled);
++        assert_eq!(standby.priority, 0);
++    }
++
++    #[test]
++    fn missing_override_target_falls_back_to_normal_priority_order() {
++        let low_entity = engine_ecs::Entity::from_raw(1, 0);
++        let high_entity = engine_ecs::Entity::from_raw(2, 0);
++        let missing = engine_ecs::Entity::from_raw(99, 0);
++        let low = Camera3D::default();
++        let high = Camera3D {
++            priority: 10,
++            ..Camera3D::default()
++        };
++
++        let selected = select_active_game_camera_with_override(
++            [(low_entity, (&low, ())), (high_entity, (&high, ()))].into_iter(),
++            Some(missing),
++        );
++
++        assert_eq!(selected.map(|(entity, _)| entity), Some(high_entity));
++    }
++}
+diff --git a/crates/render-runtime/src/lod.rs b/crates/render-runtime/src/lod.rs
+index e4c447d332b99ce6352967b89350b1278a984f8f..ee6e128701e2eef336a1cfaba7a7bdfad35fdc0f 100644
+--- a/crates/render-runtime/src/lod.rs
++++ b/crates/render-runtime/src/lod.rs
+@@ -1,7 +1,9 @@
+ //! Level-of-detail (LOD) component and selection system (Phase 47).
+ 
+ use crate::asset::Handle;
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::mesh::Mesh;
+ use crate::transform::GlobalTransform;
+ use engine_ecs::Query;
+@@ -49,12 +51,17 @@ pub struct InstanceStats {
+ /// existing [`Handle<Mesh>`] alongside the [`LodGroup`]; groups with no
+ /// levels are skipped.
+ pub fn lod_selection_system(
++    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
+     cameras: Query<(&Camera3D, &GlobalTransform)>,
+     mut groups: Query<(&LodGroup, &GlobalTransform, &mut Handle<Mesh>)>,
+ ) {
+-    let camera_pos: glam::Vec3 = select_active_game_camera(cameras.iter())
+-        .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
+-        .unwrap_or(glam::Vec3::ZERO);
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let camera_pos: glam::Vec3 =
++        select_active_game_camera_with_override(cameras.iter(), override_target)
++            .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
++            .unwrap_or(glam::Vec3::ZERO);
+ 
+     for (_, (lod, tf, handle)) in groups.iter_mut() {
+         let Some(lowest_detail) = lod.levels.last() else {
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+index f6f31c216771ce98cf5b64fb4e4be64385107b84..7a74723d06556ee0882b7e11faaded89fdf28476 100644
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -2,7 +2,9 @@ use bytemuck::{Pod, Zeroable};
+ use std::fmt;
+ use std::sync::{Arc, Weak};
+ 
+-use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, ViewportSize,
++};
+ use crate::debug_draw::{DebugLine, DebugLines};
+ use crate::environment::EnvironmentGpuState;
+ use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
+@@ -1874,8 +1876,11 @@ impl WorldRenderer {
+         use crate::transform::Transform;
+         use engine_ecs::Query;
+ 
++        let override_target = world
++            .get_resource::<GameCameraSelectionOverride>()
++            .and_then(GameCameraSelectionOverride::target);
+         let query = Query::<(&Camera3D, &Transform)>::new(world);
+-        select_active_game_camera(query.iter())
++        select_active_game_camera_with_override(query.iter(), override_target)
+             .map(|(_, (camera, transform))| (camera.clone(), transform.clone()))
+     }
+ 
+diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
+index fb95daea1cdf38b552aa9991941b73788cd9a953..b2a42c7095ceaaa3b33ca3a81141534320e3a858 100644
+--- a/crates/render-runtime/src/renderer.rs
++++ b/crates/render-runtime/src/renderer.rs
+@@ -3,7 +3,9 @@
+ use std::fmt;
+ 
+ use crate::bloom::BloomPass;
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
+ use crate::transform::Transform;
+ 
+@@ -175,16 +177,21 @@ impl WorldRenderer {
+     fn active_temporal_camera(
+         world: &mut engine_ecs::World,
+     ) -> Option<TemporalCameraSample> {
++        let override_target = world
++            .get_resource::<GameCameraSelectionOverride>()
++            .and_then(GameCameraSelectionOverride::target);
+         let query = engine_ecs::Query::<(&Camera3D, &Transform)>::new(world);
+-        select_active_game_camera(query.iter()).map(|(entity, (camera, transform))| {
+-            TemporalCameraSample::new(
+-                TemporalCameraSource::WorldEntity {
+-                    id: entity.id(),
+-                    generation: entity.generation(),
+-                },
+-                camera.view_projection_matrix(transform),
+-            )
+-        })
++        select_active_game_camera_with_override(query.iter(), override_target).map(
++            |(entity, (camera, transform))| {
++                TemporalCameraSample::new(
++                    TemporalCameraSource::WorldEntity {
++                        id: entity.id(),
++                        generation: entity.generation(),
++                    },
++                    camera.view_projection_matrix(transform),
++                )
++            },
++        )
+     }
+ }
+ 
+diff --git a/crates/timeline/Cargo.toml b/crates/timeline/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..296244905b73dc5e79638c493d6afe5041e0e9bc
+--- /dev/null
++++ b/crates/timeline/Cargo.toml
+@@ -0,0 +1,11 @@
++[package]
++name = "engine-timeline"
++version = "0.1.0"
++edition = "2024"
++
++[features]
++default = []
++serde = ["dep:serde"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"], optional = true }
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..300f59b9215bb4a1bade8562ed4d2dd0026b650a
+--- /dev/null
++++ b/crates/timeline/src/lib.rs
+@@ -0,0 +1,447 @@
++//! Dependency-neutral Timeline scheduling and playback contracts (ADR 0126).
++//!
++//! Canonical time is a signed 48 kHz integer tick. Compiled schedules are
++//! immutable/shareable and every player owns only transient playback state.
++
++#![warn(missing_docs)]
++#![warn(rustdoc::broken_intra_doc_links)]
++
++use std::fmt;
++use std::sync::Arc;
++
++/// Canonical Timeline clock rate.
++pub const TIMELINE_TICKS_PER_SECOND: i64 = 48_000;
++
++/// Exact persisted Timeline position.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(transparent))]
++pub struct TimelineTick(i64);
++
++impl TimelineTick {
++    /// Tick zero.
++    pub const ZERO: Self = Self(0);
++    /// Creates an exact tick.
++    pub const fn new(value: i64) -> Self { Self(value) }
++    /// Returns the integer value.
++    pub const fn get(self) -> i64 { self.0 }
++    /// Converts to presentation seconds.
++    pub fn to_seconds_f64(self) -> f64 { self.0 as f64 / TIMELINE_TICKS_PER_SECOND as f64 }
++    /// Adds with saturation.
++    pub const fn saturating_add(self, delta: i64) -> Self { Self(self.0.saturating_add(delta)) }
++    /// Clamps this value.
++    pub fn clamp(self, minimum: Self, maximum: Self) -> Self { Self(self.0.clamp(minimum.0, maximum.0)) }
++}
++
++impl fmt::Display for TimelineTick {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
++}
++
++/// Discontinuous-time reconstruction contract for a payload.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub enum SeekCapability {
++    /// Pure sample of target tick.
++    Stateless,
++    /// Target runtime supports deterministic seek/sample.
++    Seekable,
++    /// Runtime must reconstruct by replay.
++    ReplayRequired,
++    /// No meaningful discontinuous sample exists.
++    NonSeekable,
++}
++
++/// Why a schedule is evaluated.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EvaluationMode {
++    /// Forward/reverse production playback.
++    Playback,
++    /// Discontinuous seek/scrub.
++    Seek {
++        /// Explicit opt-in for gameplay/irreversible point events.
++        preview_events: bool,
++    },
++}
++
++/// One immutable interval or marker point.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CompiledSpan {
++    /// Active half-open interval `[start,end)`.
++    Interval {
++        /// Inclusive start.
++        start: TimelineTick,
++        /// Exclusive end.
++        end: TimelineTick,
++    },
++    /// Exact point.
++    Point {
++        /// Marker tick.
++        tick: TimelineTick,
++    },
++}
++
++impl CompiledSpan {
++    /// First represented tick.
++    pub const fn start(self) -> TimelineTick {
++        match self { Self::Interval { start, .. } => start, Self::Point { tick } => tick }
++    }
++}
++
++/// One typed immutable compiled entry.
++#[derive(Debug, Clone)]
++pub struct CompiledEntry<P> {
++    track_order: u32,
++    item_order: u32,
++    span: CompiledSpan,
++    seek: SeekCapability,
++    point_side_effect: bool,
++    payload: P,
++}
++
++impl<P> CompiledEntry<P> {
++    /// Creates an interval entry.
++    pub fn interval(track_order: u32, item_order: u32, start: TimelineTick, end: TimelineTick, seek: SeekCapability, payload: P) -> Self {
++        Self { track_order, item_order, span: CompiledSpan::Interval { start, end }, seek, point_side_effect: false, payload }
++    }
++    /// Creates a point entry.
++    pub fn point(track_order: u32, item_order: u32, tick: TimelineTick, seek: SeekCapability, side_effect: bool, payload: P) -> Self {
++        Self { track_order, item_order, span: CompiledSpan::Point { tick }, seek, point_side_effect: side_effect, payload }
++    }
++    /// Deterministic track order.
++    pub const fn track_order(&self) -> u32 { self.track_order }
++    /// Deterministic item order.
++    pub const fn item_order(&self) -> u32 { self.item_order }
++    /// Compiled span.
++    pub const fn span(&self) -> CompiledSpan { self.span }
++    /// Seek contract.
++    pub const fn seek_capability(&self) -> SeekCapability { self.seek }
++    /// Typed payload.
++    pub const fn payload(&self) -> &P { &self.payload }
++    fn order_key(&self) -> (u32, TimelineTick, u32, u8) {
++        let kind = if matches!(self.span, CompiledSpan::Interval { .. }) { 0 } else { 1 };
++        (self.track_order, self.span.start(), self.item_order, kind)
++    }
++}
++
++/// Compile-time schedule validation error.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum CompiledTimelineError {
++    /// Negative duration.
++    NegativeDuration(TimelineTick),
++    /// Invalid interval.
++    InvalidInterval {
++        /// Start.
++        start: TimelineTick,
++        /// End.
++        end: TimelineTick,
++        /// Timeline duration.
++        duration: TimelineTick,
++    },
++    /// Invalid marker.
++    InvalidPoint {
++        /// Point tick.
++        tick: TimelineTick,
++        /// Timeline duration.
++        duration: TimelineTick,
++    },
++}
++
++impl fmt::Display for CompiledTimelineError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::NegativeDuration(v) => write!(f, "negative timeline duration {v}"),
++            Self::InvalidInterval { start, end, duration } => write!(f, "invalid interval [{start},{end}) for duration {duration}"),
++            Self::InvalidPoint { tick, duration } => write!(f, "invalid point {tick} for duration {duration}"),
++        }
++    }
++}
++impl std::error::Error for CompiledTimelineError {}
++
++/// Immutable, deterministic schedule shared by players.
++#[derive(Debug, Clone)]
++pub struct CompiledTimeline<P> {
++    duration: TimelineTick,
++    entries: Arc<[CompiledEntry<P>]>,
++}
++
++impl<P> CompiledTimeline<P> {
++    /// Validates, sorts and freezes entries.
++    pub fn new(duration: TimelineTick, mut entries: Vec<CompiledEntry<P>>) -> Result<Self, CompiledTimelineError> {
++        if duration < TimelineTick::ZERO { return Err(CompiledTimelineError::NegativeDuration(duration)); }
++        for entry in &entries {
++            match entry.span {
++                CompiledSpan::Interval { start, end } if start < TimelineTick::ZERO || start >= end || end > duration => {
++                    return Err(CompiledTimelineError::InvalidInterval { start, end, duration });
++                }
++                CompiledSpan::Point { tick } if tick < TimelineTick::ZERO || tick > duration => {
++                    return Err(CompiledTimelineError::InvalidPoint { tick, duration });
++                }
++                _ => {}
++            }
++        }
++        entries.sort_by_key(CompiledEntry::order_key);
++        Ok(Self { duration, entries: entries.into() })
++    }
++    /// Inclusive final tick.
++    pub const fn duration(&self) -> TimelineTick { self.duration }
++    /// Frozen entries.
++    pub fn entries(&self) -> &[CompiledEntry<P>] { &self.entries }
++    /// Evaluates one deterministic transition.
++    pub fn evaluate(&self, request: &EvaluationRequest) -> Vec<EvaluationItem<'_, P>> {
++        let mut out = Vec::new();
++        for entry in self.entries.iter() {
++            match entry.span {
++                CompiledSpan::Interval { start, end } => {
++                    if request.current_tick >= start && request.current_tick < end {
++                        out.push(EvaluationItem { entry, local_tick: TimelineTick::new(request.current_tick.0 - start.0), decision: decision(entry.seek, request.mode, start) });
++                    }
++                }
++                CompiledSpan::Point { tick } => {
++                    let selected = match request.mode {
++                        EvaluationMode::Playback => request.current_tick >= request.previous_tick && tick > request.previous_tick && tick <= request.current_tick,
++                        EvaluationMode::Seek { preview_events } => tick == request.current_tick && (!entry.point_side_effect || preview_events),
++                    };
++                    if selected { out.push(EvaluationItem { entry, local_tick: TimelineTick::ZERO, decision: decision(entry.seek, request.mode, tick) }); }
++                }
++            }
++        }
++        out
++    }
++}
++
++fn decision(seek: SeekCapability, mode: EvaluationMode, origin: TimelineTick) -> EvaluationDecision {
++    if !matches!(mode, EvaluationMode::Seek { .. }) { return EvaluationDecision::Apply; }
++    match seek {
++        SeekCapability::Stateless | SeekCapability::Seekable => EvaluationDecision::Apply,
++        SeekCapability::ReplayRequired => EvaluationDecision::ReplayRequired { from_tick: origin },
++        SeekCapability::NonSeekable => EvaluationDecision::NonSeekable,
++    }
++}
++
++/// Required action for a selected entry.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EvaluationDecision {
++    /// Apply/sample now.
++    Apply,
++    /// Reconstruct deterministically from this origin.
++    ReplayRequired {
++        /// Earliest deterministic origin.
++        from_tick: TimelineTick,
++    },
++    /// Suppress rather than fabricate a seek result.
++    NonSeekable,
++}
++
++/// One selected entry.
++#[derive(Debug, Clone, Copy)]
++pub struct EvaluationItem<'a, P> { entry: &'a CompiledEntry<P>, local_tick: TimelineTick, decision: EvaluationDecision }
++impl<'a, P> EvaluationItem<'a, P> {
++    /// Entry.
++    pub const fn entry(&self) -> &'a CompiledEntry<P> { self.entry }
++    /// Tick relative to clip start.
++    pub const fn local_tick(&self) -> TimelineTick { self.local_tick }
++    /// Seek action.
++    pub const fn decision(&self) -> EvaluationDecision { self.decision }
++}
++
++/// One exact transition produced by one player.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvaluationRequest {
++    /// Previous playhead.
++    pub previous_tick: TimelineTick,
++    /// Current playhead.
++    pub current_tick: TimelineTick,
++    /// Evaluation reason.
++    pub mode: EvaluationMode,
++    /// Monotonic player generation.
++    pub generation: u64,
++}
++
++/// Adapter boundary consumed by production domain owners.
++pub trait TimelineEvaluationAdapter<P> {
++    /// Error returned by the owner.
++    type Error;
++    /// Applies one selected item.
++    fn apply(&mut self, request: &EvaluationRequest, item: EvaluationItem<'_, P>) -> Result<(), Self::Error>;
++}
++
++/// Evaluates then applies in deterministic schedule order.
++pub fn evaluate_with_adapter<P, A: TimelineEvaluationAdapter<P>>(timeline: &CompiledTimeline<P>, request: &EvaluationRequest, adapter: &mut A) -> Result<(), A::Error> {
++    for item in timeline.evaluate(request) { adapter.apply(request, item)?; }
++    Ok(())
++}
++
++/// Runtime playback state.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum TimelinePlaybackState {
++    /// Stopped.
++    Stopped,
++    /// Advancing.
++    Playing,
++    /// Held.
++    Paused,
++}
++
++/// Deterministic rational playback rate.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct PlaybackRate { numerator: i32, denominator: u32 }
++impl PlaybackRate {
++    /// Normal 1x.
++    pub const ONE: Self = Self { numerator: 1, denominator: 1 };
++    /// Creates a bounded rational rate.
++    pub fn new(numerator: i32, denominator: u32) -> Result<Self, PlaybackRateError> {
++        if denominator == 0 || (numerator as i64).unsigned_abs() > denominator as u64 * 16 { return Err(PlaybackRateError); }
++        Ok(Self { numerator, denominator })
++    }
++    /// Numerator.
++    pub const fn numerator(self) -> i32 { self.numerator }
++    /// Denominator.
++    pub const fn denominator(self) -> u32 { self.denominator }
++}
++
++/// Invalid playback-rate request.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct PlaybackRateError;
++impl fmt::Display for PlaybackRateError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("playback rate must have nonzero denominator and magnitude <= 16x") } }
++impl std::error::Error for PlaybackRateError {}
++
++/// Optional half-open loop range.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TimelineLoop {
++    /// Inclusive loop start.
++    pub start: TimelineTick,
++    /// Exclusive loop end.
++    pub end: TimelineTick,
++}
++
++/// Error for invalid player bounds.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TimelineLoopError;
++impl fmt::Display for TimelineLoopError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("loop must be nonempty and within timeline duration") } }
++impl std::error::Error for TimelineLoopError {}
++
++/// Per-instance transient playback state.
++#[derive(Debug, Clone)]
++pub struct TimelinePlayer {
++    duration: TimelineTick,
++    tick: TimelineTick,
++    state: TimelinePlaybackState,
++    rate: PlaybackRate,
++    rate_remainder: i128,
++    loop_range: Option<TimelineLoop>,
++    generation: u64,
++}
++
++impl TimelinePlayer {
++    /// Creates stopped state for a compiled duration.
++    pub fn new(duration: TimelineTick) -> Self {
++        Self { duration: duration.clamp(TimelineTick::ZERO, TimelineTick::new(i64::MAX)), tick: TimelineTick::ZERO, state: TimelinePlaybackState::Stopped, rate: PlaybackRate::ONE, rate_remainder: 0, loop_range: None, generation: 0 }
++    }
++    /// State.
++    pub const fn state(&self) -> TimelinePlaybackState { self.state }
++    /// Current tick.
++    pub const fn tick(&self) -> TimelineTick { self.tick }
++    /// Generation.
++    pub const fn generation(&self) -> u64 { self.generation }
++    /// Playback rate.
++    pub const fn rate(&self) -> PlaybackRate { self.rate }
++    /// Loop range.
++    pub const fn loop_range(&self) -> Option<TimelineLoop> { self.loop_range }
++    /// Starts or resumes.
++    pub fn play(&mut self) { self.state = TimelinePlaybackState::Playing; }
++    /// Pauses without changing playhead.
++    pub fn pause(&mut self) { if self.state == TimelinePlaybackState::Playing { self.state = TimelinePlaybackState::Paused; } }
++    /// Stops, resets playhead and invalidates transient owner state.
++    pub fn stop(&mut self) { self.state = TimelinePlaybackState::Stopped; self.tick = TimelineTick::ZERO; self.rate_remainder = 0; self.generation = self.generation.wrapping_add(1); }
++    /// Restarts at zero and plays.
++    pub fn restart(&mut self) { self.stop(); self.play(); }
++    /// Sets deterministic playback rate.
++    pub fn set_rate(&mut self, rate: PlaybackRate) { self.rate = rate; self.rate_remainder = 0; }
++    /// Configures a loop range.
++    pub fn set_loop(&mut self, range: Option<TimelineLoop>) -> Result<(), TimelineLoopError> {
++        if let Some(r) = range
++            && (r.start < TimelineTick::ZERO || r.start >= r.end || r.end > self.duration)
++        {
++            return Err(TimelineLoopError);
++        }
++        self.loop_range = range;
++        Ok(())
++    }
++    /// Seeks and returns the exact discontinuous evaluation request.
++    pub fn seek(&mut self, tick: TimelineTick, preview_events: bool) -> EvaluationRequest {
++        let previous = self.tick; self.tick = tick.clamp(TimelineTick::ZERO, self.duration); self.rate_remainder = 0; self.generation = self.generation.wrapping_add(1);
++        EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Seek { preview_events }, generation: self.generation }
++    }
++    /// Advances by canonical host ticks. Loop crossings are split so point events
++    /// preserve `(previous,current]` ordering on both sides of the wrap.
++    pub fn advance_ticks(&mut self, host_ticks: i64) -> Vec<EvaluationRequest> {
++        if self.state != TimelinePlaybackState::Playing || host_ticks == 0 || self.rate.numerator == 0 { return Vec::new(); }
++        let scaled = host_ticks as i128 * self.rate.numerator as i128 + self.rate_remainder;
++        let denominator = self.rate.denominator as i128;
++        let delta128 = scaled / denominator; self.rate_remainder = scaled % denominator;
++        let delta = delta128.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
++        if delta == 0 { return Vec::new(); }
++        if delta < 0 {
++            let previous = self.tick; self.tick = self.tick.saturating_add(delta).clamp(TimelineTick::ZERO, self.duration);
++            return vec![EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Playback, generation: self.generation }];
++        }
++        if let Some(range) = self.loop_range { return self.advance_forward_looped(delta, range); }
++        let previous = self.tick; self.tick = self.tick.saturating_add(delta).clamp(TimelineTick::ZERO, self.duration);
++        if self.tick == self.duration { self.state = TimelinePlaybackState::Stopped; }
++        vec![EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Playback, generation: self.generation }]
++    }
++    fn advance_forward_looped(&mut self, mut delta: i64, range: TimelineLoop) -> Vec<EvaluationRequest> {
++        let mut requests = Vec::new();
++        if self.tick < range.start || self.tick >= range.end { self.tick = range.start; self.generation = self.generation.wrapping_add(1); }
++        while delta > 0 {
++            let remaining = range.end.get() - self.tick.get();
++            if delta < remaining {
++                let previous = self.tick; self.tick = self.tick.saturating_add(delta); delta = 0;
++                requests.push(EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Playback, generation: self.generation });
++            } else {
++                let previous = self.tick; self.tick = range.end; delta -= remaining;
++                requests.push(EvaluationRequest { previous_tick: previous, current_tick: range.end, mode: EvaluationMode::Playback, generation: self.generation });
++                self.tick = range.start; self.generation = self.generation.wrapping_add(1);
++                requests.push(EvaluationRequest { previous_tick: range.start, current_tick: range.start, mode: EvaluationMode::Seek { preview_events: false }, generation: self.generation });
++            }
++        }
++        requests
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn canonical_rate_is_48khz() { assert_eq!(TIMELINE_TICKS_PER_SECOND, 48_000); }
++    #[test]
++    fn compile_order_is_deterministic() {
++        let t = CompiledTimeline::new(TimelineTick::new(100), vec![
++            CompiledEntry::point(1, 0, TimelineTick::new(5), SeekCapability::Stateless, false, "b"),
++            CompiledEntry::point(0, 1, TimelineTick::new(7), SeekCapability::Stateless, false, "a2"),
++            CompiledEntry::point(0, 0, TimelineTick::new(7), SeekCapability::Stateless, false, "a1"),
++        ]).unwrap();
++        assert_eq!(t.entries().iter().map(|e| *e.payload()).collect::<Vec<_>>(), vec!["a1", "a2", "b"]);
++    }
++    #[test]
++    fn forward_event_crossing_is_open_closed() {
++        let t = CompiledTimeline::new(TimelineTick::new(20), vec![CompiledEntry::point(0,0,TimelineTick::new(10),SeekCapability::Stateless,true,())]).unwrap();
++        assert_eq!(t.evaluate(&EvaluationRequest { previous_tick: TimelineTick::new(10), current_tick: TimelineTick::new(11), mode: EvaluationMode::Playback, generation: 0 }).len(), 0);
++        assert_eq!(t.evaluate(&EvaluationRequest { previous_tick: TimelineTick::new(9), current_tick: TimelineTick::new(10), mode: EvaluationMode::Playback, generation: 0 }).len(), 1);
++    }
++    #[test]
++    fn scrub_suppresses_side_effect_points_by_default() {
++        let t = CompiledTimeline::new(TimelineTick::new(20), vec![CompiledEntry::point(0,0,TimelineTick::new(10),SeekCapability::Stateless,true,())]).unwrap();
++        assert!(t.evaluate(&EvaluationRequest { previous_tick: TimelineTick::ZERO, current_tick: TimelineTick::new(10), mode: EvaluationMode::Seek { preview_events: false }, generation: 1 }).is_empty());
++    }
++    #[test]
++    fn players_are_independent() {
++        let mut a = TimelinePlayer::new(TimelineTick::new(100)); let mut b = a.clone(); a.play(); a.advance_ticks(7);
++        assert_eq!(a.tick(), TimelineTick::new(7)); assert_eq!(b.tick(), TimelineTick::ZERO); b.play(); b.advance_ticks(2); assert_eq!(b.tick(), TimelineTick::new(2));
++    }
++    #[test]
++    fn loop_splits_crossing_and_bumps_generation() {
++        let mut p = TimelinePlayer::new(TimelineTick::new(100)); p.set_loop(Some(TimelineLoop { start: TimelineTick::new(10), end: TimelineTick::new(20) })).unwrap(); p.seek(TimelineTick::new(18), false); p.play();
++        let g = p.generation(); let requests = p.advance_ticks(5); assert_eq!(p.tick(), TimelineTick::new(13)); assert!(requests.len() >= 3); assert!(p.generation() > g);
++    }
++}
