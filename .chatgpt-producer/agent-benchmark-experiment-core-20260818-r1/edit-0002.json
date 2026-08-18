@@ -1,0 +1,5 @@
+{
+  "operation": "create_text",
+  "path": "crates/editor/resources/agent_benchmark_fixture_v1/project.json",
+  "content": "{\n  \"schema_version\": 2,\n  \"project_id\": \"project_01BENCHMARKFIXTURE00000001\",\n  \"name\": \"GameEngineAgentBenchmarkFixture\",\n  \"engine_version\": \"0.1.0\"\n}\n"
+}
