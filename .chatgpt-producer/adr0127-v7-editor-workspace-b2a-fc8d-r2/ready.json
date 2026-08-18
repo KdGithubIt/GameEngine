@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v7-editor-workspace-b2a-fc8d-r2",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v7",
+  "expected_head_sha": "fc8d3820f406905bcc49b2d931e2851b3b3457c5",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "edit_parts": ["edit-0000.json", "edit-0001.json"],
+  "commit_message": "Add ADR0127 Native 2D animation and tile-set workspace UI",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Further isolates the failing Native 2D Editor workspace tail to the first two remaining source expansions: Sprite Animation authoring/runtime preview and Tile Set authoring."
+}
