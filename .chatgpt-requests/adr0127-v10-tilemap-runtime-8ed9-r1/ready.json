@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-tilemap-runtime-8ed9-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "8ed972c1b4a01b96bf6c7565979cf517b5203a16",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "f5caf86924c7e413e2717ef5c4a26a78f5fcc5e0253924a5a0c8697f7bc0242b",
+  "patch_bytes": 12334,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Native 2D Tile Map scene runtime component",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds additive engine.tile_map_2d authoring/runtime composition with stable TileMap/TileSet/TileId/SpriteRef resolution, conversion-time validation, shared immutable decoded sprite sources, and one ECS owner per sparse chunked map."
+}
