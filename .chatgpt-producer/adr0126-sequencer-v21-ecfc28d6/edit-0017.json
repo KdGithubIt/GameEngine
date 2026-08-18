@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"            if self.animation_preview_enabled {\n                // Install the complete pose pipeline once per world. Animation","new":"            if self.animation_preview_enabled && timeline_preview_request.is_none() {\n                // Install the complete pose pipeline once per world. Animation"}
