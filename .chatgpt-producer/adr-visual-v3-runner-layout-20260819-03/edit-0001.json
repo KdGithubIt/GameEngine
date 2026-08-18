@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/adr_visual_scenarios.rs","old":"            .fixed_pos(egui::pos2(1010.0, 86.0))\n            .fixed_size(egui::vec2(540.0, 410.0))\n","new":"            .fixed_pos(egui::pos2(900.0, 86.0))\n            .fixed_size(egui::vec2(680.0, 430.0))\n"}
