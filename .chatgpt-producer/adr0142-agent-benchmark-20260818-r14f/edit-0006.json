@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"crates/editor/resources/local_model_catalog_v1.json","content":"{\n  \"schema_version\": 1,\n  \"catalog_version\": \"local-model-catalog-v1\",\n  \"entries\": []\n}\n"}
