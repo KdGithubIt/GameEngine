@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-scene-preview-c-20260818-29",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "70c7b15f6939a3925ff1c7be5b5bfd8118d69dde",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "381f58ff08e7122b1fe8294f3d71de3228d4b73b3f74a4ab4607514fed449bec",
+  "patch_bytes": 4842,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Integrate ADR 0126 Timeline preview into Scene View execution",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nIntegrates Timeline preview with the persistent Scene View production animation/transform pipeline and transient transport state. Remaining preview sampling and Sequencer integration follow.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
