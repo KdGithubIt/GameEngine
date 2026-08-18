@@ -111,9 +111,8 @@ the beginning:
   [0096](0096-rapier-physics-adoption-and-mmd-rigid-body-bridge.md),
   [0106](0106-layered-rig-pose-and-pose-graph-boundary.md),
   [0110](0110-humanoid-profiles-and-skeleton-independent-motion.md),
-  [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md),
-  [0116](0116-animation-events-owned-by-animation-set-bindings.md), and
-  [0154](0154-target-aware-animation-motion-binding-resolution.md).
+  [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md), and
+  [0116](0116-animation-events-owned-by-animation-set-bindings.md).
 - **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
   [0035](0035-ai-agent-bridge-ipc.md),
   [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md),
@@ -134,6 +133,7 @@ contract unless and until their status becomes `Accepted`:
 - [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) — VFX Effect Authoring and Runtime Architecture
 - [0126](0126-timeline-sequencer-authoring-and-runtime.md) — Timeline / Sequencer Authoring and Runtime
 - [0127](0127-native-2d-gameplay-and-authoring-architecture.md) — Native 2D Gameplay and Authoring Architecture
+- [0154](0154-target-aware-animation-motion-binding-resolution.md) — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution
 
 The later Accepted renderer records originally reused ADR 0122 and ADR 0123.
 They are registered as ADR 0128 and ADR 0129 so the first-merged Proposed
@@ -288,7 +288,7 @@ implementation contract.
 | [0139](0139-editor-authoritative-working-copy-and-saved-copy-coherency.md) | Editor Authoritative Working Copy and Saved-Copy Coherency |
 | [0140](0140-ai-capability-roadmap-and-parallel-delivery-order.md) | **Proposed** — AI Capability Roadmap and Parallel Delivery Order |
 | [0141](0141-native-write-capable-agent-runtime-and-governed-tool-loop.md) | **Proposed** — Native Write-Capable Agent Runtime and Governed Tool Loop |
-| [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | **Proposed** — GameEngine Agent Benchmark and Curated Model Catalog |
+| [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | GameEngine Agent Benchmark and Curated Model Catalog |
 | [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | Native ModelBackend Resource Controls and Hardware Telemetry |
 | [0144](0144-hosted-and-enterprise-model-backends-and-credential-ownership.md) | **Proposed** — Hosted and Enterprise ModelBackends and Credential Ownership |
 | [0145](0145-first-class-external-agent-runtime-provider-adapters.md) | **Proposed** — First-Class External Agent Runtime Provider Adapters |
@@ -300,4 +300,4 @@ implementation contract.
 | [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | Headless Write-Capable MCP Host and Project-Writer Ownership |
 | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | Multi-Agent Writer Coordination and Conflict Ownership |
 | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
-| [0154](0154-target-aware-animation-motion-binding-resolution.md) | Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
+| [0154](0154-target-aware-animation-motion-binding-resolution.md) | **Proposed** — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |

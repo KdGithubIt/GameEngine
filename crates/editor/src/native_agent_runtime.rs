@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+pub(crate) const NATIVE_WRITE_HARNESS_VERSION: &str = "native-write-v1";
 const MAX_TOOL_RESULT_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
