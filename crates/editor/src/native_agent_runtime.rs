@@ -262,7 +262,7 @@ fn parse_turn(text: &str) -> Result<NativeAgentTurn, NativeAgentRuntimeError> {
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max { text.to_owned() } else { format!("{}…", text.chars().take(max).collect::<String>()) }
 }
-fn mcp_write(tool: &str) -> bool {
+pub(crate) fn mcp_write(tool: &str) -> bool {
     ![".describe", ".inspect", ".find", ".list", ".search", ".validate", ".preview", ".schemas", ".capabilities"]
         .iter().any(|suffix| tool.ends_with(suffix))
         && !matches!(tool, "project.describe" | "component.schemas")
@@ -341,5 +341,14 @@ mod tests {
     fn mcp_endpoint_is_loopback_only() {
         assert!(parse_mcp_endpoint("http://127.0.0.1:1234/mcp").is_ok());
         assert!(parse_mcp_endpoint("http://192.168.0.2:1234/mcp").is_err());
+    }
+
+    #[test]
+    fn mcp_write_classifier_keeps_read_only_tools_claim_free() {
+        assert!(mcp_write("authoring.apply"));
+        assert!(mcp_write("scene.set_transform"));
+        assert!(!mcp_write("project.describe"));
+        assert!(!mcp_write("authoring.inspect"));
+        assert!(!mcp_write("authoring.preview"));
     }
 }

@@ -1,6 +1,6 @@
 # ADR 0152: Multi-Agent Writer Coordination and Conflict Ownership
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131, ADR 0139, ADR 0151
 Relates to: ADR 0005, ADR 0121, ADR 0141
@@ -49,6 +49,18 @@ The first multi-writer implementation SHOULD prefer conservative concurrency: al
 ## Dependencies and parallel work
 
 This ADR is Wave D. It follows ADR 0151 writer ownership and should use a stable ADR 0141 native writer as one representative client. It MUST NOT be implemented by depending on unmerged sibling branches.
+
+## Implementation
+
+The Editor-owned `AgentHost` stores normalized `AgentWorkClaim` values on proposal snapshots and active runs. Claims are AI run-control metadata only; they do not add project Stable IDs or change canonical authoring serialization. Supported first-release claim domains are authoring document identity, project-relative code path, asset target, and explicitly shared resources. Code and asset path claims conflict on exact or ancestor/descendant overlap so ambiguous scope remains serialized conservatively.
+
+Several non-terminal runs may coexist in the same authoritative project writer host when their claims are disjoint. Starting a run validates proposal-declared claims, and an active run may acquire or release additional claims as inspection refines its scope. Conflicting expansion returns a typed owner/claim conflict and records conflict/wait evidence in that run rather than force-applying. Terminal runs release all claims and run-scoped permissions; restart recovery reconstructs active-run ownership from persisted run metadata and removes stale claims from terminal records.
+
+Native AgentRuntime code writes acquire code-path claims before modifying the isolated workspace, and the managed code-workspace apply path reasserts those claims before writing the live project while still performing the existing common-baseline stale-file check. Native AgentRuntime MCP mutations acquire one conservative `canonical_authoring` shared-resource claim before typed live Editor MCP dispatch; read-only MCP calls do not acquire it. Human edits therefore remain unlocked and may still invalidate an agent mutation after ownership was acquired. Structured authoring continues to use ADR 0121/0139 authoritative revisions and transactions; a claim is never permission to bypass stale-revision rejection.
+
+Claim acquisition/release, conflicts/waits, cross-run dependency records, and reconciliation records use the existing structured `AgentEvent` timeline. Completion reports remain per-run, so concurrent work cannot satisfy another run's completion gates.
+
+This first implementation changes coordination logic and existing generic event presentation only; it does not add a new multi-agent layout or conflict dialog. A future dedicated status/conflict surface remains subject to the Visual Validation requirement below.
 
 ## Verification
 
