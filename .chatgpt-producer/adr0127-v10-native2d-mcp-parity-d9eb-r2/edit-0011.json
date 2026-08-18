@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "        self.affected_chunks = commit.affected_chunks;\n        self.dirty = true;\n        Ok(())\n    }\n\n    fn cancel_gesture(&mut self) -> Result<(), String> {\n",
+  "new": "        self.affected_chunks = commit.affected_chunks;\n        self.state = TypedDocumentAuthoringState::new();\n        self.dirty = true;\n        Ok(())\n    }\n\n    fn undo(\n        &mut self,\n        project: &ProjectRoot,\n        manifest: &engine::AssetManifest,\n    ) -> Result<bool, String> {\n        let mut next_service = self.service.clone();\n        if !next_service.undo() {\n            return Ok(false);\n        }\n        let next_tiles = load_tile_set_for_map(project, manifest, next_service.document())?;\n        self.service = next_service;\n        self.tiles = next_tiles;\n        self.selected_tile = self.tiles.tiles.first().map(|tile| tile.id.clone());\n        self.state = TypedDocumentAuthoringState::new();\n        self.dirty = true;\n        self.affected_chunks.clear();\n        Ok(true)\n    }\n\n    fn cancel_gesture(&mut self) -> Result<(), String> {\n"
+}
