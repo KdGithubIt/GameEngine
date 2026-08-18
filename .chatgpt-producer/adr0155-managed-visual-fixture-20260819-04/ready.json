@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0155-managed-visual-fixture-20260819-04",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai",
+  "expected_head_sha": "82b9d04b71592cd2266e6b176390a0f79d021a62",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "edit_parts": ["edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json"],
+  "commit_message": "Validate ADR0155 managed setup UI deterministically",
+  "pr_title": "GameEngine: implement ADR0155 managed Local AI",
+  "pr_body": "## Summary\n\nImplements ADR 0155 managed Local AI, fixes the WSL setup UI match type regression, and adds deterministic Managed Local AI visual-validation state so the actual setup surface is reviewed.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
