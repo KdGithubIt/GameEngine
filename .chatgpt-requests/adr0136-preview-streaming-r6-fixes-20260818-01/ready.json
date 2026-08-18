@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0136-preview-streaming-r6-fixes-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-streaming-r6",
+  "expected_head_sha": "600a178c68123ddb56fc844dec8eeb11a0954ab1",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "patch_sha256": "5f0d38684c8a8ddf667f5fcaf6f8e461f0d694e0adf4b7c361e9d78e14c8270a",
+  "patch_bytes": 14607,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0136 preview streaming",
+  "pr_title": "GameEngine: implement ADR 0136 preview residency and streaming",
+  "pr_body": "## Summary\n\nCompletes ADR 0136 on current main with project-scoped preview residency, asynchronous renderer warm-up, frame-budgeted GPU uploads, stale startup reimport recovery, deterministic residency verification, ADR 0135 reclaim recovery, and full atomic import-generation promotion across source, contact, Humanoid-profile, and project skeleton-ledger inputs."
+}
