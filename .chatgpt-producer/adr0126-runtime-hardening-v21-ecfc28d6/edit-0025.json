@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"        animator.sample_timeline_pose(handle, sample_tick.to_seconds_f64() as f32);","new":"        animator.sample_timeline_pose(\n            handle,\n            sample_tick.to_seconds_f64() as f32,\n            active.discontinuous_seek,\n        );"}
