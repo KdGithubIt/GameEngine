@@ -235,6 +235,44 @@ const CAMERA_FIELDS: &[FieldDef] = &[
     .with_control(InspectorFieldControl::Number(POSITIVE)),
 ];
 
+const CAMERA_2D_FIELDS: &[FieldDef] = &[
+    boolean("enabled", "Enabled", "Whether this camera participates in shared Game View arbitration.", true),
+    integer("priority", "Priority", "Shared 2D/3D camera selection priority; higher values win.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
+    number("orthographic_height", "Orthographic Height", "Vertical world-space span before zoom.", 10.0, POSITIVE),
+    number("zoom", "Zoom", "Positive orthographic zoom multiplier.", 1.0, POSITIVE),
+    float("near", "Near", "Near clipping plane in Camera2D space.", -1000.0),
+    float("far", "Far", "Far clipping plane in Camera2D space; must exceed Near.", 1000.0),
+    boolean("pixel_perfect", "Pixel Perfect", "Use deterministic reference-pixel projection without rewriting authored transforms.", false),
+    number("reference_pixels_per_unit", "Reference Pixels Per Unit", "Reference source pixels represented by one world unit.", 100.0, POSITIVE),
+    integer("reference_width", "Reference Width", "Pixel-perfect reference resolution width.", 320, U32_RANGE),
+    integer("reference_height", "Reference Height", "Pixel-perfect reference resolution height.", 180, U32_RANGE),
+    enumeration("fit", "Viewport Fit", "How the reference frame fits the actual viewport.", "fit", &["fit", "fill", "stretch"]),
+];
+
+const SPRITE_RENDERER_2D_FIELDS: &[FieldDef] = &[
+    asset_ref("atlas", "Sprite Atlas", "Sprite Atlas document containing the stable SpriteId region.", AssetKind::SpriteAtlas, FieldDefaultSpec::Unassigned),
+    text("sprite_id", "Sprite ID", "Stable SpriteId inside the selected atlas.", ""),
+    number("tint_r", "Tint R", "Linear red tint multiplier.", 1.0, NON_NEGATIVE),
+    number("tint_g", "Tint G", "Linear green tint multiplier.", 1.0, NON_NEGATIVE),
+    number("tint_b", "Tint B", "Linear blue tint multiplier.", 1.0, NON_NEGATIVE),
+    number("tint_a", "Tint A", "Linear alpha tint multiplier.", 1.0, UNIT_INTERVAL),
+    boolean("flip_x", "Flip X", "Mirror texture coordinates horizontally.", false),
+    boolean("flip_y", "Flip Y", "Mirror texture coordinates vertically.", false),
+    text("sorting_layer", "Sorting Layer ID", "Stable SortingLayerId from Project Settings.", "sorting_layer_00000000000000000000000000"),
+    integer("order_in_layer", "Order In Layer", "Signed authored order inside the logical sorting layer.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
+    boolean("visible", "Visible", "Whether this sprite contributes a runtime draw.", true),
+    enumeration("blend", "Blend", "Supported unlit SpriteRenderer2D blend mode.", "alpha", &["alpha", "premultiplied_alpha", "additive"]),
+    asset_ref("material_override", "Material Override", "Optional material compatibility override used for deterministic batching.", AssetKind::Material, FieldDefaultSpec::Unassigned).optional(),
+];
+
+const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
+    asset_ref("clip", "Sprite Animation", "Sprite Animation document evaluated independently for this entity.", AssetKind::SpriteAnimation, FieldDefaultSpec::Unassigned),
+    boolean("autoplay", "Autoplay", "Start clip playback when the runtime entity becomes active.", true),
+    number("speed", "Speed", "Non-negative deterministic playback speed multiplier.", 1.0, NON_NEGATIVE),
+    FieldDef::new("looping_override", "Looping Override", "Optional per-entity looping override; unassigned uses the clip default.", FieldKind::Bool, FieldDefaultSpec::Unassigned).optional(),
+    integer("initial_frame", "Initial Frame", "Zero-based initial frame selected when playback becomes active.", 0, U32_RANGE),
+];
+
 const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
     FieldDef::new(
         "direction_x",
@@ -1998,6 +2036,33 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             1,
             COLLIDER_FIELDS,
             spawn_collider_component,
+        ),
+        BuiltinComponent::new(
+            CAMERA_2D_COMPONENT,
+            "Camera 2D",
+            "Orthographic XY camera participating in the shared Game View camera contract.",
+            "Rendering",
+            1,
+            CAMERA_2D_FIELDS,
+            spawn_camera_2d_component,
+        ),
+        BuiltinComponent::new(
+            SPRITE_RENDERER_2D_COMPONENT,
+            "Sprite Renderer 2D",
+            "Renders one stable SpriteRef using logical sorting rather than Transform Z.",
+            "Rendering",
+            1,
+            SPRITE_RENDERER_2D_FIELDS,
+            spawn_sprite_renderer_2d_component,
+        ),
+        BuiltinComponent::new(
+            SPRITE_ANIMATOR_2D_COMPONENT,
+            "Sprite Animator 2D",
+            "Evaluates a Sprite Animation clip in fixed time and drives SpriteRenderer2D.",
+            "Animation",
+            1,
+            SPRITE_ANIMATOR_2D_FIELDS,
+            spawn_sprite_animator_2d_component,
         ),
         BuiltinComponent::new(
             COLLIDER_2D_COMPONENT,

@@ -20,6 +20,9 @@ use crate::authoring_overlay::AuthoringDocumentOverlay;
 use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController};
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+use crate::native_2d::{
+    Camera2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
+};
 use crate::character_controller::KinematicCharacterController;
 use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
 use crate::combat::DamageReceiver;
@@ -58,7 +61,8 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
 use engine_authoring::value::Value;
 use engine_authoring::{
     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
-    Graph, VfxAuthoringService, VfxModuleOperation,
+    Graph, SortingLayerId, SpriteAnimationDocument, SpriteId, VfxAuthoringService,
+    VfxModuleOperation,
 };
 use engine_ecs::{Entity, World};
 use glam::{EulerRot, Mat4, Quat, Vec3};
@@ -104,6 +108,13 @@ pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
 
 /// The `"engine.camera"` component type string recognised by the bridge.
 pub const CAMERA_COMPONENT: &str = "engine.camera";
+
+/// Native orthographic XY camera component (ADR 0127).
+pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
+/// Native SpriteRenderer2D component using stable SpriteRef identity.
+pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
+/// Native deterministic SpriteAnimator2D component.
+pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
 
 /// The `"engine.directional_light"` component type string recognised by the bridge.
 pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
@@ -421,6 +432,8 @@ pub(crate) struct BridgeAssetState {
     pub(crate) mesh_handles: HashMap<AssetId, Handle<Mesh>>,
     pub(crate) material_handles: HashMap<AssetId, Handle<Material>>,
     pub(crate) animation_clip_handles: HashMap<AssetId, BTreeMap<String, Handle<AnimationClip>>>,
+    /// Parsed immutable Sprite Animation documents shared by every entity referencing the asset.
+    pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
     /// source contributed, recorded when its clips were first loaded.
     ///
