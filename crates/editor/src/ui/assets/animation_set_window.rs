@@ -169,6 +169,56 @@ fn show_motion_route_preview(
     response.on_hover_text(route.attempted_routing());
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
+        engine::asset::SkeletonRecord {
+            id: id.as_str().to_owned(),
+            identity,
+            next_bone_id: 0,
+            bones: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
+        let source_id = AssetId::generate();
+        let candidate_id = AssetId::generate();
+        let source_skeleton = AssetId::generate();
+        let other_skeleton = AssetId::generate();
+        let mut manifest = engine::AssetManifest::default();
+        manifest.insert(
+            source_id,
+            engine::ManifestEntry {
+                path: "models/source.glb".to_owned(),
+                name: Some("source".to_owned()),
+                import_settings: engine::ImportSettings {
+                    sub_assets: vec![engine::ImportedSubAsset {
+                        id: candidate_id.as_str().to_owned(),
+                        kind: engine::ImportedSubAssetKind::Animation,
+                        name: "Walk".to_owned(),
+                        index: 0,
+                        target_model_source: None,
+                    }],
+                    skeleton_records: vec![skeleton_record(&source_skeleton, 7)],
+                    ..engine::ImportSettings::default()
+                },
+            },
+        );
+        let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
+
+        let native = preview_motion_route(&manifest, None, &candidate, &source_skeleton)
+            .expect("registered Animation candidate must produce a route");
+        let failed = preview_motion_route(&manifest, None, &candidate, &other_skeleton)
+            .expect("registered Animation candidate must produce a route");
+
+        assert_eq!(native.badge(), "Native");
+        assert_eq!(failed.badge(), "Failed");
+    }
+}
+
 fn humanoid_motion_choices(
     manifest: &engine::AssetManifest,
     assets_root: Option<&std::path::Path>,

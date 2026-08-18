@@ -391,3 +391,77 @@ fn compatibility_issue_label(kind: engine::VmdPmxCompatibilityIssueKind) -> &'st
         Kind::AmbiguousMorph => "Ambiguous morph name",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pairing(
+        selected: Vec<AssetId>,
+        humanoid_source: Option<AssetId>,
+        capable: Vec<(AssetId, String)>,
+    ) -> MotionPairingState {
+        MotionPairingState {
+            motion_path: None,
+            original: None,
+            selected,
+            candidates: capable.clone(),
+            candidate_paths: Vec::new(),
+            humanoid_source,
+            humanoid_capable_models: capable,
+            retarget_pairs: Vec::new(),
+            recorded_model_name: None,
+            compatibility_reports: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn persisted_humanoid_source_survives_output_reordering() {
+        let source = AssetId::generate();
+        let other = AssetId::generate();
+        let mut state = pairing(
+            vec![source.clone(), other.clone()],
+            Some(source.clone()),
+            vec![
+                (source.clone(), "source".to_owned()),
+                (other.clone(), "other".to_owned()),
+            ],
+        );
+        assert!(motion_humanoid_source_is_valid(&state));
+
+        state.selected.reverse();
+
+        assert_eq!(state.humanoid_source, Some(source));
+        assert!(motion_humanoid_source_is_valid(&state));
+    }
+
+    #[test]
+    fn ambiguous_capable_models_never_auto_choose_humanoid_provenance() {
+        let first = AssetId::generate();
+        let second = AssetId::generate();
+        let state = pairing(
+            vec![first.clone(), second.clone()],
+            None,
+            vec![
+                (first, "first".to_owned()),
+                (second, "second".to_owned()),
+            ],
+        );
+
+        assert_eq!(humanoid_source_choices(&state).len(), 2);
+        assert!(state.humanoid_source.is_none());
+    }
+
+    #[test]
+    fn sole_capable_model_is_only_an_offer_until_the_author_selects_it() {
+        let only = AssetId::generate();
+        let state = pairing(
+            vec![only.clone()],
+            None,
+            vec![(only, "only".to_owned())],
+        );
+
+        assert_eq!(humanoid_source_choices(&state).len(), 1);
+        assert!(state.humanoid_source.is_none());
+    }
+}

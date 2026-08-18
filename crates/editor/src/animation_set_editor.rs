@@ -495,6 +495,35 @@ mod tests {
     }
 
     #[test]
+    fn target_preview_selection_is_transient_and_does_not_dirty_the_animation_set() {
+        let document = AnimationSet::new(AssetId::generate());
+        let canonical = document
+            .to_canonical_json()
+            .expect("fixture must serialize");
+        let mut state = editor(document);
+
+        state.target_preview_skeleton = Some(AssetId::generate());
+        assert!(!state.is_dirty());
+        assert_eq!(
+            state
+                .document
+                .to_canonical_json()
+                .expect("working copy must serialize"),
+            canonical
+        );
+
+        state.target_preview_skeleton = Some(AssetId::generate());
+        assert!(!state.is_dirty());
+        assert_eq!(
+            state
+                .document
+                .to_canonical_json()
+                .expect("working copy must serialize"),
+            canonical
+        );
+    }
+
+    #[test]
     fn graph_change_preserves_matching_bindings_and_removes_confirmed_stale_bindings() {
         let old_graph = AssetId::generate();
         let retained = slot("Idle");
