@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/runtime_systems.rs","old":"    PhysicsRuntime2d, SpriteAnimationEvents2d,\n};\n","new":"    PhysicsRuntime2d, SpriteAnimationClipRegistry2d, SpriteAnimationEvents2d,\n};\n"}
