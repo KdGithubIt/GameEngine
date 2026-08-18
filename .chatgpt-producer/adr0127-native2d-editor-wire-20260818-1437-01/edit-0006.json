@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod live_observation;\nmod native_agent;","new":"mod live_observation;\nmod native_2d_editor;\nmod native_agent;"}
