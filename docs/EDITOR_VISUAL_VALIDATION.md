@@ -1,7 +1,7 @@
 # Editor Visual Validation
 
 Status: Accepted
-Version: 1.2.0
+Version: 1.3.0
 Canonical location: `docs/EDITOR_VISUAL_VALIDATION.md`
 
 ## Purpose
@@ -92,6 +92,11 @@ The Windows job checks out that exact head SHA with persisted Git credentials
 disabled. It may use the same trusted self-hosted Windows runner configuration
 as normal GameEngine Windows validation; otherwise it uses `windows-latest`.
 
+The workflow keeps pull-request write permission out of the Windows capture job.
+After capture completes, a separate trusted Ubuntu report job that does not
+check out pull-request code may receive only the permissions required to read
+the pull request and update its result comment.
+
 Normal ChatGPT Patch Dispatcher requests still MUST NOT modify `.github/**` or
 `.chatgpt-requests/**`. Changes to this visual-validation infrastructure follow
 the repository's dedicated infrastructure-branch and Draft-PR rule.
@@ -160,12 +165,61 @@ application built, started, rendered a frame, and exported that frame. It does
 not by itself prove that the UI looks correct. Visual correctness is established
 only after the PNG is actually reviewed.
 
+## Pull-request result and artifact discovery
+
+`pull_request_target` is intentionally retained for the trusted workflow
+boundary, but a commit-filtered Actions listing may not expose that run through
+a pull-request-only lookup. The workflow therefore upserts one bot comment on
+the pull request after every valid visual-validation request whose trusted
+context job completed. The comment begins with:
+
+```text
+<!-- gameengine-visual-validation-result -->
+```
+
+and records at least:
+
+```text
+### GameEngine Visual Validation
+
+- Result: **success|failure|cancelled|skipped**
+- Head: `<40-character SHA>`
+- Requested target: `<target>`
+- Resolved target: `<target or unknown>`
+- Run: `<workflow run ID>`
+- Attempt: `<workflow run attempt>`
+- Artifact lookup key: `gameengine-editor-visual-validation-<run-id>-<attempt>`
+```
+
+The report job re-reads the current pull-request head before writing. A stale run
+for an older head does not overwrite the current result. If runs for the same
+head race, an older workflow run ID or older attempt does not overwrite a newer
+comment.
+
+ChatGPT SHOULD discover visual evidence from this comment when direct workflow
+run enumeration does not return the `pull_request_target` run. It should use the
+reported workflow run ID to list run artifacts, select the matching artifact
+lookup key when present, download the archive, and inspect the requested PNGs.
+The result comment is discovery metadata, not visual evidence itself. A
+successful workflow or a non-empty screenshot MUST NOT be called Visual PASS
+until the relevant PNG has actually been reviewed.
+
+If a valid visual-validation request completes without this result comment after
+the bridge is present on `main`, treat result discovery as an automation failure
+and investigate the report job rather than claiming that artifacts are
+unavailable.
+
 ## Current scope and extensions
 
-Version 1.2 captures the deterministic initial Launcher or Editor window and can
-open one modeless authoring-tool window before an Editor screenshot. It is
-intended for shell layout, toolbar, startup-visible panels, authoring-window
-startup layout, typography, colors, clipping, spacing, and similar regressions.
+Version 1.3 captures the deterministic initial Launcher or Editor window and can
+open one modeless authoring-tool window before an Editor screenshot. It also
+publishes trusted pull-request discovery metadata for the workflow run and
+artifact lookup key without granting write permission to the job that executes
+pull-request code.
+
+It is intended for shell layout, toolbar, startup-visible panels,
+authoring-window startup layout, typography, colors, clipping, spacing, and
+similar regressions.
 
 UI states that require a specific document, populated tool state, or a sequence
 of inputs still need an explicit future visual scenario rather than hidden
