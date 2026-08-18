@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "scripts/ci/Invoke-EditorVisualValidation.ps1",
+  "old": "        $captures += Invoke-DesktopScreenshot `\n            -Name \"editor\" `\n            -Package \"engine-editor\" `\n            -ProgramArguments @(\"--project\", $projectRoot) `\n            -RequestedAuthoringTool $AuthoringTool\n    }\n",
+  "new": "        $captures += Invoke-DesktopScreenshot `\n            -Name \"editor\" `\n            -Package \"engine-editor\" `\n            -ProgramArguments @(\"--project\", $projectRoot) `\n            -RequestedAuthoringTool $AuthoringTool\n        if ($remoteAiStudioBrowserRequested) {\n            $captures += Invoke-RemoteAiStudioBrowserScreenshots -ProjectRoot $projectRoot\n        }\n    }\n"
+}
