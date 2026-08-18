@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "fn manifest_paths(manifest: &engine::AssetManifest, suffix: &str) -> Vec<PathBuf> {\n    let mut paths = manifest\n        .iter()\n        .filter_map(|(_, entry)| {\n            entry\n                .path\n                .to_string_lossy()\n                .to_ascii_lowercase()\n                .ends_with(suffix)\n                .then(|| entry.path.clone())\n        })\n        .collect::<Vec<_>>();\n",
+  "new": "fn manifest_paths(manifest: &engine::AssetManifest, suffix: &str) -> Vec<PathBuf> {\n    let mut paths = manifest\n        .iter()\n        .filter_map(|(_, entry)| {\n            entry\n                .path\n                .to_ascii_lowercase()\n                .ends_with(suffix)\n                .then(|| PathBuf::from(&entry.path))\n        })\n        .collect::<Vec<_>>();\n"
+}
