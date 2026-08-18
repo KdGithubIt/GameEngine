@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"        .default_open(false)\n        .show(ui, |ui| {\n","new":"        .default_open(cfg!(feature = \"visual-validation\"))\n        .show(ui, |ui| {\n"}
