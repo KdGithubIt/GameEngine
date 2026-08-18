@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r14h",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v7",
+  "expected_head_sha": "b52ba77639f3710ec50585cca7f21b86bd0b02a3",
+  "baseline_main_sha": "3548cd1ebbad8caa9cab34903e0aee205b4d2604",
+  "patch_sha256": "e0d9f9f08b2384ca24f43ea89a909097669bac4096b1d71f5f6cefdf4007a298",
+  "patch_bytes": 35968,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0142 benchmark evidence contracts",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Complete ADR 0142 on current main while preserving ADR 0145 provider adapters, ADR 0136 preview streaming, and ADR 0152 writer coordination.\n- Freeze benchmark task, ADR 0135 workload classification, and active Editor hardware identity at execution start.\n- Measure uniquely matched Windows DXGI dedicated VRAM and OS-reported physical RAM without inventing unavailable telemetry.\n- Require retrieved provenance for read-question success and task-specific `Passed` completion gates for write-capable evidence; required gates cannot pass as `NotApplicable`.\n- Derive catalog recommendations only from complete measured seven-task evidence and keep compatible/unverified models visibly distinct.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r14h -->\n"
+}
