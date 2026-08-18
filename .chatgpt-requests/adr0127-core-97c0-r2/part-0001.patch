@@ -1,0 +1,888 @@
++/// Structured failure from shared Native 2D authoring operations.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum Native2dAuthoringError {
++    /// The requested stable SpriteId does not exist.
++    SpriteNotFound(SpriteId),
++    /// The requested stable TileLayerId does not exist.
++    LayerNotFound(TileLayerId),
++    /// The selected Tile Map layer is locked.
++    LayerLocked(TileLayerId),
++    /// A pointer gesture is already active.
++    GestureAlreadyActive,
++    /// A gesture-scoped operation was requested without an active gesture.
++    GestureNotActive,
++    /// A bounded operation exceeded its explicit work budget.
++    WorkBudgetExceeded {
++        /// Maximum number of cells the caller allowed.
++        limit: usize,
++    },
++    /// A normalized sprite pivot was outside `[0, 1]` or non-finite.
++    InvalidPivot,
++}
++
++impl fmt::Display for Native2dAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::SpriteNotFound(id) => write!(formatter, "SpriteId `{}` was not found", id.as_str()),
++            Self::LayerNotFound(id) => write!(formatter, "TileLayerId `{}` was not found", id.as_str()),
++            Self::LayerLocked(id) => write!(formatter, "TileLayerId `{}` is locked", id.as_str()),
++            Self::GestureAlreadyActive => formatter.write_str("a Tile Map gesture is already active"),
++            Self::GestureNotActive => formatter.write_str("no Tile Map gesture is active"),
++            Self::WorkBudgetExceeded { limit } => write!(formatter, "Tile Map operation exceeded its {limit}-cell work budget"),
++            Self::InvalidPivot => formatter.write_str("sprite pivot must be finite and normalized"),
++        }
++    }
++}
++
++impl std::error::Error for Native2dAuthoringError {}
++
++/// Atomic Sprite Atlas mutations independent of presentation or transport.
++#[derive(Debug, Clone)]
++pub struct SpriteAtlasAuthoringService {
++    document: SpriteAtlasDocument,
++    undo: Vec<SpriteAtlasDocument>,
++}
++
++impl SpriteAtlasAuthoringService {
++    /// Creates the service from one typed Sprite Atlas document.
++    pub fn new(document: SpriteAtlasDocument) -> Self {
++        Self { document, undo: Vec::new() }
++    }
++
++    /// Returns the current committed document.
++    pub fn document(&self) -> &SpriteAtlasDocument {
++        &self.document
++    }
++
++    /// Renames a region without changing its stable SpriteId.
++    pub fn rename(&mut self, id: &SpriteId, name: String) -> Result<(), Native2dAuthoringError> {
++        let Some(index) = self.document.regions.iter().position(|region| &region.id == id) else {
++            return Err(Native2dAuthoringError::SpriteNotFound(id.clone()));
++        };
++        let before = self.document.clone();
++        self.document.regions[index].name = name;
++        self.undo.push(before);
++        Ok(())
++    }
++
++    /// Changes one normalized pivot as a single semantic mutation.
++    pub fn set_pivot(&mut self, id: &SpriteId, pivot: [f32; 2]) -> Result<(), Native2dAuthoringError> {
++        if pivot.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
++            return Err(Native2dAuthoringError::InvalidPivot);
++        }
++        let Some(index) = self.document.regions.iter().position(|region| &region.id == id) else {
++            return Err(Native2dAuthoringError::SpriteNotFound(id.clone()));
++        };
++        let before = self.document.clone();
++        self.document.regions[index].pivot = pivot;
++        self.undo.push(before);
++        Ok(())
++    }
++
++    /// Reverts the latest committed semantic mutation.
++    pub fn undo(&mut self) -> bool {
++        let Some(previous) = self.undo.pop() else {
++            return false;
++        };
++        self.document = previous;
++        true
++    }
++}
++
++/// Inclusive finite Tile Map rectangle used by rectangle/fill/stamp tools.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TileRect {
++    /// Inclusive minimum world cell.
++    pub min: TileCell,
++    /// Inclusive maximum world cell.
++    pub max: TileCell,
++}
++
++impl TileRect {
++    /// Creates a normalized rectangle from two arbitrary corners.
++    pub fn from_corners(a: TileCell, b: TileCell) -> Self {
++        Self {
++            min: TileCell { x: a.x.min(b.x), y: a.y.min(b.y) },
++            max: TileCell { x: a.x.max(b.x), y: a.y.max(b.y) },
++        }
++    }
++
++    fn cells(self) -> impl Iterator<Item = TileCell> {
++        (self.min.y..=self.max.y).flat_map(move |y| {
++            (self.min.x..=self.max.x).map(move |x| TileCell { x, y })
++        })
++    }
++}
++
++/// Clipboard-like sparse Tile Map stamp using offsets from its origin.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub struct TileStamp {
++    /// Sparse `(offset, tile)` entries in deterministic order.
++    pub cells: Vec<(TileCell, TileId)>,
++}
++
++/// Commit result for exactly one Tile Map pointer gesture.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TileMapGestureCommit {
++    /// Layer/chunk pairs invalidated by the gesture only.
++    pub affected_chunks: Vec<TileMapChunkKey>,
++    /// Semantic undo entries produced by the gesture; always one.
++    pub undo_entries: u32,
++}
++
++#[derive(Debug, Clone)]
++struct TileMapGesture {
++    before: TileMapDocument,
++    working: TileMapDocument,
++    affected: BTreeSet<TileMapChunkKey>,
++}
++
++impl TileMapGesture {
++    fn new(document: &TileMapDocument) -> Self {
++        Self { before: document.clone(), working: document.clone(), affected: BTreeSet::new() }
++    }
++}
++
++/// Transactional sparse Tile Map service. One pointer gesture is one undo entry.
++#[derive(Debug, Clone)]
++pub struct TileMapAuthoringService {
++    document: TileMapDocument,
++    active: Option<TileMapGesture>,
++    undo: Vec<TileMapDocument>,
++}
++
++impl TileMapAuthoringService {
++    /// Creates a service from one committed sparse Tile Map document.
++    pub fn new(document: TileMapDocument) -> Self {
++        Self { document, active: None, undo: Vec::new() }
++    }
++
++    /// Returns the current committed document.
++    pub fn document(&self) -> &TileMapDocument {
++        &self.document
++    }
++
++    /// Returns transient preview content while a gesture is active.
++    pub fn preview(&self) -> &TileMapDocument {
++        self.active.as_ref().map_or(&self.document, |gesture| &gesture.working)
++    }
++
++    /// Begins one pointer gesture. Nested gestures are rejected.
++    pub fn begin_gesture(&mut self) -> Result<(), Native2dAuthoringError> {
++        if self.active.is_some() {
++            return Err(Native2dAuthoringError::GestureAlreadyActive);
++        }
++        self.active = Some(TileMapGesture::new(&self.document));
++        Ok(())
++    }
++
++    /// Paints or erases one world cell in the transient gesture.
++    pub fn paint(
++        &mut self,
++        layer: &TileLayerId,
++        cell: TileCell,
++        tile: Option<TileId>,
++    ) -> Result<TileMapChunkKey, Native2dAuthoringError> {
++        let gesture = self.active.as_mut().ok_or(Native2dAuthoringError::GestureNotActive)?;
++        let (coord, local) = gesture.working.split_cell(cell);
++        let Some(layer_document) = gesture.working.layers.iter_mut().find(|candidate| &candidate.id == layer) else {
++            return Err(Native2dAuthoringError::LayerNotFound(layer.clone()));
++        };
++        if layer_document.locked {
++            return Err(Native2dAuthoringError::LayerLocked(layer.clone()));
++        }
++        let chunk_index = layer_document.chunks.iter().position(|chunk| chunk.coord == coord);
++        if let Some(index) = chunk_index {
++            layer_document.chunks[index].set(local, tile);
++            if layer_document.chunks[index].cells.is_empty() {
++                layer_document.chunks.remove(index);
++            }
++        } else if let Some(tile) = tile {
++            let mut chunk = TileChunk { coord, cells: Vec::new() };
++            chunk.set(local, Some(tile));
++            layer_document.chunks.push(chunk);
++            layer_document.chunks.sort_by_key(|chunk| (chunk.coord.y, chunk.coord.x));
++        }
++        let key = TileMapChunkKey { layer: layer.clone(), chunk: coord };
++        gesture.affected.insert(key.clone());
++        Ok(key)
++    }
++
++    /// Paints or erases an inclusive rectangle within one gesture.
++    pub fn rectangle(
++        &mut self,
++        layer: &TileLayerId,
++        rect: TileRect,
++        tile: Option<TileId>,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        let cells = rect.cells().collect::<Vec<_>>();
++        if cells.len() > max_cells {
++            return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++        }
++        for cell in cells {
++            self.paint(layer, cell, tile.clone())?;
++        }
++        Ok(())
++    }
++
++    /// Paints a Bresenham line within one gesture and explicit work budget.
++    pub fn line(
++        &mut self,
++        layer: &TileLayerId,
++        start: TileCell,
++        end: TileCell,
++        tile: Option<TileId>,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        let mut x = start.x;
++        let mut y = start.y;
++        let dx = (end.x - start.x).abs();
++        let sx = if start.x < end.x { 1 } else { -1 };
++        let dy = -(end.y - start.y).abs();
++        let sy = if start.y < end.y { 1 } else { -1 };
++        let mut error = dx + dy;
++        let mut cells = Vec::new();
++        loop {
++            cells.push(TileCell { x, y });
++            if cells.len() > max_cells {
++                return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++            }
++            if x == end.x && y == end.y {
++                break;
++            }
++            let twice = 2 * error;
++            if twice >= dy {
++                error += dy;
++                x += sx;
++            }
++            if twice <= dx {
++                error += dx;
++                y += sy;
++            }
++        }
++        for cell in cells {
++            self.paint(layer, cell, tile.clone())?;
++        }
++        Ok(())
++    }
++
++    /// Flood-fills a finite rectangle, never searching outside the caller's bounds.
++    pub fn fill_bounded(
++        &mut self,
++        layer: &TileLayerId,
++        start: TileCell,
++        bounds: TileRect,
++        tile: Option<TileId>,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        if start.x < bounds.min.x || start.x > bounds.max.x || start.y < bounds.min.y || start.y > bounds.max.y {
++            return Ok(());
++        }
++        let target = self.preview().tile_at(layer, start).cloned();
++        if target == tile {
++            return Ok(());
++        }
++        let before = self.active.clone();
++        let mut queue = VecDeque::from([start]);
++        let mut visited = BTreeSet::new();
++        while let Some(cell) = queue.pop_front() {
++            if cell.x < bounds.min.x || cell.x > bounds.max.x || cell.y < bounds.min.y || cell.y > bounds.max.y || !visited.insert(cell) {
++                continue;
++            }
++            if self.preview().tile_at(layer, cell).cloned() != target {
++                continue;
++            }
++            if visited.len() > max_cells {
++                self.active = before;
++                return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++            }
++            self.paint(layer, cell, tile.clone())?;
++            queue.push_back(TileCell { x: cell.x + 1, y: cell.y });
++            queue.push_back(TileCell { x: cell.x - 1, y: cell.y });
++            queue.push_back(TileCell { x: cell.x, y: cell.y + 1 });
++            queue.push_back(TileCell { x: cell.x, y: cell.y - 1 });
++        }
++        Ok(())
++    }
++
++    /// Eyedrops the stable TileId at one world cell from the transient preview.
++    pub fn eyedropper(&self, layer: &TileLayerId, cell: TileCell) -> Option<TileId> {
++        self.preview().tile_at(layer, cell).cloned()
++    }
++
++    /// Copies a finite rectangle into a sparse stamp whose origin is the rectangle minimum.
++    pub fn copy_stamp(&self, layer: &TileLayerId, rect: TileRect) -> TileStamp {
++        let mut cells = rect
++            .cells()
++            .filter_map(|cell| {
++                self.preview().tile_at(layer, cell).cloned().map(|tile| {
++                    (TileCell { x: cell.x - rect.min.x, y: cell.y - rect.min.y }, tile)
++                })
++            })
++            .collect::<Vec<_>>();
++        cells.sort_by_key(|(cell, tile)| (cell.y, cell.x, tile.as_str().to_owned()));
++        TileStamp { cells }
++    }
++
++    /// Pastes one sparse stamp as part of the active gesture.
++    pub fn paste_stamp(
++        &mut self,
++        layer: &TileLayerId,
++        origin: TileCell,
++        stamp: &TileStamp,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        if stamp.cells.len() > max_cells {
++            return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++        }
++        for (offset, tile) in &stamp.cells {
++            self.paint(
++                layer,
++                TileCell { x: origin.x + offset.x, y: origin.y + offset.y },
++                Some(tile.clone()),
++            )?;
++        }
++        Ok(())
++    }
++
++    /// Cancels a gesture and restores the exact pre-gesture snapshot.
++    pub fn cancel_gesture(&mut self) -> Result<(), Native2dAuthoringError> {
++        let gesture = self.active.take().ok_or(Native2dAuthoringError::GestureNotActive)?;
++        self.document = gesture.before;
++        Ok(())
++    }
++
++    /// Commits the complete gesture as exactly one semantic undo entry.
++    pub fn commit_gesture(&mut self) -> Result<TileMapGestureCommit, Native2dAuthoringError> {
++        let gesture = self.active.take().ok_or(Native2dAuthoringError::GestureNotActive)?;
++        self.undo.push(gesture.before);
++        self.document = gesture.working;
++        Ok(TileMapGestureCommit {
++            affected_chunks: gesture.affected.into_iter().collect(),
++            undo_entries: 1,
++        })
++    }
++
++    /// Reverts the latest completed gesture. Active gestures are never crossed.
++    pub fn undo(&mut self) -> bool {
++        if self.active.is_some() {
++            return false;
++        }
++        let Some(previous) = self.undo.pop() else {
++            return false;
++        };
++        self.document = previous;
++        true
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::native_2d_assets::{TileMapLayer, TILE_MAP_SCHEMA_VERSION};
++    use crate::{AssetId, SortingLayerId};
++
++    fn map() -> TileMapDocument {
++        TileMapDocument {
++            schema_version: TILE_MAP_SCHEMA_VERSION,
++            tile_set: AssetId::generate(),
++            chunk_size: 32,
++            layers: vec![TileMapLayer {
++                id: TileLayerId::generate(),
++                name: "World".to_owned(),
++                enabled: true,
++                locked: false,
++                sorting_layer: SortingLayerId::generate(),
++                order_in_layer: 0,
++                chunks: Vec::new(),
++            }],
++        }
++    }
++
++    #[test]
++    fn one_pointer_stroke_is_one_undo_entry_and_cancel_is_exact() {
++        let original = map();
++        let layer = original.layers[0].id.clone();
++        let mut service = TileMapAuthoringService::new(original.clone());
++        service.begin_gesture().unwrap();
++        service.paint(&layer, TileCell { x: 2, y: 3 }, Some(TileId::generate())).unwrap();
++        service.cancel_gesture().unwrap();
++        assert_eq!(service.document(), &original);
++
++        service.begin_gesture().unwrap();
++        service.paint(&layer, TileCell { x: 33, y: 3 }, Some(TileId::generate())).unwrap();
++        let commit = service.commit_gesture().unwrap();
++        assert_eq!(commit.undo_entries, 1);
++        assert_eq!(commit.affected_chunks[0].chunk, TileChunkCoord { x: 1, y: 0 });
++        assert!(service.undo());
++        assert_eq!(service.document(), &original);
++    }
++
++    #[test]
++    fn bounded_fill_rolls_back_transient_changes_on_budget_failure() {
++        let original = map();
++        let layer = original.layers[0].id.clone();
++        let mut service = TileMapAuthoringService::new(original);
++        service.begin_gesture().unwrap();
++        let before = service.preview().clone();
++        assert!(matches!(
++            service.fill_bounded(
++                &layer,
++                TileCell { x: 0, y: 0 },
++                TileRect::from_corners(TileCell { x: 0, y: 0 }, TileCell { x: 4, y: 4 }),
++                Some(TileId::generate()),
++                4,
++            ),
++            Err(Native2dAuthoringError::WorkBudgetExceeded { .. })
++        ));
++        assert_eq!(service.preview(), &before);
++    }
++}
+diff --git a/crates/authoring/src/typed_document_authoring.rs b/crates/authoring/src/typed_document_authoring.rs
+index ad7aa69d6f6ca31b7a47668e0f06a73532ccd8fb..5fc63e55295406860390bc5b02a4b81536ef7ea8 100644
+--- a/crates/authoring/src/typed_document_authoring.rs
++++ b/crates/authoring/src/typed_document_authoring.rs
+@@ -8,7 +8,8 @@
+ use crate::project_settings::SYSTEM_SETTINGS_SCHEMA_VERSION;
+ use crate::{
+     AnimationSet, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, Diagnostic,
+-    MaterialAsset, ProjectSettings, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
++    MaterialAsset, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
++    TileSetDocument, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
+ };
+ use serde::Serialize;
+ use std::fmt;
+@@ -71,6 +72,46 @@ impl TypedAuthoringDocument for AnimationSet {
+     }
+ }
+ 
++fn validate_native_2d(errors: Vec<String>) -> Result<(), String> {
++    if errors.is_empty() {
++        Ok(())
++    } else {
++        Err(errors.join("; "))
++    }
++}
++
++impl TypedAuthoringDocument for SpriteAtlasDocument {
++    const INVALID_CODE: &'static str = "sprite_atlas.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
++impl TypedAuthoringDocument for SpriteAnimationDocument {
++    const INVALID_CODE: &'static str = "sprite_animation.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
++impl TypedAuthoringDocument for TileSetDocument {
++    const INVALID_CODE: &'static str = "tile_set.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
++impl TypedAuthoringDocument for TileMapDocument {
++    const INVALID_CODE: &'static str = "tile_map.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
+ /// Live revision metadata owned by the adapter that owns a typed document.
+ ///
+ /// Reopening a document constructs a fresh generation. Successful semantic
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index 87dc3cdc6de7483d23a00f6e5485910bf5e981f1..19f66275f7997429a555596e2815e5bc506dac79 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -10,6 +10,9 @@
+ /// Camera projection, viewport, and active-camera selection contracts.
+ #[cfg(feature = "gpu")]
+ pub mod camera;
++/// Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
++#[cfg(feature = "gpu")]
++pub mod native_2d;
+ /// Immediate-mode runtime debug line presentation.
+ #[cfg(feature = "gpu")]
+ pub mod debug_draw;
+diff --git a/crates/render-runtime/src/native_2d.rs b/crates/render-runtime/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..104170eef88bac5f940ddfdff7edd729c10d981a
+--- /dev/null
++++ b/crates/render-runtime/src/native_2d.rs
+@@ -0,0 +1,366 @@
++//! Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
++
++use crate::transform::Transform;
++use engine_authoring::{SortingLayerId, SpriteRef, TileChunkCoord, TileLayerId};
++use glam::{Mat4, Vec2, Vec3};
++
++/// Orthographic viewport-fit policy.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ViewportFit2d {
++    /// Preserve the complete reference frame and allow unused viewport space.
++    Fit,
++    /// Fill the viewport and crop reference-frame overflow.
++    Fill,
++    /// Stretch reference dimensions to the viewport shape.
++    Stretch,
++}
++
++/// Runtime Camera2D contract. Pose remains owned by the normal Transform hierarchy.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct Camera2d {
++    /// Whether this camera participates in Game View arbitration.
++    pub enabled: bool,
++    /// Selection priority shared with Camera3D. Higher values win.
++    pub priority: i32,
++    /// Vertical orthographic world span before zoom.
++    pub orthographic_height: f32,
++    /// Positive projection zoom multiplier.
++    pub zoom: f32,
++    /// Near clipping plane in camera space.
++    pub near: f32,
++    /// Far clipping plane in camera space.
++    pub far: f32,
++    /// Whether projection follows deterministic reference-pixel scaling.
++    pub pixel_perfect: bool,
++    /// Reference texture pixels represented by one world unit.
++    pub reference_pixels_per_unit: f32,
++    /// Reference pixel-perfect resolution `[width, height]`.
++    pub reference_resolution: [u32; 2],
++    /// Viewport fitting policy.
++    pub fit: ViewportFit2d,
++}
++
++impl Default for Camera2d {
++    fn default() -> Self {
++        Self {
++            enabled: true,
++            priority: 0,
++            orthographic_height: 10.0,
++            zoom: 1.0,
++            near: -1000.0,
++            far: 1000.0,
++            pixel_perfect: false,
++            reference_pixels_per_unit: 100.0,
++            reference_resolution: [320, 180],
++            fit: ViewportFit2d::Fit,
++        }
++    }
++}
++
++/// Why Camera2D cannot safely produce the required XY orthographic view.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Camera2dDiagnostic {
++    /// Transform or projection contains non-finite values.
++    NonFinitePose,
++    /// Camera rotation tilts away from the world XY plane.
++    NonPlanarTilt,
++    /// Camera scale would make projection semantics ambiguous.
++    IncompatibleScale,
++    /// Projection settings cannot form a finite orthographic matrix.
++    InvalidProjection,
++}
++
++impl Camera2d {
++    /// Builds the orthographic projection without rewriting authored transforms.
++    pub fn projection(self, viewport: [u32; 2]) -> Result<Mat4, Camera2dDiagnostic> {
++        if !self.orthographic_height.is_finite()
++            || self.orthographic_height <= 0.0
++            || !self.zoom.is_finite()
++            || self.zoom <= 0.0
++            || !self.near.is_finite()
++            || !self.far.is_finite()
++            || self.far <= self.near
++            || !self.reference_pixels_per_unit.is_finite()
++            || self.reference_pixels_per_unit <= 0.0
++        {
++            return Err(Camera2dDiagnostic::InvalidProjection);
++        }
++        let width = viewport[0].max(1) as f32;
++        let height = viewport[1].max(1) as f32;
++        let reference_width = self.reference_resolution[0].max(1) as f32;
++        let reference_height = self.reference_resolution[1].max(1) as f32;
++        let viewport_aspect = width / height;
++        let reference_aspect = reference_width / reference_height;
++
++        let mut world_height = self.orthographic_height / self.zoom;
++        let mut world_width = world_height * viewport_aspect;
++        if self.pixel_perfect {
++            let integer_scale = (width / reference_width)
++                .min(height / reference_height)
++                .floor()
++                .max(1.0);
++            let pixel_world = 1.0 / (self.reference_pixels_per_unit * integer_scale);
++            let reference_world_width = reference_width * pixel_world;
++            let reference_world_height = reference_height * pixel_world;
++            match self.fit {
++                ViewportFit2d::Fit => {
++                    if viewport_aspect >= reference_aspect {
++                        world_height = reference_world_height;
++                        world_width = world_height * viewport_aspect;
++                    } else {
++                        world_width = reference_world_width;
++                        world_height = world_width / viewport_aspect;
++                    }
++                }
++                ViewportFit2d::Fill => {
++                    if viewport_aspect >= reference_aspect {
++                        world_width = reference_world_width;
++                        world_height = world_width / viewport_aspect;
++                    } else {
++                        world_height = reference_world_height;
++                        world_width = world_height * viewport_aspect;
++                    }
++                }
++                ViewportFit2d::Stretch => {
++                    world_width = reference_world_width;
++                    world_height = reference_world_height;
++                }
++            }
++        }
++        Ok(Mat4::orthographic_rh(
++            -world_width * 0.5,
++            world_width * 0.5,
++            -world_height * 0.5,
++            world_height * 0.5,
++            self.near,
++            self.far,
++        ))
++    }
++
++    /// Builds a view-projection matrix from the normal Transform authority.
++    pub fn view_projection_matrix(
++        self,
++        transform: &Transform,
++        viewport: [u32; 2],
++    ) -> Result<Mat4, Camera2dDiagnostic> {
++        validate_camera_transform(transform)?;
++        Ok(self.projection(viewport)? * transform.to_matrix().inverse())
++    }
++}
++
++/// Validates planar Camera2D Transform usage without mutating authored values.
++pub fn validate_camera_transform(transform: &Transform) -> Result<(), Camera2dDiagnostic> {
++    if !transform.translation.is_finite()
++        || !transform.rotation.is_finite()
++        || !transform.scale.is_finite()
++    {
++        return Err(Camera2dDiagnostic::NonFinitePose);
++    }
++    if (transform.scale.x - 1.0).abs() > 1.0e-4
++        || (transform.scale.y - 1.0).abs() > 1.0e-4
++        || (transform.scale.z - 1.0).abs() > 1.0e-4
++    {
++        return Err(Camera2dDiagnostic::IncompatibleScale);
++    }
++    let forward = transform.rotation * Vec3::NEG_Z;
++    let up = transform.rotation * Vec3::Y;
++    if forward.normalize_or_zero().dot(Vec3::NEG_Z).abs() < 0.999
++        || up.normalize_or_zero().dot(Vec3::Y).abs() < 0.999
++    {
++        return Err(Camera2dDiagnostic::NonPlanarTilt);
++    }
++    Ok(())
++}
++
++/// Extracted SpriteRenderer2D draw instance.
++#[derive(Debug, Clone, PartialEq)]
++pub struct SpriteInstance2d {
++    /// Stable deterministic runtime entity tie-break key.
++    pub entity_key: u64,
++    /// Stable logical SpriteRef consumed from runtime component state.
++    pub sprite: SpriteRef,
++    /// Stable logical sorting layer.
++    pub sorting_layer: SortingLayerId,
++    /// Resolved project rank for the sorting layer.
++    pub layer_rank: u32,
++    /// Signed authored order within the layer.
++    pub order_in_layer: i32,
++    /// Runtime texture page or source texture key used for batching only.
++    pub texture_key: u64,
++    /// Runtime material key used for batching only.
++    pub material_key: u64,
++    /// Runtime sampler key used for batching only.
++    pub sampler_key: u64,
++    /// World XY sprite origin.
++    pub position: Vec2,
++    /// World XY dimensions.
++    pub size: Vec2,
++    /// Normalized pivot.
++    pub pivot: Vec2,
++    /// World Z-axis rotation in radians.
++    pub rotation_radians: f32,
++    /// Runtime normalized UV rectangle `[u0, v0, u1, v1]`.
++    pub uv_rect: [f32; 4],
++    /// Linear RGBA tint multiplier.
++    pub tint: [f32; 4],
++    /// Mirror texture coordinates horizontally.
++    pub flip_x: bool,
++    /// Mirror texture coordinates vertically.
++    pub flip_y: bool,
++    /// Whether this instance contributes a draw.
++    pub visible: bool,
++}
++
++/// One deterministic contiguous compatible sprite batch.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SpriteBatch2d {
++    /// Runtime texture compatibility key.
++    pub texture_key: u64,
++    /// Runtime material compatibility key.
++    pub material_key: u64,
++    /// Runtime sampler compatibility key.
++    pub sampler_key: u64,
++    /// First sorted instance index in the batch.
++    pub first: usize,
++    /// Number of contiguous sorted instances.
++    pub count: usize,
++}
++
++/// Sorts by logical layer/order/entity and derives compatible contiguous batches.
++pub fn sort_and_batch_sprites(instances: &mut [SpriteInstance2d]) -> Vec<SpriteBatch2d> {
++    instances.sort_by_key(|sprite| (sprite.layer_rank, sprite.order_in_layer, sprite.entity_key));
++    let mut batches = Vec::new();
++    for (index, sprite) in instances.iter().enumerate() {
++        if !sprite.visible {
++            continue;
++        }
++        let compatible = batches.last().is_some_and(|batch: &SpriteBatch2d| {
++            batch.first + batch.count == index
++                && batch.texture_key == sprite.texture_key
++                && batch.material_key == sprite.material_key
++                && batch.sampler_key == sprite.sampler_key
++        });
++        if compatible {
++            batches.last_mut().expect("compatible batch exists").count += 1;
++        } else {
++            batches.push(SpriteBatch2d {
++                texture_key: sprite.texture_key,
++                material_key: sprite.material_key,
++                sampler_key: sprite.sampler_key,
++                first: index,
++                count: 1,
++            });
++        }
++    }
++    batches
++}
++
++/// Camera-visible world XY rectangle.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct ViewRect2d {
++    /// Inclusive minimum corner.
++    pub min: Vec2,
++    /// Inclusive maximum corner.
++    pub max: Vec2,
++}
++
++impl ViewRect2d {
++    /// Returns whether one XY bounds pair intersects the view.
++    pub fn intersects(self, min: Vec2, max: Vec2) -> bool {
++        self.min.x <= max.x
++            && self.max.x >= min.x
++            && self.min.y <= max.y
++            && self.max.y >= min.y
++    }
++}
++
++/// World bounds for one stable Tile Map layer/chunk.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct TileChunkBounds2d<'a> {
++    /// Stable Tile Map layer identity.
++    pub layer: &'a TileLayerId,
++    /// Spatial chunk coordinate.
++    pub coord: TileChunkCoord,
++    /// Inclusive minimum world XY bounds.
++    pub min: Vec2,
++    /// Inclusive maximum world XY bounds.
++    pub max: Vec2,
++}
++
++/// Stable identity of one camera-visible Tile Map chunk.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct VisibleTileChunk2d {
++    /// Stable Tile Map layer identity.
++    pub layer: TileLayerId,
++    /// Spatial chunk coordinate.
++    pub coord: TileChunkCoord,
++}
++
++/// Culls sparse Tile Map chunks without rebuilding unrelated chunks.
++pub fn cull_tile_chunks<'a>(
++    chunks: impl IntoIterator<Item = TileChunkBounds2d<'a>>,
++    view: ViewRect2d,
++) -> Vec<VisibleTileChunk2d> {
++    chunks
++        .into_iter()
++        .filter(|chunk| view.intersects(chunk.min, chunk.max))
++        .map(|chunk| VisibleTileChunk2d { layer: chunk.layer.clone(), coord: chunk.coord })
++        .collect()
++}
++
++/// Per-frame Native 2D render counters used by proving-project budgets.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct Native2dRenderMetrics {
++    /// Visible SpriteRenderer2D instance count.
++    pub sprite_count: usize,
++    /// Compatible sprite batch count after deterministic sorting.
++    pub sprite_batches: usize,
++    /// Camera-visible Tile Map chunk count.
++    pub visible_tile_chunks: usize,
++    /// Tile chunks rebuilt because source data changed this frame.
++    pub rebuilt_tile_chunks: usize,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use engine_authoring::{AssetId, SpriteId};
++
++    #[test]
++    fn equal_sprite_order_has_stable_entity_tie_break() {
++        let layer = SortingLayerId::parse("sorting_layer_00000000000000000000000000").unwrap();
++        let atlas = AssetId::generate();
++        let sprite = SpriteId::generate();
++        let make = |entity_key| SpriteInstance2d {
++            entity_key,
++            sprite: SpriteRef { atlas: atlas.clone(), sprite: sprite.clone() },
++            sorting_layer: layer.clone(),
++            layer_rank: 0,
++            order_in_layer: 0,
++            texture_key: 1,
++            material_key: 2,
++            sampler_key: 3,
++            position: Vec2::ZERO,
++            size: Vec2::ONE,
++            pivot: Vec2::splat(0.5),
++            rotation_radians: 0.0,
++            uv_rect: [0.0, 0.0, 1.0, 1.0],
++            tint: [1.0; 4],
++            flip_x: false,
++            flip_y: false,
++            visible: true,
++        };
++        let mut sprites = vec![make(9), make(2)];
++        let batches = sort_and_batch_sprites(&mut sprites);
++        assert_eq!(sprites[0].entity_key, 2);
++        assert_eq!(batches[0].count, 2);
++    }
++
++    #[test]
++    fn camera_validation_rejects_scale_without_rewriting_transform() {
++        let mut transform = Transform::default();
++        transform.scale = Vec3::splat(2.0);
++        assert_eq!(validate_camera_transform(&transform), Err(Camera2dDiagnostic::IncompatibleScale));
++        assert_eq!(transform.scale, Vec3::splat(2.0));
++    }
++}
