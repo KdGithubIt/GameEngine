@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0143-model-resources-r8-20260818-08b",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources-r8",
+  "expected_head_sha": "dca1d08028d7de156693d9c649eb2de7983b0302",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "7189bfef631cf2332462302b18998bb2b8d139f49460187d5fbc0f50edf13cba",
+  "patch_bytes": 24170,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Integrate ADR0143 resource controls into current AI Studio",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\nIntegrates ADR0143 local model residency into current AI Studio while preserving ADR0145 external provider selection, provider-managed authentication, work claims, process cancellation, and AgentHost ownership. Interrupt-for-Editing releases supported local residency before Editor restoration; managed Play prioritizes renderer resources; Resume reloads only after authoritative-state re-inspection. Hosted/Enterprise backends keep local residency controls unavailable.\n\n## Validation\n\nWindows Validation: affected. Visual Validation is required for the AI Studio resource UI.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
