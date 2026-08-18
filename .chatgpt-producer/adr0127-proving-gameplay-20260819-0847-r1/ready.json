@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-proving-gameplay-20260819-0847-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v13",
+  "expected_head_sha": "1fc0d9f34512d0215523786afecf1dd43b472486",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json"
+  ],
+  "commit_message": "Complete ADR0127 playable proving project",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "## Summary\n\nCompletes another ADR0127 first-release proving-project slice on the current Draft branch. The Launcher Native 2D template now exercises the existing input, Project Rust, CharacterController2D, Sprite Animation, declarative HUD, audio, save-slot, Tile Map and one-way platform paths in one standard project.\n\nThe standard project-lifecycle crate gains only a non-destructive Project Rust host/index refresh operation so generated template sources are compiled through the normal unified project host. The same project continues to use the normal Build/package path; no Native 2D-specific packager is introduced."
+}
