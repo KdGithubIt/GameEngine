@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                ui.horizontal(|ui| {\n                    if ui.button(\"Reattach\").clicked() {\n                        reattach_requested = true;\n                    }\n                    ui.small(\"Same project Agent Host · detached presentation\");\n                });\n                ui.separator();\n                self.show_contents(ui);",
+  "new": "                ui.horizontal(|ui| {\n                    if ui.button(\"Reattach\").clicked() {\n                        reattach_requested = true;\n                    }\n                    ui.small(\"Same project Agent Host · detached presentation\");\n                });\n                ui.separator();\n                egui::ScrollArea::vertical()\n                    .id_salt(\"ai_studio_detached_contents\")\n                    .auto_shrink([false, false])\n                    .show(ui, |ui| self.show_contents(ui));"
+}
