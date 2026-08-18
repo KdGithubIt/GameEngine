@@ -119,6 +119,279 @@ impl Default for BenchmarkHardwareIdentity {
     }
 }
 
+impl BenchmarkHardwareIdentity {
+    pub(crate) fn from_editor_adapter(name: &str, vendor_id: u32, device_id: u32) -> Self {
+        let mut identity = Self::default();
+        let name = name.trim();
+        if name.is_empty() {
+            return identity;
+        }
+        identity.gpu = TelemetryValue::Measured(name.to_owned());
+
+        #[cfg(target_os = "windows")]
+        {
+            let (gpu_memory, system_memory) =
+                windows_hardware_memory(name, vendor_id, device_id);
+            identity.total_gpu_memory_bytes = gpu_memory;
+            identity.total_system_memory_bytes = system_memory;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (vendor_id, device_id);
+
+        identity
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone)]
+struct WindowsAdapterMemory {
+    name: String,
+    vendor_id: u32,
+    device_id: u32,
+    dedicated_video_memory_bytes: u64,
+    software: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hardware_memory(
+    adapter_name: &str,
+    vendor_id: u32,
+    device_id: u32,
+) -> (TelemetryValue<u64>, TelemetryValue<u64>) {
+    let gpu_memory = dxgi_adapter_candidates()
+        .and_then(|candidates| {
+            select_adapter_memory(adapter_name, vendor_id, device_id, &candidates)
+        })
+        .map(TelemetryValue::Measured)
+        .unwrap_or_default();
+    let system_memory = total_physical_memory_bytes()
+        .filter(|bytes| *bytes > 0)
+        .map(TelemetryValue::Measured)
+        .unwrap_or_default();
+    (gpu_memory, system_memory)
+}
+
+#[cfg(target_os = "windows")]
+fn select_adapter_memory(
+    adapter_name: &str,
+    vendor_id: u32,
+    device_id: u32,
+    candidates: &[WindowsAdapterMemory],
+) -> Option<u64> {
+    let by_id = candidates
+        .iter()
+        .filter(|candidate| {
+            !candidate.software
+                && vendor_id != 0
+                && device_id != 0
+                && candidate.vendor_id == vendor_id
+                && candidate.device_id == device_id
+        })
+        .collect::<Vec<_>>();
+    if by_id.len() == 1 {
+        return (by_id[0].dedicated_video_memory_bytes > 0)
+            .then_some(by_id[0].dedicated_video_memory_bytes);
+    }
+
+    let normalized = adapter_name.trim().to_ascii_lowercase();
+    let by_name = candidates
+        .iter()
+        .filter(|candidate| {
+            !candidate.software && candidate.name.trim().to_ascii_lowercase() == normalized
+        })
+        .collect::<Vec<_>>();
+    if by_name.len() == 1 {
+        return (by_name[0].dedicated_video_memory_bytes > 0)
+            .then_some(by_name[0].dedicated_video_memory_bytes);
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(dead_code)]
+struct WindowsGuid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(dead_code)]
+struct WindowsLuid {
+    low_part: u32,
+    high_part: i32,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(dead_code)]
+struct DxgiAdapterDesc1 {
+    description: [u16; 128],
+    vendor_id: u32,
+    device_id: u32,
+    subsys_id: u32,
+    revision: u32,
+    dedicated_video_memory: usize,
+    dedicated_system_memory: usize,
+    shared_system_memory: usize,
+    adapter_luid: WindowsLuid,
+    flags: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(dead_code)]
+struct MemoryStatusEx {
+    length: u32,
+    memory_load: u32,
+    total_physical: u64,
+    available_physical: u64,
+    total_page_file: u64,
+    available_page_file: u64,
+    total_virtual: u64,
+    available_virtual: u64,
+    available_extended_virtual: u64,
+}
+
+#[cfg(target_os = "windows")]
+type ComRelease = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
+
+#[cfg(target_os = "windows")]
+type EnumAdapters1 =
+    unsafe extern "system" fn(*mut DxgiFactory1, u32, *mut *mut DxgiAdapter1) -> i32;
+
+#[cfg(target_os = "windows")]
+type GetDesc1 = unsafe extern "system" fn(*mut DxgiAdapter1, *mut DxgiAdapterDesc1) -> i32;
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(dead_code)]
+struct DxgiFactory1VTable {
+    query_interface: *const std::ffi::c_void,
+    add_ref: *const std::ffi::c_void,
+    release: ComRelease,
+    set_private_data: *const std::ffi::c_void,
+    set_private_data_interface: *const std::ffi::c_void,
+    get_private_data: *const std::ffi::c_void,
+    get_parent: *const std::ffi::c_void,
+    enum_adapters: *const std::ffi::c_void,
+    make_window_association: *const std::ffi::c_void,
+    get_window_association: *const std::ffi::c_void,
+    create_swap_chain: *const std::ffi::c_void,
+    create_software_adapter: *const std::ffi::c_void,
+    enum_adapters1: EnumAdapters1,
+    is_current: *const std::ffi::c_void,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct DxgiFactory1 {
+    vtable: *const DxgiFactory1VTable,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(dead_code)]
+struct DxgiAdapter1VTable {
+    query_interface: *const std::ffi::c_void,
+    add_ref: *const std::ffi::c_void,
+    release: ComRelease,
+    set_private_data: *const std::ffi::c_void,
+    set_private_data_interface: *const std::ffi::c_void,
+    get_private_data: *const std::ffi::c_void,
+    get_parent: *const std::ffi::c_void,
+    enum_outputs: *const std::ffi::c_void,
+    get_desc: *const std::ffi::c_void,
+    check_interface_support: *const std::ffi::c_void,
+    get_desc1: GetDesc1,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct DxgiAdapter1 {
+    vtable: *const DxgiAdapter1VTable,
+}
+
+#[cfg(target_os = "windows")]
+const IID_IDXGI_FACTORY1: WindowsGuid = WindowsGuid {
+    data1: 0x770a_ae78,
+    data2: 0xf26f,
+    data3: 0x4dba,
+    data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87],
+};
+
+#[cfg(target_os = "windows")]
+const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
+
+#[cfg(target_os = "windows")]
+#[link(name = "dxgi")]
+unsafe extern "system" {
+    #[link_name = "CreateDXGIFactory1"]
+    fn create_dxgi_factory1(
+        interface_id: *const WindowsGuid,
+        factory: *mut *mut std::ffi::c_void,
+    ) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "GlobalMemoryStatusEx"]
+    fn global_memory_status_ex(status: *mut MemoryStatusEx) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn dxgi_adapter_candidates() -> Option<Vec<WindowsAdapterMemory>> {
+    let mut factory = std::ptr::null_mut::<std::ffi::c_void>();
+    let result = unsafe { create_dxgi_factory1(&IID_IDXGI_FACTORY1, &mut factory) };
+    if result < 0 || factory.is_null() {
+        return None;
+    }
+    let factory = factory.cast::<DxgiFactory1>();
+
+    let mut candidates = Vec::new();
+    for index in 0..64_u32 {
+        let mut adapter = std::ptr::null_mut::<DxgiAdapter1>();
+        let result = unsafe { ((*(*factory).vtable).enum_adapters1)(factory, index, &mut adapter) };
+        if result < 0 || adapter.is_null() {
+            break;
+        }
+
+        let mut description = unsafe { std::mem::zeroed::<DxgiAdapterDesc1>() };
+        let result = unsafe { ((*(*adapter).vtable).get_desc1)(adapter, &mut description) };
+        if result >= 0 {
+            let end = description
+                .description
+                .iter()
+                .position(|character| *character == 0)
+                .unwrap_or(description.description.len());
+            candidates.push(WindowsAdapterMemory {
+                name: String::from_utf16_lossy(&description.description[..end]),
+                vendor_id: description.vendor_id,
+                device_id: description.device_id,
+                dedicated_video_memory_bytes: description.dedicated_video_memory as u64,
+                software: description.flags & DXGI_ADAPTER_FLAG_SOFTWARE != 0,
+            });
+        }
+
+        unsafe { ((*(*adapter).vtable).release)(adapter.cast()) };
+    }
+
+    unsafe { ((*(*factory).vtable).release)(factory.cast()) };
+    Some(candidates)
+}
+
+#[cfg(target_os = "windows")]
+fn total_physical_memory_bytes() -> Option<u64> {
+    let mut status = unsafe { std::mem::zeroed::<MemoryStatusEx>() };
+    status.length = std::mem::size_of::<MemoryStatusEx>() as u32;
+    let result = unsafe { global_memory_status_ex(&mut status) };
+    (result != 0).then_some(status.total_physical)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BenchmarkToolBudget {
     pub(crate) max_model_turns: u32,
@@ -666,6 +939,7 @@ pub(crate) fn read_question_record(
     inventory: Option<&InstalledModelInventory>,
     quality: QualityPreference,
     workload: InferenceWorkload,
+    hardware: &BenchmarkHardwareIdentity,
 ) -> Result<BenchmarkRecord, String> {
     let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     if task.kind != BenchmarkTaskKind::ReadQuestion {
@@ -680,7 +954,7 @@ pub(crate) fn read_question_record(
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             runtime_harness_version: metrics.harness_version.to_owned(),
             model: model_identity(metrics.backend_id, &metrics.model_id, inventory),
-            hardware: BenchmarkHardwareIdentity::default(),
+            hardware: hardware.clone(),
             quality,
             workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
             observed_workload: TelemetryValue::Measured(workload),
@@ -735,6 +1009,8 @@ pub(crate) fn agent_run_record(
     model_id: &str,
     inventory: Option<&InstalledModelInventory>,
     quality: QualityPreference,
+    workload: InferenceWorkload,
+    hardware: &BenchmarkHardwareIdentity,
 ) -> Result<BenchmarkRecord, String> {
     let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     if task.kind == BenchmarkTaskKind::ReadQuestion {
@@ -792,10 +1068,10 @@ pub(crate) fn agent_run_record(
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             runtime_harness_version: NATIVE_WRITE_HARNESS_VERSION.to_owned(),
             model: model_identity(backend_id, model_id, inventory),
-            hardware: BenchmarkHardwareIdentity::default(),
+            hardware: hardware.clone(),
             quality,
             workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
-            observed_workload: TelemetryValue::Unavailable,
+            observed_workload: TelemetryValue::Measured(workload),
             tool_budget: BenchmarkToolBudget {
                 max_model_turns: policy.max_model_turns,
                 max_tool_failures: policy.max_tool_failures,
@@ -985,6 +1261,72 @@ mod tests {
         let mut different_claims = right.clone();
         different_claims.identity.tool_budget.work_claims = vec!["asset_target".to_owned()];
         assert!(matches!(comparison_equivalence(&left, &different_claims), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"tool_or_permission_budget")));
+    }
+
+    #[test]
+    fn read_question_record_preserves_measured_hardware_snapshot() {
+        let hardware = BenchmarkHardwareIdentity {
+            platform: "test-platform".to_owned(),
+            gpu: TelemetryValue::Measured("test-gpu".to_owned()),
+            total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
+            total_system_memory_bytes: TelemetryValue::Measured(32_000),
+        };
+        let metrics = NativeMetrics {
+            harness_version: "test-read-v1",
+            backend_id: "test-backend",
+            model_id: "model-a".to_owned(),
+            model_turns: 1,
+            retrieval_chunks: 1,
+            prompt_chars: 1,
+            response_chars: 1,
+            elapsed_ms: 1,
+            prompt_eval_tokens: Some(1),
+            response_tokens: Some(1),
+            backend_duration_ms: Some(1),
+            load_latency_ms: Some(1),
+            prompt_eval_duration_ms: Some(1),
+            generation_duration_ms: Some(1),
+            generation_tokens_per_second_milli: Some(1),
+            ttft_ms: None,
+        };
+        let record = read_question_record(
+            BENCHMARK_TASKS[0].id,
+            &metrics,
+            None,
+            QualityPreference::Balanced,
+            InferenceWorkload::InteractiveReasoning,
+            &hardware,
+        )
+        .expect("read benchmark record");
+        assert_eq!(record.identity.hardware, hardware);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_adapter_memory_selection_is_unique_and_fail_closed() {
+        let candidates = vec![
+            WindowsAdapterMemory {
+                name: "GPU A".to_owned(),
+                vendor_id: 1,
+                device_id: 2,
+                dedicated_video_memory_bytes: 12_000,
+                software: false,
+            },
+            WindowsAdapterMemory {
+                name: "GPU B".to_owned(),
+                vendor_id: 3,
+                device_id: 4,
+                dedicated_video_memory_bytes: 8_000,
+                software: false,
+            },
+        ];
+        assert_eq!(select_adapter_memory("GPU A", 1, 2, &candidates), Some(12_000));
+
+        let ambiguous = vec![
+            WindowsAdapterMemory { name: "GPU A".to_owned(), ..candidates[0].clone() },
+            WindowsAdapterMemory { name: "GPU A".to_owned(), ..candidates[0].clone() },
+        ];
+        assert_eq!(select_adapter_memory("GPU A", 1, 2, &ambiguous), None);
     }
 
     #[test]
