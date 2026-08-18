@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                let mut profile = match self.model_backend {\n                    ModelBackendPreference::Local => NativeModelConfig::Local(LocalModelConfig {\n                        endpoint: self.local_model_endpoint.clone(),\n                        model: self.local_model_name.clone(),\n                    })\n                    .capability_profile(),\n                    ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {\n",
+  "new": "                let mut profile = match self.model_backend {\n                    ModelBackendPreference::ManagedLocal => self.managed_local.capability_profile(),\n                    ModelBackendPreference::OllamaCompatible => NativeModelConfig::Local(LocalModelConfig {\n                        endpoint: self.local_model_endpoint.clone(),\n                        model: self.local_model_name.clone(),\n                    })\n                    .capability_profile(),\n                    ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {\n"
+}

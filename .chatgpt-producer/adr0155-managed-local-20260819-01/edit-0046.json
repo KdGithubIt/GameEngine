@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                            let posture = match self.model_backend {\n                                ModelBackendPreference::Local => serde_json::json!({\n                                    \"kind\": \"local\",\n                                    \"remote_processing\": false\n                                }),\n                                ModelBackendPreference::HostedApi => serde_json::json!({\n",
+  "new": "                            let posture = match self.model_backend {\n                                ModelBackendPreference::ManagedLocal => serde_json::json!({\n                                    \"kind\": \"managed_local\",\n                                    \"remote_processing\": false,\n                                    \"runtime\": \"gameengine_managed\"\n                                }),\n                                ModelBackendPreference::OllamaCompatible => serde_json::json!({\n                                    \"kind\": \"ollama_compatible\",\n                                    \"remote_processing\": false\n                                }),\n                                ModelBackendPreference::HostedApi => serde_json::json!({\n"
+}

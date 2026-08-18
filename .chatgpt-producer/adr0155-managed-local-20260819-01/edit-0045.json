@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    #[cfg(feature = \"visual-validation\")]\n    /// Returns whether the detached native viewport has completed two rendered frames.\n    pub fn detached_visual_validation_capture_ready(&self) -> bool {\n",
+  "new": "    #[cfg(feature = \"visual-validation\")]\n    /// Selects a deterministic managed-local setup state for ADR 0155 screenshot validation.\n    pub fn prepare_managed_local_visual_validation(&mut self) {\n        self.model_backend = ModelBackendPreference::ManagedLocal;\n        self.managed_local.prepare_visual_validation();\n        self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;\n        self.external_provider_status =\n            ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);\n    }\n\n    #[cfg(feature = \"visual-validation\")]\n    /// Returns whether the detached native viewport has completed two rendered frames.\n    pub fn detached_visual_validation_capture_ready(&self) -> bool {\n"
+}

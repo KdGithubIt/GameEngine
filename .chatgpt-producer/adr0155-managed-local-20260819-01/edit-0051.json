@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                if self.model_backend == ModelBackendPreference::Local {\n",
+  "new": "                if matches!(\n                    self.model_backend,\n                    ModelBackendPreference::ManagedLocal | ModelBackendPreference::OllamaCompatible\n                ) {\n"
+}

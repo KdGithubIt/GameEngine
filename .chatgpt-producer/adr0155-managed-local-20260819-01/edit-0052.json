@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {\n        let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');\n        self.installed_model_inventory.as_ref().filter(|inventory| {\n            inventory.endpoint.trim().trim_end_matches('/') == endpoint\n        })\n    }\n",
+  "new": "    fn current_installed_inventory(&self) -> Option<InstalledModelInventory> {\n        match self.model_backend {\n            ModelBackendPreference::ManagedLocal => self.managed_local.selected_inventory(),\n            ModelBackendPreference::OllamaCompatible => {\n                let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');\n                self.installed_model_inventory\n                    .as_ref()\n                    .filter(|inventory| {\n                        inventory.endpoint.trim().trim_end_matches('/') == endpoint\n                    })\n                    .cloned()\n            }\n            ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => None,\n        }\n    }\n"
+}

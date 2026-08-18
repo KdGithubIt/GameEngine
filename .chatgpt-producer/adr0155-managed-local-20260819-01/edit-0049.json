@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                match self.model_backend {\n                    ModelBackendPreference::Local => {\n                        ui.horizontal(|ui| {\n                            ui.label(\"Endpoint\");\n",
+  "new": "                match self.model_backend {\n                    ModelBackendPreference::ManagedLocal => {\n                        if self.managed_local.show(ui) {\n                            self.save_preferences();\n                        }\n                    }\n                    ModelBackendPreference::OllamaCompatible => {\n                        ui.horizontal(|ui| {\n                            ui.label(\"Endpoint\");\n"
+}
