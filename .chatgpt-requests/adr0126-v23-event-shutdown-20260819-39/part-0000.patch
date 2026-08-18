@@ -1,0 +1,143 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 18d02c061a312c6531c7a1686d881f83e0f8991c..68e8ee2fa109b0a87a73cd06ae695f0723da9802 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -28,6 +28,9 @@ struct EditorShell {
+     authoring_windows: AuthoringWindows,
+     show_authoring_tools: bool,
+     authoring_status: Option<String>,
++    exit_confirmation_open: bool,
++    allow_exit_once: bool,
++    exit_save_error: Option<String>,
+     project_lease: EditorLease,
+     _mcp_server: EditorMcpServer,
+     mcp_requests: mpsc::Receiver<EditorMcpRequest>,
+@@ -116,6 +119,9 @@ impl EditorShell {
+             authoring_windows,
+             show_authoring_tools: false,
+             authoring_status: None,
++            exit_confirmation_open: false,
++            allow_exit_once: false,
++            exit_save_error: None,
+             project_lease,
+             _mcp_server: mcp_server,
+             mcp_requests,
+@@ -130,6 +136,62 @@ impl EditorShell {
+         })
+     }
+ 
++    fn handle_native_close_request(&mut self, context: &eframe::egui::Context) {
++        if !context.input(|input| input.viewport().close_requested()) {
++            return;
++        }
++        if self.allow_exit_once {
++            self.allow_exit_once = false;
++            return;
++        }
++        if self.app.has_unsaved_authoring_documents() {
++            context.send_viewport_cmd(eframe::egui::ViewportCommand::CancelClose);
++            self.exit_confirmation_open = true;
++            self.exit_save_error = None;
++        }
++    }
++
++    fn show_exit_confirmation(&mut self, context: &eframe::egui::Context) {
++        if !self.exit_confirmation_open {
++            return;
++        }
++        let mut action = None;
++        eframe::egui::Modal::new(eframe::egui::Id::new("editor_unsaved_exit")).show(context, |ui| {
++            ui.heading("Unsaved authoring changes");
++            ui.label("Save all dirty authoring working copies before closing Engine Editor?");
++            if let Some(error) = &self.exit_save_error {
++                ui.colored_label(eframe::egui::Color32::RED, error);
++            }
++            ui.horizontal(|ui| {
++                if ui.button("Save All").clicked() { action = Some(0_u8); }
++                if ui.button("Discard").clicked() { action = Some(1); }
++                if ui.button("Cancel").clicked() { action = Some(2); }
++            });
++        });
++        match action {
++            Some(0) => match self.app.save_all_authoring_documents_for_shutdown() {
++                Ok(()) => {
++                    self.exit_confirmation_open = false;
++                    self.allow_exit_once = true;
++                    self.exit_save_error = None;
++                    context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++                }
++                Err(error) => self.exit_save_error = Some(error),
++            },
++            Some(1) => {
++                self.exit_confirmation_open = false;
++                self.allow_exit_once = true;
++                self.exit_save_error = None;
++                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            }
++            Some(2) => {
++                self.exit_confirmation_open = false;
++                self.exit_save_error = None;
++            }
++            _ => {}
++        }
++    }
++
+     fn handle_mcp_requests(&mut self) {
+         while let Ok(request) = self.mcp_requests.try_recv() {
+             let result = self
+@@ -313,6 +375,7 @@ impl EditorShell {
+ 
+ impl eframe::App for EditorShell {
+     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
++        self.handle_native_close_request(context);
+         self.handle_mcp_requests();
+         self.ai_studio.observe_benchmark_hardware(frame);
+         if self.project_lease.take_activation_request() {
+@@ -354,6 +417,7 @@ impl eframe::App for EditorShell {
+     fn ui(&mut self, ui: &mut eframe::egui::Ui, frame: &mut eframe::Frame) {
+         let context = ui.ctx().clone();
+         eframe::App::ui(&mut self.app, ui, frame);
++        self.show_exit_confirmation(&context);
+         self.show_authoring_tools_launcher(&context);
+         self.authoring_windows
+             .show(&context, frame, self.app.project_root());
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 3a9041b0f777c6a2d9594808ff88d77e0071b7b6..ba8fe9f6dd5210a232fa231c626685fd7cb485c9 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -94,6 +94,22 @@ impl EditorApp {
+             || self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty)
+     }
+ 
++    /// Returns whether closing the native Editor would discard any authoring working copy.
++    pub fn has_unsaved_authoring_documents(&self) -> bool {
++        self.any_authoring_dirty()
++    }
++
++    /// Persists all dirty authoring working copies for the native-window close guard.
++    ///
++    /// This deliberately preserves the normal Play-mode invariant: runtime state is never
++    /// mistaken for authoring data during shutdown.
++    pub fn save_all_authoring_documents_for_shutdown(&mut self) -> Result<(), String> {
++        if self.is_playing() {
++            return Err("stop Play mode before saving authoring documents".to_owned());
++        }
++        self.save_all_authoring_documents()
++    }
++
+     /// Persists every dirty working copy through its existing validated atomic adapter.
+     fn save_all_authoring_documents(&mut self) -> Result<(), String> {
+         self.session.save_all().map_err(|error| error.to_string())?;
+diff --git a/crates/editor/src/ui/sequencer.rs b/crates/editor/src/ui/sequencer.rs
+index 5f33a46292bfb629c9dcbd1d34b379e5c6091337..c2b12d7a8486ef938442a83a192759fc5e13af36 100644
+--- a/crates/editor/src/ui/sequencer.rs
++++ b/crates/editor/src/ui/sequencer.rs
+@@ -159,7 +159,7 @@ impl EditorApp {
+                 match state.selection.clone() {
+                     Some(SequencerSelection::Track(track_id)) => if let Some(track) = document.tracks.iter().find(|track| track.id == track_id) { ui.label(format!("{} / {}", track.name, track_label(track.kind))); ui.horizontal(|ui| { if let Some(entity) = selected_scene_entity.clone() { if ui.button("Bind Selected Entity").clicked() { command = Some(TimelineAuthoringCommand::SetBinding { track: track.id.clone(), binding: Some(TimelineBinding::Entity { entity }) }); } } if ui.button("Clear Binding").clicked() { command = Some(TimelineAuthoringCommand::SetBinding { track: track.id.clone(), binding: None }); } if ui.button("Delete Track").clicked() { command = Some(TimelineAuthoringCommand::RemoveTrack(track.id.clone())); state.selection = None; } }); },
+                     Some(SequencerSelection::Clip(clip_id)) => if let Some((track, clip)) = document.tracks.iter().find_map(|track| track.clips.iter().find(|clip| clip.id == clip_id).map(|clip| (track, clip))) { ui.label(format!("{} / {}", track.name, clip.name)); let mut start = seconds(clip.start); if ui.add(egui::DragValue::new(&mut start).range(0.0..=seconds(document.duration)).speed(0.01).prefix("Start " )).changed() { let start = state.snap(tick(start)); command = Some(TimelineAuthoringCommand::MoveClip { clip: clip.id.clone(), start }); } let mut duration = seconds(clip.duration); if ui.add(egui::DragValue::new(&mut duration).range(1.0 / TIMELINE_TICKS_PER_SECOND as f64..=seconds(document.duration)).speed(0.01).prefix("Duration " )).changed() { command = Some(TimelineAuthoringCommand::ResizeClip { clip: clip.id.clone(), duration: tick(duration) }); } ui.horizontal(|ui| { if ui.button("Duplicate").clicked() { let mut copy = clip.clone(); copy.id = TimelineClipId::generate(); copy.name = format!("{} Copy", clip.name); copy.start = state.snap(clip.end()); command = Some(TimelineAuthoringCommand::AddClip { track: track.id.clone(), clip: copy }); } if ui.button("Delete Clip").clicked() { command = Some(TimelineAuthoringCommand::RemoveClip(clip.id.clone())); state.selection = None; } });
+-                        match &clip.payload { TimelineClipPayload::TransformProperty { property, keys } => { ui.separator(); ui.strong(format!("Curve: {property}")); let mut edited = keys.clone(); let mut changed = false; for key in &mut edited { ui.horizontal(|ui| { let mut local = seconds(key.tick); if ui.add(egui::DragValue::new(&mut local).range(0.0..=seconds(clip.duration)).speed(0.01).suffix(" s")).changed() { key.tick = tick(local).clamp(TimelineTick::ZERO, clip.duration); changed = true; } changed |= curve_value_ui(ui, &mut key.value); }); } if changed { edited.sort_by_key(|key| key.tick); command = Some(TimelineAuthoringCommand::SetClipPayload { clip: clip.id.clone(), payload: TimelineClipPayload::TransformProperty { property: property.clone(), keys: edited } }); } }, TimelineClipPayload::Event { name, payload } => { let mut next_name = name.clone(); let mut next_payload = payload.clone(); if ui.text_edit_singleline(&mut next_name).changed() || ui.text_edit_multiline(&mut next_payload).changed() { command = Some(TimelineAuthoringCommand::SetClipPayload { clip: clip.id.clone(), payload: TimelineClipPayload::Event { name: next_name, payload: next_payload } }); } }, _ => {} }
++                        match &clip.payload { TimelineClipPayload::TransformProperty { property, keys } => { ui.separator(); ui.strong(format!("Curve: {property}")); let mut edited = keys.clone(); let mut changed = false; for key in &mut edited { ui.horizontal(|ui| { let mut local = seconds(key.tick); if ui.add(egui::DragValue::new(&mut local).range(0.0..=seconds(clip.duration)).speed(0.01).suffix(" s")).changed() { key.tick = tick(local).clamp(TimelineTick::ZERO, clip.duration); changed = true; } changed |= curve_value_ui(ui, &mut key.value); }); } if changed { edited.sort_by_key(|key| key.tick); command = Some(TimelineAuthoringCommand::SetClipPayload { clip: clip.id.clone(), payload: TimelineClipPayload::TransformProperty { property: property.clone(), keys: edited } }); } }, TimelineClipPayload::Event { name, payload } => { let mut next_name = name.clone(); let mut next_payload = payload.clone(); let name_changed = ui.text_edit_singleline(&mut next_name).changed(); let payload_changed = ui.text_edit_multiline(&mut next_payload).changed(); if name_changed || payload_changed { command = Some(TimelineAuthoringCommand::SetClipPayload { clip: clip.id.clone(), payload: TimelineClipPayload::Event { name: next_name, payload: next_payload } }); } }, _ => {} }
+                     },
+                     Some(SequencerSelection::Marker(marker_id)) => if let Some(marker) = document.markers.iter().find(|marker| marker.id == marker_id) { ui.label(&marker.name); let mut at = seconds(marker.tick); if ui.add(egui::DragValue::new(&mut at).range(0.0..=seconds(document.duration)).speed(0.01).prefix("Time " )).changed() { let at = state.snap(tick(at)); command = Some(TimelineAuthoringCommand::MoveMarker { marker: marker.id.clone(), tick: at }); } ui.horizontal(|ui| { if marker.event.is_none() && ui.button("Add Event").clicked() { command = Some(TimelineAuthoringCommand::SetMarkerEvent { marker: marker.id.clone(), event: Some("timeline.marker".to_owned()) }); } if marker.event.is_some() && ui.button("Clear Event").clicked() { command = Some(TimelineAuthoringCommand::SetMarkerEvent { marker: marker.id.clone(), event: None }); } if ui.button("Delete Marker").clicked() { command = Some(TimelineAuthoringCommand::RemoveMarker(marker.id.clone())); state.selection = None; } }); if let Some(event) = &marker.event { ui.small(format!("Event: {event}")); } },
+                     None => { ui.small("Select a track, clip, or marker. Persisted edits use TimelineAuthoringCommand."); }
