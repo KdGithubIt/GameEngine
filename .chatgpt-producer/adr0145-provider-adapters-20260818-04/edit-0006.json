@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    pending_native_mcp_tool: Option<String>,\n    active_runtime_mode: Option<AgentRuntimeMode>,\n    provider_program: String,\n    provider_args: String,",
+  "new": "    pending_native_mcp_tool: Option<String>,\n    active_runtime_mode: Option<AgentRuntimeMode>,\n    active_external_provider: Option<ExternalAgentProviderKind>,\n    active_external_program: Option<String>,\n    active_external_args: Option<String>,\n    provider_program: String,\n    provider_args: String,"
+}
