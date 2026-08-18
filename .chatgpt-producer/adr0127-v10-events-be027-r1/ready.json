@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v10-events-be027-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "be027e932876cc06cc7db9e783745d14d6f9ed2c",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json"
+  ],
+  "commit_message": "Bridge Native 2D events to Project Rust",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Bridges dedicated Native 2D collision/trigger transitions and Sprite Animation frame events into the Project Rust host event surface. The existing 3D Collision stream remains unchanged; Collision2d is additive and uses generation-checked entity handles, while sprite frame events reuse the typed Animation entity/name payload. Producer generations prevent duplicate host-log insertion across subscribers."
+}
