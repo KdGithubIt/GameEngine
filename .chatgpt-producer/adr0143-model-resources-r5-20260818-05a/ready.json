@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0143-model-resources-r5-20260818-05a",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources-r5",
+  "expected_head_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "baseline_main_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json"
+  ],
+  "commit_message": "Reapply ADR0143 local model resource controls on current main",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\nRebuilds ADR0143 on current main after AI Studio/ModelBackend architecture advanced. This tranche adds truthful local Ollama-compatible residency telemetry, verified unload/reload/CPU offload, provider-independent resource transitions, and deterministic adapter tests while preserving ADR0144 Hosted/Enterprise backends with remote GPU controls unavailable. AI Studio orchestration follows on the same Draft PR branch.\n\n## Validation\n\nWindows Validation: affected. Visual Validation is required after the AI Studio integration tranche.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: AI Studio -->"
+}
