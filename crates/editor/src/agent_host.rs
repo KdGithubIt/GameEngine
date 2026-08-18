@@ -2699,7 +2699,7 @@ fn managed_validation_plan(
 
 fn recover_persisted_runs(
     sessions: &mut BTreeMap<String, AgentSession>,
-) -> Result<(Option<String>, BTreeSet<String>), AgentHostError> {
+) -> Result<(BTreeSet<String>, BTreeSet<String>), AgentHostError> {
     let mut active_runs = BTreeSet::new();
     let mut recovered_sessions = BTreeSet::new();
     for session in sessions.values_mut() {
