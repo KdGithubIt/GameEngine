@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0152-multi-agent-writer-20260818-02",
+  "target_branch": "chatgpt/gameengine-adr0152-multi-agent-writer-r1",
+  "expected_head_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "baseline_main_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "patch_sha256": "85f867ffafa0d9611456d850ed904880029812fc3022ddc83b85e175f3895295",
+  "patch_bytes": 35177,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0152 multi-agent writer coordination",
+  "pr_title": "Implement ADR0152 multi-agent writer coordination",
+  "pr_body": "Implements ADR0152 on current main. Adds semantic per-run work claims and conflict/wait audit events without creating a second project writer authority; preserves authoring stale-revision and managed-code stale-baseline guards; releases claims on terminal runs and recovers persisted ownership across restart; gates managed source apply on code-path ownership; adds concurrency/conflict/cancellation/restart/independent-completion coverage; and accepts/registers ADR0152 in the canonical authoring specification.\n\nVisual Validation is not required by the product patch because no new Editor layout, dialog, color, spacing, or other visible presentation surface is introduced; existing generic event presentation only displays the new event kinds."
+}
