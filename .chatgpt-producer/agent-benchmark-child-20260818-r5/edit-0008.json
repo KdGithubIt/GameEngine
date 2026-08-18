@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();\n        let (backend_label, routing_summary, routing_decisions) = {",
+  "new": "        let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();\n        let benchmark_single_model = self.benchmark_child_active();\n        let (backend_label, routing_summary, routing_decisions) = {"
+}
