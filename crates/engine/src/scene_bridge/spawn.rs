@@ -3021,6 +3021,129 @@ fn resolve_sprite_region_2d(
     })
 }
 
+fn load_tile_set_document(
+    tile_set_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<TileSetDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.tile_set_documents.get(tile_set_id) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(tile_set_id, context)?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| native_2d_asset_error(tile_set_id, &path, message))?
+    } else {
+        std::fs::read_to_string(&path)
+            .map_err(|error| native_2d_asset_error(tile_set_id, &path, error.to_string()))?
+    };
+    let document = TileSetDocument::from_json(&json)
+        .map_err(|error| native_2d_asset_error(tile_set_id, &path, error.to_string()))?;
+    let errors = document.validate();
+    if !errors.is_empty() {
+        return Err(native_2d_asset_error(tile_set_id, &path, errors.join("; ")));
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .tile_set_documents
+        .insert(tile_set_id.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+fn load_tile_map_document(
+    tile_map_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<TileMapDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.tile_map_documents.get(tile_map_id) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(tile_map_id, context)?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| native_2d_asset_error(tile_map_id, &path, message))?
+    } else {
+        std::fs::read_to_string(&path)
+            .map_err(|error| native_2d_asset_error(tile_map_id, &path, error.to_string()))?
+    };
+    let document = TileMapDocument::from_json(&json)
+        .map_err(|error| native_2d_asset_error(tile_map_id, &path, error.to_string()))?;
+    let errors = document.validate();
+    if !errors.is_empty() {
+        return Err(native_2d_asset_error(tile_map_id, &path, errors.join("; ")));
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .tile_map_documents
+        .insert(tile_map_id.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+pub(crate) fn spawn_tile_map_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(TILE_MAP_2D_COMPONENT);
+    const EXPECTED: &str = "a TileMap2D object with tile_map and visible fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(tile_map_id) = fields.assignable_asset_ref("tile_map")?.cloned() else {
+        context
+            .asset_diagnostics
+            .push(component_inactive_diagnostic(
+                context.authoring_entity,
+                &component_type,
+                "tile_map",
+            ));
+        return Ok(());
+    };
+    let document = load_tile_map_document(&tile_map_id, context)?;
+    let tile_set = load_tile_set_document(&document.tile_set, context)?;
+
+    let mut used_tiles = BTreeSet::new();
+    for layer in &document.layers {
+        for chunk in &layer.chunks {
+            for cell in &chunk.cells {
+                used_tiles.insert(cell.tile.clone());
+            }
+        }
+    }
+    let mut sprites = BTreeMap::new();
+    for tile_id in used_tiles {
+        let tile = tile_set.tile(&tile_id).ok_or_else(|| {
+            let path = manifest_asset_path(&tile_map_id, context)
+                .unwrap_or_else(|_| Path::new(tile_map_id.as_str()).to_path_buf());
+            native_2d_asset_error(
+                &tile_map_id,
+                &path,
+                format!("Tile Map references unknown TileId `{}`", tile_id.as_str()),
+            )
+        })?;
+        sprites.insert(tile_id, resolve_sprite_region_2d(&tile.sprite, context)?);
+    }
+
+    context.world.add_component(
+        entity,
+        TileMap2d {
+            tile_map: tile_map_id,
+            visible: fields.bool("visible")?,
+        },
+    )?;
+    context.world.add_component(
+        entity,
+        ResolvedTileMap2d {
+            document,
+            tile_set,
+            sprites,
+        },
+    )?;
+    Ok(())
+}
+
 pub(crate) fn spawn_sprite_renderer_2d_component(
     entity: Entity,
     value: &Value,

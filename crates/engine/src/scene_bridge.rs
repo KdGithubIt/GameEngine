@@ -21,8 +21,9 @@ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, Mu
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
 use crate::native_2d::{
-    Camera2d, ResolvedSpriteRegion2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d,
-    SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
+    Camera2d, ResolvedSpriteRegion2d, ResolvedTileMap2d, SpriteAnimationClipRegistry2d,
+    SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, TileMap2d,
+    ViewportFit2d,
 };
 use crate::character_controller::KinematicCharacterController;
 use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
@@ -62,8 +63,8 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
 use engine_authoring::value::Value;
 use engine_authoring::{
     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
-    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId,
-    VfxAuthoringService,
+    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId, TileMapDocument,
+    TileSetDocument, VfxAuthoringService,
     VfxModuleOperation,
 };
 use engine_ecs::{Entity, World};
@@ -117,6 +118,8 @@ pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
 pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
 /// Native deterministic SpriteAnimator2D component.
 pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
+/// Native sparse Tile Map scene component.
+pub const TILE_MAP_2D_COMPONENT: &str = "engine.tile_map_2d";
 
 /// The `"engine.directional_light"` component type string recognised by the bridge.
 pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
@@ -438,6 +441,10 @@ pub(crate) struct BridgeAssetState {
     pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
     /// Parsed immutable Sprite Atlas documents shared by every SpriteRef in this conversion.
     pub(crate) sprite_atlas_documents: HashMap<AssetId, Arc<SpriteAtlasDocument>>,
+    /// Parsed immutable Tile Set documents shared by Tile Map entities.
+    pub(crate) tile_set_documents: HashMap<AssetId, Arc<TileSetDocument>>,
+    /// Parsed immutable Tile Map documents shared by scene instances.
+    pub(crate) tile_map_documents: HashMap<AssetId, Arc<TileMapDocument>>,
     /// CPU-decoded Native 2D source textures shared by resolved sprite regions.
     pub(crate) native_2d_textures: HashMap<AssetId, Arc<DecodedTexture>>,
     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that

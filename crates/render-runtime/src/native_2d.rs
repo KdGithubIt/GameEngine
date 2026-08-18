@@ -3,9 +3,11 @@
 use crate::material::DecodedTexture;
 use crate::transform::Transform;
 use engine_authoring::{
-    AssetId, PixelsPerUnit, SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileLayerId,
+    AssetId, PixelsPerUnit, SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileId,
+    TileLayerId, TileMapDocument, TileSetDocument,
 };
 use glam::{Mat4, Vec2, Vec3};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Orthographic viewport-fit policy.
@@ -197,6 +199,29 @@ pub struct ResolvedSpriteRegion2d {
     pub filtering: Option<SpriteFiltering>,
     /// Source edge extrusion retained for derived atlas packing/bleed handling.
     pub extrusion_pixels: u8,
+}
+
+/// Runtime Tile Map scene component. The referenced asset owns stable layers/chunks/cells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileMap2d {
+    /// Registered `*.tilemap.json` asset.
+    pub tile_map: AssetId,
+    /// Whether this Tile Map contributes runtime render output.
+    pub visible: bool,
+}
+
+/// Runtime-only immutable Tile Map data resolved during scene conversion.
+///
+/// One ECS entity owns the whole map. Cells remain sparse/chunked; resolved sprite
+/// source data is shared by TileId and contains no device-specific GPU handles.
+#[derive(Debug, Clone)]
+pub struct ResolvedTileMap2d {
+    /// Validated Tile Map document.
+    pub document: Arc<TileMapDocument>,
+    /// Validated Tile Set referenced by [`Self::document`].
+    pub tile_set: Arc<TileSetDocument>,
+    /// Stable TileId to resolved Sprite Atlas region.
+    pub sprites: BTreeMap<TileId, ResolvedSpriteRegion2d>,
 }
 
 /// Extracted SpriteRenderer2D draw instance.

@@ -273,6 +273,11 @@ const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
     integer("initial_frame", "Initial Frame", "Zero-based initial frame selected when playback becomes active.", 0, U32_RANGE),
 ];
 
+const TILE_MAP_2D_FIELDS: &[FieldDef] = &[
+    asset_ref("tile_map", "Tile Map", "Sparse chunked Tile Map document rendered by this scene entity.", AssetKind::TileMap, FieldDefaultSpec::Unassigned),
+    boolean("visible", "Visible", "Whether enabled Tile Map layers contribute runtime render output.", true),
+];
+
 const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
     FieldDef::new(
         "direction_x",
@@ -2274,5 +2279,14 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             spawn_vfx_player_component,
         )
         .collapsed_by_default(),
+        BuiltinComponent::new(
+            TILE_MAP_2D_COMPONENT,
+            "Tile Map 2D",
+            "Renders one sparse chunked Tile Map using stable TileIds, SpriteRefs, and logical sorting layers.",
+            "Rendering",
+            1,
+            TILE_MAP_2D_FIELDS,
+            spawn_tile_map_2d_component,
+        ),
     ]
 }

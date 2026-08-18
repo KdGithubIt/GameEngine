@@ -11,8 +11,9 @@ pub use engine_assets::native_2d::{
 pub use engine_physics::native_2d::*;
 pub use engine_render_runtime::native_2d::{
     cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
-    Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, SpriteBatch2d,
-    SpriteInstance2d, TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
+    Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, ResolvedTileMap2d,
+    SpriteBatch2d, SpriteInstance2d, TileChunkBounds2d, TileMap2d, ViewRect2d, ViewportFit2d,
+    VisibleTileChunk2d,
 };
 pub use engine_authoring::{
     SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
