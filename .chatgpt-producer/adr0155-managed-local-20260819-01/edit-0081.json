@@ -1,0 +1,5 @@
+{
+  "operation": "create_text",
+  "path": "crates/editor/src/managed_local_runtime/tests.rs",
+  "content": "#[cfg(test)]\nmod tests {\n    use super::*;\n    include!(\"tests_core.rs\");\n    include!(\"tests_runtime.rs\");\n}\n"
+}
