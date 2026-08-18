@@ -6028,6 +6028,8 @@ mod tests {
             confinement_requirement: AgentConfinementRequirement::default(),
             external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
             model_backend: ModelBackendPreference::HostedApi,
+            managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
+            managed_model_id: String::new(),
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
             hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
@@ -6037,6 +6039,25 @@ mod tests {
         assert!(!json.contains("authorization"));
         assert!(!json.contains("bearer"));
         assert!(!json.contains("protected_path"));
+    }
+
+    #[test]
+    fn legacy_external_local_preferences_are_not_silently_migrated_to_managed() {
+        let preferences: AiStudioPreferences = serde_json::from_str(
+            r#"{"schema_version":1,"model_backend":"local","local_model_endpoint":"http://127.0.0.1:11434","local_model_name":"legacy-model"}"#,
+        )
+        .expect("deserialize legacy external-local preferences");
+        assert_eq!(preferences.model_backend, ModelBackendPreference::Local);
+        assert_eq!(
+            preferences.managed_execution_environment,
+            ManagedExecutionEnvironment::WindowsNative
+        );
+        assert!(preferences.managed_model_id.is_empty());
+        assert_eq!(preferences.local_model_name, "legacy-model");
+        assert_eq!(
+            AiStudioPreferences::default().model_backend,
+            ModelBackendPreference::ManagedLocal
+        );
     }
 
     #[test]

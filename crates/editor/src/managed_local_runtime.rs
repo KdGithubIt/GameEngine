@@ -883,14 +883,16 @@ impl ManagedLocalRuntime {
         manager.write_process_state(&state)?;
         let started = Instant::now();
         while started.elapsed() < STARTUP_TIMEOUT {
-            if endpoint_is_healthy(&endpoint) {
+            let endpoint_healthy = endpoint_is_healthy(&endpoint);
+            if endpoint_healthy {
                 return Ok(ManagedEndpoint {
                     url: endpoint,
                     process_id,
                     reused_process: false,
                 });
             }
-            if !process_is_alive(&state)? {
+            let process_alive = process_is_alive(&state)?;
+            if managed_process_exited_before_health(endpoint_healthy, process_alive) {
                 let _ = manager.clear_process_state();
                 return Err(ManagedLocalRuntimeError::new(
                     ManagedDiagnosticLayer::ManagedProcessStartup,
@@ -1003,16 +1005,7 @@ impl ManagedLocalRuntime {
             .map_err(runtime_io)?;
         let stderr = stdout.try_clone().map_err(runtime_io)?;
         let child = Command::new(&installation.server_path)
-            .args([
-                "--model",
-                config.model_path.to_string_lossy().as_ref(),
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--n-gpu-layers",
-                "999",
-            ])
+            .args(windows_server_arguments(&config.model_path, port))
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -1259,6 +1252,44 @@ enum WslStatus {
     Available { managed_distribution: bool },
 }
 
+fn classify_wsl_status(
+    status_success: bool,
+    status_message: &str,
+    distributions_success: bool,
+    distributions_text: &str,
+) -> WslStatus {
+    if !status_success {
+        return WslStatus::Unavailable(status_message.to_owned());
+    }
+    if !distributions_success {
+        return WslStatus::Unavailable(distributions_text.to_owned());
+    }
+    let managed_distribution = distributions_text
+        .lines()
+        .map(str::trim)
+        .any(|line| line == MANAGED_WSL_DISTRIBUTION);
+    WslStatus::Available {
+        managed_distribution,
+    }
+}
+
+fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
+    vec![
+        "--model".to_owned(),
+        model_path.to_string_lossy().into_owned(),
+        "--host".to_owned(),
+        "127.0.0.1".to_owned(),
+        "--port".to_owned(),
+        port.to_string(),
+        "--n-gpu-layers".to_owned(),
+        "999".to_owned(),
+    ]
+}
+
+fn managed_process_exited_before_health(endpoint_healthy: bool, process_alive: bool) -> bool {
+    !endpoint_healthy && !process_alive
+}
+
 fn pinned_asset_name(environment: ManagedExecutionEnvironment) -> &'static str {
     match environment {
         ManagedExecutionEnvironment::WindowsNative => "llama-b10336-bin-win-vulkan-x64.zip",
@@ -1370,12 +1401,13 @@ fn powershell_output(
 }
 
 fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> {
-    let path_text = path.to_string_lossy();
     #[cfg(target_os = "windows")]
-    let output = powershell_output(
-        "(Get-FileHash -Algorithm SHA256 -LiteralPath $args[0]).Hash",
-        &[&path_text],
-    )?;
+    let output = Command::new("certutil.exe")
+        .arg("-hashfile")
+        .arg(path)
+        .arg("SHA256")
+        .output()
+        .map_err(model_io)?;
     #[cfg(not(target_os = "windows"))]
     let output = Command::new("sha256sum")
         .arg(path)
@@ -1387,18 +1419,17 @@ fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> 
             format!("SHA-256 calculation failed: {}", command_output_text(&output)),
         ));
     }
-    let digest = String::from_utf8_lossy(&output.stdout)
+    let output_text = decode_windows_command_text(&output.stdout);
+    let digest = output_text
         .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if !is_sha256_hex(&digest) {
-        return Err(ManagedLocalRuntimeError::new(
-            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-            "SHA-256 calculation returned an invalid digest",
-        ));
-    }
+        .map(|token| token.trim().to_ascii_lowercase())
+        .find(|token| is_sha256_hex(token))
+        .ok_or_else(|| {
+            ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+                "SHA-256 calculation returned no valid digest",
+            )
+        })?;
     Ok(digest)
 }
 
@@ -1588,7 +1619,12 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
         )
     })?;
     if !status.status.success() {
-        return Ok(WslStatus::Unavailable(command_output_text(&status)));
+        return Ok(classify_wsl_status(
+            false,
+            &command_output_text(&status),
+            false,
+            "",
+        ));
     }
     let distributions = Command::new("wsl.exe")
         .args(["--list", "--quiet"])
@@ -1600,14 +1636,15 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
             )
         })?;
     if !distributions.status.success() {
-        return Ok(WslStatus::Unavailable(command_output_text(&distributions)));
+        return Ok(classify_wsl_status(
+            true,
+            "",
+            false,
+            &command_output_text(&distributions),
+        ));
     }
     let text = decode_windows_command_text(&distributions.stdout);
-    let managed_distribution = text
-        .lines()
-        .map(str::trim)
-        .any(|line| line == MANAGED_WSL_DISTRIBUTION);
-    Ok(WslStatus::Available { managed_distribution })
+    Ok(classify_wsl_status(true, "", true, &text))
 }
 
 fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRuntimeError> {
@@ -1915,6 +1952,55 @@ mod tests {
         assert!(pinned_asset_name(ManagedExecutionEnvironment::WindowsNative).contains("win-vulkan-x64"));
         assert!(pinned_asset_name(ManagedExecutionEnvironment::Wsl2Linux).contains("ubuntu-vulkan-x64"));
         assert_eq!(MANAGED_WSL_DISTRIBUTION, "GameEngine-LocalAI");
+    }
+
+    #[test]
+    fn windows_launch_contract_uses_exact_model_loopback_and_gpu_arguments() {
+        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+        assert_eq!(
+            windows_server_arguments(model, 18443),
+            vec![
+                "--model".to_owned(),
+                model.to_string_lossy().into_owned(),
+                "--host".to_owned(),
+                "127.0.0.1".to_owned(),
+                "--port".to_owned(),
+                "18443".to_owned(),
+                "--n-gpu-layers".to_owned(),
+                "999".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wsl_status_classification_fails_closed_and_requires_exact_managed_distribution() {
+        assert_eq!(
+            classify_wsl_status(false, "WSL unavailable", false, ""),
+            WslStatus::Unavailable("WSL unavailable".to_owned())
+        );
+        assert_eq!(
+            classify_wsl_status(true, "", false, "distribution list failed"),
+            WslStatus::Unavailable("distribution list failed".to_owned())
+        );
+        assert_eq!(
+            classify_wsl_status(true, "", true, "Ubuntu-24.04\nGameEngine-LocalAI\n"),
+            WslStatus::Available {
+                managed_distribution: true,
+            }
+        );
+        assert_eq!(
+            classify_wsl_status(true, "", true, "GameEngine-LocalAI-copy\n"),
+            WslStatus::Available {
+                managed_distribution: false,
+            }
+        );
+    }
+
+    #[test]
+    fn startup_contract_never_treats_a_crashed_process_as_healthy() {
+        assert!(!managed_process_exited_before_health(true, false));
+        assert!(!managed_process_exited_before_health(false, true));
+        assert!(managed_process_exited_before_health(false, false));
     }
 
     #[test]
