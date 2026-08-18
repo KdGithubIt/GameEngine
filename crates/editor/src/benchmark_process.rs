@@ -296,10 +296,11 @@ impl BenchmarkExperimentCoordinator {
             }
         }
 
-        if self.active.is_none() && !self.stopped {
-            if let Some(run) = self.queue.pop_front() {
-                self.active = Some(self.spawn_run(run)?);
-            }
+        if self.active.is_none()
+            && !self.stopped
+            && let Some(run) = self.queue.pop_front()
+        {
+            self.active = Some(self.spawn_run(run)?);
         }
         Ok(())
     }

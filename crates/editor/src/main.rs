@@ -353,10 +353,10 @@ impl eframe::App for EditorShell {
         }
         if self.ai_studio.take_benchmark_child_exit_request() {
             context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-            return;
+        } else {
+            #[cfg(feature = "visual-validation")]
+            self.handle_visual_validation_capture(context);
         }
-        #[cfg(feature = "visual-validation")]
-        self.handle_visual_validation_capture(context);
     }
 
     fn ui(&mut self, ui: &mut eframe::egui::Ui, frame: &mut eframe::Frame) {

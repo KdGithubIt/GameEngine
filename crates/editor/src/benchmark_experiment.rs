@@ -19,17 +19,19 @@ pub(crate) const BENCHMARK_FIXTURE_REPOSITORY_PATH: &str =
     "crates/editor/resources/agent_benchmark_fixture_v1";
 pub(crate) const SINGLE_MODEL_ROUTING_POLICY: &str = "single-model-no-routing-v1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Exact GameEngine commit this Editor was built from.
+///
+/// Captured by the crate build script. It is empty when the build tree carried
+/// no repository identity, and an experiment refuses to start rather than
+/// recording a guessed commit.
+pub(crate) const ENGINE_COMMIT_HEAD: &str = env!("GAMEENGINE_COMMIT_HEAD");
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BenchmarkExecutionOrder {
+    #[default]
     ModelTaskRepeat,
     SeededInterleaved { seed: u64 },
-}
-
-impl Default for BenchmarkExecutionOrder {
-    fn default() -> Self {
-        Self::ModelTaskRepeat
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,13 +218,14 @@ impl BenchmarkExperimentResult {
         if spec.routing_mode == BenchmarkRoutingMode::SingleModel && self.routed_to_another_model {
             return Err("single-model benchmark result was contaminated by model routing".to_owned());
         }
-        if let Some(record) = self.record.as_ref() {
-            if record.identity.model.backend_id != spec.backend_id
+        if let Some(record) = self.record.as_ref()
+            && (record.identity.model.backend_id != spec.backend_id
                 || record.identity.model.model_id != self.run.model_id
-                || record.identity.task_id != self.run.task_id
-            {
-                return Err("benchmark record model/task identity does not match the planned run".to_owned());
-            }
+                || record.identity.task_id != self.run.task_id)
+        {
+            return Err(
+                "benchmark record model/task identity does not match the planned run".to_owned(),
+            );
         }
         Ok(())
     }

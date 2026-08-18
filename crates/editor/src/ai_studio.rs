@@ -5,6 +5,7 @@
 //! workspace rules live in the GUI-free `agent_host` module.
 
 mod benchmark_child;
+mod benchmark_experiment_ui;
 
 use crate::agent_benchmark::{
     agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
@@ -501,6 +502,8 @@ pub struct AiStudioPanel {
     managed_playtest_started_at: Option<std::time::Instant>,
     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
     benchmark_child: Option<benchmark_child::BenchmarkChildState>,
+    benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel,
+    benchmark_experiment_root: PathBuf,
     status: Option<String>,
 }
 
@@ -517,6 +520,7 @@ impl AiStudioPanel {
         let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
         let preferences = load_ai_studio_preferences(&preferences_path);
         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
+        let benchmark_experiment_root = ai_root.join("benchmark-experiments");
         let (benchmark_records, benchmark_status) = match benchmark_store.load() {
             Ok(records) => (records, None),
             Err(error) => (
@@ -625,6 +629,8 @@ impl AiStudioPanel {
             managed_playtest_started_at: None,
             last_captured_frame: None,
             benchmark_child: None,
+            benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel::default(),
+            benchmark_experiment_root,
             status: benchmark_status,
         })
     }
@@ -934,6 +940,7 @@ impl AiStudioPanel {
         self.request_next_managed_runtime_input_if_ready();
         self.poll_managed_playtest_timeout();
         self.poll_benchmark_child();
+        self.poll_benchmark_experiment();
 
         if !self.presentation.open {
             return;
@@ -1809,6 +1816,8 @@ impl AiStudioPanel {
             ui.small(
                 "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
             );
+            ui.separator();
+            self.show_benchmark_experiment(ui);
         });
     }
 
