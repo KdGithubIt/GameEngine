@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/capability.rs","old":"    /// An Animation Set asset document.\n    AnimationSet,\n}\n\n/// Semantic shape of one capability.","new":"    /// An Animation Set asset document.\n    AnimationSet,\n    /// A Timeline sequence document.\n    Timeline,\n}\n\n/// Semantic shape of one capability."}
