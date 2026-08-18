@@ -2,6 +2,7 @@
 name = "engine-launcher"
 version = "0.1.0"
 edition = "2024"
+default-run = "engine-launcher"
 
 [features]
 visual-validation = []
