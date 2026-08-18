@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "    let cells = (-7..=7)\n        .map(|x| json!({ \"cell\": { \"x\": x, \"y\": 0 }, \"tile\": SOLID_TILE }))\n        .collect::<Vec<_>>();\n",
+  "new": "    let cells = (0..15)\n        .map(|x| json!({ \"cell\": { \"x\": x, \"y\": 0 }, \"tile\": SOLID_TILE }))\n        .collect::<Vec<_>>();\n"
+}
