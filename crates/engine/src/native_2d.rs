@@ -158,8 +158,10 @@ mod tests {
     #[test]
     fn project_settings_apply_same_typed_gravity_resource() {
         let mut app = crate::App::new();
-        let mut settings = Project2dSettings::default();
-        settings.gravity = [2.5, -7.0];
+        let settings = Project2dSettings {
+            gravity: [2.5, -7.0],
+            ..Project2dSettings::default()
+        };
         apply_project_2d_settings(&mut app, &settings);
         assert_eq!(
             app.world().get_resource::<Gravity2d>().unwrap().0,
