@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/render_backend.rs","old":"pub(crate) struct WorldRenderer {\n    render: RenderState,\n    debug: DebugRenderState,\n","new":"pub(crate) struct WorldRenderer {\n    render: RenderState,\n    debug: DebugRenderState,\n    sprite: SpriteRenderState,\n"}

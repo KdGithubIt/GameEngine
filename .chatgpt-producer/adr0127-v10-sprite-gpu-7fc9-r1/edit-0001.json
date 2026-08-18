@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/render_backend.rs","old":"use crate::native_2d::{Camera2d, Camera2dDiagnostic};\n","new":"use crate::native_2d::{\n    sort_and_batch_sprites, Camera2d, Camera2dDiagnostic, Native2dRenderMetrics,\n    ResolvedSpriteRegion2d, SpriteInstance2d,\n};\n"}

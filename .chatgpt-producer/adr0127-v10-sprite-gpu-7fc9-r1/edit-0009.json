@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/render_backend.rs","old":"struct SpriteGpuFrame {\n    instance_buffer: Option<wgpu::Buffer>,\n    batches: Vec<SpriteGpuBatch>,\n    sprite_count: usize,\n}\n","new":"struct SpriteGpuFrame {\n    instance_buffer: Option<wgpu::Buffer>,\n    batches: Vec<SpriteGpuBatch>,\n}\n"}
