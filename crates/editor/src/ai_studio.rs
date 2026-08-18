@@ -4044,6 +4044,7 @@ mod tests {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: QualityPreference::Balanced,
             confinement_requirement: AgentConfinementRequirement::default(),
+            external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
             model_backend: ModelBackendPreference::HostedApi,
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
