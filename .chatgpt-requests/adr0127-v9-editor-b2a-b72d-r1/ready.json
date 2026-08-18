@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v9-editor-b2a-b72d-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "b72d6851cb6ed43e4549c7edbd22afd939f84158",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "3ef91d031c35945a5c5dd00b7e8382755e97cad739a09e3b612ba69fbfa95285",
+  "patch_bytes": 12246,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0127 Sprite Animation and Tile Set Editor workspaces",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Continues ADR0127 Native 2D first-release completion with Sprite Animation and Tile Set authoring workspaces."
+}
