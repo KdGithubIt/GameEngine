@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0144-hosted-backends-current-20260818-08",
+  "target_branch": "chatgpt/gameengine-adr0144-hosted-backends-v3",
+  "expected_head_sha": "99cd9cf17c92eeeb1248bc6e15eca560d870db66",
+  "baseline_main_sha": "99cd9cf17c92eeeb1248bc6e15eca560d870db66",
+  "patch_sha256": "4b6b558c89fe9104c90e893e7b5d1a0c04a926d53d37e0dadd746b4eaeafe144",
+  "patch_bytes": 86225,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR 0144 hosted and enterprise model backends",
+  "pr_title": "GameEngine: implement ADR 0144 hosted model backends",
+  "pr_body": "## Summary\n\nImplements ADR 0144 on the current ADR 0141/0147/0153/0148 baseline. Adds Hosted API and Enterprise ModelBackend adapters shared by read-only questions and the write-capable NativeAgentRuntime, OS-protected machine-local credential ownership, explicit NetworkAccess approval, frozen per-run backend selection, structured provider failure mapping, honest capability reporting, and sanitized Remote AI Studio processing posture while preserving Agent Host mutation/completion ownership and ADR 0153 confinement preferences.\n\n## Validation\n\nRequires Windows Validation and Editor Visual Validation because backend and credential selection UI changes.\n\n<!-- gameengine-visual-validation: editor -->"
+}
