@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/animation_preview.rs","old":"            target: None,\n            view,\n","new":"            target: None,\n            clip_choices_cache: None,\n            view,\n"}
