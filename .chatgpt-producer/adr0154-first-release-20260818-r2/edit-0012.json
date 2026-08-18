@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/import/src/humanoid_import.rs","old":"use crate::asset::{\n    imported_logical_humanoid_motion_sub_asset_id, HumanoidProfile, ImportedSubAsset,\n    ImportedSubAssetKind,\n};","new":"use crate::asset::{\n    imported_humanoid_motion_sub_asset_id, HumanoidProfile, ImportedSubAsset,\n    ImportedSubAssetKind,\n};"}
