@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "pub(crate) struct NativeAgentRuntime {\n    backend: Box<dyn ModelBackend>, backend_config: NativeModelConfig,\n    routing: ModelRoutingPolicy, routing_decisions: Vec<ModelRouteDecision>,\n    policy: HarnessPolicy, turns: u32, failures: u32,\n    exchanges: Vec<Exchange>, active: Option<Box<dyn ModelTurnTask>>,\n}",
+  "new": "pub(crate) struct NativeAgentRuntime {\n    backend: Box<dyn ModelBackend>, backend_config: NativeModelConfig,\n    routing: ModelRoutingPolicy, routing_decisions: Vec<ModelRouteDecision>,\n    benchmark_single_model: bool,\n    policy: HarnessPolicy, turns: u32, failures: u32,\n    exchanges: Vec<Exchange>, active: Option<Box<dyn ModelTurnTask>>,\n}"
+}
