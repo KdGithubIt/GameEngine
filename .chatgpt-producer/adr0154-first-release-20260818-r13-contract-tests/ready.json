@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0154-first-release-20260818-r13-contract-tests",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "93424218c654310697bf480ca616bbaf3a8e7959",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Add ADR0154 target-preview and provenance contract tests",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Adds synthetic first-release contract coverage for ADR 0154: Target Preview selection remains transient and never dirties/serializes the Animation Set, the same imported candidate recomputes Native versus Failed when the target skeleton changes, and motion-only Humanoid provenance remains stable across output reordering while ambiguous/sole capable models remain explicit author choices until selected. No third-party model fixtures are introduced.\n\nThe PR remains Draft and must not be merged automatically."
+}
