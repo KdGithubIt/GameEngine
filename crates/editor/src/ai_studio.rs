@@ -5,9 +5,9 @@
 //! workspace rules live in the GUI-free `agent_host` module.
 
 use crate::agent_benchmark::{
-    agent_run_record, benchmark_task, read_question_record, BenchmarkHardwareIdentity,
-    BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog,
-    BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
+    agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
+    BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
+    CuratedModelCatalog, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
 };
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
@@ -1838,12 +1838,14 @@ impl AiStudioPanel {
             agent_run_record(
                 &context.task_id,
                 &run,
-                &context.backend_id,
-                &context.model_id,
-                context.inventory.as_ref(),
-                context.quality,
-                context.workload,
-                &context.hardware,
+                AgentRunBenchmarkIdentity {
+                    backend_id: &context.backend_id,
+                    model_id: &context.model_id,
+                    inventory: context.inventory.as_ref(),
+                    quality: context.quality,
+                    workload: context.workload,
+                    hardware: &context.hardware,
+                },
             )
         };
         let record = match record {

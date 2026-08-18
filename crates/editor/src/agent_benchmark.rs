@@ -121,24 +121,27 @@ impl Default for BenchmarkHardwareIdentity {
 
 impl BenchmarkHardwareIdentity {
     pub(crate) fn from_editor_adapter(name: &str, vendor_id: u32, device_id: u32) -> Self {
-        let mut identity = Self::default();
         let name = name.trim();
         if name.is_empty() {
-            return identity;
+            return Self::default();
         }
-        identity.gpu = TelemetryValue::Measured(name.to_owned());
+        let gpu = TelemetryValue::Measured(name.to_owned());
 
         #[cfg(target_os = "windows")]
-        {
-            let (gpu_memory, system_memory) =
-                windows_hardware_memory(name, vendor_id, device_id);
-            identity.total_gpu_memory_bytes = gpu_memory;
-            identity.total_system_memory_bytes = system_memory;
-        }
+        let (total_gpu_memory_bytes, total_system_memory_bytes) =
+            windows_hardware_memory(name, vendor_id, device_id);
         #[cfg(not(target_os = "windows"))]
-        let _ = (vendor_id, device_id);
+        let (total_gpu_memory_bytes, total_system_memory_bytes) = {
+            let _ = (vendor_id, device_id);
+            (TelemetryValue::Unavailable, TelemetryValue::Unavailable)
+        };
 
-        identity
+        Self {
+            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            gpu,
+            total_gpu_memory_bytes,
+            total_system_memory_bytes,
+        }
     }
 }
 
@@ -945,6 +948,7 @@ pub(crate) fn read_question_record(
     if task.kind != BenchmarkTaskKind::ReadQuestion {
         return Err("the last read-oriented result can only record a read-question benchmark task".to_owned());
     }
+    let provenance_reported = metrics.retrieval_chunks > 0;
     Ok(BenchmarkRecord {
         schema_version: BENCHMARK_SCHEMA_VERSION,
         recorded_unix_ms: unix_ms(),
@@ -968,8 +972,8 @@ pub(crate) fn read_question_record(
             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
         },
         metrics: BenchmarkMetrics {
-            acceptance_success: TelemetryValue::Measured(true),
-            completion_success: TelemetryValue::Measured(true),
+            acceptance_success: TelemetryValue::Measured(provenance_reported),
+            completion_success: TelemetryValue::Measured(provenance_reported),
             model_turns: TelemetryValue::Measured(u64::from(metrics.model_turns)),
             tool_calls: TelemetryValue::Measured(0),
             invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
@@ -1002,15 +1006,19 @@ fn work_claim_kind_label(claim: &AgentWorkClaim) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+pub(crate) struct AgentRunBenchmarkIdentity<'a> {
+    pub(crate) backend_id: &'a str,
+    pub(crate) model_id: &'a str,
+    pub(crate) inventory: Option<&'a InstalledModelInventory>,
+    pub(crate) quality: QualityPreference,
+    pub(crate) workload: InferenceWorkload,
+    pub(crate) hardware: &'a BenchmarkHardwareIdentity,
+}
+
 pub(crate) fn agent_run_record(
     task_id: &str,
     run: &AgentRun,
-    backend_id: &str,
-    model_id: &str,
-    inventory: Option<&InstalledModelInventory>,
-    quality: QualityPreference,
-    workload: InferenceWorkload,
-    hardware: &BenchmarkHardwareIdentity,
+    identity: AgentRunBenchmarkIdentity<'_>,
 ) -> Result<BenchmarkRecord, String> {
     let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     if task.kind == BenchmarkTaskKind::ReadQuestion {
@@ -1067,11 +1075,11 @@ pub(crate) fn agent_run_record(
             task_id: task.id.to_owned(),
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             runtime_harness_version: NATIVE_WRITE_HARNESS_VERSION.to_owned(),
-            model: model_identity(backend_id, model_id, inventory),
-            hardware: hardware.clone(),
-            quality,
+            model: model_identity(identity.backend_id, identity.model_id, identity.inventory),
+            hardware: identity.hardware.clone(),
+            quality: identity.quality,
             workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
-            observed_workload: TelemetryValue::Measured(workload),
+            observed_workload: TelemetryValue::Measured(identity.workload),
             tool_budget: BenchmarkToolBudget {
                 max_model_turns: policy.max_model_turns,
                 max_tool_failures: policy.max_tool_failures,
@@ -1271,7 +1279,7 @@ mod tests {
             total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
             total_system_memory_bytes: TelemetryValue::Measured(32_000),
         };
-        let metrics = NativeMetrics {
+        let mut metrics = NativeMetrics {
             harness_version: "test-read-v1",
             backend_id: "test-backend",
             model_id: "model-a".to_owned(),
@@ -1299,6 +1307,21 @@ mod tests {
         )
         .expect("read benchmark record");
         assert_eq!(record.identity.hardware, hardware);
+
+        metrics.retrieval_chunks = 0;
+        let no_provenance = read_question_record(
+            BENCHMARK_TASKS[0].id,
+            &metrics,
+            None,
+            QualityPreference::Balanced,
+            InferenceWorkload::InteractiveReasoning,
+            &hardware,
+        )
+        .expect("read benchmark record without provenance");
+        assert_eq!(
+            no_provenance.metrics.completion_success,
+            TelemetryValue::Measured(false)
+        );
     }
 
     #[cfg(target_os = "windows")]
