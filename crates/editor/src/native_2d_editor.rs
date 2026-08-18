@@ -538,4 +538,267 @@ impl Native2dEditorState {
     }
 }
 
+impl Native2dEditorState {
+    fn show_animation(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &ProjectRoot,
+        manifest: &engine::AssetManifest,
+    ) {
+        let paths = manifest_paths(manifest, ".spriteanim.json");
+        let current = self
+            .animation
+            .as_ref()
+            .map(|loaded| loaded.relative.as_path());
+        if let Some(path) = document_picker(ui, "native2d_animation_document", current, &paths) {
+            self.open_animation(project, &path);
+        }
+        let Some(loaded) = self.animation.as_mut() else {
+            ui.label("Register and select a *.spriteanim.json asset to author deterministic frames.");
+            return;
+        };
+        if let Some(status) = typed_document_toolbar(ui, loaded) {
+            self.status = Some(status);
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::DragValue::new(&mut loaded.draft.ticks_per_second)
+                    .range(1..=10_000)
+                    .prefix("Ticks/s "),
+            );
+            ui.checkbox(&mut loaded.draft.looping, "Looping");
+            ui.add(
+                egui::DragValue::new(&mut loaded.draft.default_speed)
+                    .range(0.0..=100.0)
+                    .speed(0.05)
+                    .prefix("Default speed "),
+            );
+        });
+
+        ui.columns(2, |columns| {
+            columns[0].strong("Frames");
+            for (index, frame) in loaded.draft.frames.iter().enumerate() {
+                if columns[0]
+                    .selectable_label(
+                        self.animation_frame == index,
+                        format!("#{index} · {} ticks · {}", frame.duration_ticks, frame.sprite.sprite.as_str()),
+                    )
+                    .clicked()
+                {
+                    self.animation_frame = index;
+                }
+            }
+            if !loaded.draft.frames.is_empty() && columns[0].button("Duplicate frame").clicked() {
+                let index = self.animation_frame.min(loaded.draft.frames.len() - 1);
+                let frame = loaded.draft.frames[index].clone();
+                loaded.draft.frames.insert(index + 1, frame);
+                self.animation_frame = index + 1;
+            }
+            if loaded.draft.frames.len() > 1
+                && columns[0].button("Remove selected frame").clicked()
+            {
+                let index = self.animation_frame.min(loaded.draft.frames.len() - 1);
+                loaded.draft.frames.remove(index);
+                self.animation_frame = self.animation_frame.min(loaded.draft.frames.len() - 1);
+                if self.animation_preview.frame_index >= loaded.draft.frames.len() {
+                    self.animation_preview.stop();
+                }
+            }
+
+            if let Some(frame) = loaded.draft.frames.get_mut(self.animation_frame) {
+                columns[1].strong(format!("Frame {}", self.animation_frame));
+                columns[1].label(format!("Atlas: {}", frame.sprite.atlas.as_str()));
+                let sprite_drop = columns[1].label(format!("Sprite: {}", frame.sprite.sprite.as_str()));
+                if let Some(payload) = sprite_drop.dnd_release_payload::<SpriteRegionDragPayload>() {
+                    frame.sprite = payload.sprite.clone();
+                }
+                columns[1].add(
+                    egui::DragValue::new(&mut frame.duration_ticks)
+                        .range(1..=u32::MAX)
+                        .prefix("Duration ticks "),
+                );
+                let mut event = frame.event.clone().unwrap_or_default();
+                if columns[1].text_edit_singleline(&mut event).changed() {
+                    frame.event = (!event.trim().is_empty()).then_some(event);
+                }
+                columns[1].small("Drop a Sprite Atlas region on the Sprite row to replace the stable SpriteRef.");
+            }
+        });
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui.button("Play").clicked() {
+                self.animation_preview.play();
+            }
+            if ui.button("Pause").clicked() {
+                self.animation_preview.pause();
+            }
+            if ui.button("Stop").clicked() {
+                self.animation_preview.stop();
+            }
+            if ui.button("Step tick").clicked()
+                && self.animation_preview.frame_index < loaded.draft.frames.len()
+            {
+                self.animation_preview
+                    .advance_ticks(&loaded.draft, 1, None);
+            }
+            ui.label(format!(
+                "Runtime preview: frame {} · tick {}",
+                self.animation_preview.frame_index, self.animation_preview.tick_in_frame
+            ));
+        });
+        if self.animation_preview.playing
+            && self.animation_preview.frame_index < loaded.draft.frames.len()
+        {
+            self.animation_preview
+                .advance_fixed_seconds(&loaded.draft, 1.0 / 60.0, None);
+            ui.ctx().request_repaint();
+        }
+        if let Some(sprite) = self.animation_preview.current_sprite(&loaded.draft) {
+            ui.small(format!(
+                "Current SpriteRef: {} / {}",
+                sprite.atlas.as_str(),
+                sprite.sprite.as_str()
+            ));
+        }
+    }
+}
+
+impl Native2dEditorState {
+    fn show_tile_set(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &ProjectRoot,
+        manifest: &engine::AssetManifest,
+    ) {
+        let paths = manifest_paths(manifest, ".tileset.json");
+        let current = self
+            .tile_set
+            .as_ref()
+            .map(|loaded| loaded.relative.as_path());
+        if let Some(path) = document_picker(ui, "native2d_tileset_document", current, &paths) {
+            self.open_tile_set(project, &path);
+        }
+        let Some(loaded) = self.tile_set.as_mut() else {
+            ui.label("Register and select a *.tileset.json asset to edit palette and collision metadata.");
+            return;
+        };
+        if let Some(status) = typed_document_toolbar(ui, loaded) {
+            self.status = Some(status);
+        }
+        ui.separator();
+        ui.columns(2, |columns| {
+            columns[0].strong("Tile palette");
+            egui::ScrollArea::vertical()
+                .max_height(420.0)
+                .show(&mut columns[0], |ui| {
+                    for (index, tile) in loaded.draft.tiles.iter().enumerate() {
+                        if ui
+                            .selectable_label(
+                                self.tile_index == index,
+                                format!("{}  {}", tile.name, tile.id.as_str()),
+                            )
+                            .clicked()
+                        {
+                            self.tile_index = index;
+                        }
+                    }
+                });
+            if !loaded.draft.tiles.is_empty() && columns[0].button("Duplicate tile").clicked() {
+                let index = self.tile_index.min(loaded.draft.tiles.len() - 1);
+                let mut tile = loaded.draft.tiles[index].clone();
+                tile.id = engine_authoring::TileId::generate();
+                tile.name = format!("{} Copy", tile.name);
+                loaded.draft.tiles.push(tile);
+                self.tile_index = loaded.draft.tiles.len() - 1;
+            }
+
+            let Some(tile) = loaded.draft.tiles.get_mut(self.tile_index) else {
+                columns[1].label("Select a tile to edit its stable palette entry.");
+                return;
+            };
+            columns[1].strong("Tile definition");
+            columns[1].label(format!("Stable ID: {}", tile.id.as_str()));
+            columns[1].horizontal(|ui| {
+                ui.label("Name");
+                ui.text_edit_singleline(&mut tile.name);
+            });
+            let sprite_drop = columns[1].label(format!(
+                "Sprite: {} / {}",
+                tile.sprite.atlas.as_str(),
+                tile.sprite.sprite.as_str()
+            ));
+            if let Some(payload) = sprite_drop.dnd_release_payload::<SpriteRegionDragPayload>() {
+                tile.sprite = payload.sprite.clone();
+            }
+            columns[1].checkbox(&mut tile.one_way, "One-way platform surface");
+            let mut tags = tile.tags.join(", " );
+            columns[1].horizontal(|ui| {
+                ui.label("Tags");
+                if ui.text_edit_singleline(&mut tags).changed() {
+                    tile.tags = tags
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|tag| !tag.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                }
+            });
+            columns[1].separator();
+            columns[1].strong("Collision shapes");
+            let mut remove_shape = None;
+            for (index, shape) in tile.collision.iter_mut().enumerate() {
+                columns[1].group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Shape {}", index + 1));
+                        if ui.small_button("Remove").clicked() {
+                            remove_shape = Some(index);
+                        }
+                    });
+                    match shape {
+                        engine_authoring::TileCollisionShape::Box { half_extents } => {
+                            ui.label("Box");
+                            ui.add(egui::DragValue::new(&mut half_extents[0]).range(0.001..=1000.0).prefix("Half X "));
+                            ui.add(egui::DragValue::new(&mut half_extents[1]).range(0.001..=1000.0).prefix("Half Y "));
+                        }
+                        engine_authoring::TileCollisionShape::Circle { radius } => {
+                            ui.label("Circle");
+                            ui.add(egui::DragValue::new(radius).range(0.001..=1000.0).prefix("Radius "));
+                        }
+                        engine_authoring::TileCollisionShape::Polygon { points } => {
+                            ui.label(format!("Polygon · {} vertices", points.len()));
+                            for (point_index, point) in points.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("P{point_index}"));
+                                    ui.add(egui::DragValue::new(&mut point[0]).speed(0.05));
+                                    ui.add(egui::DragValue::new(&mut point[1]).speed(0.05));
+                                });
+                            }
+                        }
+                    }
+                });
+            }
+            if let Some(index) = remove_shape {
+                tile.collision.remove(index);
+            }
+            columns[1].horizontal_wrapped(|ui| {
+                if ui.button("Add Box").clicked() {
+                    tile.collision.push(engine_authoring::TileCollisionShape::Box {
+                        half_extents: [0.5, 0.5],
+                    });
+                }
+                if ui.button("Add Circle").clicked() {
+                    tile.collision.push(engine_authoring::TileCollisionShape::Circle { radius: 0.5 });
+                }
+                if ui.button("Add Polygon").clicked() {
+                    tile.collision.push(engine_authoring::TileCollisionShape::Polygon {
+                        points: vec![[-0.5, -0.5], [0.5, -0.5], [0.0, 0.5]],
+                    });
+                }
+            });
+        });
+    }
+}
+
 // __ADR0127_NATIVE2D_EDITOR_CONTINUE__
