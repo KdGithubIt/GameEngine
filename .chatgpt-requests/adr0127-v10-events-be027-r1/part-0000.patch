@@ -1,0 +1,303 @@
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+index f963c9804e78bcb4f80e0b9f4d3264f972671e31..18e06c4ec64488ef44ca020d44aeb0a7c1814fc4 100644
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -23,7 +23,10 @@ use crate::game_timer::GameTimerEvents;
+ use crate::hitbox::AttackHitbox;
+ use crate::lock_on::TargetLock;
+ use crate::navmesh::NavMeshAgent;
+-use crate::native_2d::{CharacterController2d, CharacterControllerMotion2d, SpriteAnimatorRuntime2d};
++use crate::native_2d::{
++    CharacterController2d, CharacterControllerMotion2d, ContactPhase2d, PhysicsRuntime2d,
++    SpriteAnimationEvents2d, SpriteAnimatorRuntime2d,
++};
+ use crate::player::InputActionMap;
+ use crate::runtime_metadata::RuntimeMetadata;
+ use crate::save::{SaveData, SaveValue};
+@@ -290,8 +293,10 @@ pub struct GameHostRuntime {
+     next_event_sequences: BTreeMap<GameEventStream, u64>,
+     consumed_event_sequences: BTreeMap<String, BTreeMap<GameEventStream, u64>>,
+     last_collision_generation: Option<u64>,
++    last_collision_2d_generation: Option<u64>,
+     last_hit_generation: Option<u64>,
+     last_animation_generation: Option<u64>,
++    last_sprite_animation_2d_generation: Option<u64>,
+     last_ui_generation: Option<u64>,
+     last_timer_source_sequence: u64,
+     last_spawn_source_sequence: u64,
+@@ -436,11 +441,15 @@ impl GameHostRuntime {
+         if access.event_streams.contains(&GameEventStream::Collision) {
+             self.capture_collision_events(world);
+         }
++        if access.event_streams.contains(&GameEventStream::Collision2d) {
++            self.capture_collision_events_2d(world);
++        }
+         if access.event_streams.contains(&GameEventStream::Hit) {
+             self.capture_hit_events(world);
+         }
+         if access.event_streams.contains(&GameEventStream::Animation) {
+             self.capture_animation_events(world);
++            self.capture_sprite_animation_events_2d(world);
+         }
+         if access.event_streams.contains(&GameEventStream::Ui) {
+             self.capture_ui_events(world);
+@@ -482,6 +491,43 @@ impl GameHostRuntime {
+         }
+     }
+ 
++    fn capture_collision_events_2d(&mut self, world: &World) {
++        let Some(runtime) = world.get_resource::<PhysicsRuntime2d>() else {
++            return;
++        };
++        let generation = runtime.event_generation();
++        if self.last_collision_2d_generation == Some(generation) {
++            return;
++        }
++        self.last_collision_2d_generation = Some(generation);
++        let records = runtime
++            .events()
++            .iter()
++            .map(|event| {
++                let phase = match event.phase {
++                    ContactPhase2d::Enter => "enter",
++                    ContactPhase2d::Stay => "stay",
++                    ContactPhase2d::Exit => "exit",
++                };
++                Value::Object(BTreeMap::from([
++                    ("phase".to_owned(), Value::String(phase.to_owned())),
++                    (
++                        "entity_a".to_owned(),
++                        entity_handle_record_value(entity_handle_from_runtime_key(event.a)),
++                    ),
++                    (
++                        "entity_b".to_owned(),
++                        entity_handle_record_value(entity_handle_from_runtime_key(event.b)),
++                    ),
++                    ("sensor".to_owned(), Value::Bool(event.sensor)),
++                ]))
++            })
++            .collect::<Vec<_>>();
++        for payload in records {
++            self.push_event(GameEventStream::Collision2d, payload);
++        }
++    }
++
+     fn capture_hit_events(&mut self, world: &World) {
+         let Some(results) = world.get_resource::<HitResults>() else {
+             return;
+@@ -538,6 +584,29 @@ impl GameHostRuntime {
+         }
+     }
+ 
++    fn capture_sprite_animation_events_2d(&mut self, world: &World) {
++        let Some(events) = world.get_resource::<SpriteAnimationEvents2d>() else {
++            return;
++        };
++        let generation = events.generation();
++        if self.last_sprite_animation_2d_generation == Some(generation) {
++            return;
++        }
++        self.last_sprite_animation_2d_generation = Some(generation);
++        let records = events
++            .iter()
++            .map(|event| {
++                Value::Object(BTreeMap::from([
++                    ("entity".to_owned(), entity_handle_value(event.entity)),
++                    ("name".to_owned(), Value::String(event.name.clone())),
++                ]))
++            })
++            .collect::<Vec<_>>();
++        for payload in records {
++            self.push_event(GameEventStream::Animation, payload);
++        }
++    }
++
+     fn capture_ui_events(&mut self, world: &World) {
+         let Some(events) = world.get_resource::<UiEventFrame>() else {
+             return;
+@@ -1306,6 +1375,13 @@ fn entity_handle(entity: Entity) -> GameEntityHandle {
+     }
+ }
+ 
++fn entity_handle_from_runtime_key(key: u64) -> GameEntityHandle {
++    GameEntityHandle {
++        id: key as u32,
++        generation: (key >> 32) as u32,
++    }
++}
++
+ fn entity_handle_record_value(handle: GameEntityHandle) -> Value {
+     Value::Object(BTreeMap::from([
+         ("id".to_owned(), Value::U64(u64::from(handle.id))),
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index 7d19480532c6258b1740bdfa2f43572870e3b0ed..72b082018a49cdcd632b0d431bb6b9f09e7f6c1e 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -82,6 +82,7 @@ impl Default for CharacterControllerMotion2d {
+ pub struct PhysicsRuntime2d {
+     world: PhysicsWorld2d,
+     events: Vec<ContactEvent2d>,
++    event_generation: u64,
+ }
+ 
+ impl PhysicsRuntime2d {
+@@ -94,6 +95,11 @@ impl PhysicsRuntime2d {
+     pub fn events(&self) -> &[ContactEvent2d] {
+         &self.events
+     }
++
++    /// Returns the monotonically increasing fixed-step event generation.
++    pub fn event_generation(&self) -> u64 {
++        self.event_generation
++    }
+ }
+ 
+ /// Compiled backend-neutral Tile Map collision source attached during scene conversion.
+@@ -334,6 +340,7 @@ pub fn physics_2d_fixed_system(
+     }
+ 
+     runtime.events = runtime.world.step(fixed_time.fixed_delta, gravity.0);
++    runtime.event_generation = runtime.event_generation.wrapping_add(1);
+ 
+     for (entity, (transform, _, parent, body, _, _, _)) in query.iter_mut() {
+         let Some(body) = body else {
+@@ -390,6 +397,7 @@ pub struct SpriteAnimationEvent2d {
+ #[derive(Debug, Default)]
+ pub struct SpriteAnimationEvents2d {
+     events: Vec<SpriteAnimationEvent2d>,
++    generation: u64,
+ }
+ 
+ impl SpriteAnimationEvents2d {
+@@ -397,6 +405,11 @@ impl SpriteAnimationEvents2d {
+     pub fn iter(&self) -> impl Iterator<Item = &SpriteAnimationEvent2d> {
+         self.events.iter()
+     }
++
++    /// Returns the monotonically increasing fixed-step event generation.
++    pub fn generation(&self) -> u64 {
++        self.generation
++    }
+ }
+ 
+ /// Advances per-entity Sprite Animation state and writes only the current SpriteRef to rendering.
+@@ -406,6 +419,7 @@ pub fn sprite_animation_2d_fixed_system(
+     mut query: Query<(&mut SpriteAnimatorRuntime2d, &mut SpriteRenderer2d)>,
+ ) {
+     events.events.clear();
++    events.generation = events.generation.wrapping_add(1);
+     let seconds = f64::from(fixed_time.fixed_delta.max(0.0));
+     for (entity, (animator, renderer)) in query.iter_mut() {
+         let clip = animator.clip.clone();
+diff --git a/crates/scripting/src/game_api.rs b/crates/scripting/src/game_api.rs
+index 5d735e458a515031593e491ca26c2607e525e28a..3f99c6a8a4cd9a9853717ef93b250f0f686c200f 100644
+--- a/crates/scripting/src/game_api.rs
++++ b/crates/scripting/src/game_api.rs
+@@ -1537,6 +1537,38 @@ impl HostEvent for CollisionEvent {
+     }
+ }
+ 
++/// Typed Native 2D collision or trigger transition event.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Collision2dEvent {
++    /// Transition phase emitted by the dedicated fixed-step 2D world.
++    pub phase: CollisionEventPhase,
++    /// First generation-checked runtime entity in deterministic pair order.
++    pub entity_a: GameEntityHandle,
++    /// Second generation-checked runtime entity in deterministic pair order.
++    pub entity_b: GameEntityHandle,
++    /// Whether either participating Native 2D collider is a sensor.
++    pub sensor: bool,
++}
++
++impl HostEvent for Collision2dEvent {
++    const STREAM: GameEventStream = GameEventStream::Collision2d;
++    fn decode(value: &Value) -> Result<Self, String> {
++        let fields = object(value)?;
++        let phase = match string_field(fields, "phase")? {
++            "enter" => CollisionEventPhase::Enter,
++            "stay" => CollisionEventPhase::Stay,
++            "exit" => CollisionEventPhase::Exit,
++            value => return Err(format!("unknown Native 2D collision phase `{value}`")),
++        };
++        Ok(Self {
++            phase,
++            entity_a: entity(field(fields, "entity_a")?)?,
++            entity_b: entity(field(fields, "entity_b")?)?,
++            sensor: bool_field(fields, "sensor")?,
++        })
++    }
++}
++
+ /// Typed accepted-hit event.
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct HitEvent {
+@@ -2583,4 +2615,32 @@ mod tests {
+         assert_eq!(output.commands[0].family, GameCommandFamily::Character2d);
+         assert_eq!(output.commands[1].family, GameCommandFamily::Character2d);
+     }
++
++    #[test]
++    fn collision_2d_event_decodes_generation_checked_entities_and_sensor_state() {
++        let event = Collision2dEvent::decode(&Value::Object(BTreeMap::from([
++            ("phase".to_owned(), Value::String("enter".to_owned())),
++            (
++                "entity_a".to_owned(),
++                Value::Object(BTreeMap::from([
++                    ("id".to_owned(), Value::U64(3)),
++                    ("generation".to_owned(), Value::U64(4)),
++                ])),
++            ),
++            (
++                "entity_b".to_owned(),
++                Value::Object(BTreeMap::from([
++                    ("id".to_owned(), Value::U64(7)),
++                    ("generation".to_owned(), Value::U64(2)),
++                ])),
++            ),
++            ("sensor".to_owned(), Value::Bool(true)),
++        ])))
++        .unwrap();
++        assert_eq!(Collision2dEvent::STREAM, GameEventStream::Collision2d);
++        assert_eq!(event.phase, CollisionEventPhase::Enter);
++        assert_eq!(event.entity_a, GameEntityHandle { id: 3, generation: 4 });
++        assert_eq!(event.entity_b, GameEntityHandle { id: 7, generation: 2 });
++        assert!(event.sensor);
++    }
+ }
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+index 00dae57af8da91e5c62ded6f5cf68ab3732a7b3a..985b1594d62038411c78acf6157f9ea3f7078477 100644
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -77,8 +77,10 @@ pub enum EngineViewKind {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub enum GameEventStream {
+-    /// Collision enter, stay, and exit records.
++    /// 3D collision enter, stay, and exit records.
+     Collision,
++    /// Native 2D collision/trigger enter, stay, and exit records.
++    Collision2d,
+     /// Accepted combat hit results after team and invulnerability filtering.
+     Hit,
+     /// Animation events emitted while sampling clips.
+diff --git a/docs/PROJECT_RUST_GAMEPLAY.md b/docs/PROJECT_RUST_GAMEPLAY.md
+index 08c8c467566d42b99a063084afb3f75bdd31f273..c053792eecc85be6026019ea739150620f987727 100644
+--- a/docs/PROJECT_RUST_GAMEPLAY.md
++++ b/docs/PROJECT_RUST_GAMEPLAY.md
+@@ -215,8 +215,13 @@ name-keyed object with string, number, and boolean values; the engine resource
+ itself never crosses the module boundary.
+ 
+ Declared event streams receive host-owned records with monotonically
+-increasing per-stream sequences. Collision records contain `enter`, `stay`, or
+-`exit`; animation records identify the firing entity and event name; UI records
++increasing per-stream sequences. The existing `Collision` stream remains the 3D
++collision contract. Native 2D collision/trigger transitions use the additive
++`Collision2d` stream and typed `Collision2dEvent`, carrying `enter`, `stay`, or
++`exit`, two generation-checked entity handles, and sensor state without exposing
++solver handles. Native 2D Sprite Animation frame events join the existing
++`Animation` stream with the same typed entity/name payload as skeletal markers.
++UI records
+ contain the relayed document event name; scene records report completed or
+ failed transitions; emitted project events appear on the `Game` stream. Source
+ resources carry producer generations, so a project system ordered before a
