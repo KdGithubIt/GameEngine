@@ -1,0 +1,160 @@
++#[derive(Debug, Serialize)]
++struct ManagedChatRequest<'a> {
++    model: &'a str,
++    messages: [ManagedChatMessage<'a>; 1],
++    stream: bool,
++}
++
++#[derive(Debug, Serialize)]
++struct ManagedChatMessage<'a> {
++    role: &'static str,
++    content: &'a str,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatResponse {
++    #[serde(default)]
++    choices: Vec<ManagedChatChoice>,
++    #[serde(default)]
++    usage: Option<ManagedChatUsage>,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatChoice {
++    message: ManagedChatResponseMessage,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatResponseMessage {
++    content: String,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatUsage {
++    #[serde(default)]
++    prompt_tokens: Option<u64>,
++    #[serde(default)]
++    completion_tokens: Option<u64>,
++}
++
++fn generate_managed(
++    config: &ManagedLocalModelConfig,
++    prompt: &str,
++    interrupted: &AtomicBool,
++    active_stream: &Mutex<Option<TcpStream>>,
++) -> Result<BackendGeneration, NativeAgentError> {
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    let startup_started = Instant::now();
++    let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)
++        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
++    let load_latency_ms = (!managed_endpoint.reused_process)
++        .then(|| duration_ms(startup_started.elapsed()));
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    let endpoint = LocalHttpEndpoint::parse(&managed_endpoint.url)?;
++    let request = ManagedChatRequest {
++        model: &config.model_id,
++        messages: [ManagedChatMessage {
++            role: "user",
++            content: prompt,
++        }],
++        stream: false,
++    };
++    let body = serde_json::to_vec(&request)?;
++    let response: ManagedChatResponse = request_local_json_interruptible(
++        &endpoint,
++        "POST",
++        "/v1/chat/completions",
++        &body,
++        interrupted,
++        active_stream,
++    )?;
++    let text = response
++        .choices
++        .into_iter()
++        .next()
++        .map(|choice| choice.message.content.trim().to_owned())
++        .unwrap_or_default();
++    let (prompt_tokens, response_tokens) = response
++        .usage
++        .map(|usage| (usage.prompt_tokens, usage.completion_tokens))
++        .unwrap_or((None, None));
++    Ok(BackendGeneration {
++        text,
++        prompt_tokens,
++        response_tokens,
++        backend_duration_ms: None,
++        load_latency_ms,
++        prompt_eval_duration_ms: None,
++        generation_duration_ms: None,
++        generation_tokens_per_second_milli: None,
++    })
++}
++
++fn request_local_json_interruptible<R: DeserializeOwned>(
++    endpoint: &LocalHttpEndpoint,
++    method: &str,
++    path: &str,
++    body: &[u8],
++    interrupted: &AtomicBool,
++    active_stream: &Mutex<Option<TcpStream>>,
++) -> Result<R, NativeAgentError> {
++    let mut stream = endpoint.connect()?;
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    if let Ok(mut guard) = active_stream.lock() {
++        *guard = stream.try_clone().ok();
++    }
++    let result = (|| {
++        write!(
++            stream,
++            "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++            endpoint.host_header(),
++            body.len()
++        )?;
++        stream.write_all(body)?;
++        stream.flush()?;
++        let mut response = Vec::new();
++        stream
++            .take(MAX_HTTP_RESPONSE_BYTES + 1)
++            .read_to_end(&mut response)?;
++        if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
++            return Err(NativeAgentError::ResponseTooLarge);
++        }
++        let parsed = parse_http_response(&response)?;
++        if parsed.status != 200 {
++            let message = String::from_utf8_lossy(&parsed.body);
++            return Err(NativeAgentError::HttpStatus(
++                parsed.status,
++                truncate_text(message.trim(), 500),
++            ));
++        }
++        serde_json::from_slice(&parsed.body).map_err(Into::into)
++    })();
++    if let Ok(mut guard) = active_stream.lock() {
++        *guard = None;
++    }
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    result
++}
++
++fn observe_managed_model(config: &ManagedLocalModelConfig) -> ModelResourceTelemetry {
++    let resident = ManagedLocalRuntime::is_resident(config)
++        .map(TelemetryValue::Measured)
++        .unwrap_or(TelemetryValue::Unavailable);
++    ModelResourceTelemetry {
++        resident,
++        representation_size_bytes: TelemetryValue::Measured(config.model_size_bytes),
++        ..ModelResourceTelemetry::default()
++    }
++}
++
+ #[derive(Debug, Serialize)]
+ struct GenerateRequest<'a> {
+     model: &'a str,
