@@ -72,7 +72,11 @@ impl EditorShell {
             let mut ai_studio = ai_studio;
             let detached_capture = visual_validation_touches_ai_studio();
             if detached_capture {
-                ai_studio.prepare_hosted_backend_visual_validation();
+                if let Ok(scenario) = std::env::var("GAMEENGINE_VISUAL_SCENARIO") {
+                    ai_studio.prepare_adr_visual_validation(&scenario);
+                } else {
+                    ai_studio.prepare_hosted_backend_visual_validation();
+                }
                 ai_studio.detach();
             }
             (ai_studio, detached_capture)
@@ -361,6 +365,8 @@ impl eframe::App for EditorShell {
         #[cfg(feature = "visual-validation")]
         if !self.visual_behavior_debug_capture
             && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
+            && (self.visual_ai_studio_detached_capture
+                || std::env::var_os("GAMEENGINE_VISUAL_SCENARIO").is_none())
         {
             self.ai_studio.show(&context);
         }
@@ -391,6 +397,15 @@ fn visual_validation_touches_behavior_debug() -> bool {
 
 #[cfg(feature = "visual-validation")]
 fn visual_validation_touches_ai_studio() -> bool {
+    if let Ok(scenario) = std::env::var("GAMEENGINE_VISUAL_SCENARIO") {
+        return matches!(
+            scenario.as_str(),
+            "adr0144-hosted-backend"
+                | "adr0144-enterprise-backend"
+                | "adr0149-live-observation"
+                | "adr0153-confinement"
+        );
+    }
     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
     let base = format!("origin/{base_ref}...HEAD");
     std::process::Command::new("git")
