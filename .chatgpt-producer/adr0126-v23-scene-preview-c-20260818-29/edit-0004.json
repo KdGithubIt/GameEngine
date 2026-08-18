@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                self.animation_preview_status = animation_status;\n            }\n            let particle_debug","new":"                self.animation_preview_status = animation_status;\n                }\n            }\n            let particle_debug"}
