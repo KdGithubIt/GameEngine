@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/lib.rs",
+  "old": "#[allow(dead_code)]\nmod agent_asset_acquisition;\nmod agent_host;\nmod hosted_model_backend;",
+  "new": "#[allow(dead_code)]\nmod agent_asset_acquisition;\nmod agent_host;\nmod external_agent_provider;\nmod hosted_model_backend;"
+}
