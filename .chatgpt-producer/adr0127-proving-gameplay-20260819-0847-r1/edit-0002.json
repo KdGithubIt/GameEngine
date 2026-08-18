@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "const TILE_MAP_ASSET: &str = \"asset_00000000000000000000000005\";\nconst PLAYER_IDLE_SPRITE: &str = \"sprite_00000000000000000000000001\";\n",
+  "new": "const TILE_MAP_ASSET: &str = \"asset_00000000000000000000000005\";\nconst HUD_ASSET: &str = \"asset_00000000000000000000000006\";\nconst AUDIO_ASSET: &str = \"asset_00000000000000000000000007\";\nconst PLAYER_IDLE_SPRITE: &str = \"sprite_00000000000000000000000001\";\n"
+}
