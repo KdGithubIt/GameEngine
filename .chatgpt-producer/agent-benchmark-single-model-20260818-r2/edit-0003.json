@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "    pub(crate) fn routing_policy_summary(&self) -> String {\n        format!(\n            \"{} adopted specialist workload(s)\",\n            self.routing.adopted_specialist_count()\n        )\n    }",
+  "new": "    pub(crate) fn routing_policy_summary(&self) -> String {\n        if self.benchmark_single_model {\n            return \"single-model benchmark; routing and specialist fallback disabled\".to_owned();\n        }\n        format!(\n            \"{} adopted specialist workload(s)\",\n            self.routing.adopted_specialist_count()\n        )\n    }"
+}
