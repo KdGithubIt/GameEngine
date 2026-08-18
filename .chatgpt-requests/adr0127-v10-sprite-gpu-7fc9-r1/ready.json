@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-sprite-gpu-7fc9-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "7fc965e4085956b96e42a198c1b9a71f1e9aeb49",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "fb9ee31c088a53329bbeb7e72bafa23d9265bf89a0385a7fb16be6f019186615",
+  "patch_bytes": 24417,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Render Native 2D sprites through ordered GPU batches",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds a dedicated instanced Native 2D sprite pass inside WorldRenderer with stable layer/order/entity sorting, compatible texture/material/sampler batching, alpha/premultiplied/additive blending, nearest/linear sampling, project PPU/filter defaults, and shared decoded-texture GPU residency."
+}
