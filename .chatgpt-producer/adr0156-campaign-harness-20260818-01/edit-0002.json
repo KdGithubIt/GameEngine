@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "pub(crate) struct CampaignRunRequest {\n    pub(crate) campaign_id: String,\n    pub(crate) plan_fingerprint: String,\n    pub(crate) schedule: CampaignScheduleEntry,\n    pub(crate) candidate: CampaignCandidate,\n    pub(crate) fixture: CampaignFixtureIdentity,\n    pub(crate) execution_identity: BenchmarkExecutionIdentity,\n}",
+  "new": "pub(crate) struct CampaignRunRequest {\n    pub(crate) campaign_id: String,\n    pub(crate) plan_fingerprint: String,\n    pub(crate) schedule: CampaignScheduleEntry,\n    pub(crate) candidate: CampaignCandidate,\n    pub(crate) fixture: CampaignFixtureIdentity,\n    pub(crate) harness_route: CampaignHarnessRoute,\n    pub(crate) execution_identity: BenchmarkExecutionIdentity,\n}"
+}
