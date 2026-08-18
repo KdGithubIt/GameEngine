@@ -2775,6 +2775,20 @@ pub(crate) fn spawn_sprite_animator_2d_component(
     };
     let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
     let clip = resolve_sprite_animation_document(&clip_asset, context)?;
+    if context
+        .world
+        .get_resource::<SpriteAnimationClipRegistry2d>()
+        .is_none()
+    {
+        context
+            .world
+            .insert_resource(SpriteAnimationClipRegistry2d::default());
+    }
+    context
+        .world
+        .get_resource_mut::<SpriteAnimationClipRegistry2d>()
+        .expect("Sprite Animation registry was just installed")
+        .insert(clip_asset.clone(), Arc::clone(&clip));
     let animator = SpriteAnimatorRuntime2d::new(
         clip_asset,
         clip,

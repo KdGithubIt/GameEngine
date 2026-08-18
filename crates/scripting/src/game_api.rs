@@ -13,7 +13,7 @@ use crate::game_io::{
     GameSystemAccess,
 };
 use crate::game_contracts::{GameComponent, GameField, GameResource};
-use engine_authoring::{ComponentTypeId, EntityId, StableId, Value};
+use engine_authoring::{AssetId, ComponentTypeId, EntityId, StableId, Value};
 use glam::{Quat, Vec2, Vec3};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -964,6 +964,42 @@ impl EngineView for AnimationStateView {
             time: number_field(fields, "time")? as f32,
             looping: bool_field(fields, "looping")?,
             fading: bool_field(fields, "fading")?,
+        })
+    }
+}
+
+/// Deterministic Native 2D sprite-animation state copied for one entity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpriteAnimationStateView {
+    /// Stable authored Sprite Animation asset identity.
+    pub clip_asset: AssetId,
+    /// Whether playback currently advances.
+    pub playing: bool,
+    /// Zero-based current frame index.
+    pub frame_index: u64,
+    /// Whole clip ticks consumed inside the current frame.
+    pub tick_in_frame: u64,
+    /// Per-entity playback speed multiplier.
+    pub speed: f32,
+    /// Effective looping policy after the per-entity override.
+    pub looping: bool,
+}
+
+impl EngineView for SpriteAnimationStateView {
+    const KIND: EngineViewKind = EngineViewKind::SpriteAnimationState;
+
+    fn decode(value: &Value) -> Result<Self, String> {
+        let fields = object(value)?;
+        let clip_text = string_field(fields, "clip_asset")?;
+        let clip_asset = AssetId::from_stable_id(StableId::new(clip_text))
+            .map_err(|error| format!("invalid Sprite Animation AssetId `{clip_text}`: {error}"))?;
+        Ok(Self {
+            clip_asset,
+            playing: bool_field(fields, "playing")?,
+            frame_index: unsigned_field(fields, "frame_index")?,
+            tick_in_frame: unsigned_field(fields, "tick_in_frame")?,
+            speed: number_field(fields, "speed")? as f32,
+            looping: bool_field(fields, "looping")?,
         })
     }
 }
