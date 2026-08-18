@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r14f",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v7",
+  "expected_head_sha": "3548cd1ebbad8caa9cab34903e0aee205b4d2604",
+  "baseline_main_sha": "3548cd1ebbad8caa9cab34903e0aee205b4d2604",
+  "patch_sha256": "d7d25eb249103ff48e44228a714510653117bc66d78a54a58dd2dba5fd099e5a",
+  "patch_bytes": 89211,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Rebase ADR 0142 foundation onto preview streaming main",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Re-integrate ADR 0142 on current main after ADR 0145 and ADR 0136.\n- Preserve provider adapter and preview-streaming contracts while adding the benchmark/catalog foundation.\n- Keep native benchmark evidence fail-closed and model acquisition explicit.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r14f -->\n"
+}
