@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0143-model-resources-r7-20260818-07a",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources-r7",
+  "expected_head_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "baseline_main_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "patch_sha256": "1760c5f8e73809e4e8dc0c39439136907e4ada631b578e5c97430f7f34723ad7",
+  "patch_bytes": 27303,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Reapply ADR0143 local model resource controls on current main",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\nRebuilds ADR0143 on current main after ADR0145 external provider adapters and ADR0154 documentation landed. This tranche adds truthful local Ollama-compatible residency telemetry, verified unload/reload/CPU offload, provider-independent resource transitions, and deterministic adapter tests while preserving ADR0144 Hosted/Enterprise backends. AI Studio integration will preserve ADR0145 external provider lifecycle and follow on the same Draft PR branch.\n\n## Validation\n\nWindows Validation: affected. Visual Validation is required after the AI Studio integration tranche.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
