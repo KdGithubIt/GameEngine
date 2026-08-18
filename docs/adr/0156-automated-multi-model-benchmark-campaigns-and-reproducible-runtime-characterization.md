@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-08-18
 Builds on: ADR 0142, ADR 0155
-Relates to: ADR 0135, ADR 0141, ADR 0143, ADR 0150
+Relates to: ADR 0135, ADR 0141, ADR 0143, ADR 0150, ADR 0157
 
 ## Context
 
@@ -34,12 +34,16 @@ second. Code implementation, authoring mutation, repair, Play/runtime
 interaction, and visual evaluation must continue to exercise the real Agent
 Host, governed tools, validation, and completion gates.
 
-A second use case is runtime characterization. The same GGUF may be executed
-through Windows-native `llama.cpp`, WSL2 Linux, or native Linux. That comparison
-is useful for choosing the managed runtime environment, but ADR 0142 correctly
-forbids presenting it as a model-only ranking. The campaign system therefore
-needs an explicit distinction between model comparison and runtime/platform
-characterization.
+A second use case is runtime characterization. For the Windows first release,
+the same GGUF may be executed through Windows-native `llama.cpp` or WSL2 Linux.
+That comparison is useful for choosing the managed Windows runtime environment,
+but ADR 0142 correctly forbids presenting it as a model-only ranking. Native
+Linux is not required for this decision because a true native-Linux comparison
+would also require a validated Linux-hosted GameEngine product path. The
+campaign system therefore needs an explicit distinction between model comparison
+and Windows runtime/platform characterization, while reserving future
+`NativeLinux` evidence as a separate environment if Linux-hosted GameEngine is
+later supported.
 
 A project-wide decision is required for campaign identity, user consent,
 fixtures, repetitions, execution ordering, lifecycle automation, automatic
@@ -127,8 +131,16 @@ Each task runner maps one frozen task descriptor to the real production harness:
 - write-capable tasks use the native Agent Runtime and Agent Host;
 - code tasks use the governed code workspace and managed validation;
 - authoring tasks use the authoritative Editor/MCP boundary;
-- runtime tasks use normal Play and managed input;
-- visual tasks use host-owned frame capture and visual completion evidence.
+- runtime tasks use the production AI Runtime Debugging / Automated Playtest
+  surface defined by ADR 0157, including normal Play, deterministic managed
+  input, pause/step, observation, and host-owned assertions;
+- visual tasks use the same ADR 0157 observation path plus host-owned frame
+  capture and visual completion evidence when the selected ModelBackend supports
+  image input.
+
+The benchmark MUST NOT introduce a benchmark-only privileged runtime-control
+path. A model qualifies by using the same governed debugging surface available
+to normal AI Studio work.
 
 A campaign may run a subset for diagnostics, but a full catalog-qualification
 campaign requires every task required by the current ADR 0142 recommendation
@@ -162,25 +174,92 @@ Private projects may be benchmarked only through an explicit separate user
 action and remain ineligible for silent upload or public catalog evidence unless
 the user deliberately contributes sanitized results through a future policy.
 
-### 5. Campaign execution automates model and runtime lifecycle
+### 4a. Candidate-visible task contracts are separated from host-only evaluation
 
-For a managed local campaign the orchestrator may automatically:
+A benchmark is invalid if the candidate model can retrieve the answer key or the
+mechanics used to award success. The benchmark therefore separates what the
+Agent is legitimately asked to solve from what only the host may know.
 
-1. verify all selected model representations;
-2. acquire only models whose downloads the user explicitly approved;
-3. verify runtime/backend identity;
-4. start the selected managed runtime;
-5. load the required model;
-6. confirm backend health and applicable telemetry;
-7. run the frozen benchmark task;
-8. record sanitized evidence;
-9. reset the benchmark fixture;
-10. unload or switch the model at the defined boundary; and
-11. continue to the next scheduled run.
+The candidate-visible side MAY contain:
 
-The user does not manually select `Evidence task`, press Go, press
-`Record current evidence`, switch models, or relaunch the managed server for
-every campaign item.
+- the task prompt;
+- user-visible acceptance criteria that a real user would reasonably provide;
+- the project/source/assets required to perform the task;
+- the normal production tool descriptions and permission boundaries; and
+- runtime observations that ADR 0157 would expose during ordinary debugging.
+
+The host-only evaluation side contains, as applicable:
+
+- pristine fixture/reset metadata not needed by the candidate;
+- hidden validation cases and expected state;
+- golden outputs or reference invariants;
+- scoring/qualification thresholds;
+- hidden visual or runtime assertions; and
+- variant-generation state that would reveal the specific held-out answer.
+
+Host-only evaluator data MUST NOT be placed inside the candidate's code
+workspace, project tree, retrieval corpus, MCP-visible files, tool results,
+conversation context, or other model-readable surface. If a benchmark task must
+let the Agent inspect GameEngine source, that access MUST expose only the
+candidate-visible source needed for the task or otherwise keep the evaluator in
+a separate host-owned boundary. Merely naming a file `hidden` inside a readable
+repository is not isolation.
+
+The host, not the model, decides hidden completion. A model may report progress
+or visible acceptance criteria, but it cannot self-award a hidden benchmark
+gate.
+
+### 4b. Parameterized variants and holdouts reduce benchmark contamination
+
+A permanently fixed public problem can eventually become part of model training
+data or be solved through benchmark-specific memorization. The corpus SHOULD
+therefore define task families with multiple equivalent fixtures or
+parameterized instances in addition to stable public smoke cases.
+
+For a measured campaign, the host freezes the exact instantiated task identity
+and any reproducibility seed before execution. The candidate receives the
+instantiated user-facing task, not hidden generator state or the evaluation
+oracle. Results record enough instance identity to reproduce or explicitly reject
+a comparison without requiring the answer key to become model-visible.
+
+Open-source generator logic alone is not treated as secret. Holdout value comes
+from candidate-inaccessible instantiated data, hidden assertions, and variation
+that prevents a model from succeeding merely by recalling one published fixture.
+
+### 5. Campaign execution automates acquisition, model switching, and runtime lifecycle
+
+Before measured execution, the campaign preflight resolves every selected
+candidate to an exact representation. A candidate may already be installed, may
+refer to an existing compatible GGUF, or may be introduced from a supported
+source repository / exact model-file URL. GameEngine SHOULD discover available
+metadata and GGUF representations from the source where possible, but the exact
+file and quantization used for comparison remain explicit campaign identity.
+
+If selected candidates are missing, the preflight presents one review containing
+per-candidate and aggregate transfer/storage requirements plus known
+license/provenance. One explicit **Download & Run** approval authorizes acquisition
+of exactly those frozen missing candidates. The campaign MUST NOT use that
+approval to download unrelated candidates later. Interrupted downloads may use
+the bounded pre-measurement retry policy from this ADR.
+
+For a managed local campaign the orchestrator may then automatically:
+
+1. acquire and content-verify the approved missing model representations;
+2. verify all selected model identities and the frozen runtime/backend identity;
+3. start the selected managed runtime;
+4. load the required model;
+5. confirm backend health and applicable telemetry;
+6. restore the selected candidate-visible fixture instance;
+7. run the frozen benchmark task through the production Agent/ADR 0157 surfaces;
+8. evaluate host-only gates without exposing their oracle to the candidate;
+9. record sanitized evidence;
+10. reset the benchmark fixture;
+11. unload or switch the model at the defined boundary; and
+12. continue to the next scheduled run.
+
+The user does not manually download each GGUF in a browser, create an Ollama
+`Modelfile`, select `Evidence task`, press Go, press `Record current evidence`,
+switch models, or relaunch the managed server for every campaign item.
 
 External compatible runtimes MAY participate when their identity and lifecycle
 can be measured truthfully, but the orchestrator MUST NOT fake controls that the
@@ -256,20 +335,24 @@ and frozen for the campaign.
 
 #### Runtime/platform characterization
 
-A runtime-characterization campaign intentionally holds the model
-representation constant while changing runtime or execution environment, for
-example:
+A first-release Windows runtime-characterization campaign intentionally holds
+the model representation constant while changing only the Windows execution
+environment:
 
 ```text
 same GGUF
   WindowsNative
   Wsl2Linux
-  NativeLinux
 ```
 
-These results are useful for ADR 0155 platform selection, but they are labelled
-runtime/platform evidence and are never inserted into a model-only ranking as if
-the environment matched.
+This is an engineering/product-selection campaign for ADR 0155, not a normal
+step every user must run before benchmarking models. It SHOULD be short and use
+representative GPU-resident and, when relevant, CPU/GPU-hybrid workloads.
+
+These results are labelled runtime/platform evidence and are never inserted into
+a model-only ranking as if the environment matched. `NativeLinux` may be added
+later only when a Linux-hosted GameEngine exists as a validated product path; it
+is not required to choose the Windows first-release runtime.
 
 #### End-to-end product profile
 
@@ -389,14 +472,19 @@ a Lightweight, Balanced, or High Quality winner from an incomplete corpus.
 AI Studio SHOULD provide a benchmark surface that allows the user to:
 
 - select multiple discovered or managed models;
+- add a new candidate from a supported source repository / exact model-file URL;
+- inspect discovered GGUF files and explicitly choose the representation /
+  quantization used by the campaign;
 - inspect exact model/quantization/runtime identity;
 - select full corpus or a task subset;
 - choose repetition count;
 - choose cold/warm execution profile where supported;
-- choose model-comparison or runtime-characterization mode;
-- review missing model transfer/storage and license/provenance;
-- explicitly approve required downloads;
-- start the campaign;
+- choose model-comparison or runtime-characterization mode where that mode is
+  relevant to the current product state;
+- review missing model transfer/storage and license/provenance per candidate and
+  in aggregate;
+- explicitly approve the exact missing set through **Download & Run**;
+- start the campaign automatically after approved acquisition succeeds;
 - observe current model/task/repetition and aggregate progress;
 - pause/stop and later resume; and
 - inspect the final per-task comparison report.
@@ -405,11 +493,20 @@ The normal full-model-comparison path should therefore approach:
 
 ```text
 select models
-  -> Run Benchmark
+  -> Download & Run   # only when selected models are missing
   -> review results
 ```
 
-rather than a manual sequence for every task and model.
+rather than a manual download/import/task/record sequence for every model.
+
+Months later, a newly released model SHOULD be addable without rebuilding the
+benchmark system or re-running every historical candidate. If prior evidence
+for the current baseline model is still strictly comparable, the new candidate
+may be measured against that existing baseline. If benchmark corpus, harness,
+runtime, execution environment, hardware, or another equivalence dimension
+changed incompatibly, the UI SHOULD offer to re-run the current baseline plus
+the new candidate. It MUST NOT imply strict comparability to stale evidence or
+require all historical models to be downloaded and measured again.
 
 ### 16. Benchmark campaigns remain machine-local product data
 
@@ -425,18 +522,31 @@ ADR 0142 redaction and provenance rules.
 
 The campaign orchestrator belongs above the benchmark record primitives and
 Agent Host, in application-layer code. It coordinates existing services rather
-than duplicating task semantics in the UI.
+than duplicating task semantics in the UI. Runtime-interaction and visual task
+execution MUST call the production ADR 0157 debugging/observation API rather
+than a benchmark-only control seam.
 
 The first release can reuse the current seven task descriptors and benchmark
-record schema while adding campaign-plan/progress storage and any additional
-execution-profile identity required to preserve strict equivalence. If a schema
-extension is needed, it must be versioned and must not reinterpret existing
-records.
+record schema while adding campaign-plan/progress storage, instantiated fixture
+identity, and any additional execution-profile identity required to preserve
+strict equivalence. If a schema extension is needed, it must be versioned and
+must not reinterpret existing records.
+
+Candidate-visible fixture material and host-only evaluator material MUST be
+separate application-layer resources with separate access policy. The Agent's
+retrieval roots, project/code workspace, MCP surface, tool results, and prompt
+context must be constructed so they cannot traverse into the host-only oracle.
+Parameterized or holdout instance generation occurs before measured execution,
+and the frozen instance identity is recorded without exposing hidden scoring
+state to the model.
 
 ADR 0155 managed-runtime lifecycle is the preferred local execution path, but
 campaign orchestration remains backend-independent enough to use the existing
 Ollama-compatible adapter or future hosted/enterprise backends when their
-comparison identity is valid.
+comparison identity is valid. Managed acquisition and campaign orchestration are
+separate responsibilities: ADR 0155 owns verified model/runtime bytes, while
+this ADR owns the exact candidate set and the explicit **Download & Run**
+authorization for a campaign.
 
 ## Verification
 
@@ -445,20 +555,33 @@ Tests and benchmark fixtures must prove:
 - campaign plans freeze before the first measured run;
 - changing model/runtime/task/repetition policy creates new campaign identity;
 - every one of the seven task descriptors maps to the intended production
-  harness;
+  harness, with runtime/visual tasks using ADR 0157 rather than a privileged
+  benchmark-only control path;
 - fixture reset prevents cross-model source/authoring/session contamination;
+- candidate retrieval, code workspace, project files, MCP tools, prompts, and
+  tool results cannot expose the host-only evaluator/oracle;
+- visible acceptance criteria remain usable while hidden tests, golden state,
+  scoring thresholds, and hidden assertions remain host-owned;
+- parameterized/holdout instances freeze reproducible identity without exposing
+  their hidden answer state to the candidate;
+- **Download & Run** authorizes only the exact missing candidate set shown in
+  campaign preflight and content verification precedes measured execution;
 - measured local runs are sequential by default;
 - deterministic schedule order is stable for the same campaign plan;
 - repetition records are preserved individually;
 - cold and warm profiles do not silently mix startup cost;
 - model-comparison campaigns freeze one execution environment;
-- Windows/WSL/Linux comparisons are labelled runtime characterization;
+- Windows-native/WSL2 comparisons are labelled runtime characterization and do
+  not require native Linux for the Windows first release;
 - campaign start is the explicit recording action;
 - identity mismatch rejects automatic evidence recording;
 - measured failures are retained rather than retried until success;
 - only classified pre-measurement infrastructure failures receive bounded retry;
 - pause/resume preserves prior evidence and rejects incompatible environment
   drift;
+- a newly added model can reuse strictly comparable baseline evidence or prompts
+  a baseline re-run when equivalence dimensions changed, without forcing every
+  historical model to run again;
 - aggregate reports treat unavailable telemetry truthfully;
 - incomplete evidence produces no false curated-catalog recommendation; and
 - ADR 0150 consumes only records that still satisfy its comparison policy.
@@ -472,10 +595,19 @@ This ADR does not:
 
 - replace the ADR 0142 benchmark corpus with synthetic tokens-per-second tests;
 - silently benchmark private user projects;
+- expose hidden tests, golden state, scoring thresholds, or evaluation-oracle
+  internals to the candidate model;
+- rely on one permanently fixed public fixture as the only evidence of a model's
+  capability;
 - run competing local models concurrently by default;
 - hide failed runs through unlimited retries;
 - declare three repetitions statistically sufficient for every future decision;
 - make runtime/platform comparisons equivalent to model-only comparisons;
+- require native-Linux GameEngine support for the Windows first-release runtime
+  decision;
+- require every historical model to be re-downloaded and re-run whenever one new
+  model is added;
 - automatically publish benchmark data;
-- silently download model weights; or
+- silently download model weights outside the exact explicitly approved campaign
+  candidate set; or
 - define one permanent model winner or one permanent local runtime platform.

@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-08-18
 Builds on: ADR 0131, ADR 0135, ADR 0143
-Relates to: ADR 0142, ADR 0144, ADR 0150, ADR 0153
+Relates to: ADR 0142, ADR 0144, ADR 0150, ADR 0153, ADR 0156, ADR 0157
 
 ## Context
 
@@ -30,10 +30,13 @@ benchmark identity contracts.
 
 Windows creates an additional deployment choice. Native Windows inference has
 the lowest setup cost. WSL2 can run the Linux runtime while the Editor remains a
-Windows application and may have different performance or memory behavior.
-Native Linux remains relevant for Linux hosts and as a reference environment.
-The product must not assume that one environment is always faster. Selection
-must be based on measured behavior and user policy rather than folklore.
+Windows application and may have different performance or memory behavior. The
+first release therefore needs evidence for Windows-native versus WSL2 execution,
+not a requirement that Windows users install or boot native Linux. A true
+`NativeLinux` product path is deferred until GameEngine itself has an explicitly
+validated Linux-hosted Editor/runtime support surface. The product must not
+assume that WSL2 or Windows native is always faster; the first-release default
+must be chosen from measured behavior rather than folklore.
 
 A GameEngine-managed WSL2 path is feasible, but the first machine setup can
 cross an operating-system privilege boundary. Enabling required Windows
@@ -55,7 +58,7 @@ The preferred local-native AI product path is a GameEngine-managed inference
 service rather than a requirement that the user separately install and operate
 a local-model application.
 
-Conceptually:
+Conceptually for the Windows first release:
 
 ```text
 AI Studio / Native Agent Runtime
@@ -63,11 +66,15 @@ AI Studio / Native Agent Runtime
         ModelBackend
               |
    ManagedLocalRuntime
-      /      |       \
- Windows   WSL2    native Linux
-      \      |       /
-         llama.cpp
+        /           \
+WindowsNative    Wsl2Linux
+        \           /
+           llama.cpp
 ```
+
+A future Linux-hosted GameEngine may add `NativeLinux -> managed llama.cpp`
+through the same provider-independent boundary. Native Linux is not required to
+ship or validate the Windows first release.
 
 The managed service owns the application-level lifecycle required to make a
 local model usable:
@@ -104,37 +111,41 @@ A future local runtime MAY coexist with or replace `llama.cpp` only through the
 same provider-independent boundary and with equivalent lifecycle, provenance,
 security, and observability guarantees.
 
-### 3. Managed local execution supports explicit platform modes
+### 3. The Windows first release characterizes two execution environments
 
-The managed local-runtime layer recognizes at least these execution
-environments when supported by the host:
+The first-release managed local-runtime layer defines two Windows-hosted
+execution environments:
 
 ```text
 WindowsNative
 Wsl2Linux
-NativeLinux
 ```
 
 These are execution-environment identities, not model identities.
 
-On Windows, AI Studio SHOULD expose a simple runtime preference:
+Before one environment is treated as the normal product default, GameEngine
+engineering evidence MUST compare the two on representative local workloads. At
+minimum the characterization SHOULD cover one model that is predominantly GPU
+resident and, when the target hardware permits it, one model that exercises
+meaningful CPU/GPU hybrid execution. The comparison records throughput, model
+load latency, memory/resource behavior, OOM or stability failures, and a small
+production Agent workload rather than tokens per second alone.
 
-```text
-Auto
-Windows native
-WSL2
-```
+This characterization is a product-selection activity, not a recurring setup
+step that ordinary users must perform. If the measured difference is not
+material, the lower-complexity Windows-native path SHOULD be preferred. If WSL2
+provides a material product benefit, WSL2 MAY become the preferred Windows
+runtime. The non-preferred implementation may remain as a compatibility or
+diagnostic fallback only when maintaining it is justified.
 
-`Auto` selects only among environments that have passed local capability and
-health checks. It MUST NOT assume that WSL2 or Windows is universally faster.
+AI Studio MUST NOT require ordinary users to install both environments merely to
+use Local AI. An advanced runtime override MAY be exposed when both implementations
+are shipped, but the normal setup path uses the product-selected default.
 
-When both Windows native and WSL2 are eligible, GameEngine MAY perform a short
-local calibration or consume equivalent ADR 0156 runtime-characterization
-evidence. The selected environment and the evidence behind the decision are
-machine-local product state. A user may override Auto.
-
-A Linux-hosted Editor uses `NativeLinux`; this ADR does not require dual boot or
-native Linux installation on a Windows machine.
+`NativeLinux` is reserved as a future execution-environment identity for a
+Linux-hosted GameEngine. It is not a first-release requirement and Windows users
+are never required to dual boot, install native Linux, or collect native-Linux
+benchmark evidence for Local AI setup.
 
 ### 4. WSL2 is engine-managed when selected
 
@@ -234,6 +245,23 @@ action that shows, when known:
 
 Downloads SHOULD be resumable and content-verified.
 
+A benchmark campaign from ADR 0156 may request several missing model
+representations at once. One explicit **Download & Run** approval MAY authorize
+exactly the candidate files frozen into that campaign after the UI shows, for
+each candidate and in aggregate, the source, representation/quantization,
+license/provenance when known, transfer size, and resulting storage requirement.
+That approval does not authorize unrelated or future model downloads. After the
+approved files are acquired and verified, GameEngine may register them in the
+managed model store and continue directly into the campaign without a manual
+provider import step.
+
+A new candidate may be introduced from a source repository or exact model-file
+URL. GameEngine SHOULD discover available GGUF representations and metadata from
+the source when the provider exposes them. When several quantizations or files
+are plausible, the exact representation remains an explicit campaign choice;
+GameEngine MUST NOT silently substitute a different quantization merely to make
+a model fit.
+
 Advanced users may register an existing compatible GGUF file without an Ollama
 `Modelfile` or provider-specific import step. Registration MUST NOT alter the
 model bytes. A content digest or equivalent immutable representation identity
@@ -309,7 +337,7 @@ distinguish at least:
 
 - managed backend family;
 - exact runtime version/revision;
-- execution environment (`WindowsNative`, `Wsl2Linux`, or `NativeLinux`);
+- execution environment (`WindowsNative` or `Wsl2Linux` for the Windows first release, with `NativeLinux` reserved for a future Linux-hosted product path);
 - model representation identity and quantization;
 - GameEngine benchmark/harness versions; and
 - hardware identity required by ADR 0142.
@@ -346,12 +374,21 @@ The first managed Local AI experience SHOULD make the normal path:
 ```text
 Open AI Studio
   -> Set up Local AI
-  -> choose Auto / Windows / WSL2
-  -> satisfy any one-time OS prerequisite
+  -> use the product-selected Windows runtime
+  -> satisfy any one-time prerequisite for that runtime
   -> choose or register a model
   -> explicit download/import
   -> Ready
 ```
+
+The normal setup flow does not ask the user to benchmark Windows native against
+WSL2. That comparison belongs to product/runtime characterization before the
+default is chosen. If both runtimes are shipped, an advanced override may expose
+the alternative without making it part of ordinary setup.
+
+Benchmark setup SHOULD integrate with ADR 0156 so a selected set of missing
+candidates can be reviewed once and acquired through **Download & Run**, then
+continue directly into the frozen campaign.
 
 Ordinary use MUST NOT require the user to:
 
@@ -393,20 +430,25 @@ preferred UI path becomes managed Local AI after its setup, lifecycle,
 resource-control, benchmark-identity, and recovery behavior are validated.
 
 Windows native and WSL2 use the same provider-independent ModelBackend contract.
-Platform-specific launchers remain application-layer adapters. Linux-hosted
-GameEngine reuses the Linux managed runtime without introducing a separate Agent
-Runtime.
+Platform-specific launchers remain application-layer adapters. Both may exist
+during first-release engineering characterization, but the normal product path
+SHOULD converge on the measured default rather than permanently requiring users
+to maintain both. Native-Linux GameEngine support is deferred and is not needed
+to complete this ADR's Windows first release.
 
-Machine-local runtime state may include installed runtime versions, environment
-selection, managed WSL identity, model-cache locations, calibration results,
-health state, and update metadata. None of this state is canonical project data.
+Machine-local runtime state may include installed runtime versions, the selected
+Windows environment, managed WSL identity when applicable, model-cache
+locations, runtime-characterization evidence, health state, and update metadata.
+None of this state is canonical project data.
 
 ## Verification
 
 Deterministic tests and platform validation must cover:
 
 - managed runtime installation metadata and digest rejection;
-- no silent model acquisition;
+- no silent model acquisition, including campaign acquisition limited to the exact
+  models approved by **Download & Run**;
+- aggregate transfer/storage review for multi-model campaign acquisition;
 - existing-GGUF registration without byte mutation;
 - Windows-native launch and health lifecycle;
 - WSL2 capability detection and fail-closed setup behavior;
@@ -416,8 +458,9 @@ Deterministic tests and platform validation must cover:
 - process crash/restart behavior without false successful turns;
 - model load/unload integration with ADR 0135/0143;
 - preserved Agent Host permission and completion boundaries;
-- distinct benchmark identity for Windows-native, WSL2, native Linux, and
-  Ollama-compatible evidence;
+- distinct benchmark identity for Windows-native, WSL2, and Ollama-compatible
+  evidence, with future `NativeLinux` evidence remaining a separate environment
+  if Linux-hosted GameEngine support is later adopted;
 - settings migration preserving old external endpoint meaning; and
 - runtime update failure preserving a usable prior installation when rollback is
   supported.
@@ -433,6 +476,10 @@ or diagnostics UI requires Editor Visual Validation.
 This ADR does not:
 
 - require native Linux installation on Windows;
+- make a Linux-hosted GameEngine or `NativeLinux` runtime a Windows first-release
+  requirement;
+- require ordinary users to benchmark Windows native against WSL2 during Local
+  AI setup;
 - declare WSL2 universally faster than Windows native;
 - select one permanent model family or quantization;
 - bundle model weights without explicit acquisition consent;
