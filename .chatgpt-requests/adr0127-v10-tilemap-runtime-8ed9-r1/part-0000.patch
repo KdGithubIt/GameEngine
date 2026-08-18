@@ -1,0 +1,275 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+index 204133bb14d5f30ee19c972111ef71e156ef4f98..e49e07f224163597b81322f8343fc355eb9d9e97 100644
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -273,6 +273,11 @@ const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
+     integer("initial_frame", "Initial Frame", "Zero-based initial frame selected when playback becomes active.", 0, U32_RANGE),
+ ];
+ 
++const TILE_MAP_2D_FIELDS: &[FieldDef] = &[
++    asset_ref("tile_map", "Tile Map", "Sparse chunked Tile Map document rendered by this scene entity.", AssetKind::TileMap, FieldDefaultSpec::Unassigned),
++    boolean("visible", "Visible", "Whether enabled Tile Map layers contribute runtime render output.", true),
++];
++
+ const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
+     FieldDef::new(
+         "direction_x",
+@@ -2274,5 +2279,14 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             spawn_vfx_player_component,
+         )
+         .collapsed_by_default(),
++        BuiltinComponent::new(
++            TILE_MAP_2D_COMPONENT,
++            "Tile Map 2D",
++            "Renders one sparse chunked Tile Map using stable TileIds, SpriteRefs, and logical sorting layers.",
++            "Rendering",
++            1,
++            TILE_MAP_2D_FIELDS,
++            spawn_tile_map_2d_component,
++        ),
+     ]
+ }
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index c916c681a4b767bb2739a36c2e4dbf7fdc8ebc72..ebcc1bc9321630ea6dbe4c7f662a83daf4964510 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -11,8 +11,9 @@ pub use engine_assets::native_2d::{
+ pub use engine_physics::native_2d::*;
+ pub use engine_render_runtime::native_2d::{
+     cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
+-    Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, SpriteBatch2d,
+-    SpriteInstance2d, TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
++    Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, ResolvedTileMap2d,
++    SpriteBatch2d, SpriteInstance2d, TileChunkBounds2d, TileMap2d, ViewRect2d, ViewportFit2d,
++    VisibleTileChunk2d,
+ };
+ pub use engine_authoring::{
+     SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index b32796d95b5963b858756c15d272f65a93b787ee..e5f07bfe28a12ad114b3e991ccd5a9b241829681 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -21,8 +21,9 @@ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, Mu
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+ use crate::native_2d::{
+-    Camera2d, ResolvedSpriteRegion2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d,
+-    SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
++    Camera2d, ResolvedSpriteRegion2d, ResolvedTileMap2d, SpriteAnimationClipRegistry2d,
++    SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, TileMap2d,
++    ViewportFit2d,
+ };
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+@@ -62,8 +63,8 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
+ use engine_authoring::value::Value;
+ use engine_authoring::{
+     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
+-    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId,
+-    VfxAuthoringService,
++    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId, TileMapDocument,
++    TileSetDocument, VfxAuthoringService,
+     VfxModuleOperation,
+ };
+ use engine_ecs::{Entity, World};
+@@ -117,6 +118,8 @@ pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
+ pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
+ /// Native deterministic SpriteAnimator2D component.
+ pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
++/// Native sparse Tile Map scene component.
++pub const TILE_MAP_2D_COMPONENT: &str = "engine.tile_map_2d";
+ 
+ /// The `"engine.directional_light"` component type string recognised by the bridge.
+ pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
+@@ -438,6 +441,10 @@ pub(crate) struct BridgeAssetState {
+     pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
+     /// Parsed immutable Sprite Atlas documents shared by every SpriteRef in this conversion.
+     pub(crate) sprite_atlas_documents: HashMap<AssetId, Arc<SpriteAtlasDocument>>,
++    /// Parsed immutable Tile Set documents shared by Tile Map entities.
++    pub(crate) tile_set_documents: HashMap<AssetId, Arc<TileSetDocument>>,
++    /// Parsed immutable Tile Map documents shared by scene instances.
++    pub(crate) tile_map_documents: HashMap<AssetId, Arc<TileMapDocument>>,
+     /// CPU-decoded Native 2D source textures shared by resolved sprite regions.
+     pub(crate) native_2d_textures: HashMap<AssetId, Arc<DecodedTexture>>,
+     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 9ddc5a75ecc690c33244a4807dd37ddcb5864169..da661de736ada81b3bab6ae93ba9a59f2513cc4f 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -3021,6 +3021,129 @@ fn resolve_sprite_region_2d(
+     })
+ }
+ 
++fn load_tile_set_document(
++    tile_set_id: &AssetId,
++    context: &mut SpawnContext<'_>,
++) -> Result<Arc<TileSetDocument>, SceneBridgeError> {
++    if let Some(document) = context.asset_state.tile_set_documents.get(tile_set_id) {
++        return Ok(Arc::clone(document));
++    }
++    let path = manifest_asset_path(tile_set_id, context)?;
++    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
++        snapshot
++            .contents()
++            .map(str::to_owned)
++            .map_err(|message| native_2d_asset_error(tile_set_id, &path, message))?
++    } else {
++        std::fs::read_to_string(&path)
++            .map_err(|error| native_2d_asset_error(tile_set_id, &path, error.to_string()))?
++    };
++    let document = TileSetDocument::from_json(&json)
++        .map_err(|error| native_2d_asset_error(tile_set_id, &path, error.to_string()))?;
++    let errors = document.validate();
++    if !errors.is_empty() {
++        return Err(native_2d_asset_error(tile_set_id, &path, errors.join("; ")));
++    }
++    let document = Arc::new(document);
++    context
++        .asset_state
++        .tile_set_documents
++        .insert(tile_set_id.clone(), Arc::clone(&document));
++    Ok(document)
++}
++
++fn load_tile_map_document(
++    tile_map_id: &AssetId,
++    context: &mut SpawnContext<'_>,
++) -> Result<Arc<TileMapDocument>, SceneBridgeError> {
++    if let Some(document) = context.asset_state.tile_map_documents.get(tile_map_id) {
++        return Ok(Arc::clone(document));
++    }
++    let path = manifest_asset_path(tile_map_id, context)?;
++    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
++        snapshot
++            .contents()
++            .map(str::to_owned)
++            .map_err(|message| native_2d_asset_error(tile_map_id, &path, message))?
++    } else {
++        std::fs::read_to_string(&path)
++            .map_err(|error| native_2d_asset_error(tile_map_id, &path, error.to_string()))?
++    };
++    let document = TileMapDocument::from_json(&json)
++        .map_err(|error| native_2d_asset_error(tile_map_id, &path, error.to_string()))?;
++    let errors = document.validate();
++    if !errors.is_empty() {
++        return Err(native_2d_asset_error(tile_map_id, &path, errors.join("; ")));
++    }
++    let document = Arc::new(document);
++    context
++        .asset_state
++        .tile_map_documents
++        .insert(tile_map_id.clone(), Arc::clone(&document));
++    Ok(document)
++}
++
++pub(crate) fn spawn_tile_map_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(TILE_MAP_2D_COMPONENT);
++    const EXPECTED: &str = "a TileMap2D object with tile_map and visible fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let Some(tile_map_id) = fields.assignable_asset_ref("tile_map")?.cloned() else {
++        context
++            .asset_diagnostics
++            .push(component_inactive_diagnostic(
++                context.authoring_entity,
++                &component_type,
++                "tile_map",
++            ));
++        return Ok(());
++    };
++    let document = load_tile_map_document(&tile_map_id, context)?;
++    let tile_set = load_tile_set_document(&document.tile_set, context)?;
++
++    let mut used_tiles = BTreeSet::new();
++    for layer in &document.layers {
++        for chunk in &layer.chunks {
++            for cell in &chunk.cells {
++                used_tiles.insert(cell.tile.clone());
++            }
++        }
++    }
++    let mut sprites = BTreeMap::new();
++    for tile_id in used_tiles {
++        let tile = tile_set.tile(&tile_id).ok_or_else(|| {
++            let path = manifest_asset_path(&tile_map_id, context)
++                .unwrap_or_else(|_| Path::new(tile_map_id.as_str()).to_path_buf());
++            native_2d_asset_error(
++                &tile_map_id,
++                &path,
++                format!("Tile Map references unknown TileId `{}`", tile_id.as_str()),
++            )
++        })?;
++        sprites.insert(tile_id, resolve_sprite_region_2d(&tile.sprite, context)?);
++    }
++
++    context.world.add_component(
++        entity,
++        TileMap2d {
++            tile_map: tile_map_id,
++            visible: fields.bool("visible")?,
++        },
++    )?;
++    context.world.add_component(
++        entity,
++        ResolvedTileMap2d {
++            document,
++            tile_set,
++            sprites,
++        },
++    )?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_sprite_renderer_2d_component(
+     entity: Entity,
+     value: &Value,
+diff --git a/crates/render-runtime/src/native_2d.rs b/crates/render-runtime/src/native_2d.rs
+index 4a2e0cac97870e369d3957a466a58a8477118f8d..737d3af91ba7cbb55b10263eb3f2461454a20ac5 100644
+--- a/crates/render-runtime/src/native_2d.rs
++++ b/crates/render-runtime/src/native_2d.rs
+@@ -3,9 +3,11 @@
+ use crate::material::DecodedTexture;
+ use crate::transform::Transform;
+ use engine_authoring::{
+-    AssetId, PixelsPerUnit, SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileLayerId,
++    AssetId, PixelsPerUnit, SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileId,
++    TileLayerId, TileMapDocument, TileSetDocument,
+ };
+ use glam::{Mat4, Vec2, Vec3};
++use std::collections::BTreeMap;
+ use std::sync::Arc;
+ 
+ /// Orthographic viewport-fit policy.
+@@ -199,6 +201,29 @@ pub struct ResolvedSpriteRegion2d {
+     pub extrusion_pixels: u8,
+ }
+ 
++/// Runtime Tile Map scene component. The referenced asset owns stable layers/chunks/cells.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TileMap2d {
++    /// Registered `*.tilemap.json` asset.
++    pub tile_map: AssetId,
++    /// Whether this Tile Map contributes runtime render output.
++    pub visible: bool,
++}
++
++/// Runtime-only immutable Tile Map data resolved during scene conversion.
++///
++/// One ECS entity owns the whole map. Cells remain sparse/chunked; resolved sprite
++/// source data is shared by TileId and contains no device-specific GPU handles.
++#[derive(Debug, Clone)]
++pub struct ResolvedTileMap2d {
++    /// Validated Tile Map document.
++    pub document: Arc<TileMapDocument>,
++    /// Validated Tile Set referenced by [`Self::document`].
++    pub tile_set: Arc<TileSetDocument>,
++    /// Stable TileId to resolved Sprite Atlas region.
++    pub sprites: BTreeMap<TileId, ResolvedSpriteRegion2d>,
++}
++
+ /// Extracted SpriteRenderer2D draw instance.
+ #[derive(Debug, Clone, PartialEq)]
+ pub struct SpriteInstance2d {
