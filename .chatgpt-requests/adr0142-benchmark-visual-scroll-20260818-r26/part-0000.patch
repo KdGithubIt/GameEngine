@@ -1,0 +1,38 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index a9da3f632744e7faf4a21c10ce7c68418c1c0b1e..aeb7013579430983ab6ec2d55e256fc16e5872fa 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -985,10 +985,12 @@ impl AiStudioPanel {
+                     ui.small("Same project Agent Host · detached presentation");
+                 });
+                 ui.separator();
+-                egui::ScrollArea::vertical()
++                let scroll_area = egui::ScrollArea::vertical()
+                     .id_salt("ai_studio_detached_contents")
+-                    .auto_shrink([false, false])
+-                    .show(ui, |ui| self.show_contents(ui));
++                    .auto_shrink([false, false]);
++                #[cfg(feature = "visual-validation")]
++                let scroll_area = scroll_area.vertical_scroll_offset(480.0);
++                scroll_area.show(ui, |ui| self.show_contents(ui));
+             },
+         );
+ 
+@@ -1716,7 +1718,7 @@ impl AiStudioPanel {
+     }
+ 
+     fn show_agent_benchmark(&mut self, ui: &mut egui::Ui) {
+-        let _response = egui::CollapsingHeader::new(format!(
++        egui::CollapsingHeader::new(format!(
+             "GameEngine Agent Benchmark · {} record(s) · {}",
+             self.benchmark_records.len(),
+             self.model_catalog.catalog_version
+@@ -1800,8 +1802,6 @@ impl AiStudioPanel {
+                 "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
+             );
+         });
+-        #[cfg(feature = "visual-validation")]
+-        ui.scroll_to_rect(_response.header_response.rect, Some(egui::Align::TOP));
+     }
+ 
+     fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
