@@ -1,0 +1,129 @@
+diff --git a/crates/editor/src/ui/inspector/asset_reference.rs b/crates/editor/src/ui/inspector/asset_reference.rs
+index 8464b6abedfbce65956f4a05c532cf1c9b5b9c25..d5524c7d556342c90750742eaf262c068f7a5a49 100644
+--- a/crates/editor/src/ui/inspector/asset_reference.rs
++++ b/crates/editor/src/ui/inspector/asset_reference.rs
+@@ -510,6 +510,35 @@ fn show_asset_choice_picker(
+     action
+ }
+ 
++/// Draws a compact searchable typed-asset picker button for specialized authoring tools.
++///
++/// Choices come from the same manifest/sub-asset catalog as Inspector AssetRef fields, so
++/// callers never manufacture Stable IDs or bypass import-owned sub-asset semantics.
++pub(in crate::ui) fn show_typed_asset_picker_button(
++    ui: &mut egui::Ui,
++    id_salt: impl std::hash::Hash,
++    label: &str,
++    current: Option<&AssetId>,
++    kind: engine::AssetKind,
++    manifest: &engine::AssetManifest,
++    assets_root: Option<&Path>,
++) -> Option<AssetId> {
++    let choices = asset_choices_for_kind(kind, manifest, assets_root);
++    let response = ui.push_id(id_salt, |ui| ui.button(label)).inner;
++    match show_asset_choice_picker(
++        ui,
++        &response,
++        current,
++        kind,
++        &choices,
++        manifest,
++        false,
++    ) {
++        Some(ReferencePickerAction::Assign(asset)) => Some(asset),
++        Some(ReferencePickerAction::Clear) | None => None,
++    }
++}
++
+ pub(in crate::ui) fn show_asset_reference_editor(
+     ui: &mut egui::Ui,
+     value: &mut Value,
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index b5254ad53782bc81e80be965ddae4021529a15be..2db4c8d281e16a1aff7c206b830b039744ad36d8 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -66,6 +66,7 @@ mod mcp;
+ mod navigation_workspace;
+ mod play;
+ mod presentation;
++mod sequencer;
+ mod viewport;
+ #[cfg(feature = "visual-validation")]
+ mod vfx_visual_validation;
+@@ -101,6 +102,7 @@ use inspector::*;
+ use navigation_workspace::*;
+ use play::*;
+ use presentation::*;
++use sequencer::*;
+ 
+ /// Editor application shell (Phase 8-C / 9-B / 9-C).
+ pub struct EditorApp {
+@@ -151,6 +153,8 @@ pub struct EditorApp {
+     material_texture_choices_cache: Option<MaterialTextureChoicesCache>,
+     /// Open Animation Set document edited through the dedicated typed window.
+     animation_set_editor: Option<AnimationSetEditorState>,
++    /// Open Timeline working copy edited through the ADR 0126 Sequencer.
++    timeline_sequencer: Option<TimelineSequencerState>,
+     /// Graph selection waiting for stale-binding removal confirmation.
+     pending_animation_set_graph: Option<AssetId>,
+     /// Whether the two-choice Animation Set Clear confirmation is visible.
+@@ -427,6 +431,7 @@ impl EditorApp {
+             material_scene_preview_deadline: None,
+             material_texture_choices_cache: None,
+             animation_set_editor: None,
++            timeline_sequencer: None,
+             pending_animation_set_graph: None,
+             pending_animation_set_clear: false,
+             animation_set_event_draft: None,
+@@ -941,6 +946,7 @@ impl eframe::App for EditorApp {
+         self.show_new_rust_script_modal(ui.ctx());
+         self.show_material_editor_window(ui.ctx());
+         self.show_animation_set_editor_window(ui.ctx());
++        self.show_timeline_sequencer_window(ui.ctx());
+         self.show_project_settings_window(ui.ctx());
+         self.show_navigation_window(ui.ctx());
+         self.show_texture_preview_window(ui.ctx());
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index 724d27f5c584a9e82eb25cbd58e14280baef569c..7d7c6594e7129e2a73afadc5cb86ffde5e0d0862 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -112,7 +112,29 @@ impl TimelineRuntime {
+     }
+ }
+ 
+-pub(crate) fn timeline_prepare_system(
++/// Installs the resources required to evaluate Timeline inside an existing engine App.
++///
++/// Editor Scene View uses this on its persistent PreviewWorld. It intentionally installs no
++/// parallel simulator and does not register systems itself; the caller places the production
++/// Timeline systems in its existing pose pipeline so system ordering remains explicit.
++pub fn ensure_timeline_preview_resources(app: &mut crate::App) {
++    if app.world().get_resource::<TimelineRuntime>().is_none() {
++        app.insert_resource(TimelineRuntime::default());
++    }
++    if app.world().get_resource::<TimelineEvents>().is_none() {
++        app.insert_resource(TimelineEvents::default());
++    }
++    if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
++        app.insert_resource(SpatialAudioRuntime::default());
++    }
++    if app.world().get_resource::<GameCameraSelectionOverride>().is_none() {
++        app.insert_resource(GameCameraSelectionOverride::default());
++    }
++}
++
++/// Production Timeline prepare system, exposed for installation into the Editor PreviewWorld.
++/// Runtime hosts normally receive this through `register_runtime_systems`.
++pub fn timeline_prepare_system(
+     fixed: Res<FixedTime>, mut runtime: ResMut<TimelineRuntime>, mut events: ResMut<TimelineEvents>, mut camera_override: ResMut<GameCameraSelectionOverride>,
+     mut animators: Query<(&RuntimeEntityIdentity, &mut AnimGraphPlayer, &mut Animator)>, mut cameras: Query<(&RuntimeEntityIdentity, &Camera3D)>,
+     mut vfx_players: Query<(&RuntimeEntityIdentity, &VfxSourceIdentity, &GlobalTransform, &mut VfxPlayer)>, mut emitters: Query<(&RuntimeEntityIdentity, &AudioEmitter)>,
+@@ -136,7 +158,7 @@ pub(crate) fn timeline_prepare_system(
+     apply_audio(&mut runtime, &frame.active, &mut emitters, &spatial_audio, manifest.as_deref(), server.as_deref_mut(), audio_assets.as_deref_mut(), audio.as_deref_mut());
+ }
+ 
+-pub(crate) fn timeline_transform_system(mut runtime: ResMut<TimelineRuntime>, mut transforms: Query<(&RuntimeEntityIdentity, &mut Transform)>) {
++pub fn timeline_transform_system(mut runtime: ResMut<TimelineRuntime>, mut transforms: Query<(&RuntimeEntityIdentity, &mut Transform)>) {
+     let desired = runtime.desired_transforms.clone(); let mut seen = BTreeSet::new();
+     for (_, (identity, transform)) in transforms.iter_mut() {
+         let entity_id = identity.authoring_id.clone(); seen.insert(entity_id.clone());
