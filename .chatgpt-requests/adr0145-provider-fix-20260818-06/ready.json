@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0145-provider-fix-20260818-06",
+  "target_branch": "chatgpt/gameengine-adr0145-provider-adapters-v5",
+  "expected_head_sha": "1e13cd8ca8ef2e9ab565ad1ef7fcba6760d5c805",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "patch_sha256": "101325fae00785449250df79ee53b0960b580bdd9a6472cfa416ffbd9bddfe2c",
+  "patch_bytes": 4823,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0145 Claude provider MCP wiring",
+  "pr_title": "Implement ADR0145 first-class external agent provider adapters",
+  "pr_body": "Implements ADR 0145 on current main with first-class Claude Code and Codex AgentRuntime adapters plus the generic fallback. This correction fixes Claude MCP configuration construction to emit valid JSON, uses the documented server-level MCP allowlist instead of an unsupported glob, and strengthens regression coverage by parsing the generated MCP config and exercising valid structured provider JSON. AgentHost run/permission/workspace/validation/completion contracts remain authoritative and unchanged."
+}
