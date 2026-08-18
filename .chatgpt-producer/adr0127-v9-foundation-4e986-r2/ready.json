@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v9-foundation-4e986-r2",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json", "edit-0004.json", "edit-0005.json", "edit-0006.json", "edit-0007.json", "edit-0008.json", "edit-0009.json",
+    "edit-0010.json", "edit-0011.json", "edit-0012.json", "edit-0013.json", "edit-0014.json", "edit-0015.json", "edit-0016.json", "edit-0017.json", "edit-0018.json", "edit-0019.json",
+    "edit-0020.json", "edit-0021.json", "edit-0022.json", "edit-0023.json", "edit-0024.json", "edit-0025.json", "edit-0026.json", "edit-0027.json", "edit-0028.json", "edit-0029.json",
+    "edit-0030.json", "edit-0031.json", "edit-0032.json", "edit-0033.json", "edit-0034.json", "edit-0035.json", "edit-0036.json", "edit-0037.json", "edit-0038.json", "edit-0039.json",
+    "edit-0040.json", "edit-0041.json", "edit-0042.json", "edit-0043.json", "edit-0044.json", "edit-0045.json", "edit-0046.json", "edit-0047.json", "edit-0048.json", "edit-0049.json",
+    "edit-0050.json", "edit-0051.json", "edit-0052.json", "edit-0053.json"
+  ],
+  "commit_message": "Complete ADR0127 Native 2D current-main foundation",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Rebuilds ADR0127 Native 2D first-release completion on current main. This initial request restores the audited core authoring, runtime, rendering, CLI/MCP, and scene bridge foundation while preserving concurrent current-main changes. Further requests complete Project Rust, Editor authoring, proving content, and final validation."
+}
