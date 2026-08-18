@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/asset_import.rs","old":"    humanoid_import::{build_humanoid_import_catalog, humanoid_imported_sub_assets},","new":"    humanoid_import::{\n        build_humanoid_import_catalog, build_humanoid_motion_variant, humanoid_imported_sub_assets,\n    },"}
