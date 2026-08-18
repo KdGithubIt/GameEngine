@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/animation/src/animation.rs","old":"struct CrossfadeState {","new":"#[derive(Clone)]\nstruct CrossfadeState {"}
