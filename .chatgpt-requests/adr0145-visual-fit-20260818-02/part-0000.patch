@@ -1,0 +1,13 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index d439ddf7dbef659ddb9c2bc82de6816792a4b47c..ddaa7dc583bb66592ef2f63687d301311dce233a 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -697,7 +697,7 @@ impl AiStudioPanel {
+         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+         self.external_provider_status =
+             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+-        self.visual_scroll_offset = 1_520.0;
++        self.visual_scroll_offset = 1_600.0;
+         self.visual_external_provider_evidence = true;
+     }
+ 
