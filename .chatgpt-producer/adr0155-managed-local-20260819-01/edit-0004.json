@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "            Self::Hosted(error) => write!(formatter, \"{error}\"),\n            Self::UnsupportedCapability(capability) => {\n",
+  "new": "            Self::Hosted(error) => write!(formatter, \"{error}\"),\n            Self::Managed(error) => write!(formatter, \"{error}\"),\n            Self::UnsupportedCapability(capability) => {\n"
+}

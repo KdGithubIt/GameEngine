@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "        match self {\n            Self::Local(_) => BACKEND_ID,\n            Self::Hosted(config) => config.auth_mode.backend_id(),\n        }\n",
+  "new": "        match self {\n            Self::Local(_) => BACKEND_ID,\n            Self::Managed(_) => MANAGED_BACKEND_ID,\n            Self::Hosted(config) => config.auth_mode.backend_id(),\n        }\n"
+}

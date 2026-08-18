@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "impl From<HostedBackendError> for NativeAgentError {\n    fn from(value: HostedBackendError) -> Self {\n        Self::Hosted(value)\n    }\n}\n\n",
+  "new": "impl From<HostedBackendError> for NativeAgentError {\n    fn from(value: HostedBackendError) -> Self {\n        Self::Hosted(value)\n    }\n}\n\nimpl From<ManagedLocalRuntimeError> for NativeAgentError {\n    fn from(value: ManagedLocalRuntimeError) -> Self {\n        Self::Managed(value)\n    }\n}\n\n"
+}

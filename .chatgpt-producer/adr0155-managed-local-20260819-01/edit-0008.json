@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "            Self::Local(config) => config.capability_profile(),\n            Self::Hosted(config) => ModelCapabilityProfile {\n",
+  "new": "            Self::Local(config) => config.capability_profile(),\n            Self::Managed(config) => config.capability_profile(),\n            Self::Hosted(config) => ModelCapabilityProfile {\n"
+}

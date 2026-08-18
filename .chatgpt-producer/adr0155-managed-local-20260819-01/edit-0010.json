@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "        match self {\n            Self::Local(config) => config.model.trim().to_owned(),\n            Self::Hosted(config) => config.model.trim().to_owned(),\n        }\n",
+  "new": "        match self {\n            Self::Local(config) => config.model.trim().to_owned(),\n            Self::Managed(config) => config.config.model_id.clone(),\n            Self::Hosted(config) => config.model.trim().to_owned(),\n        }\n"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "        match self {\n            Self::Io(error) => Some(error),\n            Self::Json(error) => Some(error),\n            _ => None,\n        }\n",
+  "new": "        match self {\n            Self::Io(error) => Some(error),\n            Self::Json(error) => Some(error),\n            Self::Managed(error) => Some(error),\n            _ => None,\n        }\n"
+}
