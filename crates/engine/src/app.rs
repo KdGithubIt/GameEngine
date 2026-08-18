@@ -16,7 +16,7 @@ use crate::asset::{AssetServer, Assets};
 use crate::audio::{
     game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
 };
-use crate::camera::{camera_aspect_system, ViewportSize};
+use crate::camera::{camera_aspect_system, GameCameraSelectionOverride, ViewportSize};
 use crate::game_module::{
     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
 };
@@ -98,6 +98,7 @@ impl App {
         let mut ecs = EcsApp::new();
         ecs.insert_resource(Time::default());
         ecs.insert_resource(ViewportSize::default());
+        ecs.insert_resource(GameCameraSelectionOverride::default());
         ecs.insert_resource(Assets::<Mesh>::default());
         ecs.insert_resource(Assets::<Material>::default());
         ecs.insert_resource(Assets::<AudioAsset>::default());
