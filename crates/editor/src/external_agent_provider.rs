@@ -247,9 +247,20 @@ pub(crate) fn build_launch_plan(
 ) -> Result<ExternalAgentLaunchPlan, String> {
     match kind {
         ExternalAgentProviderKind::ClaudeCode => {
-            let mcp_config = format!(
-                r#"{{\"mcpServers\":{{\"{GAMEENGINE_MCP_SERVER_NAME}\":{{\"type\":\"http\",\"url\":\"${{GAMEENGINE_MCP_ENDPOINT}}\",\"headers\":{{\"Authorization\":\"Bearer ${{{GAMEENGINE_MCP_TOKEN_ENV}}}\"}}}}}}}}"#
-            );
+            let mcp_config = serde_json::json!({
+                "mcpServers": {
+                    (GAMEENGINE_MCP_SERVER_NAME): {
+                        "type": "http",
+                        "url": "${GAMEENGINE_MCP_ENDPOINT}",
+                        "headers": {
+                            "Authorization": format!(
+                                "Bearer ${{{GAMEENGINE_MCP_TOKEN_ENV}}}"
+                            )
+                        }
+                    }
+                }
+            })
+            .to_string();
             Ok(ExternalAgentLaunchPlan {
                 program: OsString::from("claude"),
                 args: vec![
@@ -262,7 +273,7 @@ pub(crate) fn build_launch_plan(
                     OsString::from(mcp_config),
                     OsString::from("--strict-mcp-config"),
                     OsString::from("--allowedTools"),
-                    OsString::from("mcp__gameengine_editor__*"),
+                    OsString::from("mcp__gameengine_editor"),
                 ],
             })
         }
@@ -589,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_mcp_config_references_ephemeral_environment() {
+    fn claude_mcp_config_is_valid_json_and_references_ephemeral_environment() {
         let plan = build_launch_plan(
             ExternalAgentProviderKind::ClaudeCode,
             "",
@@ -598,14 +609,30 @@ mod tests {
             "http://127.0.0.1:1234/mcp",
         )
         .expect("claude plan");
-        let args = plan
+        let config_index = plan
             .args
             .iter()
-            .map(|value| value.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(args.contains("${GAMEENGINE_MCP_ENDPOINT}"));
-        assert!(args.contains("${GAMEENGINE_MCP_AUTH_TOKEN}"));
+            .position(|value| value == OsStr::new("--mcp-config"))
+            .expect("mcp config flag");
+        let config = plan.args[config_index + 1]
+            .to_str()
+            .expect("UTF-8 MCP config");
+        let parsed: Value = serde_json::from_str(config).expect("valid MCP config JSON");
+        let server = &parsed["mcpServers"][GAMEENGINE_MCP_SERVER_NAME];
+        assert_eq!(server["url"], "${GAMEENGINE_MCP_ENDPOINT}");
+        assert_eq!(
+            server["headers"]["Authorization"],
+            "Bearer ${GAMEENGINE_MCP_AUTH_TOKEN}"
+        );
+        let allowed_index = plan
+            .args
+            .iter()
+            .position(|value| value == OsStr::new("--allowedTools"))
+            .expect("allowed tools flag");
+        assert_eq!(
+            plan.args[allowed_index + 1],
+            OsString::from("mcp__gameengine_editor")
+        );
     }
 
     #[test]
@@ -630,7 +657,7 @@ mod tests {
 
     #[test]
     fn claude_stream_translation_keeps_host_protocol_explicit() {
-        let line = r#"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"GAMEENGINE_AGENT_EVENT {\\\"type\\\":\\\"progress\\\",\\\"step\\\":\\\"inspect\\\",\\\"detail\\\":\\\"scene\\\"}\"},{\"type\":\"tool_use\",\"name\":\"mcp__gameengine_editor__scene_get\"}]}}"#;
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"GAMEENGINE_AGENT_EVENT {\"type\":\"progress\",\"step\":\"inspect\",\"detail\":\"scene\"}"},{"type":"tool_use","name":"mcp__gameengine_editor__scene_get"}]}}"#;
         let events = translate_provider_line(ExternalAgentProviderKind::ClaudeCode, line);
         assert!(events.iter().any(|event| matches!(
             event,
@@ -649,7 +676,7 @@ mod tests {
         let mut diagnostics = ExternalAgentDiagnostics::default();
         diagnostics.observe(
             ExternalAgentProviderKind::Codex,
-            r#"{\"type\":\"turn.failed\",\"error\":{\"message\":\"rate limit exceeded\"}}"#,
+            r#"{"type":"turn.failed","error":{"message":"rate limit exceeded"}}"#,
         );
         let failure = diagnostics.classify_exit(ExternalAgentProviderKind::Codex, Some(1));
         assert!(failure.retryable);
