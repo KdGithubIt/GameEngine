@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/animation/src/animation.rs","old":"/// An ECS component that plays an [`AnimationClip`] on an entity's\n/// [`Transform`].\npub struct Animator {","new":"/// An ECS component that plays an [`AnimationClip`] on an entity's\n/// [`Transform`].\n#[derive(Clone)]\npub struct Animator {"}
