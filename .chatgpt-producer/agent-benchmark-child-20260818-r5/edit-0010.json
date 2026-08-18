@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        let routing_candidates = native_config\n            .as_ref()\n            .map(|config| self.native_routing_candidates(config))\n            .unwrap_or_default();\n        self.native_agent_runtime = native_config.map(|config| {\n            NativeAgentRuntime::configured_routed(\n                config,\n                routing_candidates,\n                &self.benchmark_records,\n            )\n        });",
+  "new": "        let benchmark_single_model = self.benchmark_child_active();\n        let routing_candidates = native_config\n            .as_ref()\n            .map(|config| self.native_routing_candidates(config))\n            .unwrap_or_default();\n        self.native_agent_runtime = native_config.map(|config| {\n            if benchmark_single_model {\n                NativeAgentRuntime::configured(config)\n            } else {\n                NativeAgentRuntime::configured_routed(\n                    config,\n                    routing_candidates,\n                    &self.benchmark_records,\n                )\n            }\n        });"
+}
