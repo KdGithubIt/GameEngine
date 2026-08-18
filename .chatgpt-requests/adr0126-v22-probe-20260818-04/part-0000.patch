@@ -1,0 +1,12 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index a8ffcfe63ec061690f82f293d4fc0f5d2eedc42d..279179ba38145d635c419924fc624a3ef71a2240 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,6 +12,7 @@ members = [
+     "crates/import",
+     "crates/scripting",
+     "crates/scene",
++    "crates/timeline",
+     "crates/renderer",
+     "crates/engine",
+     "crates/authoring",
