@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent.rs","old":"                    NativeModelConfig::Hosted(config) if !images.is_empty() => {\n","new":"                    NativeModelConfig::Hosted(_) if !images.is_empty() => {\n"}
