@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v9-camera-facade-3467-r4",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "34675673e934e5c2521d47486c420ea73149427e",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "de5f9d9dee922c1570659a16ed754e126f8a9467d8c6f162bf75824d77113439",
+  "patch_bytes": 3853,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Expose Camera2D world preview rendering",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Exposes explicit Camera2D rendering through the existing WorldRenderer and PreviewRenderer facades so Editor preview can use the same runtime presentation path."
+}
