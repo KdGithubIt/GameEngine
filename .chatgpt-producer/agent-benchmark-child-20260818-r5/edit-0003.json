@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "//! lifecycle, permissions, persistence, provider process management, and code\n//! workspace rules live in the GUI-free `agent_host` module.\n\nuse crate::agent_benchmark::{",
+  "new": "//! lifecycle, permissions, persistence, provider process management, and code\n//! workspace rules live in the GUI-free `agent_host` module.\n\nmod benchmark_child;\n\nuse crate::agent_benchmark::{"
+}
