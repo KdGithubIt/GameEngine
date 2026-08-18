@@ -1103,7 +1103,7 @@ impl SceneView {
         render_state: &egui_wgpu::RenderState,
         context: &egui::Context,
     ) -> bool {
-        let device_identity = Arc::as_ptr(&render_state.device) as usize;
+        let device_identity = (&render_state.device as *const wgpu::Device) as usize;
         if self.renderer_device != Some(device_identity) {
             self.renderer_device = Some(device_identity);
             self.renderer_failure_device = None;
@@ -1608,7 +1608,7 @@ impl SceneView {
             self.texture = SceneTexture::new(render_state, size);
         }
 
-        let renderer_ready = self.ensure_renderer_ready(render_state, response.ctx());
+        let renderer_ready = self.ensure_renderer_ready(render_state, &response.ctx);
 
         let mut picked_entity = None;
         let mut picked_ui_node = None;
@@ -4562,6 +4562,7 @@ mod tests {
         let base = PreviewKey {
             scene_revision: 1,
             manifest_hash: manifest_content_hash(&manifest_with("a.glb")),
+            residency_revision: 1,
             game_module: None,
             project_root: None,
             sky_enabled: true,
@@ -4581,6 +4582,13 @@ mod tests {
             base,
             PreviewKey {
                 manifest_hash: manifest_content_hash(&manifest_with("b.glb")),
+                ..base_clone(&base)
+            }
+        );
+        assert_ne!(
+            base,
+            PreviewKey {
+                residency_revision: 2,
                 ..base_clone(&base)
             }
         );
@@ -4654,6 +4662,7 @@ mod tests {
         PreviewKey {
             scene_revision: key.scene_revision,
             manifest_hash: key.manifest_hash,
+            residency_revision: key.residency_revision,
             game_module: key.game_module,
             project_root: key.project_root.clone(),
             sky_enabled: key.sky_enabled,
