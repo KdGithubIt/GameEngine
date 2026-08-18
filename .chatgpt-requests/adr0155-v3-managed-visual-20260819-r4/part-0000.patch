@@ -1,0 +1,94 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 5d569ab3eb9fe084ea10a0072788ce9ccc02fa18..a828066ddbbd3f00b5acd8b66ec96056ca16ce74 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -932,6 +932,32 @@ impl AiStudioPanel {
+         self.visual_external_provider_evidence = true;
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    /// Selects a deterministic managed-local setup state for ADR 0155 screenshot validation.
++    pub fn prepare_managed_local_visual_validation(&mut self) -> Result<(), String> {
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map_err(|error| error.to_string())?
++            .as_nanos();
++        let fixture_root = std::env::temp_dir().join(format!(
++            "gameengine-managed-local-visual-{}-{unique}",
++            std::process::id()
++        ));
++        self.managed_local_runtime =
++            ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
++        self.model_backend = ModelBackendPreference::ManagedLocal;
++        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
++        self.managed_model_id.clear();
++        self.managed_setup_task = None;
++        self.last_model_resource_telemetry = ModelResourceTelemetry::default();
++        self.external_provider_kind = ExternalAgentProviderKind::Generic;
++        self.external_provider_status =
++            ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
++        self.visual_scroll_offset = 0.0;
++        self.visual_external_provider_evidence = false;
++        Ok(())
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Returns whether the detached native viewport has completed two rendered frames.
+     pub fn detached_visual_validation_capture_ready(&self) -> bool {
+@@ -2060,9 +2086,11 @@ impl AiStudioPanel {
+                                             }
+                                         });
+                                     }
+-                                    Err(error) => ui.small(format!(
+-                                        "WSL model preparation unavailable: {error}"
+-                                    )),
++                                    Err(error) => {
++                                        ui.small(format!(
++                                            "WSL model preparation unavailable: {error}"
++                                        ));
++                                    }
+                                 }
+                             }
+                         } else {
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 1ea41015d946b990a6da8164b24bfe50bf7579e5..79ee07cefd58b6616a02a4949e5a8549fa8cd765 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -85,7 +85,11 @@ impl EditorShell {
+                 None => {
+                     let touches_ai_studio = visual_validation_touches_ai_studio();
+                     if touches_ai_studio {
+-                        ai_studio.prepare_hosted_backend_visual_validation();
++                        if visual_validation_touches_managed_local_runtime() {
++                            ai_studio.prepare_managed_local_visual_validation()?;
++                        } else {
++                            ai_studio.prepare_hosted_backend_visual_validation();
++                        }
+                     }
+                     touches_ai_studio
+                 }
+@@ -439,6 +443,24 @@ fn visual_validation_touches_ai_studio() -> bool {
+         .is_some_and(|output| !output.stdout.is_empty())
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn visual_validation_touches_managed_local_runtime() -> bool {
++    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
++    let base = format!("origin/{base_ref}...HEAD");
++    std::process::Command::new("git")
++        .args([
++            "diff",
++            "--name-only",
++            &base,
++            "--",
++            "crates/editor/src/managed_local_runtime.rs",
++        ])
++        .output()
++        .ok()
++        .filter(|output| output.status.success())
++        .is_some_and(|output| !output.stdout.is_empty())
++}
++
+ #[cfg(all(feature = "visual-validation", target_os = "windows"))]
+ fn capture_ai_studio_native_window(path: &Path) -> Result<(), String> {
+     const SCRIPT: &str = r#"
