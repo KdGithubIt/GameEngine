@@ -1,6 +1,6 @@
 # ADR 0143: Native ModelBackend Resource Controls and Hardware Telemetry
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131, ADR 0135
 Relates to: ADR 0003, ADR 0072, ADR 0104, ADR 0136, ADR 0142
