@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "fn run() -> Result<(), String> {\n    let project = project_argument()?;\n    let project_lease = acquire_editor_project(&project).map_err(|error| error.to_string())?;",
+  "new": "fn run() -> Result<(), String> {\n    let arguments = editor_arguments()?;\n    let project_lease =\n        acquire_editor_project(&arguments.project).map_err(|error| error.to_string())?;\n    let benchmark_run = arguments.benchmark_run;"
+}
