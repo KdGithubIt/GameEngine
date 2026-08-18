@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0143-model-resources-r4-20260818-04a",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources-r4",
+  "expected_head_sha": "ea7289ca8f6b244adda4e0794d69345b56ac8831",
+  "baseline_main_sha": "ea7289ca8f6b244adda4e0794d69345b56ac8831",
+  "patch_sha256": "88a8ceae633034665803054b6dbfcc0bca1233680efef59deb5cb6f380483d44",
+  "patch_bytes": 27055,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Apply ADR 0143 backend resource controls",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\nADR0143 conflict-resolution branch rebuilt on current main. This first tranche applies provider-independent resource operations/telemetry and Ollama adapter behavior; AI Studio integration follows on the same Draft PR branch.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
