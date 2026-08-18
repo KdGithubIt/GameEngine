@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/runtime.rs","old":"                replay_recorder: None,\n                replay_player: None,\n                renderer: None,\n","new":"                replay_recorder: None,\n                replay_player: None,\n                human_input_generation: 0,\n                renderer: None,\n"}
