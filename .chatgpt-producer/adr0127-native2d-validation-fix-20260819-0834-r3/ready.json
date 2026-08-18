@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-native2d-validation-fix-20260819-0834-r3",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v13",
+  "expected_head_sha": "bcbd122082eea178d79cfc10bb3a2b01de94b3ad",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json"
+  ],
+  "commit_message": "Fix ADR0127 Native 2D validation coverage",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "## Summary\n\nContinues ADR0127 first-release completion on a current-main branch. Restores the Native 2D authoring-window asset-manifest integration after branch synchronization, fixes the Launcher proving-template Clippy regression, and advertises the already-implemented Native 2D typed-document MCP handlers through the canonical capability-derived descriptor inventory with regression coverage.\n\nThe branch retains the existing Native 2D runtime, authoring, Editor, CLI/MCP-host, physics, rendering, scripting, event bridge, and first-party Launcher proving-project implementation."
+}
