@@ -1,6 +1,22 @@
 //! Cross-domain Native 2D physics composition (ADR 0127).
 
+pub use engine_animation::sprite_2d::{
+    SpriteAnimationRuntimeError, SpriteAnimationState2d, SpriteAnimatorRuntime2d, SpriteFrameEvent2d,
+};
+pub use engine_assets::native_2d::{
+    compile_sprite_atlas, compile_tile_map, compile_tile_set, CompiledSpriteAtlas,
+    CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileLayer, CompiledTileMap,
+    CompiledTileSet, Native2dCompileError,
+};
 pub use engine_physics::native_2d::*;
+pub use engine_render_runtime::native_2d::{
+    cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
+    Camera2dDiagnostic, Native2dRenderMetrics, SpriteBatch2d, SpriteInstance2d,
+    TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
+};
+pub use engine_authoring::{
+    SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
+};
 
 use crate::transform::{GlobalTransform, Parent, Transform};
 use engine_authoring::Project2dSettings;
@@ -148,6 +164,57 @@ pub fn physics_2d_fixed_system(
         transform.rotation = Quat::from_rotation_z(resolved.pose.rotation);
         body.velocity = resolved.body.velocity;
         body.angular_velocity = resolved.body.angular_velocity;
+    }
+}
+
+/// One named frame event emitted by SpriteAnimator2D in the current fixed step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpriteAnimationEvent2d {
+    /// Runtime entity whose playback entered the frame.
+    pub entity: Entity,
+    /// Stable Sprite Animation asset used by the animator.
+    pub clip: engine_authoring::AssetId,
+    /// Frame index entered by deterministic playback.
+    pub frame_index: usize,
+    /// Authored event name.
+    pub name: String,
+}
+
+/// Fixed-step Sprite Animation event stream visible to later gameplay systems.
+#[derive(Debug, Default)]
+pub struct SpriteAnimationEvents2d {
+    events: Vec<SpriteAnimationEvent2d>,
+}
+
+impl SpriteAnimationEvents2d {
+    /// Iterates events emitted by the most recent SpriteAnimator2D evaluation.
+    pub fn iter(&self) -> impl Iterator<Item = &SpriteAnimationEvent2d> {
+        self.events.iter()
+    }
+}
+
+/// Advances per-entity Sprite Animation state and writes only the current SpriteRef to rendering.
+pub fn sprite_animation_2d_fixed_system(
+    fixed_time: Res<crate::time::FixedTime>,
+    mut events: ResMut<SpriteAnimationEvents2d>,
+    mut query: Query<(&mut SpriteAnimatorRuntime2d, &mut SpriteRenderer2d)>,
+) {
+    events.events.clear();
+    let seconds = f64::from(fixed_time.fixed_delta.max(0.0));
+    for (entity, (animator, renderer)) in query.iter_mut() {
+        let clip = animator.clip.clone();
+        let emitted = animator
+            .state
+            .advance_fixed_seconds(clip.as_ref(), seconds, animator.looping_override);
+        if let Some(sprite) = animator.state.current_sprite(clip.as_ref()) {
+            renderer.sprite = sprite.clone();
+        }
+        events.events.extend(emitted.into_iter().map(|event| SpriteAnimationEvent2d {
+            entity,
+            clip: animator.clip_asset.clone(),
+            frame_index: event.frame_index,
+            name: event.name,
+        }));
     }
 }
 
