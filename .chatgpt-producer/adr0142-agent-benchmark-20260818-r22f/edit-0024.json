@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark.rs","old":"pub(crate) fn agent_run_record(\n","new":"fn work_claim_kind_label(claim: &AgentWorkClaim) -> Option<String> {\n    serde_json::to_value(claim.kind)\n        .ok()?\n        .as_str()\n        .map(ToOwned::to_owned)\n}\n\npub(crate) fn agent_run_record(\n"}
