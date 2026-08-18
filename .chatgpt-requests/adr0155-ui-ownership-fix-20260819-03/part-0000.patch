@@ -1,0 +1,20 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 5e29ec137579c7dadceefb7736d6c1070e014017..f1735c72b9a76f7d882ea85b83c55aa4dbb835c0 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -1594,13 +1594,13 @@ impl AiStudioPanel {
+                                 ui.spinner();
+                             }
+                         });
+-                        if matches!(setup_status, ManagedSetupStatus::RestartRequired) {
++                        if matches!(&setup_status, ManagedSetupStatus::RestartRequired) {
+                             ui.small(
+                                 "Windows reported that setup requires a restart. GameEngine persists only a machine-local continuation marker and does not reboot automatically. Reopen the Editor after the restart to continue.",
+                             );
+                         }
+                         if !matches!(
+-                            setup_status,
++                            &setup_status,
+                             ManagedSetupStatus::RuntimeNotInstalled
+                                 | ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(_)
+                         ) {
