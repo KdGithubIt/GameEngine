@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "    fn new(\n        backend: Box<dyn ModelBackend>,\n        backend_config: NativeModelConfig,\n        routing: ModelRoutingPolicy,\n        policy: HarnessPolicy,\n    ) -> Self {\n        Self {\n            backend,\n            backend_config,\n            routing,\n            routing_decisions: Vec::new(),\n            policy,",
+  "new": "    fn new(\n        backend: Box<dyn ModelBackend>,\n        backend_config: NativeModelConfig,\n        routing: ModelRoutingPolicy,\n        policy: HarnessPolicy,\n        benchmark_single_model: bool,\n    ) -> Self {\n        Self {\n            backend,\n            backend_config,\n            routing,\n            routing_decisions: Vec::new(),\n            benchmark_single_model,\n            policy,"
+}
