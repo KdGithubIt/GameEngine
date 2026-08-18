@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                workload: benchmark_workload,\n                hardware: self.benchmark_hardware.clone(),\n                inventory,\n            },",
+  "new": "                workload: benchmark_workload,\n                hardware: self.benchmark_hardware.clone(),\n                inventory,\n                routed: false,\n            },"
+}
