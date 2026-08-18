@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "    #[test]\n    fn pre_measurement_retry_is_bounded() {\n        let mut campaign = BenchmarkCampaign::new(\"campaign-a\", plan()).expect(\"campaign\");\n        assert!(campaign.record_pre_measurement_failure(0).expect(\"retry one\"));\n        assert!(campaign.record_pre_measurement_failure(0).expect(\"retry two\"));\n        assert!(!campaign.record_pre_measurement_failure(0).expect(\"retry three\"));\n    }",
+  "new": "    #[test]\n    fn pre_measurement_retry_is_bounded() {\n        let mut campaign = BenchmarkCampaign::new(\"campaign-a\", plan()).expect(\"campaign\");\n        assert!(campaign\n            .record_pre_measurement_failure(0)\n            .expect(\"retry one\"));\n        assert!(campaign\n            .record_pre_measurement_failure(0)\n            .expect(\"retry two\"));\n        assert!(!campaign\n            .record_pre_measurement_failure(0)\n            .expect(\"retry three\"));\n        assert_eq!(campaign.state, BenchmarkCampaignState::Stopped);\n        assert_eq!(campaign.runs[0].status, CampaignRunStatus::Rejected);\n        assert_eq!(\n            campaign.runs[0].failure,\n            Some(CampaignFailureKind::InfrastructurePreMeasurement)\n        );\n    }"
+}
