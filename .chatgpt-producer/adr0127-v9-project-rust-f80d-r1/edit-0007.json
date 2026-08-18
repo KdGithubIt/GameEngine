@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/scripting/src/animation_commands.rs","old":"use engine_authoring::Value;\n","new":"use engine_authoring::{AssetId, Value};\n"}
