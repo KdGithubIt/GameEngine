@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "    Hosted(HostedBackendError),\n    UnsupportedCapability(String),\n",
+  "new": "    Hosted(HostedBackendError),\n    Managed(ManagedLocalRuntimeError),\n    UnsupportedCapability(String),\n"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/lib.rs",
+  "old": "mod live_observation;\nmod model_router;\n",
+  "new": "mod live_observation;\nmod managed_local_runtime;\nmod model_router;\n"
+}

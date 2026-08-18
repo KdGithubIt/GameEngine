@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};\nuse crate::resource_arbitration::{\n",
+  "new": "use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};\nuse crate::managed_local_runtime::{\n    ManagedLocalModelConfig, ManagedLocalRuntime,\n    ManagedLocalRuntimeError, MANAGED_BACKEND_ID, MANAGED_LAUNCH_POLICY_VERSION,\n};\nuse crate::resource_arbitration::{\n"
+}
