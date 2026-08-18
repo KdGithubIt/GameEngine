@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/components/tests.rs",
+  "old": "            UI_DOCUMENT_COMPONENT,\n            COLLIDER_COMPONENT,\n            COLLIDER_2D_COMPONENT,\n            RIGID_BODY_2D_COMPONENT,\n            CHARACTER_CONTROLLER_2D_COMPONENT,\n            PHYSICS_BODY_COMPONENT,\n",
+  "new": "            UI_DOCUMENT_COMPONENT,\n            COLLIDER_COMPONENT,\n            CAMERA_2D_COMPONENT,\n            SPRITE_RENDERER_2D_COMPONENT,\n            SPRITE_ANIMATOR_2D_COMPONENT,\n            COLLIDER_2D_COMPONENT,\n            RIGID_BODY_2D_COMPONENT,\n            CHARACTER_CONTROLLER_2D_COMPONENT,\n            PHYSICS_BODY_COMPONENT,\n"
+}
