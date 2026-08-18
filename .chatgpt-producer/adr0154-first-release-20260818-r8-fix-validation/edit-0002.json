@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge/spawn.rs","old":"        Diagnostic::error(\n            \"anim.motion_binding_failed\",","new":"        Diagnostic::error(\n            ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC,"}
