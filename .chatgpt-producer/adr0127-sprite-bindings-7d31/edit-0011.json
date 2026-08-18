@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge/spawn.rs","old":"    let filtering = authored_filtering.unwrap_or(project.filtering);","new":"    let filtering = authored_filtering.unwrap_or(project.default_filtering);"}
