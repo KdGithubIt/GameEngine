@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-project-rust-51ab-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main",
+  "expected_head_sha": "d05559131e0926805cce51196eb4d6049d0869a3",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "patch_sha256": "ac4a0d3909cb0a5dce47026ca976572d8b375bbfc3ad307ea390d82e2df6ae38",
+  "patch_bytes": 22461,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Expose ADR0127 Sprite Animation to Project Rust",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "## Summary\n\nContinues ADR0127 first-release completion on the existing Draft PR. Extends the existing Project Rust Animation command family with deferred SpriteAnimator2D play/pause/stop and stable-AssetId clip selection, adds a copied deterministic Sprite Animation state view, and documents the stable-ID boundary. The implementation reuses current ABI v3 command/view architecture rather than introducing a parallel gameplay API."
+}
