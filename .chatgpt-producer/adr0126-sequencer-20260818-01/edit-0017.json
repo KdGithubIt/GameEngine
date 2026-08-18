@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/sequencer.rs","old":"                                        let exists = scene.as_ref().is_some_and(|scene| scene.entities.iter().any(|candidate| candidate.id == *entity));\n","new":"                                        let exists = scene.as_ref().is_some_and(|scene| scene.entity(entity).is_some());\n"}
