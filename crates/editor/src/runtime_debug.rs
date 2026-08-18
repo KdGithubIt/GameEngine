@@ -686,7 +686,6 @@ fn update_held_inputs(held: &mut Vec<HeldInput>, command: InputCommand) {
         | InputCommand::MouseMove { .. }
         | InputCommand::MouseDelta { .. }
         | InputCommand::MouseScroll { .. } => {}
-        _ => {}
     }
 }
 
