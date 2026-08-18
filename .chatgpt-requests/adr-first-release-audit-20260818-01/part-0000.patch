@@ -1,0 +1,304 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index aeb7013579430983ab6ec2d55e256fc16e5872fa..d439ddf7dbef659ddb9c2bc82de6816792a4b47c 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -476,6 +476,10 @@ pub struct AiStudioPanel {
+     presentation: AiStudioPresentationState,
+     #[cfg(feature = "visual-validation")]
+     detached_visual_frames: u8,
++    #[cfg(feature = "visual-validation")]
++    visual_scroll_offset: f32,
++    #[cfg(feature = "visual-validation")]
++    visual_external_provider_evidence: bool,
+     active_run_id: Option<String>,
+     process: Option<ExternalAgentProcess>,
+     process_purpose: Option<ExternalAgentPurpose>,
+@@ -599,6 +603,10 @@ impl AiStudioPanel {
+             presentation: AiStudioPresentationState::default(),
+             #[cfg(feature = "visual-validation")]
+             detached_visual_frames: 0,
++            #[cfg(feature = "visual-validation")]
++            visual_scroll_offset: 480.0,
++            #[cfg(feature = "visual-validation")]
++            visual_external_provider_evidence: false,
+             active_run_id,
+             process: None,
+             process_purpose: None,
+@@ -662,6 +670,35 @@ impl AiStudioPanel {
+         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+         self.external_provider_status =
+             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
++        self.visual_scroll_offset = 480.0;
++        self.visual_external_provider_evidence = false;
++    }
++
++    #[cfg(feature = "visual-validation")]
++    /// Selects deterministic local-resource telemetry for ADR 0143 screenshot validation.
++    pub fn prepare_local_model_resources_visual_validation(&mut self) {
++        self.model_backend = ModelBackendPreference::Local;
++        self.local_model_endpoint = DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned();
++        self.local_model_name = "qwen2.5-coder:7b".to_owned();
++        self.last_model_resource_telemetry = ModelResourceTelemetry {
++            resident: TelemetryValue::Measured(true),
++            representation_size_bytes: TelemetryValue::Measured(4_700_000_000),
++            gpu_residency_bytes: TelemetryValue::Measured(3_200_000_000),
++            context_length_tokens: TelemetryValue::Measured(8_192),
++        };
++        self.visual_scroll_offset = 480.0;
++        self.visual_external_provider_evidence = false;
++    }
++
++    #[cfg(feature = "visual-validation")]
++    /// Selects deterministic external-provider state for ADR 0145 screenshot validation.
++    pub fn prepare_external_agent_visual_validation(&mut self) {
++        self.prepare_hosted_backend_visual_validation();
++        self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
++        self.external_provider_status =
++            ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
++        self.visual_scroll_offset = 1_520.0;
++        self.visual_external_provider_evidence = true;
+     }
+ 
+     #[cfg(feature = "visual-validation")]
+@@ -989,7 +1026,7 @@ impl AiStudioPanel {
+                     .id_salt("ai_studio_detached_contents")
+                     .auto_shrink([false, false]);
+                 #[cfg(feature = "visual-validation")]
+-                let scroll_area = scroll_area.vertical_scroll_offset(480.0);
++                let scroll_area = scroll_area.vertical_scroll_offset(self.visual_scroll_offset);
+                 scroll_area.show(ui, |ui| self.show_contents(ui));
+             },
+         );
+@@ -2989,6 +3026,30 @@ impl AiStudioPanel {
+                 "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
+             );
+         });
++        #[cfg(feature = "visual-validation")]
++        if self.visual_external_provider_evidence {
++            ui.group(|ui| {
++                ui.strong("First-class AgentRuntime provider evidence");
++                for provider in ExternalAgentProviderKind::ALL {
++                    let status = ExternalAgentProviderStatus::visual_fixture(provider);
++                    ui.label(format!(
++                        "{} · discovery {} · authentication {}",
++                        provider.label(),
++                        status.discovery.label(),
++                        status.auth.label(),
++                    ));
++                }
++                ui.small(
++                    "Claude Code and Codex keep provider-owned credentials; Generic command remains the explicit compatibility fallback.",
++                );
++                ui.small(
++                    "MCP bearer: ephemeral environment reference only. Secret values are never displayed, serialized, or copied into provider arguments.",
++                );
++                ui.small(
++                    "Sanitized error presentation: provider failures report adapter/status context without credential or bearer contents.",
++                );
++            });
++        }
+         if self.external_provider_kind == ExternalAgentProviderKind::Generic {
+             ui.horizontal(|ui| {
+                 ui.label("Compatible agent program");
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 18d02c061a312c6531c7a1686d881f83e0f8991c..1ea41015d946b990a6da8164b24bfe50bf7579e5 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -68,11 +68,29 @@ impl EditorShell {
+             ),
+         )?;
+         #[cfg(feature = "visual-validation")]
++        let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
++        #[cfg(feature = "visual-validation")]
+         let (ai_studio, visual_ai_studio_detached_capture) = {
+             let mut ai_studio = ai_studio;
+-            let detached_capture = visual_validation_touches_ai_studio();
++            let detached_capture = match visual_scenario.as_deref() {
++                Some("ADR 0143 Model Resources") => {
++                    ai_studio.prepare_local_model_resources_visual_validation();
++                    true
++                }
++                Some("ADR 0145 External Agent") => {
++                    ai_studio.prepare_external_agent_visual_validation();
++                    true
++                }
++                Some(_) => false,
++                None => {
++                    let touches_ai_studio = visual_validation_touches_ai_studio();
++                    if touches_ai_studio {
++                        ai_studio.prepare_hosted_backend_visual_validation();
++                    }
++                    touches_ai_studio
++                }
++            };
+             if detached_capture {
+-                ai_studio.prepare_hosted_backend_visual_validation();
+                 ai_studio.detach();
+             }
+             (ai_studio, detached_capture)
+@@ -82,9 +100,15 @@ impl EditorShell {
+         #[cfg(not(feature = "visual-validation"))]
+         let authoring_windows = AuthoringWindows::default();
+         #[cfg(feature = "visual-validation")]
+-        if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
+-            let requested = requested.to_string_lossy();
+-            if requested == "Navigation" {
++        if let Some(requested) = visual_scenario.as_deref() {
++            if matches!(
++                requested,
++                "ADR 0143 Model Resources" | "ADR 0145 External Agent"
++            ) {
++                // AI Studio scenarios are prepared above and use its detached native viewport.
++            } else if requested == "ADR 0154 Animation Set" {
++                app.prepare_animation_set_visual_validation();
++            } else if requested == "Navigation" {
+                 app.prepare_navigation_visual_validation();
+             } else if requested == "Spatial Audio" {
+                 app.prepare_spatial_audio_visual_validation();
+@@ -360,10 +384,17 @@ impl eframe::App for EditorShell {
+         #[cfg(not(feature = "visual-validation"))]
+         self.ai_studio.show(&context);
+         #[cfg(feature = "visual-validation")]
+-        if !self.visual_behavior_debug_capture
+-            && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
+         {
+-            self.ai_studio.show(&context);
++            let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
++            let ai_studio_scenario = matches!(
++                visual_scenario.as_deref(),
++                Some("ADR 0143 Model Resources") | Some("ADR 0145 External Agent")
++            );
++            if !self.visual_behavior_debug_capture
++                && (visual_scenario.is_none() || ai_studio_scenario)
++            {
++                self.ai_studio.show(&context);
++            }
+         }
+     }
+ 
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index 0cc31af565569480e79609257cadf548b7277242..140940e32d27653f3cb6b0cf452c0079678a15f5 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -294,6 +294,64 @@ fn show_motion_route_preview(
+     });
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn visual_validation_asset_id(suffix: &str) -> AssetId {
++    AssetId::from_stable_id(StableId::new(format!("asset_{suffix}")))
++        .expect("visual validation AssetId must use a fixed valid ULID suffix")
++}
++
++#[cfg(feature = "visual-validation")]
++fn show_adr0154_visual_validation_evidence(ui: &mut egui::Ui) {
++    use engine::motion_binding::{AnimationMotionFailure, AnimationMotionRoute};
++
++    let retarget_map = visual_validation_asset_id("00000000000000000000000003");
++    let humanoid_motion = visual_validation_asset_id("00000000000000000000000004");
++    ui.separator();
++    ui.heading("Selected animation target evidence");
++    ui.small(
++        "Candidate: [Model] Walk · selected imported animation skin resolves its actual source skeleton before target-aware routing.",
++    );
++    ui.group(|ui| {
++        ui.strong("Matching target skeleton");
++        show_motion_route_preview(ui, Some(&AnimationMotionRoute::Native), true);
++    });
++    ui.group(|ui| {
++        ui.strong("Different target · explicit Retarget Map available");
++        show_motion_route_preview(
++            ui,
++            Some(&AnimationMotionRoute::Retarget { map: retarget_map }),
++            true,
++        );
++    });
++    ui.group(|ui| {
++        ui.strong("Different target · import-owned Humanoid fallback available");
++        show_motion_route_preview(
++            ui,
++            Some(&AnimationMotionRoute::Humanoid {
++                motion: humanoid_motion,
++            }),
++            true,
++        );
++    });
++    ui.group(|ui| {
++        ui.strong("Different target · no compatible adaptation");
++        show_motion_route_preview(
++            ui,
++            Some(&AnimationMotionRoute::Failed {
++                reason: AnimationMotionFailure::NoCompatibleRoute,
++            }),
++            true,
++        );
++    });
++    ui.group(|ui| {
++        ui.strong("Imported source still resident-loading");
++        show_motion_route_preview(ui, None, true);
++    });
++    ui.small(
++        "Resolution order: Native → Retarget → Humanoid → Failed. Target Preview is transient and never persisted into the Animation Set.",
++    );
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -647,6 +705,17 @@ pub(in crate::ui) fn validate_animation_set_clip_references(
+ }
+ 
+ impl EditorApp {
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_animation_set_visual_validation(&mut self) {
++        let mut state = AnimationSetEditorState::new(
++            PathBuf::from("visual/adr0154.animset.json"),
++            PathBuf::from("visual/adr0154.animset.json"),
++            engine_authoring::AnimationSet::empty(),
++        );
++        state.target_preview_skeleton = Some(visual_validation_asset_id("00000000000000000000000002"));
++        self.animation_set_editor = Some(state);
++    }
++
+     pub(in crate::ui) fn open_animation_set_editor(
+         &mut self,
+         relative_path: PathBuf,
+@@ -810,6 +879,15 @@ impl EditorApp {
+                             .map(|choice| choice.label.as_str())
+                     })
+                     .unwrap_or("No target - routing unresolved");
++                #[cfg(feature = "visual-validation")]
++                let visual_adr0154 =
++                    state.relative_path == Path::new("visual/adr0154.animset.json");
++                #[cfg(feature = "visual-validation")]
++                let target_preview_label = if visual_adr0154 {
++                    "ADR0154 Hero Target · imported skeleton"
++                } else {
++                    target_preview_label
++                };
+                 control_row(ui, |ui| {
+                     ui.label("Target Preview");
+                     egui::ComboBox::from_id_salt("animation_set_target_preview")
+@@ -830,6 +908,10 @@ impl EditorApp {
+                         });
+                 });
+                 ui.small("Preview-only: this target is never saved into the Animation Set.");
++                #[cfg(feature = "visual-validation")]
++                if visual_adr0154 {
++                    show_adr0154_visual_validation_evidence(ui);
++                }
+ 
+                 match &graph_model {
+                     Some(Err(error)) => {
+diff --git a/docs/adr/0145-first-class-external-agent-runtime-provider-adapters.md b/docs/adr/0145-first-class-external-agent-runtime-provider-adapters.md
+index da9ed8e0726460d0c53440437bcd8141c9801a72..86a2465ad07a5ede69c11e754f5e72b21e571c45 100644
+--- a/docs/adr/0145-first-class-external-agent-runtime-provider-adapters.md
++++ b/docs/adr/0145-first-class-external-agent-runtime-provider-adapters.md
+@@ -1,6 +1,6 @@
+ # ADR 0145: First-Class External Agent Runtime Provider Adapters
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0131
+ Relates to: ADR 0121, ADR 0133, ADR 0153
