@@ -1,0 +1,133 @@
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+index 77c9d43f9c3c7a90fc951903be760d62fa1161de..b486ab0d924a9380b3512f1ccf76c8ed2e4ff877 100644
+--- a/crates/editor/src/native_2d_editor.rs
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -66,7 +66,12 @@ struct LoadedTyped<T> {
+ 
+ impl<T: Native2dDocument> LoadedTyped<T> {
+     fn open(project: &ProjectRoot, relative: &Path) -> Result<Self, String> {
+-        let path = project.resolve_asset(relative).map_err(|error| error.to_string())?;
++        let relative = relative
++            .to_str()
++            .ok_or_else(|| "Native 2D document path contains non-UTF-8 characters".to_owned())?;
++        let path = project
++            .resolve_asset(relative)
++            .map_err(|error| error.to_string())?;
+         let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+         let document: T = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+         Ok(Self {
+@@ -178,7 +183,12 @@ impl LoadedTileMap {
+         manifest: &engine::AssetManifest,
+         relative: &Path,
+     ) -> Result<Self, String> {
+-        let path = project.resolve_asset(relative).map_err(|error| error.to_string())?;
++        let relative = relative
++            .to_str()
++            .ok_or_else(|| "Tile Map path contains non-UTF-8 characters".to_owned())?;
++        let path = project
++            .resolve_asset(relative)
++            .map_err(|error| error.to_string())?;
+         let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+         let document = engine_authoring::TileMapDocument::from_json(&text)
+             .map_err(|error| error.to_string())?;
+@@ -356,10 +366,9 @@ fn manifest_paths(manifest: &engine::AssetManifest, suffix: &str) -> Vec<PathBuf
+         .filter_map(|(_, entry)| {
+             entry
+                 .path
+-                .to_string_lossy()
+                 .to_ascii_lowercase()
+                 .ends_with(suffix)
+-                .then(|| entry.path.clone())
++                .then(|| PathBuf::from(&entry.path))
+         })
+         .collect::<Vec<_>>();
+     paths.sort();
+@@ -999,7 +1008,7 @@ fn show_tile_map_canvas(
+                         painter.rect_stroke(
+                             cell_rect.shrink(3.0),
+                             1.0,
+-                            egui::Stroke::new(2.0, color),
++                            egui::Stroke::new(2.0_f32, color),
+                             egui::StrokeKind::Inside,
+                         );
+                     }
+@@ -1008,7 +1017,7 @@ fn show_tile_map_canvas(
+                     painter.rect_stroke(
+                         cell_rect,
+                         0.0,
+-                        egui::Stroke::new(0.5, egui::Color32::from_gray(64)),
++                        egui::Stroke::new(0.5_f32, egui::Color32::from_gray(64)),
+                         egui::StrokeKind::Inside,
+                     );
+                 }
+@@ -1022,7 +1031,7 @@ fn show_tile_map_canvas(
+                 let px = rect.left() + (x - MIN_X) as f32 * cell_size.x;
+                 painter.line_segment(
+                     [egui::pos2(px, rect.top()), egui::pos2(px, rect.bottom())],
+-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(190, 125, 55)),
++                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(190, 125, 55)),
+                 );
+             }
+         }
+@@ -1031,7 +1040,7 @@ fn show_tile_map_canvas(
+                 let py = rect.top() + (MAX_Y - y + 1) as f32 * cell_size.y;
+                 painter.line_segment(
+                     [egui::pos2(rect.left(), py), egui::pos2(rect.right(), py)],
+-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(190, 125, 55)),
++                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(190, 125, 55)),
+                 );
+             }
+         }
+@@ -1040,11 +1049,11 @@ fn show_tile_map_canvas(
+     let origin_y = rect.top() + (MAX_Y + 1) as f32 * cell_size.y;
+     painter.line_segment(
+         [egui::pos2(origin_x, rect.top()), egui::pos2(origin_x, rect.bottom())],
+-        egui::Stroke::new(1.5, egui::Color32::from_rgb(190, 80, 80)),
++        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(190, 80, 80)),
+     );
+     painter.line_segment(
+         [egui::pos2(rect.left(), origin_y), egui::pos2(rect.right(), origin_y)],
+-        egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 190, 100)),
++        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(80, 190, 100)),
+     );
+ 
+     let pointer_cell = response
+@@ -1055,7 +1064,7 @@ fn show_tile_map_canvas(
+         painter.rect_stroke(
+             hover.shrink(1.0),
+             1.0,
+-            egui::Stroke::new(2.0, egui::Color32::WHITE),
++            egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
+             egui::StrokeKind::Inside,
+         );
+     }
+diff --git a/crates/editor/src/ui/assets/browser.rs b/crates/editor/src/ui/assets/browser.rs
+index a20c765bbabc35d29e96bc45822ae6fb42149640..08e9ea639a86d4a4c5e15d023ee42f4af20007f0 100644
+--- a/crates/editor/src/ui/assets/browser.rs
++++ b/crates/editor/src/ui/assets/browser.rs
+@@ -1337,6 +1337,10 @@ pub(in crate::ui) fn asset_kind_icon(kind: AssetKind) -> &'static str {
+         AssetKind::AnimationSet => "◎",
+         AssetKind::AnimationClip => "▶",
+         AssetKind::MotionSource => "↝",
++        AssetKind::SpriteAtlas => "▥",
++        AssetKind::SpriteAnimation => "▷",
++        AssetKind::TileSet => "▦",
++        AssetKind::TileMap => "▧",
+         AssetKind::Texture => "▤",
+         AssetKind::Mesh => "△",
+         AssetKind::Audio => "♪",
+diff --git a/crates/editor/src/ui/assets/document_creation.rs b/crates/editor/src/ui/assets/document_creation.rs
+index cc732f9b32957d7162eef6a8093d04ed89c2f46e..455f0cde8d6a8e73a21d9915bab1d2b71ba95bcc 100644
+--- a/crates/editor/src/ui/assets/document_creation.rs
++++ b/crates/editor/src/ui/assets/document_creation.rs
+@@ -111,6 +111,10 @@ impl EditorApp {
+             AssetKind::Mesh
+             | AssetKind::AnimationClip
+             | AssetKind::MotionSource
++            | AssetKind::SpriteAtlas
++            | AssetKind::SpriteAnimation
++            | AssetKind::TileSet
++            | AssetKind::TileMap
+             | AssetKind::Audio
+             | AssetKind::Prefab
+             | AssetKind::NavMesh
