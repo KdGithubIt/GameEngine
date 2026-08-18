@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-scene2d-a6c3-r2",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "a6c3fc91c765e200ac399442471bea9c07dd9aaa",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "5d982d80a630fc09d544fa10c36afcc371a8ef937fa69fbcbac17fe0f9758519",
+  "patch_bytes": 14220,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Native 2D Scene View camera mode",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds orthographic XY Scene View camera input/rendering, an XY grid, planar gizmo hit testing, and an explicit 2D/3D toolbar switch through the existing runtime Camera2D preview path on current-main v10."
+}
