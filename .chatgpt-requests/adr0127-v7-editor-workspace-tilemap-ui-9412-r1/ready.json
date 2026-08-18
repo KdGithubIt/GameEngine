@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v7-editor-workspace-tilemap-ui-9412-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v7",
+  "expected_head_sha": "9412acae165ba6f50e7d9398d8fb3ea053fc1f81",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "b936998f1be1ebac42ae700df2da2e96c15f5a02fbb5e4a6d2e7333877de6a90",
+  "patch_bytes": 5543,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0127 Tile Map workspace UI",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Isolates the Native 2D Tile Map workspace toolbar, layer/palette/tool selection, and canvas dispatch as one producer edit to identify the remaining preflight failure precisely."
+}
