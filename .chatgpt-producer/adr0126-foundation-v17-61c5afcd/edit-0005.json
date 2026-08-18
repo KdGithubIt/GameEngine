@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/lib.rs","old":"pub mod test_fixtures;\npub mod transaction;","new":"pub mod test_fixtures;\npub mod timeline;\npub mod timeline_authoring;\npub mod transaction;"}
