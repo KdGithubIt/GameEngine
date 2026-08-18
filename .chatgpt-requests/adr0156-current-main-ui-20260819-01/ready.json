@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0156-current-main-ui-20260819-01",
+  "target_branch": "chatgpt/gameengine-adr0156-benchmark-campaigns-v3",
+  "expected_head_sha": "6d77eca012b7601e01cf865cf8257fef1d3a6d76",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "patch_sha256": "406ec3fb52ac37658b9a601d25f70b7835abdc1878707d4b8d1e955806dbb832",
+  "patch_bytes": 36606,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0156 campaign controls on current main",
+  "pr_title": "GameEngine: implement ADR 0156 benchmark campaigns",
+  "pr_body": "## Summary\n\nAdds the ADR 0156 AI Studio campaign selection, immutable-plan start, exact installed-model preflight, persisted pause/stop/resume progress, aggregate reporting, and deterministic Visual Validation fixture on top of the current-main campaign core. The existing manual Record current evidence path remains available.\n\nCampaign execution against controlled fixtures follows on this same Draft PR; the active user project is never used implicitly.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
