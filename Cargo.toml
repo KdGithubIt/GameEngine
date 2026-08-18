@@ -33,3 +33,5 @@ resolver = "3"
 # debug info for workspace crates while removing the bulk of the linker input.
 [profile.dev.package."*"]
 debug = false
+
+# Validation-only sentinel: semantically inert; forces full workspace CI coverage.
