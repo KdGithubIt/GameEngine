@@ -1,0 +1,13 @@
+diff --git a/crates/authoring/src/capability.rs b/crates/authoring/src/capability.rs
+index c2a1460b7e244d1c53cbdac81ce8ffdc6168b475..e0389eed5634aa6881f3b0d77edcd1d685537bf7 100644
+--- a/crates/authoring/src/capability.rs
++++ b/crates/authoring/src/capability.rs
+@@ -174,6 +174,8 @@ pub enum AuthoringDomain {
+     ProjectSettings,
+     /// Animation Set asset documents.
+     AnimationSet,
++    /// Timeline sequence documents and live Sequencer sessions.
++    Timeline,
+ }
+ 
+ /// Authoring document a capability reads or mutates.
