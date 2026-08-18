@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-timeline-core-20260818-18",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "8ec9cfe1692ef1d46cbe53aba9bf8b26ec66e1e4",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "87ec5bf1385f52e00513bb2b74e1857717b135a69f326fa17afa9d1c0710f5b9",
+  "patch_bytes": 80053,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Add ADR 0126 Timeline core authoring contracts",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nContinues ADR 0126 current-main completion with the dependency-neutral Timeline crate, versioned Timeline document, transactional authoring service, exports, and canonical capability registry entries.\n\nFurther runtime and Sequencer integration follows before final validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
