@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0143-model-resources-r7-20260818-07b",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources-r7",
+  "expected_head_sha": "8775dfe5dd2f501582743ce65e20898300e925aa",
+  "baseline_main_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json",
+    "edit-0016.json"
+  ],
+  "commit_message": "Integrate ADR0143 resource orchestration with ADR0145 providers",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\nIntegrates ADR0143 model-resource orchestration into the current ADR0145 AI Studio without treating external coding agents as ModelBackends. Local Ollama-compatible residency is released before Editor restoration and managed Play, and is reacquired only after authoritative-state re-inspection. Hosted/Enterprise GPU controls remain unavailable. ADR0145 provider selection, provider-managed authentication, MCP injection, canonical-authoring work claims, external process cancellation, diagnostics, and frozen per-run provider snapshots remain intact.\n\n## Validation\n\nWindows Validation: affected. Editor Visual Validation is required on the final exact head.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
