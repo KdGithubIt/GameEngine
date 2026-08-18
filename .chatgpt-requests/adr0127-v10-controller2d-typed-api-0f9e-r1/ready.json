@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-controller2d-typed-api-0f9e-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "0f9e74dadf38b5a9ad40d87ddb5b2cbd6e6de9ae",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "6312ef9c444ff919e963b3ed151973b026175743e11a30a5843ab83e4cc15cf3",
+  "patch_bytes": 10405,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete typed CharacterController2D gameplay API",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Completes the public typed Project Rust surface for CharacterController2D: Character2dStateView, typed Commands methods, explicit Character2d authorization, precise host errors, contract tests, and gameplay documentation. The raw Value payload remains behind the typed API and the 3D Character family remains unchanged."
+}
