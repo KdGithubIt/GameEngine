@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "        let project_root = self.sandbox.reset_run(&self.spec.experiment_id, run.ordinal)?;\n        let experiment_root = self",
+  "new": "        let project_root = self.sandbox.reset_run(&self.spec.experiment_id, run.ordinal)?;\n        if run.task_id == \"validation_repair_v1\" {\n            inject_validation_repair_fault(&project_root)?;\n        }\n        let experiment_root = self"
+}
