@@ -488,10 +488,12 @@ impl HumanoidProfile {
         if !self.bones.values().all(|bone| known_bones.contains(bone)) {
             return false;
         }
-        let mapped_bones = self.bones.values().copied().collect::<Vec<_>>();
-        if mapped_bones.iter().copied().collect::<std::collections::BTreeSet<_>>().len()
-            != mapped_bones.len()
-        {
+        let mapped_bones = self
+            .bones
+            .values()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        if mapped_bones.len() != self.bones.len() {
             return false;
         }
         self.motion_root

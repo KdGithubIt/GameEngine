@@ -138,12 +138,12 @@ pub fn plan_animation_motion(input: &AnimationMotionPlanInput) -> AnimationMotio
     if let Some(map) = &input.retarget_map {
         return AnimationMotionRoute::Retarget { map: map.clone() };
     }
-    if input.target_humanoid_usable {
-        if let Some(motion) = &input.humanoid_fallback {
-            return AnimationMotionRoute::Humanoid {
-                motion: motion.clone(),
-            };
-        }
+    if input.target_humanoid_usable
+        && let Some(motion) = &input.humanoid_fallback
+    {
+        return AnimationMotionRoute::Humanoid {
+            motion: motion.clone(),
+        };
     }
     AnimationMotionRoute::Failed {
         reason: AnimationMotionFailure::NoCompatibleRoute,
