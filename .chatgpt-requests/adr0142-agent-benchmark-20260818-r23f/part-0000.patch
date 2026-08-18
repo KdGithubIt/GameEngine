@@ -1,0 +1,803 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 8fa433c72e64b7a2b3a0a1ed2a5057af567db162..7f18999258f1effa9cc5bb05a35727031fbc8a39 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -4,7 +4,8 @@
+ //! conversation transcript, retrieved source text, project path, credentials, or model prompt.
+ 
+ use crate::agent_host::{
+-    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, AgentWorkClaim, CompletionStatus,
++    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, AgentWorkClaim, CompletionReport,
++    CompletionStatus,
+ };
+ use crate::native_agent::{InstalledModelInventory, NativeMetrics};
+ use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
+@@ -119,6 +120,282 @@ impl Default for BenchmarkHardwareIdentity {
+     }
+ }
+ 
++impl BenchmarkHardwareIdentity {
++    pub(crate) fn from_editor_adapter(name: &str, vendor_id: u32, device_id: u32) -> Self {
++        let name = name.trim();
++        if name.is_empty() {
++            return Self::default();
++        }
++        let gpu = TelemetryValue::Measured(name.to_owned());
++
++        #[cfg(target_os = "windows")]
++        let (total_gpu_memory_bytes, total_system_memory_bytes) =
++            windows_hardware_memory(name, vendor_id, device_id);
++        #[cfg(not(target_os = "windows"))]
++        let (total_gpu_memory_bytes, total_system_memory_bytes) = {
++            let _ = (vendor_id, device_id);
++            (TelemetryValue::Unavailable, TelemetryValue::Unavailable)
++        };
++
++        Self {
++            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
++            gpu,
++            total_gpu_memory_bytes,
++            total_system_memory_bytes,
++        }
++    }
++}
++
++#[cfg(target_os = "windows")]
++#[derive(Debug, Clone)]
++struct WindowsAdapterMemory {
++    name: String,
++    vendor_id: u32,
++    device_id: u32,
++    dedicated_video_memory_bytes: u64,
++    software: bool,
++}
++
++#[cfg(target_os = "windows")]
++fn windows_hardware_memory(
++    adapter_name: &str,
++    vendor_id: u32,
++    device_id: u32,
++) -> (TelemetryValue<u64>, TelemetryValue<u64>) {
++    let gpu_memory = dxgi_adapter_candidates()
++        .and_then(|candidates| {
++            select_adapter_memory(adapter_name, vendor_id, device_id, &candidates)
++        })
++        .map(TelemetryValue::Measured)
++        .unwrap_or_default();
++    let system_memory = total_physical_memory_bytes()
++        .filter(|bytes| *bytes > 0)
++        .map(TelemetryValue::Measured)
++        .unwrap_or_default();
++    (gpu_memory, system_memory)
++}
++
++#[cfg(target_os = "windows")]
++fn select_adapter_memory(
++    adapter_name: &str,
++    vendor_id: u32,
++    device_id: u32,
++    candidates: &[WindowsAdapterMemory],
++) -> Option<u64> {
++    let by_id = candidates
++        .iter()
++        .filter(|candidate| {
++            !candidate.software
++                && vendor_id != 0
++                && device_id != 0
++                && candidate.vendor_id == vendor_id
++                && candidate.device_id == device_id
++        })
++        .collect::<Vec<_>>();
++    if by_id.len() == 1 {
++        return (by_id[0].dedicated_video_memory_bytes > 0)
++            .then_some(by_id[0].dedicated_video_memory_bytes);
++    }
++
++    let normalized = adapter_name.trim().to_ascii_lowercase();
++    let by_name = candidates
++        .iter()
++        .filter(|candidate| {
++            !candidate.software && candidate.name.trim().to_ascii_lowercase() == normalized
++        })
++        .collect::<Vec<_>>();
++    if by_name.len() == 1 {
++        return (by_name[0].dedicated_video_memory_bytes > 0)
++            .then_some(by_name[0].dedicated_video_memory_bytes);
++    }
++    None
++}
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++#[allow(dead_code)]
++struct WindowsGuid {
++    data1: u32,
++    data2: u16,
++    data3: u16,
++    data4: [u8; 8],
++}
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++#[allow(dead_code)]
++struct WindowsLuid {
++    low_part: u32,
++    high_part: i32,
++}
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++#[allow(dead_code)]
++struct DxgiAdapterDesc1 {
++    description: [u16; 128],
++    vendor_id: u32,
++    device_id: u32,
++    subsys_id: u32,
++    revision: u32,
++    dedicated_video_memory: usize,
++    dedicated_system_memory: usize,
++    shared_system_memory: usize,
++    adapter_luid: WindowsLuid,
++    flags: u32,
++}
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++#[allow(dead_code)]
++struct MemoryStatusEx {
++    length: u32,
++    memory_load: u32,
++    total_physical: u64,
++    available_physical: u64,
++    total_page_file: u64,
++    available_page_file: u64,
++    total_virtual: u64,
++    available_virtual: u64,
++    available_extended_virtual: u64,
++}
++
++#[cfg(target_os = "windows")]
++type ComRelease = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
++
++#[cfg(target_os = "windows")]
++type EnumAdapters1 =
++    unsafe extern "system" fn(*mut DxgiFactory1, u32, *mut *mut DxgiAdapter1) -> i32;
++
++#[cfg(target_os = "windows")]
++type GetDesc1 = unsafe extern "system" fn(*mut DxgiAdapter1, *mut DxgiAdapterDesc1) -> i32;
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++#[allow(dead_code)]
++struct DxgiFactory1VTable {
++    query_interface: *const std::ffi::c_void,
++    add_ref: *const std::ffi::c_void,
++    release: ComRelease,
++    set_private_data: *const std::ffi::c_void,
++    set_private_data_interface: *const std::ffi::c_void,
++    get_private_data: *const std::ffi::c_void,
++    get_parent: *const std::ffi::c_void,
++    enum_adapters: *const std::ffi::c_void,
++    make_window_association: *const std::ffi::c_void,
++    get_window_association: *const std::ffi::c_void,
++    create_swap_chain: *const std::ffi::c_void,
++    create_software_adapter: *const std::ffi::c_void,
++    enum_adapters1: EnumAdapters1,
++    is_current: *const std::ffi::c_void,
++}
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++struct DxgiFactory1 {
++    vtable: *const DxgiFactory1VTable,
++}
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++#[allow(dead_code)]
++struct DxgiAdapter1VTable {
++    query_interface: *const std::ffi::c_void,
++    add_ref: *const std::ffi::c_void,
++    release: ComRelease,
++    set_private_data: *const std::ffi::c_void,
++    set_private_data_interface: *const std::ffi::c_void,
++    get_private_data: *const std::ffi::c_void,
++    get_parent: *const std::ffi::c_void,
++    enum_outputs: *const std::ffi::c_void,
++    get_desc: *const std::ffi::c_void,
++    check_interface_support: *const std::ffi::c_void,
++    get_desc1: GetDesc1,
++}
++
++#[cfg(target_os = "windows")]
++#[repr(C)]
++struct DxgiAdapter1 {
++    vtable: *const DxgiAdapter1VTable,
++}
++
++#[cfg(target_os = "windows")]
++const IID_IDXGI_FACTORY1: WindowsGuid = WindowsGuid {
++    data1: 0x770a_ae78,
++    data2: 0xf26f,
++    data3: 0x4dba,
++    data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87],
++};
++
++#[cfg(target_os = "windows")]
++const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
++
++#[cfg(target_os = "windows")]
++#[link(name = "dxgi")]
++unsafe extern "system" {
++    #[link_name = "CreateDXGIFactory1"]
++    fn create_dxgi_factory1(
++        interface_id: *const WindowsGuid,
++        factory: *mut *mut std::ffi::c_void,
++    ) -> i32;
++}
++
++#[cfg(target_os = "windows")]
++#[link(name = "kernel32")]
++unsafe extern "system" {
++    #[link_name = "GlobalMemoryStatusEx"]
++    fn global_memory_status_ex(status: *mut MemoryStatusEx) -> i32;
++}
++
++#[cfg(target_os = "windows")]
++fn dxgi_adapter_candidates() -> Option<Vec<WindowsAdapterMemory>> {
++    let mut factory = std::ptr::null_mut::<std::ffi::c_void>();
++    let result = unsafe { create_dxgi_factory1(&IID_IDXGI_FACTORY1, &mut factory) };
++    if result < 0 || factory.is_null() {
++        return None;
++    }
++    let factory = factory.cast::<DxgiFactory1>();
++
++    let mut candidates = Vec::new();
++    for index in 0..64_u32 {
++        let mut adapter = std::ptr::null_mut::<DxgiAdapter1>();
++        let result = unsafe { ((*(*factory).vtable).enum_adapters1)(factory, index, &mut adapter) };
++        if result < 0 || adapter.is_null() {
++            break;
++        }
++
++        let mut description = unsafe { std::mem::zeroed::<DxgiAdapterDesc1>() };
++        let result = unsafe { ((*(*adapter).vtable).get_desc1)(adapter, &mut description) };
++        if result >= 0 {
++            let end = description
++                .description
++                .iter()
++                .position(|character| *character == 0)
++                .unwrap_or(description.description.len());
++            candidates.push(WindowsAdapterMemory {
++                name: String::from_utf16_lossy(&description.description[..end]),
++                vendor_id: description.vendor_id,
++                device_id: description.device_id,
++                dedicated_video_memory_bytes: description.dedicated_video_memory as u64,
++                software: description.flags & DXGI_ADAPTER_FLAG_SOFTWARE != 0,
++            });
++        }
++
++        unsafe { ((*(*adapter).vtable).release)(adapter.cast()) };
++    }
++
++    unsafe { ((*(*factory).vtable).release)(factory.cast()) };
++    Some(candidates)
++}
++
++#[cfg(target_os = "windows")]
++fn total_physical_memory_bytes() -> Option<u64> {
++    let mut status = unsafe { std::mem::zeroed::<MemoryStatusEx>() };
++    status.length = std::mem::size_of::<MemoryStatusEx>() as u32;
++    let result = unsafe { global_memory_status_ex(&mut status) };
++    (result != 0).then_some(status.total_physical)
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub(crate) struct BenchmarkToolBudget {
+     pub(crate) max_model_turns: u32,
+@@ -666,11 +943,13 @@ pub(crate) fn read_question_record(
+     inventory: Option<&InstalledModelInventory>,
+     quality: QualityPreference,
+     workload: InferenceWorkload,
++    hardware: &BenchmarkHardwareIdentity,
+ ) -> Result<BenchmarkRecord, String> {
+     let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+     if task.kind != BenchmarkTaskKind::ReadQuestion {
+         return Err("the last read-oriented result can only record a read-question benchmark task".to_owned());
+     }
++    let provenance_reported = metrics.retrieval_chunks > 0;
+     Ok(BenchmarkRecord {
+         schema_version: BENCHMARK_SCHEMA_VERSION,
+         recorded_unix_ms: unix_ms(),
+@@ -680,7 +959,7 @@ pub(crate) fn read_question_record(
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             runtime_harness_version: metrics.harness_version.to_owned(),
+             model: model_identity(metrics.backend_id, &metrics.model_id, inventory),
+-            hardware: BenchmarkHardwareIdentity::default(),
++            hardware: hardware.clone(),
+             quality,
+             workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
+             observed_workload: TelemetryValue::Measured(workload),
+@@ -694,8 +973,8 @@ pub(crate) fn read_question_record(
+             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
+         },
+         metrics: BenchmarkMetrics {
+-            acceptance_success: TelemetryValue::Measured(true),
+-            completion_success: TelemetryValue::Measured(true),
++            acceptance_success: TelemetryValue::Measured(provenance_reported),
++            completion_success: TelemetryValue::Measured(provenance_reported),
+             model_turns: TelemetryValue::Measured(u64::from(metrics.model_turns)),
+             tool_calls: TelemetryValue::Measured(0),
+             invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
+@@ -728,13 +1007,19 @@ fn work_claim_kind_label(claim: &AgentWorkClaim) -> Option<String> {
+         .map(ToOwned::to_owned)
+ }
+ 
++pub(crate) struct AgentRunBenchmarkIdentity<'a> {
++    pub(crate) backend_id: &'a str,
++    pub(crate) model_id: &'a str,
++    pub(crate) inventory: Option<&'a InstalledModelInventory>,
++    pub(crate) quality: QualityPreference,
++    pub(crate) workload: InferenceWorkload,
++    pub(crate) hardware: &'a BenchmarkHardwareIdentity,
++}
++
+ pub(crate) fn agent_run_record(
+     task_id: &str,
+     run: &AgentRun,
+-    backend_id: &str,
+-    model_id: &str,
+-    inventory: Option<&InstalledModelInventory>,
+-    quality: QualityPreference,
++    identity: AgentRunBenchmarkIdentity<'_>,
+ ) -> Result<BenchmarkRecord, String> {
+     let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+     if task.kind == BenchmarkTaskKind::ReadQuestion {
+@@ -782,7 +1067,7 @@ pub(crate) fn agent_run_record(
+         .filter(|event| event.kind == AgentEventKind::UserMessage)
+         .count() as u64;
+     let elapsed_ms = run.finished_unix_ms.map(|finished| finished.saturating_sub(run.started_unix_ms));
+-    let completion_success = completion_success(run);
++    let completion_success = task_completion_success(task, run);
+     Ok(BenchmarkRecord {
+         schema_version: BENCHMARK_SCHEMA_VERSION,
+         recorded_unix_ms: unix_ms(),
+@@ -791,11 +1076,11 @@ pub(crate) fn agent_run_record(
+             task_id: task.id.to_owned(),
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             runtime_harness_version: NATIVE_WRITE_HARNESS_VERSION.to_owned(),
+-            model: model_identity(backend_id, model_id, inventory),
+-            hardware: BenchmarkHardwareIdentity::default(),
+-            quality,
++            model: model_identity(identity.backend_id, identity.model_id, identity.inventory),
++            hardware: identity.hardware.clone(),
++            quality: identity.quality,
+             workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
+-            observed_workload: TelemetryValue::Unavailable,
++            observed_workload: TelemetryValue::Measured(identity.workload),
+             tool_budget: BenchmarkToolBudget {
+                 max_model_turns: policy.max_model_turns,
+                 max_tool_failures: policy.max_tool_failures,
+@@ -838,18 +1123,37 @@ pub(crate) fn agent_run_record(
+     })
+ }
+ 
+-fn completion_success(run: &AgentRun) -> bool {
+-    [
+-        run.completion.acceptance_criteria,
+-        run.completion.authoring_validation,
+-        run.completion.source_validation,
+-        run.completion.play_launch,
+-        run.completion.frame_capture,
+-        run.completion.visual_evaluation,
+-        run.completion.interaction_scenarios,
+-    ]
+-    .into_iter()
+-    .all(|status| matches!(status, CompletionStatus::Passed | CompletionStatus::NotApplicable))
++fn completion_gate_status(
++    report: &CompletionReport,
++    criterion: &str,
++) -> Option<CompletionStatus> {
++    match criterion {
++        "acceptance_criteria" => Some(report.acceptance_criteria),
++        "authoring_validation" => Some(report.authoring_validation),
++        "source_validation" => Some(report.source_validation),
++        "play_launch" => Some(report.play_launch),
++        "frame_capture" => Some(report.frame_capture),
++        "visual_evaluation" => Some(report.visual_evaluation),
++        "interaction_scenarios" => Some(report.interaction_scenarios),
++        _ => None,
++    }
++}
++
++fn completion_report_satisfies_task(
++    task: &BenchmarkTaskDescriptor,
++    report: &CompletionReport,
++    validation_attempts: usize,
++) -> bool {
++    let required_gates_passed = task.completion_criteria.iter().all(|criterion| {
++        completion_gate_status(report, criterion) == Some(CompletionStatus::Passed)
++    });
++    required_gates_passed
++        && (task.kind != BenchmarkTaskKind::ValidationRepair || validation_attempts >= 2)
++}
++
++fn task_completion_success(task: &BenchmarkTaskDescriptor, run: &AgentRun) -> bool {
++    run.state == AgentRunState::Completed
++        && completion_report_satisfies_task(task, &run.completion, run.validation_attempts.len())
+ }
+ 
+ fn optional_measured(value: Option<u64>) -> TelemetryValue<u64> {
+@@ -987,6 +1291,111 @@ mod tests {
+         assert!(matches!(comparison_equivalence(&left, &different_claims), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"tool_or_permission_budget")));
+     }
+ 
++    #[test]
++    fn read_question_record_preserves_measured_hardware_snapshot() {
++        let hardware = BenchmarkHardwareIdentity {
++            platform: "test-platform".to_owned(),
++            gpu: TelemetryValue::Measured("test-gpu".to_owned()),
++            total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
++            total_system_memory_bytes: TelemetryValue::Measured(32_000),
++        };
++        let mut metrics = NativeMetrics {
++            harness_version: "test-read-v1",
++            backend_id: "test-backend",
++            model_id: "model-a".to_owned(),
++            model_turns: 1,
++            retrieval_chunks: 1,
++            prompt_chars: 1,
++            response_chars: 1,
++            elapsed_ms: 1,
++            prompt_eval_tokens: Some(1),
++            response_tokens: Some(1),
++            backend_duration_ms: Some(1),
++            load_latency_ms: Some(1),
++            prompt_eval_duration_ms: Some(1),
++            generation_duration_ms: Some(1),
++            generation_tokens_per_second_milli: Some(1),
++            ttft_ms: None,
++        };
++        let record = read_question_record(
++            BENCHMARK_TASKS[0].id,
++            &metrics,
++            None,
++            QualityPreference::Balanced,
++            InferenceWorkload::InteractiveReasoning,
++            &hardware,
++        )
++        .expect("read benchmark record");
++        assert_eq!(record.identity.hardware, hardware);
++
++        metrics.retrieval_chunks = 0;
++        let no_provenance = read_question_record(
++            BENCHMARK_TASKS[0].id,
++            &metrics,
++            None,
++            QualityPreference::Balanced,
++            InferenceWorkload::InteractiveReasoning,
++            &hardware,
++        )
++        .expect("read benchmark record without provenance");
++        assert_eq!(
++            no_provenance.metrics.completion_success,
++            TelemetryValue::Measured(false)
++        );
++    }
++
++    #[cfg(target_os = "windows")]
++    #[test]
++    fn windows_adapter_memory_selection_is_unique_and_fail_closed() {
++        let candidates = vec![
++            WindowsAdapterMemory {
++                name: "GPU A".to_owned(),
++                vendor_id: 1,
++                device_id: 2,
++                dedicated_video_memory_bytes: 12_000,
++                software: false,
++            },
++            WindowsAdapterMemory {
++                name: "GPU B".to_owned(),
++                vendor_id: 3,
++                device_id: 4,
++                dedicated_video_memory_bytes: 8_000,
++                software: false,
++            },
++        ];
++        assert_eq!(select_adapter_memory("GPU A", 1, 2, &candidates), Some(12_000));
++
++        let ambiguous = vec![
++            WindowsAdapterMemory { name: "GPU A".to_owned(), ..candidates[0].clone() },
++            WindowsAdapterMemory { name: "GPU A".to_owned(), ..candidates[0].clone() },
++        ];
++        assert_eq!(select_adapter_memory("GPU A", 1, 2, &ambiguous), None);
++    }
++
++    #[test]
++    fn task_completion_requires_required_gates_to_pass() {
++        let mut report = CompletionReport {
++            acceptance_criteria: CompletionStatus::NotApplicable,
++            authoring_validation: CompletionStatus::NotApplicable,
++            source_validation: CompletionStatus::NotApplicable,
++            play_launch: CompletionStatus::NotApplicable,
++            frame_capture: CompletionStatus::NotApplicable,
++            visual_evaluation: CompletionStatus::NotApplicable,
++            interaction_scenarios: CompletionStatus::NotApplicable,
++        };
++        let runtime = &BENCHMARK_TASKS[5];
++        assert!(!completion_report_satisfies_task(runtime, &report, 0));
++        report.play_launch = CompletionStatus::Passed;
++        report.interaction_scenarios = CompletionStatus::Passed;
++        assert!(completion_report_satisfies_task(runtime, &report, 0));
++
++        let repair = &BENCHMARK_TASKS[4];
++        report.acceptance_criteria = CompletionStatus::Passed;
++        report.source_validation = CompletionStatus::Passed;
++        assert!(!completion_report_satisfies_task(repair, &report, 1));
++        assert!(completion_report_satisfies_task(repair, &report, 2));
++    }
++
+     #[test]
+     fn unavailable_telemetry_serializes_explicitly() {
+         let value = serde_json::to_string(&TelemetryValue::<u64>::Unavailable).expect("telemetry JSON");
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 38137d599a57caf97472830728a75f5e4698c8a0..895605d7e763485faeb52047a1be980f7da8673a 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -5,9 +5,9 @@
+ //! workspace rules live in the GUI-free `agent_host` module.
+ 
+ use crate::agent_benchmark::{
+-    agent_run_record, benchmark_task, read_question_record, BenchmarkRecord, BenchmarkStore,
+-    BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog, BENCHMARK_CORPUS_VERSION,
+-    BENCHMARK_TASKS,
++    agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
++    BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
++    CuratedModelCatalog, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
+ };
+ use crate::agent_host::{
+     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
+@@ -205,8 +205,10 @@ struct ManagedRuntimeObservation {
+ 
+ #[derive(Debug, Clone)]
+ struct NativeQuestionBenchmarkPolicy {
++    task_id: String,
+     quality: QualityPreference,
+     workload: InferenceWorkload,
++    hardware: BenchmarkHardwareIdentity,
+     inventory: Option<InstalledModelInventory>,
+ }
+ 
+@@ -219,9 +221,12 @@ struct NativeQuestionBenchmarkSnapshot {
+ #[derive(Debug, Clone)]
+ struct NativeRunBenchmarkContext {
+     run_id: String,
++    task_id: String,
+     backend_id: String,
+     model_id: String,
+     quality: QualityPreference,
++    workload: InferenceWorkload,
++    hardware: BenchmarkHardwareIdentity,
+     inventory: Option<InstalledModelInventory>,
+ }
+ 
+@@ -436,6 +441,8 @@ pub struct AiStudioPanel {
+     benchmark_records: Vec<BenchmarkRecord>,
+     model_catalog: CuratedModelCatalog,
+     benchmark_task_id: String,
++    benchmark_hardware: BenchmarkHardwareIdentity,
++    benchmark_hardware_probe_attempted: bool,
+     installed_model_inventory: Option<InstalledModelInventory>,
+     model_discovery: Option<InstalledModelDiscoveryTask>,
+     native_question_benchmark_policy: Option<NativeQuestionBenchmarkPolicy>,
+@@ -552,6 +559,8 @@ impl AiStudioPanel {
+             benchmark_records,
+             model_catalog,
+             benchmark_task_id: BENCHMARK_TASKS[0].id.to_owned(),
++            benchmark_hardware: BenchmarkHardwareIdentity::default(),
++            benchmark_hardware_probe_attempted: false,
+             installed_model_inventory: None,
+             model_discovery: None,
+             native_question_benchmark_policy: None,
+@@ -624,6 +633,25 @@ impl AiStudioPanel {
+         self.presentation.detach();
+     }
+ 
++    /// Captures the active Editor adapter and reliable machine memory identity once.
++    ///
++    /// Unsupported or ambiguous platform telemetry remains explicitly unavailable.
++    pub fn observe_benchmark_hardware(&mut self, frame: &eframe::Frame) {
++        if self.benchmark_hardware_probe_attempted {
++            return;
++        }
++        let Some(render_state) = frame.wgpu_render_state() else {
++            return;
++        };
++        let adapter = render_state.adapter.get_info();
++        self.benchmark_hardware = BenchmarkHardwareIdentity::from_editor_adapter(
++            &adapter.name,
++            adapter.vendor,
++            adapter.device,
++        );
++        self.benchmark_hardware_probe_attempted = true;
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Selects a deterministic hosted-backend state for screenshot validation.
+     pub fn prepare_hosted_backend_visual_validation(&mut self) {
+@@ -943,7 +971,7 @@ impl AiStudioPanel {
+             egui::ViewportId::from_hash_of("gameengine_ai_studio_detached"),
+             egui::ViewportBuilder::default()
+                 .with_title("AI Studio")
+-                .with_inner_size([600.0, 760.0])
++                .with_inner_size([600.0, 680.0])
+                 .with_min_inner_size([460.0, 520.0])
+                 .with_resizable(true),
+             |ui, _class| {
+@@ -1690,7 +1718,7 @@ impl AiStudioPanel {
+             self.benchmark_records.len(),
+             self.model_catalog.catalog_version
+         ))
+-        .default_open(false)
++        .default_open(cfg!(feature = "visual-validation"))
+         .show(ui, |ui| {
+             ui.small(format!(
+                 "Versioned corpus: {BENCHMARK_CORPUS_VERSION}. Recommendations require complete, comparable GameEngine task evidence; third-party scores alone never qualify a model."
+@@ -1766,7 +1794,7 @@ impl AiStudioPanel {
+                 }
+             });
+             ui.small(
+-                "Record only when the current result intentionally executes the selected corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
++                "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
+             );
+         });
+     }
+@@ -1826,19 +1854,23 @@ impl AiStudioPanel {
+             return false;
+         };
+         if task.kind == BenchmarkTaskKind::ReadQuestion {
+-            return self.last_native_question_benchmark.is_some();
++            return self
++                .last_native_question_benchmark
++                .as_ref()
++                .is_some_and(|snapshot| snapshot.policy.task_id == task.id);
+         }
+         self.native_run_benchmark_context
+             .as_ref()
+             .is_some_and(|benchmark| {
+-                self.host.run(&benchmark.run_id).is_ok_and(|run| {
+-                    matches!(
+-                        run.state,
+-                        AgentRunState::Completed
+-                            | AgentRunState::Failed
+-                            | AgentRunState::Cancelled
+-                    )
+-                })
++                benchmark.task_id == task.id
++                    && self.host.run(&benchmark.run_id).is_ok_and(|run| {
++                        matches!(
++                            run.state,
++                            AgentRunState::Completed
++                                | AgentRunState::Failed
++                                | AgentRunState::Cancelled
++                        )
++                    })
+             })
+     }
+ 
+@@ -1856,11 +1888,12 @@ impl AiStudioPanel {
+                 return;
+             };
+             read_question_record(
+-                task.id,
++                &snapshot.policy.task_id,
+                 &snapshot.metrics,
+                 snapshot.policy.inventory.as_ref(),
+                 snapshot.policy.quality,
+                 snapshot.policy.workload,
++                &snapshot.policy.hardware,
+             )
+         } else {
+             let Some(context) = self.native_run_benchmark_context.clone() else {
+@@ -1878,12 +1911,16 @@ impl AiStudioPanel {
+                 }
+             };
+             agent_run_record(
+-                task.id,
++                &context.task_id,
+                 &run,
+-                &context.backend_id,
+-                &context.model_id,
+-                context.inventory.as_ref(),
+-                context.quality,
++                AgentRunBenchmarkIdentity {
++                    backend_id: &context.backend_id,
++                    model_id: &context.model_id,
++                    inventory: context.inventory.as_ref(),
++                    quality: context.quality,
++                    workload: context.workload,
++                    hardware: &context.hardware,
++                },
+             )
+         };
+         let record = match record {
+@@ -2077,8 +2114,10 @@ impl AiStudioPanel {
+             None
+         };
+         self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
++            task_id: self.benchmark_task_id.clone(),
+             quality: self.quality_preference,
+             workload: self.resolved_workload,
++            hardware: self.benchmark_hardware.clone(),
+             inventory,
+         });
+         if self.resource_plan.presentation == PresentationPosture::InferenceFocused {
+@@ -3307,6 +3346,18 @@ impl AiStudioPanel {
+         let native_requires_network = native_config
+             .as_ref()
+             .is_some_and(NativeModelConfig::requires_network);
++        let has_non_trivial_work = !self.proposal_draft.planned_code_changes.is_empty()
++            || !self.proposal_draft.planned_project_changes.is_empty()
++            || !self.proposal_draft.planned_assets.is_empty();
++        let benchmark_workload = classify_workload(WorkloadSignals {
++            strong_reasoning_required: has_non_trivial_work
++                && matches!(
++                    self.quality_preference,
++                    QualityPreference::Balanced | QualityPreference::Deep
++                ),
++            model_judgement_required: true,
++            ..WorkloadSignals::default()
++        });
+         let native_benchmark_identity = native_config.as_ref().map(|config| {
+             let inventory = if matches!(config, NativeModelConfig::Local(_)) {
+                 self.current_installed_inventory().cloned()
+@@ -3326,9 +3377,12 @@ impl AiStudioPanel {
+         self.native_run_benchmark_context = native_benchmark_identity.map(
+             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
+                 run_id: run_id.clone(),
++                task_id: self.benchmark_task_id.clone(),
+                 backend_id,
+                 model_id,
+                 quality: self.quality_preference,
++                workload: benchmark_workload,
++                hardware: self.benchmark_hardware.clone(),
+                 inventory,
+             },
+         );
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 9f963d2c039328d87fb970b8e6e12fd8848a72fa..18d02c061a312c6531c7a1686d881f83e0f8991c 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -314,6 +314,7 @@ impl EditorShell {
+ impl eframe::App for EditorShell {
+     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
+         self.handle_mcp_requests();
++        self.ai_studio.observe_benchmark_hardware(frame);
+         if self.project_lease.take_activation_request() {
+             context.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
+         }
+diff --git a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+index 343073f9f512c8b7fcd0bb73f8377c0b328e05c8..7a7d2dc4b3b91d161d0dfad8b9a3f43187c52259 100644
+--- a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
++++ b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+@@ -25,7 +25,7 @@ Each comparable result records at least:
+ - backend/runtime version;
+ - hardware identity and total GPU/system memory;
+ - quality/workload policy;
+-- available tool/permission/work-claim budget; and
++- available tool/permission/work-claim kind/count budget without raw project target keys; and
+ - completion criteria used by the task.
+ 
+ A comparison that changes multiple dimensions must be labeled non-equivalent rather than presented as a model-only ranking.
+@@ -54,9 +54,9 @@ The RTX 4070 Ti 12 GB remains the first reference profile from ADR 0135, not a m
+ 
+ ## Implementation
+ 
+-The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim budget, completion criteria, and measured Agent Host evidence.
++The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim kind/count budget, completion criteria, and measured Agent Host evidence. The selected benchmark task identity and ADR 0135 workload classification are frozen when inference or a native run starts. Read-question evidence satisfies its provenance completion gate only when the read harness actually retrieved at least one evidence chunk; a plain model answer without retrieved provenance remains a recorded failure and cannot qualify a catalog recommendation. On Windows, the first release snapshots the active Editor wgpu adapter identity, accepts dedicated GPU memory only from one matching non-software DXGI adapter, and measures total physical system memory through the operating system. Ambiguous adapter matching, API failure, zero dedicated-memory reporting, and unsupported platforms remain explicitly unavailable rather than being estimated.
+ 
+-Model-only comparison is permitted only when corpus/task, both harness identities, backend runtime, hardware profile, quality/workload policy, tool/permission/work-claim budget, and completion criteria match. Changed dimensions are returned as an explicit non-equivalent comparison instead of being ranked as if only the model changed. The benchmark store intentionally omits prompts, conversation history, retrieved source text, project paths, and credentials. Recording local evidence is an explicit AI Studio action rather than silent collection or upload.
++Model-only comparison is permitted only when corpus/task, both harness identities, backend runtime, hardware profile, quality/workload policy, tool/permission/work-claim kind/count budget, and completion criteria match. Changed dimensions are returned as an explicit non-equivalent comparison instead of being ranked as if only the model changed. Write-capable benchmark success is task-specific: every completion gate named by the versioned task descriptor must be `Passed`; generic Agent Host `NotApplicable` completion is not sufficient for a required benchmark gate, and the validation/repair task additionally requires at least one repair/revalidation cycle represented by two managed validation attempts. The benchmark store intentionally omits prompts, conversation history, retrieved source text, project paths, raw work-claim target keys, and credentials. Recording local evidence is an explicit AI Studio action rather than silent collection or upload.
+ 
+ The curated catalog is bundled as versioned product data separate from model weights. A candidate records exact model/runtime representation plus source, license, transfer/storage size, memory guidance, context, modality, and tool-capability metadata. Lightweight, Balanced, and High Quality recommendation slots are derived only from complete comparable GameEngine corpus evidence; an empty or incomplete evidence set produces no recommendation rather than a guessed default. The first catalog ships without invented candidate recommendations and becomes populated only from measured evidence with explicit provenance.
+ 
