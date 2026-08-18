@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/runtime_debug.rs","old":"        cleanup_inputs: 0,\n        replay_recorded: false,\n        observation: capture_observation(runtime),\n","new":"        cleanup_inputs: 0,\n        replay_recorded: false,\n        observation: capture_observation(runtime, host_diagnostics),\n"}
