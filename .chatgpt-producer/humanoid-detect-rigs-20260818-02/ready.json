@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "humanoid-detect-rigs-20260818-02",
+  "target_branch": "chatgpt/gameengine-humanoid-detection-rig-coverage",
+  "expected_head_sha": "e99a6b9a13caba71191157cb53f316e5e9139a2f",
+  "baseline_main_sha": "e99a6b9a13caba71191157cb53f316e5e9139a2f",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Broaden humanoid rig auto-detection",
+  "pr_title": "GameEngine: broaden humanoid rig auto-detection",
+  "pr_body": "## Summary\n\n- broaden automatic Humanoid name normalization and aliases across common DCC and game-engine rig conventions\n- use required hierarchy relationships to disambiguate candidates and conservatively infer a shared Hips parent for branching rigs such as MMD semi-standard skeletons\n- add synthetic SkeletonAsset regression coverage for existing Mixamo-style detection, MMD branching hips, Unreal-style side suffixes, Biped-style prefixes, and unnamed branching hips\n\n## Architecture\n\nADR 0110 required semantics and structural validation remain unchanged. Authored Humanoid profile reconciliation is unchanged. All new detection tests construct BoneDef/SkeletonAsset data directly in crates/animation and do not depend on third-party model or animation files."
+}
