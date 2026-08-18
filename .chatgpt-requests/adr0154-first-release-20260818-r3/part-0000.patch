@@ -1,0 +1,435 @@
+diff --git a/crates/animation/src/lib.rs b/crates/animation/src/lib.rs
+index c7a5cf1bd55030280a1cb096677b9e8ab0d60886..9837bfb01c44dad5dbfd4b8650db5e70ede5082f 100644
+--- a/crates/animation/src/lib.rs
++++ b/crates/animation/src/lib.rs
+@@ -23,6 +23,8 @@ pub mod humanoid;
+ pub mod humanoid_motion;
+ /// Animation-side morph assets, bindings, and weights.
+ pub mod morph;
++/// Target-aware Animation Set motion candidate routing (ADR 0154).
++pub mod motion_binding;
+ /// Pure pose sampling and blending.
+ pub mod pose_graph;
+ /// Skeleton retargeting and baked-clip cache integration.
+diff --git a/crates/animation/src/motion_binding.rs b/crates/animation/src/motion_binding.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b51992112d81e7d615130b84be416df7e71af34f
+--- /dev/null
++++ b/crates/animation/src/motion_binding.rs
+@@ -0,0 +1,235 @@
++//! Target-aware animation motion binding resolution (ADR 0154).
++//!
++//! This module owns the pure routing policy shared by runtime, Editor preview,
++//! validation, and packaging. It deliberately performs no I/O and never uses
++//! display names as identity.
++
++use engine_authoring::id::AssetId;
++use std::fmt;
++
++/// Catalog-level kind of the selected Animation Set motion candidate.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AnimationMotionCandidateKind {
++    /// A concrete Native animation bound to one source skeleton.
++    ModelBound,
++    /// A skeleton-independent Humanoid motion candidate.
++    Humanoid,
++}
++
++/// Immutable facts consumed by [`plan_animation_motion`].
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AnimationMotionPlanInput {
++    /// Stable imported sub-asset selected by the Animation Set.
++    pub candidate: AssetId,
++    /// Catalog kind of [`Self::candidate`].
++    pub candidate_kind: AnimationMotionCandidateKind,
++    /// Skeleton bound by a model-specific Native candidate.
++    pub source_skeleton: Option<AssetId>,
++    /// Skeleton owned by the entity being previewed or played.
++    pub target_skeleton: AssetId,
++    /// Exact registered Retarget Map for source -> target, when one exists.
++    pub retarget_map: Option<AssetId>,
++    /// Logical portable Humanoid variant for the same imported animation.
++    pub humanoid_fallback: Option<AssetId>,
++    /// Whether the target skeleton currently has a usable Humanoid profile.
++    pub target_humanoid_usable: bool,
++}
++
++/// Stable failure classes produced by the shared motion planner.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AnimationMotionFailure {
++    /// A model-bound candidate could not identify its source skeleton.
++    MissingSourceSkeleton,
++    /// An explicit Humanoid candidate cannot bake onto the selected target.
++    TargetHumanoidUnavailable,
++    /// Native did not match and neither Retarget nor Humanoid can resolve.
++    NoCompatibleRoute,
++}
++
++impl fmt::Display for AnimationMotionFailure {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::MissingSourceSkeleton => formatter.write_str("source skeleton is unavailable"),
++            Self::TargetHumanoidUnavailable => {
++                formatter.write_str("target skeleton has no usable Humanoid profile")
++            }
++            Self::NoCompatibleRoute => formatter.write_str(
++                "Native skeleton differs and no explicit Retarget Map or usable Humanoid fallback is available",
++            ),
++        }
++    }
++}
++
++/// Deterministic route selected for one candidate/target pair.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum AnimationMotionRoute {
++    /// Play the selected model-bound Native clip directly.
++    Native,
++    /// Retarget the selected Native clip through the named explicit map.
++    Retarget {
++        /// Stable registered Retarget Map asset.
++        map: AssetId,
++    },
++    /// Bake the named skeleton-independent Humanoid motion for the target.
++    Humanoid {
++        /// Stable logical Humanoid motion asset.
++        motion: AssetId,
++    },
++    /// No legal route exists for the selected candidate/target pair.
++    Failed {
++        /// Stable machine-readable failure class.
++        reason: AnimationMotionFailure,
++    },
++}
++
++impl AnimationMotionRoute {
++    /// Short route label used by Editor badges and diagnostics.
++    pub fn badge(&self) -> &'static str {
++        match self {
++            Self::Native => "Native",
++            Self::Retarget { .. } => "Retarget",
++            Self::Humanoid { .. } => "Humanoid",
++            Self::Failed { .. } => "Failed",
++        }
++    }
++
++    /// Human-readable routing trace suitable for Problems/build diagnostics.
++    pub fn attempted_routing(&self) -> String {
++        match self {
++            Self::Native => "Native: source skeleton matches target".to_owned(),
++            Self::Retarget { map } => format!("Native mismatch -> Retarget Map `{}`", map.as_str()),
++            Self::Humanoid { motion } => {
++                format!("Native mismatch -> no Retarget Map -> Humanoid `{}`", motion.as_str())
++            }
++            Self::Failed { reason } => {
++                format!("Native -> Retarget -> Humanoid -> Failed: {reason}")
++            }
++        }
++    }
++}
++
++/// Resolves one imported motion candidate for one concrete target skeleton.
++///
++/// Model-bound candidates follow the first-release precedence exactly:
++/// Native -> explicit Retarget Map -> Humanoid -> Failed. Explicit Humanoid
++/// candidates only take the Humanoid branch and never switch to Native or a
++/// Retarget Map.
++pub fn plan_animation_motion(input: &AnimationMotionPlanInput) -> AnimationMotionRoute {
++    if input.candidate_kind == AnimationMotionCandidateKind::Humanoid {
++        return if input.target_humanoid_usable {
++            AnimationMotionRoute::Humanoid {
++                motion: input.candidate.clone(),
++            }
++        } else {
++            AnimationMotionRoute::Failed {
++                reason: AnimationMotionFailure::TargetHumanoidUnavailable,
++            }
++        };
++    }
++
++    let Some(source_skeleton) = input.source_skeleton.as_ref() else {
++        return AnimationMotionRoute::Failed {
++            reason: AnimationMotionFailure::MissingSourceSkeleton,
++        };
++    };
++    if source_skeleton == &input.target_skeleton {
++        return AnimationMotionRoute::Native;
++    }
++    if let Some(map) = &input.retarget_map {
++        return AnimationMotionRoute::Retarget { map: map.clone() };
++    }
++    if input.target_humanoid_usable {
++        if let Some(motion) = &input.humanoid_fallback {
++            return AnimationMotionRoute::Humanoid {
++                motion: motion.clone(),
++            };
++        }
++    }
++    AnimationMotionRoute::Failed {
++        reason: AnimationMotionFailure::NoCompatibleRoute,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn id() -> AssetId {
++        AssetId::generate()
++    }
++
++    fn model_input(source: AssetId, target: AssetId) -> AnimationMotionPlanInput {
++        AnimationMotionPlanInput {
++            candidate: id(),
++            candidate_kind: AnimationMotionCandidateKind::ModelBound,
++            source_skeleton: Some(source),
++            target_skeleton: target,
++            retarget_map: None,
++            humanoid_fallback: None,
++            target_humanoid_usable: false,
++        }
++    }
++
++    #[test]
++    fn same_skeleton_resolves_native() {
++        let skeleton = id();
++        let input = model_input(skeleton.clone(), skeleton);
++        assert_eq!(plan_animation_motion(&input), AnimationMotionRoute::Native);
++    }
++
++    #[test]
++    fn retarget_precedes_humanoid_fallback() {
++        let map = id();
++        let humanoid = id();
++        let mut input = model_input(id(), id());
++        input.retarget_map = Some(map.clone());
++        input.humanoid_fallback = Some(humanoid);
++        input.target_humanoid_usable = true;
++        assert_eq!(
++            plan_animation_motion(&input),
++            AnimationMotionRoute::Retarget { map }
++        );
++    }
++
++    #[test]
++    fn humanoid_is_used_after_native_and_retarget_fail() {
++        let humanoid = id();
++        let mut input = model_input(id(), id());
++        input.humanoid_fallback = Some(humanoid.clone());
++        input.target_humanoid_usable = true;
++        assert_eq!(
++            plan_animation_motion(&input),
++            AnimationMotionRoute::Humanoid { motion: humanoid }
++        );
++    }
++
++    #[test]
++    fn model_candidate_fails_without_any_compatible_route() {
++        let input = model_input(id(), id());
++        assert_eq!(
++            plan_animation_motion(&input),
++            AnimationMotionRoute::Failed {
++                reason: AnimationMotionFailure::NoCompatibleRoute
++            }
++        );
++    }
++
++    #[test]
++    fn explicit_humanoid_never_switches_to_native_or_retarget() {
++        let candidate = id();
++        let target = id();
++        let input = AnimationMotionPlanInput {
++            candidate: candidate.clone(),
++            candidate_kind: AnimationMotionCandidateKind::Humanoid,
++            source_skeleton: Some(target.clone()),
++            target_skeleton: target,
++            retarget_map: Some(id()),
++            humanoid_fallback: None,
++            target_humanoid_usable: true,
++        };
++        assert_eq!(
++            plan_animation_motion(&input),
++            AnimationMotionRoute::Humanoid { motion: candidate }
++        );
++    }
++}
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+index d1d19cba7714098ca076cd73612df27f67acf8c8..995ef46988248ca8d237f7f7530d390f5a5d585f 100644
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -246,6 +246,10 @@ pub struct ImportSettings {
+     /// Optional original model used before retargeting a motion to output models.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub motion_original_model_source: Option<String>,
++    /// Stable model source whose usable Humanoid profile generates the motion's
++    /// one target-independent portable Humanoid variant (ADR 0154).
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub motion_humanoid_source_model: Option<String>,
+     /// Imported material sub-asset ID to standalone material asset ID.
+     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+     pub material_remaps: BTreeMap<String, String>,
+@@ -528,6 +532,18 @@ pub fn imported_humanoid_motion_sub_asset_id(native_clip: &AssetId) -> AssetId {
+     AssetId::derive(native_clip, "humanoid")
+ }
+ 
++/// Derives the target-independent Humanoid identity for one logical imported animation.
++///
++/// Unlike [`imported_motion_sub_asset_id`], this deliberately excludes any VMD
++/// output model or Humanoid provenance model from the derivation (ADR 0154).
++pub fn imported_logical_humanoid_motion_sub_asset_id(
++    source: &AssetId,
++    index: usize,
++) -> AssetId {
++    let logical_native = imported_sub_asset_id(source, ImportedSubAssetKind::Animation, index);
++    imported_humanoid_motion_sub_asset_id(&logical_native)
++}
++
+ /// Stable metadata exposed to asset pickers after import or reimport.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct ImportedSubAsset {
+@@ -554,25 +570,24 @@ pub fn expected_imported_sub_asset_id(
+     source_id: &AssetId,
+     sub_asset: &ImportedSubAsset,
+ ) -> Result<AssetId, AssetManifestError> {
+-    let native = if let Some(target) = &sub_asset.target_model_source {
++    if sub_asset.kind == ImportedSubAssetKind::HumanoidMotion {
++        return Ok(imported_logical_humanoid_motion_sub_asset_id(
++            source_id,
++            sub_asset.index as usize,
++        ));
++    }
++
++    if let Some(target) = &sub_asset.target_model_source {
+         let target_id = AssetId::from_stable_id(engine_authoring::StableId::new(target))
+             .map_err(|source| AssetManifestError::InvalidAssetId {
+                 id: target.clone(),
+                 source,
+             })?;
+-        imported_motion_sub_asset_id(source_id, &target_id, sub_asset.index as usize)
+-    } else {
+-        imported_sub_asset_id(
++        Ok(imported_motion_sub_asset_id(
+             source_id,
+-            ImportedSubAssetKind::Animation,
++            &target_id,
+             sub_asset.index as usize,
+-        )
+-    };
+-
+-    if sub_asset.kind == ImportedSubAssetKind::HumanoidMotion {
+-        Ok(imported_humanoid_motion_sub_asset_id(&native))
+-    } else if sub_asset.target_model_source.is_some() {
+-        Ok(native)
++        ))
+     } else {
+         Ok(imported_sub_asset_id(
+             source_id,
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index f59dc25b98cc2d7b6d1184339ac32c6c37d04cac..ddf43ac6775d599347b4dbc90cf1bc0c2325f95c 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -118,6 +118,8 @@ pub mod model_ir;
+ /// Morph targets: named vertex and material deformations blended on top of a
+ /// mesh (ADR 0097 §5).
+ pub mod morph;
++/// Target-aware Animation Set motion candidate routing (ADR 0154).
++pub mod motion_binding;
+ /// GUI-free production navigation bake service shared by authoring adapters.
+ pub mod navigation_bake;
+ /// Production tiled polygon navigation and runtime query facade.
+@@ -222,7 +224,8 @@ pub use animation_parameters::{
+ };
+ pub use app::App;
+ pub use asset::{
+-    imported_motion_sub_asset_id, imported_sub_asset_id, AssetLoadError, AssetManifest,
++    imported_logical_humanoid_motion_sub_asset_id, imported_motion_sub_asset_id,
++    imported_sub_asset_id, AssetLoadError, AssetManifest,
+     AssetManifestError, AssetPathError, AssetServer, Assets, Handle, ImportSettings,
+     ImportedSubAsset, ImportedSubAssetKind, ManifestEntry, RuntimeAssetId, SkeletonBoneRecord,
+     SkeletonRecord, SourceFileStamp, SourceStamp,
+diff --git a/crates/engine/src/motion_binding.rs b/crates/engine/src/motion_binding.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5e7d26def0457ae3b511e1aa13817dc0db9663a
+--- /dev/null
++++ b/crates/engine/src/motion_binding.rs
+@@ -0,0 +1,3 @@
++//! Target-aware Animation Set motion binding planner facade (ADR 0154).
++
++pub use engine_animation::motion_binding::*;
+diff --git a/crates/import/src/humanoid_import.rs b/crates/import/src/humanoid_import.rs
+index 444afc91aec330afacc7f57ac4a927272b0e97da..2544fcd7a11efc1d95c9a7e41e8b0b18c4a44710 100644
+--- a/crates/import/src/humanoid_import.rs
++++ b/crates/import/src/humanoid_import.rs
+@@ -10,7 +10,9 @@ use crate::asset::{
+ };
+ use crate::model_import::GltfImportResult;
+ use engine_animation::humanoid::{detect_humanoid_profile, validate_humanoid_profile};
+-use engine_animation::humanoid_motion::{build_humanoid_motion, HumanoidMotion};
++use engine_animation::humanoid_motion::{
++    build_humanoid_motion, HumanoidMotion, HumanoidMotionError,
++};
+ use engine_assets::asset::HumanoidProfileOrigin;
+ use engine_authoring::diagnostic::Diagnostic;
+ use engine_authoring::id::AssetId;
+@@ -43,6 +45,33 @@ pub struct HumanoidImportCatalog {
+     pub diagnostics: Vec<Diagnostic>,
+ }
+ 
++/// Builds one import-owned logical Humanoid motion variant.
++///
++/// The caller supplies the stable logical identity, allowing model-contained
++/// animation and motion-only VMD import to share conversion without making a
++/// provenance model part of the portable candidate identity (ADR 0154).
++pub fn build_humanoid_motion_variant(
++    id: AssetId,
++    source_index: usize,
++    name: &str,
++    skin_index: usize,
++    clip: &engine_animation::animation::AnimationClip,
++    skeleton: &SkeletonAsset,
++    profile: &HumanoidProfile,
++) -> Result<(GltfHumanoidMotionData, Vec<Diagnostic>), HumanoidMotionError> {
++    let mut built = build_humanoid_motion(clip, skeleton, profile)?;
++    Ok((
++        GltfHumanoidMotionData {
++            source_index,
++            id,
++            name: name.to_owned(),
++            skin_index,
++            motion: built.motion,
++        },
++        std::mem::take(&mut built.diagnostics),
++    ))
++}
++
+ enum ReconciledProfile {
+     Usable(HumanoidProfile),
+     PreservedStaleAuthored(HumanoidProfile),
+@@ -162,16 +191,18 @@ pub fn build_humanoid_import_catalog(
+             continue;
+         };
+         let profile = &profiles[profile_index];
+-        match build_humanoid_motion(&animation.clip, &skin.skeleton, profile) {
+-            Ok(mut built) => {
+-                diagnostics.append(&mut built.diagnostics);
+-                motions.push(GltfHumanoidMotionData {
+-                    source_index: animation.source_index,
+-                    id: imported_humanoid_motion_sub_asset_id(&animation.id),
+-                    name: animation.name.clone(),
+-                    skin_index: animation.skin_index,
+-                    motion: built.motion,
+-                });
++        match build_humanoid_motion_variant(
++            imported_humanoid_motion_sub_asset_id(&animation.id),
++            animation.source_index,
++            &animation.name,
++            animation.skin_index,
++            &animation.clip,
++            &skin.skeleton,
++            profile,
++        ) {
++            Ok((motion, mut built_diagnostics)) => {
++                diagnostics.append(&mut built_diagnostics);
++                motions.push(motion);
+             }
+             Err(error) => diagnostics.push(Diagnostic::warning(
+                 "anim.humanoid_conversion_unavailable",
