@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                #[cfg(feature = \"visual-validation\")]\n                let scroll_area = scroll_area.vertical_scroll_offset(480.0);\n","new":"                #[cfg(feature = \"visual-validation\")]\n                let scroll_area = scroll_area.vertical_scroll_offset(self.visual_scroll_offset);\n"}
