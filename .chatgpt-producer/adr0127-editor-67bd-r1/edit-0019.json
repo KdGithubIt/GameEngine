@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/authoring_windows.rs","old":"    advanced_geometry: advanced_geometry::EmbeddedWindow,\n    vfx: VfxBuilderState,\n}","new":"    advanced_geometry: advanced_geometry::EmbeddedWindow,\n    vfx: VfxBuilderState,\n    native_2d: Native2dEditorState,\n}"}
