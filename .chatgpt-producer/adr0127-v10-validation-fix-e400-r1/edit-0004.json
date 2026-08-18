@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "                    painter.rect_stroke(\n                        cell_rect,\n                        0.0,\n                        egui::Stroke::new(0.5, egui::Color32::from_gray(64)),\n                        egui::StrokeKind::Inside,\n                    );\n",
+  "new": "                    painter.rect_stroke(\n                        cell_rect,\n                        0.0,\n                        egui::Stroke::new(0.5_f32, egui::Color32::from_gray(64)),\n                        egui::StrokeKind::Inside,\n                    );\n"
+}
