@@ -1,0 +1,9 @@
+diff --git a/docs/CHATGPT_AUTOMATION_E2E_SMOKE.md b/docs/CHATGPT_AUTOMATION_E2E_SMOKE.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9a098d8345f878034ea39d67fd43109c895d2e7
+--- /dev/null
++++ b/docs/CHATGPT_AUTOMATION_E2E_SMOKE.md
+@@ -0,0 +1,3 @@
++# ChatGPT Automation E2E Smoke
++
++Ephemeral production-path smoke test for the repository-native ChatGPT producer, publisher, Dispatcher, and Windows Validation chain. This pull request is not intended to merge.
