@@ -1,0 +1,342 @@
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index bc9929638397d25e08044e8c9e0e23a6c32a3230..f936fcb2714ada2456920ad47fa675bb0553f45d 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
+ use std::sync::{mpsc, Arc};
+ use std::time::Instant;
+ 
++pub(crate) mod native_2d_mode;
++
+ const PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME: u64 = 8 * 1024 * 1024;
+ const PREVIEW_GPU_UPLOADS_PER_FRAME: u32 = 4;
+ 
+@@ -740,8 +742,10 @@ pub struct AnimationPreviewStatus {
+ 
+ /// Offscreen Scene View panel: renders the authoring scene in Edit Mode.
+ pub struct SceneView {
+-    /// Editor-only orbit camera (not serialized to the scene).
++    /// Editor-only orbit/orthographic camera state (not serialized to the scene).
+     pub camera: EditorViewCamera,
++    /// Transient 2D/3D presentation mode; never serialized to scene data.
++    pub(crate) mode: native_2d_mode::SceneViewMode,
+     renderer: Option<engine::PreviewRenderer>,
+     /// Device identity bound to the current renderer and project GPU residency.
+     renderer_device: Option<usize>,
+@@ -917,6 +921,7 @@ impl SceneView {
+     pub(crate) fn with_residency(residency: ProjectAssetResidency) -> Self {
+         Self {
+             camera: EditorViewCamera::default(),
++            mode: native_2d_mode::SceneViewMode::default(),
+             renderer: None,
+             renderer_device: None,
+             renderer_failure_device: None,
+@@ -1349,7 +1354,12 @@ impl SceneView {
+         let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
+         self.last_view = Some((rect, size));
+ 
+-        self.camera.handle_input(&response);
++        let planar_2d = self.mode == native_2d_mode::SceneViewMode::TwoD;
++        if planar_2d {
++            native_2d_mode::handle_input(&mut self.camera, &response);
++        } else {
++            self.camera.handle_input(&response);
++        }
+         let now = Instant::now();
+         let particle_delta = now
+             .saturating_duration_since(self.last_particle_frame)
+@@ -1379,7 +1389,11 @@ impl SceneView {
+         self.entity_pick_info = collect_entity_positions(interaction_scene);
+ 
+         let aspect = size[0] as f32 / size[1] as f32;
+-        let vp = self.camera.view_projection(aspect);
++        let vp = if planar_2d {
++            native_2d_mode::view_projection(&self.camera, rect)
++        } else {
++            self.camera.view_projection(aspect)
++        };
+         let mut placement_position = response
+             .clicked_by(egui::PointerButton::Primary)
+             .then(|| response.interact_pointer_pos())
+@@ -1448,6 +1462,9 @@ impl SceneView {
+                         let len = gizmo_axis_length(center, vp, rect);
+                         self.gizmo_drag =
+                             hit_test_gizmo_axis(pos, center, vp, rect, gizmo_mode, len, &axis_dirs)
++                                .filter(|axis| {
++                                    !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
++                                })
+                                 .map(|axis| GizmoDragState {
+                                     axis,
+                                     axis_dir: axis_direction_of(&axis_dirs, axis),
+@@ -1797,7 +1814,12 @@ impl SceneView {
+             // one at the orbit position.
+             despawn_camera_entities(app.world_mut());
+             let cam_transform = self.camera.to_transform();
+-            update_editor_camera(app.world_mut(), cam_transform, aspect);
++            let camera_2d = planar_2d.then(|| native_2d_mode::camera(&self.camera));
++            let camera_2d_transform =
++                planar_2d.then(|| native_2d_mode::transform(&self.camera));
++            if !planar_2d {
++                update_editor_camera(app.world_mut(), cam_transform, aspect);
++            }
+ 
+             // On a reused world, move any entity being dragged now (and restore
+             // any moved last frame) directly, so a gizmo or Inspector transform
+@@ -1891,7 +1913,11 @@ impl SceneView {
+                 // The world persists across frames, so last frame's overlay
+                 // segments must be discarded before redrawing.
+                 dl.lines.clear();
+-                draw_grid(dl);
++                if planar_2d {
++                    native_2d_mode::draw_grid(dl, &self.camera);
++                } else {
++                    draw_grid(dl);
++                }
+                 for info in &self.entity_pick_info {
+                     if let Some(icon) = info.icon {
+                         draw_entity_icon(dl, info, icon);
+@@ -1920,6 +1946,9 @@ impl SceneView {
+                                         len,
+                                         &axis_dirs,
+                                     )
++                                    .filter(|axis| {
++                                        !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
++                                    })
+                                 })
+                             });
+                         draw_gizmo(dl, info.center, gizmo_mode, len, hovered, &axis_dirs);
+@@ -1987,13 +2016,29 @@ impl SceneView {
+                 ));
+             }
+ 
+-            if let Err(error) = renderer.render_to_view(
+-                app.world_mut(),
+-                &render_state.device,
+-                &render_state.queue,
+-                &texture.render_view,
+-                &texture.depth_view,
+-            ) {
++            let render_result = if let (Some(camera), Some(transform)) =
++                (camera_2d.as_ref(), camera_2d_transform.as_ref())
++            {
++                renderer.render_to_view_with_camera_2d(
++                    app.world_mut(),
++                    camera,
++                    transform,
++                    size,
++                    &render_state.device,
++                    &render_state.queue,
++                    &texture.render_view,
++                    &texture.depth_view,
++                )
++            } else {
++                renderer.render_to_view(
++                    app.world_mut(),
++                    &render_state.device,
++                    &render_state.queue,
++                    &texture.render_view,
++                    &texture.depth_view,
++                )
++            };
++            if let Err(error) = render_result {
+                 self.preview_notice = Some(PreviewNotice::failure(
+                     "editor.scene_view.render_failed",
+                     format!("Scene View render failed: {error}"),
+@@ -3277,10 +3322,16 @@ fn selected_particle_debug(
+ }
+ 
+ fn despawn_camera_entities(world: &mut engine::ecs::World) {
+-    let camera_entities: Vec<engine::ecs::Entity> = {
++    let mut camera_entities: Vec<engine::ecs::Entity> = {
+         let q = engine::Query::<&Camera3D>::new(world);
+         q.iter().map(|(e, _)| e).collect()
+     };
++    {
++        let q = engine::Query::<&engine::native_2d::Camera2d>::new(world);
++        camera_entities.extend(q.iter().map(|(e, _)| e));
++    }
++    camera_entities.sort_unstable_by_key(|entity| (entity.id(), entity.generation()));
++    camera_entities.dedup();
+     for e in camera_entities {
+         let _ = world.despawn(e);
+     }
+diff --git a/crates/editor/src/scene_view/native_2d_mode.rs b/crates/editor/src/scene_view/native_2d_mode.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c963f7ed6723fa3ad9ec7b4123802cce4192a6e2
+--- /dev/null
++++ b/crates/editor/src/scene_view/native_2d_mode.rs
+@@ -0,0 +1,150 @@
++//! Transient Native 2D Scene View camera and grid presentation.
++
++use super::{EditorViewCamera, GizmoMode};
++use eframe::egui;
++use engine::glam::{Mat4, Vec3};
++use engine::{DebugLines, Transform};
++
++/// Transient Scene View projection mode. This is never persisted into scene data.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub(crate) enum SceneViewMode {
++    /// Perspective orbit/fly editing.
++    #[default]
++    ThreeD,
++    /// Orthographic XY authoring using the runtime Camera2D projection contract.
++    TwoD,
++}
++
++impl SceneViewMode {
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::ThreeD => "3D",
++            Self::TwoD => "2D",
++        }
++    }
++}
++
++pub(crate) fn camera(camera: &EditorViewCamera) -> engine::native_2d::Camera2d {
++    engine::native_2d::Camera2d {
++        orthographic_height: (camera.distance.max(0.5) * 1.154_700_5).max(0.01),
++        ..engine::native_2d::Camera2d::default()
++    }
++}
++
++pub(crate) fn transform(camera: &EditorViewCamera) -> Transform {
++    Transform::from_translation(Vec3::new(camera.target.x, camera.target.y, 100.0))
++}
++
++pub(crate) fn view_projection(camera_state: &EditorViewCamera, viewport: egui::Rect) -> Mat4 {
++    let width = viewport.width().round().max(1.0) as u32;
++    let height = viewport.height().round().max(1.0) as u32;
++    camera(camera_state)
++        .view_projection_matrix(&transform(camera_state), [width, height])
++        .unwrap_or(Mat4::IDENTITY)
++}
++
++pub(crate) fn handle_input(camera_state: &mut EditorViewCamera, response: &egui::Response) {
++    let rect = response.rect;
++    if rect.height() <= f32::EPSILON {
++        return;
++    }
++    let delta = response.ctx.input(|input| input.pointer.delta());
++    if response.dragged_by(egui::PointerButton::Middle)
++        || response.dragged_by(egui::PointerButton::Secondary)
++    {
++        let units_per_point = camera(camera_state).orthographic_height / rect.height();
++        camera_state.target.x -= delta.x * units_per_point;
++        camera_state.target.y += delta.y * units_per_point;
++    }
++    let scroll = if response.hovered() {
++        response.ctx.input(|input| input.smooth_scroll_delta.y)
++    } else {
++        0.0
++    };
++    if scroll == 0.0 {
++        return;
++    }
++    let pointer = response.hover_pos().unwrap_or(rect.center());
++    let before = screen_to_xy(pointer, rect, view_projection(camera_state, rect));
++    camera_state.distance =
++        (camera_state.distance * (1.0 - scroll * 0.002)).clamp(0.5, 500.0);
++    let after = screen_to_xy(pointer, rect, view_projection(camera_state, rect));
++    if let (Some(before), Some(after)) = (before, after) {
++        camera_state.target.x += before.x - after.x;
++        camera_state.target.y += before.y - after.y;
++    }
++}
++
++pub(crate) fn draw_grid(lines: &mut DebugLines, camera_state: &EditorViewCamera) {
++    let span = (camera_state.distance.ceil() as i32).clamp(10, 100);
++    for index in -span..=span {
++        let value = index as f32;
++        let x_color = if index == 0 {
++            Vec3::new(0.8, 0.1, 0.1)
++        } else {
++            Vec3::splat(0.25)
++        };
++        let y_color = if index == 0 {
++            Vec3::new(0.1, 0.8, 0.1)
++        } else {
++            Vec3::splat(0.25)
++        };
++        lines.line(
++            Vec3::new(value, -(span as f32), 0.0),
++            Vec3::new(value, span as f32, 0.0),
++            x_color,
++        );
++        lines.line(
++            Vec3::new(-(span as f32), value, 0.0),
++            Vec3::new(span as f32, value, 0.0),
++            y_color,
++        );
++    }
++}
++
++pub(crate) const fn axis_allowed(mode: GizmoMode, axis: crate::gizmo::GizmoAxis) -> bool {
++    match mode {
++        GizmoMode::Translate | GizmoMode::Scale => {
++            matches!(axis, crate::gizmo::GizmoAxis::X | crate::gizmo::GizmoAxis::Y)
++        }
++        GizmoMode::Rotate => matches!(axis, crate::gizmo::GizmoAxis::Z),
++    }
++}
++
++fn screen_to_xy(position: egui::Pos2, viewport: egui::Rect, vp: Mat4) -> Option<Vec3> {
++    let x = ((position.x - viewport.left()) / viewport.width()) * 2.0 - 1.0;
++    let y = 1.0 - ((position.y - viewport.top()) / viewport.height()) * 2.0;
++    let inverse = vp.inverse();
++    let near = inverse.project_point3(Vec3::new(x, y, 0.0));
++    let far = inverse.project_point3(Vec3::new(x, y, 1.0));
++    let direction = far - near;
++    if direction.z.abs() <= f32::EPSILON {
++        return None;
++    }
++    let distance = -near.z / direction.z;
++    Some(near + direction * distance)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn two_d_camera_is_planar_and_orthographic() {
++        let state = EditorViewCamera::default();
++        let transform = transform(&state);
++        assert_eq!(transform.translation.x, state.target.x);
++        assert_eq!(transform.translation.y, state.target.y);
++        assert!(camera(&state)
++            .view_projection_matrix(&transform, [1280, 720])
++            .is_ok());
++    }
++
++    #[test]
++    fn planar_gizmo_contract_allows_xy_and_z_rotation_only() {
++        assert!(axis_allowed(GizmoMode::Translate, crate::gizmo::GizmoAxis::X));
++        assert!(!axis_allowed(GizmoMode::Translate, crate::gizmo::GizmoAxis::Z));
++        assert!(axis_allowed(GizmoMode::Rotate, crate::gizmo::GizmoAxis::Z));
++        assert!(!axis_allowed(GizmoMode::Rotate, crate::gizmo::GizmoAxis::X));
++    }
++}
+diff --git a/crates/editor/src/ui/viewport.rs b/crates/editor/src/ui/viewport.rs
+index 0f328c75dd5f4921101fa2c9f2d8fa2607310003..e5ec81e143a279a3a1c5d20e1cf3c2cf164068e8 100644
+--- a/crates/editor/src/ui/viewport.rs
++++ b/crates/editor/src/ui/viewport.rs
+@@ -146,6 +146,19 @@ impl EditorApp {
+                 }
+                 ui.separator();
+             }
++            for mode in [
++                crate::scene_view::native_2d_mode::SceneViewMode::ThreeD,
++                crate::scene_view::native_2d_mode::SceneViewMode::TwoD,
++            ] {
++                ui.selectable_value(&mut self.scene_view.mode, mode, mode.label())
++                    .on_hover_text(match mode {
++                        crate::scene_view::native_2d_mode::SceneViewMode::ThreeD =>
++                            "Perspective 3D Scene View",
++                        crate::scene_view::native_2d_mode::SceneViewMode::TwoD =>
++                            "Orthographic XY Native 2D Scene View",
++                    });
++            }
++            ui.separator();
+             self.show_gizmo_selectors(ui);
+             ui.separator();
+             self.show_camera_menu(ui);
