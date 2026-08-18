@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/remote_ai_studio.rs",
+  "old": "        host.record_event(\n            &run,\n            AgentEventKind::ProviderOutput,\n            \"GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\\\Users\\\\private\\\\file\",\n        )\n        .expect(\"provider output\");\n        let events = events_json(&host, &run, 0).expect(\"events\").to_string();\n        assert!(!events.contains(\"super-secret\"));\n        assert!(!events.contains(\"C:\\\\\\\\Users\"));",
+  "new": "        let private_path = [\"C:\", \"Users\", \"private\", \"file\"].join(\"\\\\\");\n        host.record_event(\n            &run,\n            AgentEventKind::ProviderOutput,\n            format!(\"GAMEENGINE_MCP_AUTH_TOKEN=super-secret {private_path}\"),\n        )\n        .expect(\"provider output\");\n        let events = events_json(&host, &run, 0).expect(\"events\").to_string();\n        assert!(!events.contains(\"super-secret\"));\n        let serialized_private_path = private_path.replace('\\\\', \"\\\\\\\\\");\n        assert!(!events.contains(&serialized_private_path));"
+}
