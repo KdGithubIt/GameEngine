@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "        if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {\n            self.ai_studio.report_runtime_result(\n                context,\n                engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,\n            );\n        }\n        #[cfg(feature = \"visual-validation\")]",
+  "new": "        if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {\n            self.ai_studio.report_runtime_result(\n                context,\n                engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,\n            );\n        }\n        if self.ai_studio.take_benchmark_child_exit_request() {\n            context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);\n            return;\n        }\n        #[cfg(feature = \"visual-validation\")]"
+}
