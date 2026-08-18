@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "fn read_child_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {\n    let bytes = fs::read(path).map_err(|error| error.to_string())?;\n    serde_json::from_slice(&bytes).map_err(|error| error.to_string())\n}\n\nfn safe_component",
+  "new": "fn read_child_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {\n    let bytes = fs::read(path).map_err(|error| error.to_string())?;\n    serde_json::from_slice(&bytes).map_err(|error| error.to_string())\n}\n\nfn inject_validation_repair_fault(project_root: &Path) -> Result<(), String> {\n    let path = project_root.join(\"game/src/benchmark_target.rs\");\n    let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;\n    let baseline = \"assert_eq!(fixture_score(4), 5);\";\n    if source.matches(baseline).count() != 1 {\n        return Err(\"validation-repair fixture baseline is not the expected version\".to_owned());\n    }\n    fs::write(&path, source.replace(baseline, \"assert_eq!(fixture_score(4), 999);\"))\n        .map_err(|error| error.to_string())\n}\n\nfn safe_component"
+}
