@@ -203,8 +203,11 @@ so every fixed callback observes the exact simulation step it is running.
 
 ## Engine views and event streams
 
-Entity queries can copy authoring identity, local/global Transform, character,
-skeletal animation, Native 2D sprite-animation, lock-on, navigation, and UI-binding views.
+Entity queries can copy authoring identity, local/global Transform, 3D character,
+Native 2D character, skeletal animation, Native 2D sprite-animation, lock-on, navigation,
+and UI-binding views. `Character2dStateView` exposes persistent fixed-step velocity,
+grounded/ground-normal state, wall/ceiling classification, and remaining one-way
+drop-through time without exposing the 2D solver or ECS references.
 `SpriteAnimationState` exposes the stable Sprite Animation `AssetId`, playing state,
 current frame/tick, speed, and effective looping policy without exposing engine ECS
 references or process-local asset handles. `UiBindings` is encoded as a stable
@@ -261,6 +264,14 @@ has exclusive world access; the module never receives that access.
 components and both finite vectors have been preflighted. Facing is a non-zero
 world-space direction; local `-Z` is rotated toward it. This keeps movement and
 orientation in one atomic command instead of allowing a half-applied state.
+
+Native 2D gameplay uses the separate `Character2d` command family so it never
+projects through the 3D controller. `Commands::set_character_motion_2d` publishes
+persistent world-XY velocity consumed by `CharacterController2D` during the next
+fixed 2D step, after scene/Tile Map collision synchronization and before solver
+integration. `Commands::drop_through_2d` queues a bounded one-way-platform ignore
+interval. `Character2dStateView` reads back the resulting grounded, normal, wall,
+ceiling, velocity, and drop-through state through copied values only.
 
 Lock-on uses the targetless `acquire_lock_on`, `cycle_lock_on`, and
 `release_lock_on` constructors. They queue the existing `TargetLock` service

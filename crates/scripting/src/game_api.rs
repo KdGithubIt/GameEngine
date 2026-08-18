@@ -922,6 +922,38 @@ impl EngineView for CharacterStateView {
     }
 }
 
+/// Native 2D platformer controller state copied for one entity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Character2dStateView {
+    /// Persistent fixed-step world velocity requested by project gameplay.
+    pub velocity: Vec2,
+    /// Whether the latest controller move ended on walkable ground.
+    pub grounded: bool,
+    /// Latest resolved walkable ground normal.
+    pub ground_normal: Vec2,
+    /// Whether the latest controller move was blocked horizontally.
+    pub hit_wall: bool,
+    /// Whether the latest controller move was blocked upward.
+    pub hit_ceiling: bool,
+    /// Remaining one-way platform drop-through interval in seconds.
+    pub drop_through_seconds: f32,
+}
+
+impl EngineView for Character2dStateView {
+    const KIND: EngineViewKind = EngineViewKind::Character2dState;
+    fn decode(value: &Value) -> Result<Self, String> {
+        let fields = object(value)?;
+        Ok(Self {
+            velocity: vec2_object(field(fields, "velocity")?)?,
+            grounded: bool_field(fields, "grounded")?,
+            ground_normal: vec2_object(field(fields, "ground_normal")?)?,
+            hit_wall: bool_field(fields, "hit_wall")?,
+            hit_ceiling: bool_field(fields, "hit_ceiling")?,
+            drop_through_seconds: number_field(fields, "drop_through_seconds")? as f32,
+        })
+    }
+}
+
 /// Playback mode of a copied animator state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimationPlaybackState {
@@ -1861,6 +1893,14 @@ impl Commands {
             facing.to_array(),
         ));
     }
+    /// Sets persistent fixed-step velocity for CharacterController2D.
+    pub fn set_character_motion_2d(&mut self, target: GameEntityHandle, velocity: Vec2) {
+        self.push(GameCommand::set_character_motion_2d(target, velocity.to_array()));
+    }
+    /// Requests a bounded one-way platform drop-through interval for CharacterController2D.
+    pub fn drop_through_2d(&mut self, target: GameEntityHandle, seconds: f32) {
+        self.push(GameCommand::drop_through_2d(target, seconds));
+    }
     /// Assigns a navigation destination.
     pub fn set_navigation_target(&mut self, target: GameEntityHandle, destination: Vec3) {
         self.push(GameCommand::set_navigation_target(
@@ -2126,6 +2166,7 @@ impl GameSystemParam for Commands {
         access.command_families.extend([
             GameCommandFamily::Transform,
             GameCommandFamily::Character,
+            GameCommandFamily::Character2d,
             GameCommandFamily::Navigation,
             GameCommandFamily::BehaviorTree,
             GameCommandFamily::PrefabSpawn,
@@ -2251,6 +2292,13 @@ fn optional_unsigned(value: &Value) -> Result<Option<u64>, String> {
     } else {
         unsigned(value).map(Some)
     }
+}
+fn vec2_object(value: &Value) -> Result<Vec2, String> {
+    let fields = object(value)?;
+    Ok(Vec2::new(
+        number_field(fields, "x")? as f32,
+        number_field(fields, "y")? as f32,
+    ))
 }
 fn vec3(value: &Value) -> Result<Vec3, String> {
     let values = array(value)?;
@@ -2480,5 +2528,59 @@ mod tests {
         assert_eq!(access.input_actions, [Jump::NAME]);
         assert_eq!(access.event_streams, [GameEventStream::Collision]);
         assert!(access.command_families.contains(&GameCommandFamily::Scene));
+        assert!(access
+            .command_families
+            .contains(&GameCommandFamily::Character2d));
+    }
+
+    #[test]
+    fn character_2d_view_and_commands_keep_raw_payloads_behind_typed_api() {
+        let view = Character2dStateView::decode(&Value::Object(BTreeMap::from([
+            (
+                "velocity".to_owned(),
+                Value::Object(BTreeMap::from([
+                    ("x".to_owned(), Value::F64(3.0)),
+                    ("y".to_owned(), Value::F64(-2.0)),
+                ])),
+            ),
+            ("grounded".to_owned(), Value::Bool(true)),
+            (
+                "ground_normal".to_owned(),
+                Value::Object(BTreeMap::from([
+                    ("x".to_owned(), Value::F64(0.0)),
+                    ("y".to_owned(), Value::F64(1.0)),
+                ])),
+            ),
+            ("hit_wall".to_owned(), Value::Bool(false)),
+            ("hit_ceiling".to_owned(), Value::Bool(false)),
+            ("drop_through_seconds".to_owned(), Value::F64(0.125)),
+        ])))
+        .unwrap();
+        assert_eq!(view.velocity, Vec2::new(3.0, -2.0));
+        assert!(view.grounded);
+        assert_eq!(view.ground_normal, Vec2::Y);
+        assert_eq!(view.drop_through_seconds, 0.125);
+
+        let input = GameInvocation {
+            schema_version: crate::game_io::GAME_IO_SCHEMA_VERSION,
+            system_id: "game.test".to_owned(),
+            clock: GameClock::default(),
+            input_actions: BTreeMap::new(),
+            save_values: BTreeMap::new(),
+            queries: Vec::new(),
+            resources: BTreeMap::new(),
+            host_views: BTreeMap::new(),
+            events: Vec::new(),
+        };
+        let output = TypedOutput::new();
+        let mut commands = Commands::fetch(&input, output.clone()).unwrap();
+        let target = GameEntityHandle { id: 7, generation: 2 };
+        commands.set_character_motion_2d(target, Vec2::new(4.0, 5.0));
+        commands.drop_through_2d(target, 0.2);
+        drop(commands);
+        let output = output.into_output().unwrap();
+        assert_eq!(output.commands.len(), 2);
+        assert_eq!(output.commands[0].family, GameCommandFamily::Character2d);
+        assert_eq!(output.commands[1].family, GameCommandFamily::Character2d);
     }
 }

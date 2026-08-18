@@ -213,7 +213,7 @@ pub(crate) fn prepare_game_commands(
             GameCommandFamily::Character2d => {
                 let (target, entity) = targeted_entity(world, command, index, &despawned)?;
                 if world.get_component::<CharacterController2d>(entity).is_none() {
-                    return Err(GameCommandError::MissingCharacterController { index, target });
+                    return Err(GameCommandError::MissingCharacterController2d { index, target });
                 }
                 if world.get_component::<Transform>(entity).is_none() {
                     return Err(GameCommandError::MissingTransform { index, target });
@@ -1751,6 +1751,13 @@ pub enum GameCommandError {
         /// Rejected target.
         target: GameEntityHandle,
     },
+    /// A Native 2D character command targeted an entity without CharacterController2D.
+    MissingCharacterController2d {
+        /// Zero-based command index.
+        index: usize,
+        /// Rejected target.
+        target: GameEntityHandle,
+    },
     /// A navigation command targeted an entity without a NavMeshAgent.
     MissingNavigationAgent {
         /// Zero-based command index.
@@ -1982,6 +1989,11 @@ impl fmt::Display for GameCommandError {
             Self::MissingCharacterController { index, target } => write!(
                 formatter,
                 "game command {index} targets entity {} generation {} without KinematicCharacterController",
+                target.id, target.generation
+            ),
+            Self::MissingCharacterController2d { index, target } => write!(
+                formatter,
+                "game command {index} targets entity {} generation {} without CharacterController2D",
                 target.id, target.generation
             ),
             Self::MissingNavigationAgent { index, target } => write!(
