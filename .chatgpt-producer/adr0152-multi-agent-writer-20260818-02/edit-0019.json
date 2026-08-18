@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,\n","new":"    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,\n    AgentWorkClaim,\n"}
