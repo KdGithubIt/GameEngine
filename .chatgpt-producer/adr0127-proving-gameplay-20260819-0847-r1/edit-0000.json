@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/project-lifecycle/src/lib.rs",
+  "old": "    inspect_project(final_path)\n}\n\n/// Acquires the authoritative exclusive lease for a direct or Launcher-spawned\n",
+  "new": "    inspect_project(final_path)\n}\n\n/// Refreshes the standard project-local Rust host and generated module index.\n///\n/// Existing project-authored Rust sources and current host files are preserved;\n/// this only applies the same non-destructive host initialization used by new\n/// project scaffolding.\n///\n/// # Errors\n///\n/// Returns project compatibility errors or a scaffold error when the current\n/// Project Rust host cannot be refreshed.\npub fn refresh_project_game_host(path: &Path) -> Result<(), LifecycleError> {\n    let project = inspect_project(path)?;\n    initialize_game_project(&project).map_err(|error| LifecycleError::Scaffold {\n        step: \"game_project\",\n        message: error.to_string(),\n    })\n}\n\n/// Acquires the authoritative exclusive lease for a direct or Launcher-spawned\n"
+}
