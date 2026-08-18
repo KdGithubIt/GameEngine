@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "    fn new(\n        project_lease: EditorLease,\n        context: &eframe::egui::Context,\n    ) -> Result<Self, String> {",
+  "new": "    fn new(\n        project_lease: EditorLease,\n        context: &eframe::egui::Context,\n        benchmark_run: Option<&Path>,\n    ) -> Result<Self, String> {"
+}
