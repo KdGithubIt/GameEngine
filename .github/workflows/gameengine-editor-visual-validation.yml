@@ -72,7 +72,7 @@ jobs:
               ? authoringToolMatches[0][1].trim()
               : "";
             if (authoringTool && !/^[A-Za-z0-9][A-Za-z0-9 ._()\/-]{0,79}$/.test(authoringTool)) {
-              core.setFailed(`Visual-validation authoring tool contains unsupported characters.`);
+              core.setFailed("Authoring-tool visual scenario contains unsupported characters.");
               return;
             }
             if (authoringTool && requestedTarget !== "editor" && requestedTarget !== "both") {
