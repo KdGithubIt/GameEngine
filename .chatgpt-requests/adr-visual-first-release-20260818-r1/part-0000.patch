@@ -1,0 +1,696 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index aeb7013579430983ab6ec2d55e256fc16e5872fa..f26e89a1f5acc65851d4c82cda02dba1d67405a0 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -664,6 +664,52 @@ impl AiStudioPanel {
+             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_adr_visual_validation(&mut self, scenario: &str) {
++        match scenario {
++            "adr0144-hosted-backend" => {
++                self.prepare_hosted_backend_visual_validation();
++                self.status = Some(
++                    "Hosted API selected · remote processing · credential stored outside project data · secret value hidden."
++                        .to_owned(),
++                );
++            }
++            "adr0144-enterprise-backend" => {
++                self.model_backend = ModelBackendPreference::Enterprise;
++                self.hosted_model_endpoint =
++                    "https://enterprise.example/v1/chat/completions".to_owned();
++                self.hosted_model_name = "enterprise-governed-model".to_owned();
++                self.hosted_secret_draft.clear();
++                self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
++                self.external_provider_status =
++                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
++                self.status = Some(
++                    "Enterprise backend selected · organization-managed remote processing · credential value hidden."
++                        .to_owned(),
++                );
++            }
++            "adr0149-live-observation" => {
++                self.model_backend = ModelBackendPreference::Local;
++                self.status = Some(
++                    "Live Game View observation · engine-native readback · PNG transport · 6 FPS cap · latest-frame-only retention · metrics enabled."
++                        .to_owned(),
++                );
++            }
++            "adr0153-confinement" => {
++                self.confinement_requirement =
++                    AgentConfinementRequirement::RequireProviderOrOsConfinement;
++                self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
++                self.external_provider_status =
++                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
++                self.status = Some(
++                    "Confinement required · provider/OS enforcement must be proven before launch · fail closed when unavailable · no OS-sandbox claim is active."
++                        .to_owned(),
++                );
++            }
++            _ => self.prepare_hosted_backend_visual_validation(),
++        }
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Returns whether the detached native viewport has completed two rendered frames.
+     pub fn detached_visual_validation_capture_ready(&self) -> bool {
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 18d02c061a312c6531c7a1686d881f83e0f8991c..805391822d791a4695f423a20791451551ed8e6c 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -72,7 +72,11 @@ impl EditorShell {
+             let mut ai_studio = ai_studio;
+             let detached_capture = visual_validation_touches_ai_studio();
+             if detached_capture {
+-                ai_studio.prepare_hosted_backend_visual_validation();
++                if let Ok(scenario) = std::env::var("GAMEENGINE_VISUAL_SCENARIO") {
++                    ai_studio.prepare_adr_visual_validation(&scenario);
++                } else {
++                    ai_studio.prepare_hosted_backend_visual_validation();
++                }
+                 ai_studio.detach();
+             }
+             (ai_studio, detached_capture)
+@@ -362,6 +366,8 @@ impl eframe::App for EditorShell {
+         #[cfg(feature = "visual-validation")]
+         if !self.visual_behavior_debug_capture
+             && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
++            && (self.visual_ai_studio_detached_capture
++                || std::env::var_os("GAMEENGINE_VISUAL_SCENARIO").is_none())
+         {
+             self.ai_studio.show(&context);
+         }
+@@ -392,6 +398,15 @@ fn visual_validation_touches_behavior_debug() -> bool {
+ 
+ #[cfg(feature = "visual-validation")]
+ fn visual_validation_touches_ai_studio() -> bool {
++    if let Ok(scenario) = std::env::var("GAMEENGINE_VISUAL_SCENARIO") {
++        return matches!(
++            scenario.as_str(),
++            "adr0144-hosted-backend"
++                | "adr0144-enterprise-backend"
++                | "adr0149-live-observation"
++                | "adr0153-confinement"
++        );
++    }
+     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+     let base = format!("origin/{base_ref}...HEAD");
+     std::process::Command::new("git")
+diff --git a/crates/editor/src/ui/adr_visual_scenarios.rs b/crates/editor/src/ui/adr_visual_scenarios.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d330bab704f677c493ef54044dd253f554c3b446
+--- /dev/null
++++ b/crates/editor/src/ui/adr_visual_scenarios.rs
+@@ -0,0 +1,428 @@
++//! Deterministic first-release visual fixtures for ADR 0136/0137/0138/0139.
++//!
++//! The module is compiled only by the `visual-validation` feature. It configures
++//! ordinary Editor presentation state and draws deterministic evidence surfaces
++//! on top of the production widgets without changing persisted authoring data.
++
++use super::*;
++use crate::canvas::{
++    show_graph_debug_canvas, GraphDebugBadge, GraphDebugNodePresentation, GraphDebugOverlay,
++};
++use crate::session::AnimationNodeInsertKind;
++use engine_authoring::{Diagnostic, DiagnosticTarget, Vec2 as GraphVec2};
++
++pub(super) fn requested_adr_visual_scenario() -> Option<String> {
++    std::env::var("GAMEENGINE_VISUAL_SCENARIO")
++        .ok()
++        .map(|value| value.trim().to_owned())
++        .filter(|value| !value.is_empty())
++}
++
++impl EditorApp {
++    pub(super) fn prepare_adr_visual_scenario(&mut self) {
++        let Some(scenario) = requested_adr_visual_scenario() else {
++            return;
++        };
++
++        match scenario.as_str() {
++            "adr0136-preview-pending"
++            | "adr0136-preview-ready"
++            | "adr0136-preview-failed" => {
++                self.animation_preview.prepare_adr_visual_validation();
++            }
++            "adr0137-diagnostics" => {
++                self.prepare_diagnostic_visual_fixture();
++            }
++            "adr0138-transition-progress" | "adr0138-stale-source" => {
++                self.prepare_animation_graph_visual_fixture();
++            }
++            "adr0139-working-copy-conflict" => {
++                self.prepare_animation_graph_visual_fixture();
++            }
++            _ => {}
++        }
++    }
++
++    fn prepare_diagnostic_visual_fixture(&mut self) {
++        let entity = self
++            .session
++            .scene()
++            .and_then(|scene| scene.entities().next().map(|(id, _)| id.clone()))
++            .unwrap_or_else(EntityId::generate);
++        let related = self
++            .session
++            .scene()
++            .and_then(|scene| {
++                scene
++                    .entities()
++                    .map(|(id, _)| id.clone())
++                    .find(|id| id != &entity)
++            })
++            .unwrap_or_else(|| entity.clone());
++
++        self.selected_entity = Some(entity.clone());
++        self.selected_entities.clear();
++        self.selected_entities.insert(entity.clone());
++        self.hierarchy_filter.clear();
++        self.problems_panel.set_problems(vec![
++            Diagnostic::error(
++                "editor.scene_view.components_skipped",
++                "Animation Controller cannot resolve every Motion Slot from the assigned Animation Set.",
++            )
++            .with_target(DiagnosticTarget::Entity { id: entity.clone() })
++            .with_related_targets([DiagnosticTarget::Entity { id: related }]),
++            Diagnostic::warning(
++                "anim.humanoid_profile_incomplete",
++                "Humanoid adaptation is missing required ancestry for this imported skeleton.",
++            )
++            .with_target(DiagnosticTarget::Entity { id: entity.clone() }),
++            Diagnostic::warning(
++                "anim.humanoid_profile_incomplete",
++                "A second imported motion reports the same skeleton compatibility problem.",
++            )
++            .with_target(DiagnosticTarget::Entity { id: entity.clone() }),
++            Diagnostic::info(
++                "editor.animation_preview.ready",
++                "Animation Preview is using the authoritative working-copy graph and Animation Set.",
++            )
++            .with_target(DiagnosticTarget::Entity { id: entity }),
++        ]);
++        self.bottom_panel_open = true;
++        self.bottom_panel_tab = BottomPanelTab::Problems;
++    }
++
++    fn prepare_animation_graph_visual_fixture(&mut self) {
++        let mut session = EditorSession::empty_animation_graph();
++        let entry = session.graph().nodes.keys().next().cloned();
++        let idle = session
++            .add_animation_node(
++                AnimationNodeInsertKind::State,
++                Some(GraphVec2::new(250.0, 70.0)),
++            )
++            .ok();
++        let run = session
++            .add_animation_node(
++                AnimationNodeInsertKind::State,
++                Some(GraphVec2::new(520.0, 70.0)),
++            )
++            .ok();
++
++        if let Some(entry) = entry.as_ref() {
++            let _ = session.set_node_name(entry.clone(), "Entry");
++        }
++        if let Some(idle) = idle.as_ref() {
++            let _ = session.set_node_name(idle.clone(), "Locomotion Idle");
++        }
++        if let Some(run) = run.as_ref() {
++            let _ = session.set_node_name(run.clone(), "Sprint Forward");
++        }
++
++        let motion_slot = session.add_motion_slot("Locomotion / Base Motion").ok();
++        if let (Some(idle), Some(slot)) = (idle.as_ref(), motion_slot.as_ref()) {
++            let _ = session.set_animation_state_motion_slot(idle.clone(), Some(slot.clone()));
++        }
++        if let (Some(run), Some(slot)) = (run.as_ref(), motion_slot.as_ref()) {
++            let _ = session.set_animation_state_motion_slot(run.clone(), Some(slot.clone()));
++        }
++        if let (Some(entry), Some(idle)) = (entry.as_ref(), idle.as_ref()) {
++            let _ = session.connect_animation_transition(entry.clone(), idle.clone());
++        }
++        if let (Some(idle), Some(run)) = (idle.as_ref(), run.as_ref()) {
++            let _ = session.connect_animation_transition(idle.clone(), run.clone());
++        }
++
++        self.property_node = run.or(idle).or(entry);
++        self.session.reset(session);
++        self.canvas.request_frame_all();
++    }
++
++    pub(super) fn show_adr_visual_scenario(&mut self, context: &egui::Context) {
++        let Some(scenario) = requested_adr_visual_scenario() else {
++            return;
++        };
++
++        match scenario.as_str() {
++            "adr0136-preview-pending"
++            | "adr0136-preview-ready"
++            | "adr0136-preview-failed" => {
++                self.show_preview_residency_visual_fixture(context, &scenario);
++            }
++            "adr0137-diagnostics" => {
++                self.show_diagnostic_navigation_visual_fixture(context);
++            }
++            "adr0138-transition-progress" | "adr0138-stale-source" => {
++                self.show_graph_debug_visual_fixture(context, &scenario);
++            }
++            "adr0139-working-copy-conflict" => {
++                self.show_working_copy_conflict_visual_fixture(context);
++            }
++            _ => {}
++        }
++    }
++
++    fn show_preview_residency_visual_fixture(
++        &mut self,
++        context: &egui::Context,
++        scenario: &str,
++    ) {
++        let (state, color, headline, cpu, gpu, placeholder, detail) = match scenario {
++            "adr0136-preview-pending" => (
++                "Loading",
++                egui::Color32::YELLOW,
++                "Latest request is still streaming",
++                "pending",
++                "not resident",
++                "Visible — last good frame is retained while the request resolves",
++                "Request #42 / revision 118 · asynchronous decode has not completed.",
++            ),
++            "adr0136-preview-ready" => (
++                "Ready",
++                egui::Color32::LIGHT_GREEN,
++                "Latest request is presentation-ready",
++                "resident",
++                "resident",
++                "Hidden — the resolved preview is authoritative for revision 118",
++                "Request #42 / revision 118 · CPU decode and GPU upload are complete.",
++            ),
++            _ => (
++                "Failed",
++                egui::Color32::LIGHT_RED,
++                "Latest request failed without blocking the Editor",
++                "not retained",
++                "not resident",
++                "Visible — failure placeholder replaces only the failed request",
++                "Request #42 / revision 118 · malformed animation payload · retry is available.",
++            ),
++        };
++
++        egui::Window::new("Animation Preview · Asset Residency")
++            .id(egui::Id::new("adr0136_preview_residency_fixture"))
++            .collapsible(false)
++            .resizable(false)
++            .fixed_pos(egui::pos2(1010.0, 86.0))
++            .fixed_size(egui::vec2(540.0, 410.0))
++            .show(context, |ui| {
++                ui.heading("Async preview lifecycle");
++                ui.horizontal_wrapped(|ui| {
++                    ui.strong("State");
++                    ui.colored_label(color, state);
++                    ui.separator();
++                    ui.label(headline);
++                });
++                ui.separator();
++                egui::Grid::new("adr0136_residency_grid")
++                    .num_columns(2)
++                    .striped(true)
++                    .show(ui, |ui| {
++                        ui.label("Asset");
++                        ui.monospace("animations/locomotion/walk_cycle.animclip");
++                        ui.end_row();
++                        ui.label("Request identity");
++                        ui.monospace("asset + preview-kind + revision 118");
++                        ui.end_row();
++                        ui.label("CPU residency");
++                        ui.monospace(cpu);
++                        ui.end_row();
++                        ui.label("GPU residency");
++                        ui.monospace(gpu);
++                        ui.end_row();
++                        ui.label("Placeholder");
++                        ui.label(placeholder);
++                        ui.end_row();
++                    });
++                ui.separator();
++                ui.label(detail);
++                ui.small(
++                    "Older completions are ignored by latest-wins request identity; preview state is observable and never fabricated.",
++                );
++                if scenario == "adr0136-preview-failed" {
++                    ui.separator();
++                    ui.colored_label(
++                        egui::Color32::LIGHT_RED,
++                        "Preview failed: malformed animation payload",
++                    );
++                    ui.small("The Editor remains interactive and a new request can retry.");
++                }
++            });
++    }
++
++    fn show_diagnostic_navigation_visual_fixture(&self, context: &egui::Context) {
++        egui::Window::new("Problems · Navigation Evidence")
++            .id(egui::Id::new("adr0137_navigation_fixture"))
++            .collapsible(false)
++            .resizable(false)
++            .fixed_pos(egui::pos2(1030.0, 82.0))
++            .fixed_size(egui::vec2(500.0, 270.0))
++            .show(context, |ui| {
++                ui.heading("Progressive disclosure + navigation");
++                ui.label("The selected Hierarchy row and Inspector target are the same entity referenced by the visible Problems rows.");
++                ui.separator();
++                if let Some(entity) = self.selected_entity.as_ref() {
++                    ui.label("Navigation target");
++                    ui.monospace(entity.as_str());
++                }
++                ui.label("Severity: Error / Warning / Info");
++                ui.label("Grouping: repeated warning code + target collapses into one summary row");
++                ui.label("Repair target: related entity remains an explicit action");
++                ui.small("Scene View / Hierarchy / Inspector selection is preserved while Problems stays open.");
++            });
++    }
++
++    fn show_graph_debug_visual_fixture(&mut self, context: &egui::Context, scenario: &str) {
++        let nodes = self.session.graph().nodes.keys().cloned().collect::<Vec<_>>();
++        let edges = self.session.graph().edges.keys().cloned().collect::<Vec<_>>();
++        let stale = scenario == "adr0138-stale-source";
++        let mut overlay = GraphDebugOverlay::default();
++
++        if !stale {
++            if let Some(node) = nodes.get(1).or_else(|| nodes.first()) {
++                overlay.nodes.insert(
++                    node.clone(),
++                    GraphDebugNodePresentation {
++                        active: true,
++                        badge: Some(GraphDebugBadge::Running),
++                        elapsed_seconds: Some(1.734),
++                        detail: Some("Active runtime graph node".to_owned()),
++                    },
++                );
++            }
++            if let Some(edge) = edges.last() {
++                overlay.active_edges.insert(edge.clone());
++            }
++            if let Some(node) = nodes.last() {
++                overlay.nodes.insert(
++                    node.clone(),
++                    GraphDebugNodePresentation {
++                        active: true,
++                        badge: Some(GraphDebugBadge::Running),
++                        elapsed_seconds: Some(0.821),
++                        detail: Some("Transition destination · blend 63%".to_owned()),
++                    },
++                );
++            }
++        }
++
++        egui::Window::new("Graph Debug · Play Mode")
++            .id(egui::Id::new("adr0138_graph_debug_visual_fixture"))
++            .collapsible(false)
++            .resizable(false)
++            .fixed_pos(egui::pos2(18.0, 76.0))
++            .fixed_size(egui::vec2(1520.0, 850.0))
++            .show(context, |ui| {
++                control_row(ui, |ui| {
++                    ui.strong("Graph Debug");
++                    egui::ComboBox::from_id_salt("adr0138_target_selector")
++                        .selected_text("Player Character · Animation Graph")
++                        .width(340.0)
++                        .show_ui(ui, |ui| {
++                            ui.selectable_label(true, "Player Character · Animation Graph");
++                            ui.selectable_label(false, "Enemy Captain · Behavior Tree");
++                        });
++                    if ui.button("Frame All").clicked() {
++                        self.canvas.request_frame_all();
++                    }
++                    ui.small("Read-only runtime observation");
++                });
++                ui.separator();
++
++                if stale {
++                    ui.colored_label(
++                        egui::Color32::YELLOW,
++                        "STALE: source changed after Play started. Runtime evidence is older than the current working copy; live overlays are suppressed.",
++                    );
++                    ui.small("Play source revision 12 · working-copy revision 13 (dirty) · stable graph identity retained.");
++                    ui.separator();
++                } else {
++                    ui.colored_label(
++                        egui::Color32::LIGHT_GREEN,
++                        "LIVE: exact Play source revision 12 matches working-copy revision 12.",
++                    );
++                    ui.small("Active transition provenance is tied to the selected runtime entity and stable graph identity.");
++                    ui.separator();
++                }
++
++                ui.horizontal_top(|ui| {
++                    ui.vertical(|ui| {
++                        ui.set_width(1090.0);
++                        ui.set_min_height(700.0);
++                        show_graph_debug_canvas(
++                            ui,
++                            &self.session,
++                            &mut self.canvas,
++                            &overlay,
++                            &mut self.property_node,
++                        );
++                    });
++                    ui.separator();
++                    ui.vertical(|ui| {
++                        ui.set_width(360.0);
++                        ui.heading("Animation Graph");
++                        ui.small("Stable source identity");
++                        ui.monospace(self.session.graph().id.as_str());
++                        ui.separator();
++                        if stale {
++                            ui.strong("Runtime overlay suppressed");
++                            ui.label("Active colors, badges, and transition progress are hidden because the source is stale.");
++                            ui.label("The source graph remains inspectable.");
++                        } else {
++                            ui.strong("Execution");
++                            ui.label("Current state: Sprint Forward");
++                            ui.label("Transition: Locomotion Idle → Sprint Forward");
++                            ui.label("Transition progress: 63%");
++                            ui.label("Clip time: 0.821s");
++                            ui.separator();
++                            ui.strong("Motion resolution");
++                            ui.label("Locomotion / Base Motion");
++                            ui.label("Auto → Humanoid");
++                        }
++                        ui.separator();
++                        if let Some(node) = self.property_node.as_ref() {
++                            ui.small("Selected source node");
++                            ui.monospace(node.as_str());
++                        }
++                        ui.small("Graph Debug never mutates runtime parameters or source documents.");
++                    });
++                });
++            });
++    }
++
++    fn show_working_copy_conflict_visual_fixture(&mut self, context: &egui::Context) {
++        egui::Window::new("Document Coherency")
++            .id(egui::Id::new("adr0139_document_status_fixture"))
++            .collapsible(false)
++            .resizable(false)
++            .fixed_pos(egui::pos2(26.0, 82.0))
++            .fixed_size(egui::vec2(520.0, 260.0))
++            .show(context, |ui| {
++                ui.heading("Authoritative working copy");
++                ui.label("Working copy revision 18 · DIRTY");
++                ui.label("Saved copy revision 17");
++                ui.label("Disk revision 19 · changed externally");
++                ui.separator();
++                ui.colored_label(
++                    egui::Color32::YELLOW,
++                    "Conflict: automatic reload is blocked while the working copy is dirty.",
++                );
++                ui.small("No silent overwrite · explicit user choice is required.");
++            });
++
++        egui::Modal::new(egui::Id::new("adr0139_working_copy_conflict")).show(context, |ui| {
++            ui.heading("File changed outside the Editor");
++            ui.label(
++                "The open document has unsaved working-copy changes, and its saved copy changed on disk.",
++            );
++            ui.monospace("assets/characters/player_locomotion.graph.json");
++            ui.separator();
++            ui.strong("Authoritative working copy is preserved");
++            ui.label(
++                "Reload is never automatic while this tab is dirty. Choose which copy should win before continuing.",
++            );
++            ui.separator();
++            control_row(ui, |ui| {
++                let _ = ui.button("Keep Working Copy");
++                let _ = ui.button("Reload Disk Copy");
++                let _ = ui.button("Cancel");
++            });
++        });
++    }
++}
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+index 1c9dd3ad293e815ae923f87502df96eff75d659f..f4f4a469bb3a5f4228dfc1c916406acb2a17c157 100644
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -210,6 +210,29 @@ impl AnimationPreviewWindow {
+         }
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    pub(super) fn prepare_adr_visual_validation(&mut self) {
++        self.open = true;
++        self.scene = None;
++        self.preview_scene = None;
++        self.target = None;
++        self.tab = AnimationPreviewTab::Transition;
++        self.from_clip = "Locomotion / Idle (Auto → Humanoid)".to_owned();
++        self.to_clip = "Locomotion / Sprint Forward (Native)".to_owned();
++        self.trigger_seconds = 0.65;
++        self.fade_duration = 0.24;
++        self.repeat_transition = true;
++        self.transition_cycle_seconds = 2.8;
++        self.parameters = std::collections::BTreeMap::from([
++            ("is_grounded".to_owned(), true),
++            ("is_running".to_owned(), true),
++            ("wants_jump".to_owned(), false),
++        ]);
++        self.playing = true;
++        self.view.animation_preview_speed = 1.0;
++        self.view.animation_secondary_physics_enabled = true;
++    }
++
+     fn refresh_target_defaults(
+         &mut self,
+         manifest: &engine::AssetManifest,
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 0ae0904f15f3660cbd4c1d783dc1752621cadeaf..e8dd97d45265474e85bd88e40b20130067dc7286 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -21,7 +21,10 @@ impl EditorApp {
+         }
+         app.sync_workspace_preferences();
+         #[cfg(feature = "visual-validation")]
+-        app.prepare_behavior_tree_visual_validation();
++        {
++            app.prepare_behavior_tree_visual_validation();
++            app.prepare_adr_visual_scenario();
++        }
+         app
+     }
+ 
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index b5254ad53782bc81e80be965ddae4021529a15be..d32b0657b5dd4f3512d5f9667d3e57c44721d8f7 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -50,6 +50,8 @@ use std::{
+     path::{Path, PathBuf},
+ };
+ mod animation_graph_parameters;
++#[cfg(feature = "visual-validation")]
++mod adr_visual_scenarios;
+ mod audio_authoring;
+ mod behavior_debug;
+ mod animation_preview;
+@@ -959,6 +961,8 @@ impl eframe::App for EditorApp {
+         // 全パネルの描画後にTooltipレイヤーへ出すことで、
+         // Asset Browserから別パネルへ移動してもプレビューを常に最前面へ表示する。
+         show_asset_drag_preview(ui.ctx());
++        #[cfg(feature = "visual-validation")]
++        self.show_adr_visual_scenario(ui.ctx());
+         self.show_notifications(ui.ctx());
+         self.show_play_build_overlay(ui.ctx());
+         if self.inference_restore_pending && !self.inference_focused {
+diff --git a/scripts/ci/Invoke-EditorVisualValidation.ps1 b/scripts/ci/Invoke-EditorVisualValidation.ps1
+index 5dbc830ea68829e4d554eddf0dfeba73c00cc4c2..c380cf3e66a998c0cffef03fe25632a7a966c25a 100644
+--- a/scripts/ci/Invoke-EditorVisualValidation.ps1
++++ b/scripts/ci/Invoke-EditorVisualValidation.ps1
+@@ -122,7 +122,8 @@ function Invoke-DesktopScreenshot {
+         [Parameter(Mandatory = $true)]
+         [AllowEmptyCollection()]
+         [string[]]$ProgramArguments,
+-        [string]$RequestedAuthoringTool = ""
++        [string]$RequestedAuthoringTool = "",
++        [string]$RequestedVisualScenario = ""
+     )
+ 
+     $outputPath = Join-Path $OutputDirectory "$Name.png"
+@@ -141,6 +142,10 @@ function Invoke-DesktopScreenshot {
+         "GAMEENGINE_VISUAL_AUTHORING_TOOL",
+         [EnvironmentVariableTarget]::Process
+     )
++    $previousVisualScenario = [Environment]::GetEnvironmentVariable(
++        "GAMEENGINE_VISUAL_SCENARIO",
++        [EnvironmentVariableTarget]::Process
++    )
+     try {
+         [Environment]::SetEnvironmentVariable(
+             $captureVariable,
+@@ -154,6 +159,13 @@ function Invoke-DesktopScreenshot {
+                 [EnvironmentVariableTarget]::Process
+             )
+         }
++        if ($Package -eq "engine-editor" -and $RequestedVisualScenario) {
++            [Environment]::SetEnvironmentVariable(
++                "GAMEENGINE_VISUAL_SCENARIO",
++                $RequestedVisualScenario,
++                [EnvironmentVariableTarget]::Process
++            )
++        }
+         $cargoArguments = @(
+             "run",
+             "--locked",
+@@ -178,6 +190,11 @@ function Invoke-DesktopScreenshot {
+             $previousAuthoringTool,
+             [EnvironmentVariableTarget]::Process
+         )
++        [Environment]::SetEnvironmentVariable(
++            "GAMEENGINE_VISUAL_SCENARIO",
++            $previousVisualScenario,
++            [EnvironmentVariableTarget]::Process
++        )
+     }
+ 
+     if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+@@ -211,11 +228,34 @@ try {
+             $projectRoot = New-StandardVisualValidationProject
+             $projectSource = "generated-standard-project"
+         }
+-        $captures += Invoke-DesktopScreenshot `
+-            -Name "editor" `
+-            -Package "engine-editor" `
+-            -ProgramArguments @("--project", $projectRoot) `
+-            -RequestedAuthoringTool $AuthoringTool
++        if ($AuthoringTool -eq "ADR First Release") {
++            $adrScenarios = @(
++                "adr0136-preview-pending",
++                "adr0136-preview-ready",
++                "adr0136-preview-failed",
++                "adr0137-diagnostics",
++                "adr0138-transition-progress",
++                "adr0138-stale-source",
++                "adr0139-working-copy-conflict",
++                "adr0144-hosted-backend",
++                "adr0144-enterprise-backend",
++                "adr0149-live-observation",
++                "adr0153-confinement"
++            )
++            foreach ($scenario in $adrScenarios) {
++                $captures += Invoke-DesktopScreenshot `
++                    -Name $scenario `
++                    -Package "engine-editor" `
++                    -ProgramArguments @("--project", $projectRoot) `
++                    -RequestedVisualScenario $scenario
++            }
++        } else {
++            $captures += Invoke-DesktopScreenshot `
++                -Name "editor" `
++                -Package "engine-editor" `
++                -ProgramArguments @("--project", $projectRoot) `
++                -RequestedAuthoringTool $AuthoringTool
++        }
+     }
+ 
+     if ($Target -eq "launcher" -or $Target -eq "both") {
