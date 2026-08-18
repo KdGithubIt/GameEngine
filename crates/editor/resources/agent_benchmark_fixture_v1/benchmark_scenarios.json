@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "fixture_version": "gameengine-agent-fixture-v1",
+  "tasks": [
+    {"task_id":"read_question_v1","goal":"Answer which function defines the fixture score and report repository/project provenance.","requires":["retrieved_evidence","provenance"]},
+    {"task_id":"project_inspection_v1","goal":"Inspect the benchmark project and report its scene and Rust game-code structure.","requires":["acceptance_criteria","authoring_validation"]},
+    {"task_id":"code_implementation_v1","goal":"Change fixture_score so value 4 produces 8 and update its test through the managed code workspace.","requires":["managed_code_write","source_validation"]},
+    {"task_id":"typed_authoring_mutation_v1","goal":"Create one named benchmark entity through the authoritative typed authoring/MCP path.","requires":["typed_authoring","authoring_validation"]},
+    {"task_id":"validation_repair_v1","goal":"Repair the task-injected failing fixture test after observing the managed validation failure, then revalidate.","requires":["initial_validation_failure","repair","revalidation"]},
+    {"task_id":"runtime_interaction_v1","goal":"Launch normal Editor Play, send the task-provided Agent virtual input recipe, and prove the expected runtime outcome.","requires":["normal_play","virtual_input","interaction_scenarios"]},
+    {"task_id":"visual_evaluation_v1","goal":"Capture the Game View and evaluate the actual image; text-only capability must remain unavailable.","requires":["frame_capture","image_input","visual_evaluation"]}
+  ]
+}
