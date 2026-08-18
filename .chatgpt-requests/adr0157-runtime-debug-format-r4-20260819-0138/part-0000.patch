@@ -1,0 +1,31 @@
+diff --git a/crates/editor/src/runtime_debug.rs b/crates/editor/src/runtime_debug.rs
+index 0f27a47019327e8a3d8e49c9e7c69500f666c092..cb4832490be5c4f945dc8e0c11236be691a51df8 100644
+--- a/crates/editor/src/runtime_debug.rs
++++ b/crates/editor/src/runtime_debug.rs
+@@ -233,11 +233,15 @@ impl RuntimeDebugObservation {
+             .map(|entity| {
+                 format!(
+                     "{} authoring={:?} components={:?} values={:?} transform={:?}",
+-                    entity.name, entity.authoring_id, entity.components, entity.values, entity.transform
++                    entity.name,
++                    entity.authoring_id,
++                    entity.components,
++                    entity.values,
++                    entity.transform
+                 )
+             })
+             .collect::<Vec<_>>()
+-            .join(" | " );
++            .join(" | ");
+         format!(
+             "fixed_tick={} paused={} entities={} keyboard={:?} mouse={:?} gamepad_buttons={:?} gamepad_axes={:?} actions={:?} timing_ms(last={:.3}, max={:.3}, avg={:.3}) rows=[{}]",
+             self.fixed_tick,
+@@ -860,7 +864,7 @@ mod tests {
+                     button: MouseButton::Left,
+                     pressed: false,
+                 },
+-            ]
++            ],
+         );
+     }
+ 
