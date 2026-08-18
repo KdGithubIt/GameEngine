@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-visual-fixture-20260819-43",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "2c12dd957292dc5815beb367501f0407061e0831",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "aa02a7d373a002bc9e8eddd6770bab852d77f174c17521a62efa0c2cf9f4e1d5",
+  "patch_bytes": 10553,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add deterministic ADR0126 Sequencer visual validation fixture",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0126 Timeline / Sequencer and adds a deterministic visual fixture that opens the normal Sequencer against the persistent Scene View production preview path.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Timeline Sequencer -->\n"
+}
