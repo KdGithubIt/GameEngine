@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline.rs","old":"use crate::id::{AssetId, EntityId, TimelineClipId, TimelineId, TimelineMarkerId, TimelineTrackId};","new":"use crate::id::{\n    AssetId, EntityId, MotionSlotId, TimelineClipId, TimelineId, TimelineMarkerId, TimelineTrackId,\n};"}
