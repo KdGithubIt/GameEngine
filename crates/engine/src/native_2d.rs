@@ -20,7 +20,9 @@ pub use engine_authoring::{
 };
 
 use crate::transform::{GlobalTransform, Parent, Transform};
-use engine_authoring::{AssetId, Project2dSettings, SpriteAnimationDocument};
+use engine_authoring::{
+    AssetId, Project2dSettings, SpriteAnimationDocument, TileChunkCoord, TileCollisionShape,
+};
 use engine_ecs::{Entity, Query, Res, ResMut};
 use glam::{Quat, Vec2};
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,6 +78,13 @@ impl PhysicsRuntime2d {
     }
 }
 
+/// Compiled backend-neutral Tile Map collision source attached during scene conversion.
+#[derive(Debug, Clone)]
+pub struct TileMapPhysicsSource2d {
+    pub(crate) map: Arc<CompiledTileMap>,
+    pub(crate) tile_set: Arc<CompiledTileSet>,
+}
+
 /// Applies persisted project 2D settings to one runtime host.
 ///
 /// Editor Play and the packaged Player call this same function after loading
@@ -100,6 +109,35 @@ type Physics2dQuery<'a> = (
     &'a Collider2d,
 );
 
+type TilePhysics2dQuery<'a> = (&'a TileMapPhysicsSource2d, &'a GlobalTransform);
+
+fn tile_static_chunk_key(owner: u64, layer: &TileLayerId, coord: TileChunkCoord) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in owner
+        .to_le_bytes()
+        .into_iter()
+        .chain(layer.as_str().bytes())
+        .chain(coord.x.to_le_bytes())
+        .chain(coord.y.to_le_bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn tile_collider_shape_2d(shape: &TileCollisionShape) -> ColliderShape2d {
+    match shape {
+        TileCollisionShape::Box { half_extents } => ColliderShape2d::Box {
+            half_extents: *half_extents,
+        },
+        TileCollisionShape::Circle { radius } => ColliderShape2d::Circle { radius: *radius },
+        TileCollisionShape::Polygon { points } => ColliderShape2d::Polygon {
+            points: points.clone(),
+        },
+    }
+}
+
 /// Synchronizes ECS components into the dedicated 2D world, steps it, and
 /// writes root dynamic poses back through the existing Transform authority.
 pub fn physics_2d_fixed_system(
@@ -108,6 +146,7 @@ pub fn physics_2d_fixed_system(
     mut runtime: ResMut<PhysicsRuntime2d>,
     mut diagnostics: ResMut<Physics2dDiagnostics>,
     mut query: Query<Physics2dQuery<'_>>,
+    tile_maps: Query<TilePhysics2dQuery<'_>>,
 ) {
     diagnostics.entries.clear();
     let mut active = BTreeSet::new();
@@ -149,7 +188,82 @@ pub fn physics_2d_fixed_system(
         active.insert(key);
     }
 
+    let mut active_static_chunks = BTreeSet::new();
+    for (entity, (source, global)) in tile_maps.iter() {
+        let owner = runtime_key(entity);
+        let map_matrix = global.matrix();
+        if let Err(error) = project_planar_transform(map_matrix) {
+            diagnostics.entries.push(Physics2dDiagnostic {
+                entity,
+                kind: Physics2dDiagnosticKind::InvalidPlanarPose(error),
+            });
+            continue;
+        }
+        let chunk_size = i64::from(source.map.chunk_size.max(1));
+        for chunk in &source.map.chunks {
+            let enabled = source
+                .map
+                .layers
+                .iter()
+                .find(|layer| layer.id == chunk.layer)
+                .is_some_and(|layer| layer.enabled);
+            if !enabled {
+                continue;
+            }
+            let key = tile_static_chunk_key(owner, &chunk.layer, chunk.coord);
+            let mut colliders = Vec::new();
+            for (local_x, local_y, tile_id) in &chunk.cells {
+                let Some(tile) = source.tile_set.tile(tile_id) else {
+                    continue;
+                };
+                if tile.collision.is_empty() {
+                    continue;
+                }
+                let cell_x = i64::from(chunk.coord.x) * chunk_size + i64::from(*local_x);
+                let cell_y = i64::from(chunk.coord.y) * chunk_size + i64::from(*local_y);
+                let cell_model = map_matrix
+                    * glam::Mat4::from_translation(glam::Vec3::new(
+                        cell_x as f32 + 0.5,
+                        cell_y as f32 + 0.5,
+                        0.0,
+                    ));
+                let pose = match project_planar_transform(cell_model) {
+                    Ok(pose) => pose,
+                    Err(error) => {
+                        diagnostics.entries.push(Physics2dDiagnostic {
+                            entity,
+                            kind: Physics2dDiagnosticKind::InvalidPlanarPose(error),
+                        });
+                        continue;
+                    }
+                };
+                for shape in &tile.collision {
+                    let mut collider = Collider2d {
+                        shape: tile_collider_shape_2d(shape),
+                        one_way: tile.one_way,
+                        ..Collider2d::default()
+                    };
+                    if let Some(material) = tile.collision_material {
+                        collider.friction = material.friction;
+                        collider.restitution = material.restitution;
+                    }
+                    colliders.push(StaticColliderPart2d { pose, collider });
+                }
+            }
+            if colliders.is_empty() {
+                continue;
+            }
+            active_static_chunks.insert(key);
+            runtime.world.upsert_static_chunk(StaticColliderChunk2d {
+                key,
+                owner,
+                colliders,
+            });
+        }
+    }
+
     runtime.world.retain_entities(&active);
+    runtime.world.retain_static_chunks(&active_static_chunks);
     runtime.events = runtime.world.step(fixed_time.fixed_delta, gravity.0);
 
     for (entity, (transform, _, parent, body, _)) in query.iter_mut() {

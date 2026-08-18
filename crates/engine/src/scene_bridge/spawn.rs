@@ -3159,6 +3159,21 @@ pub(crate) fn spawn_tile_map_2d_component(
             visible: fields.bool("visible")?,
         },
     )?;
+    let compiled_tile_set = match compile_tile_set(&tile_set) {
+        Ok(compiled) => Arc::new(compiled),
+        Err(_) => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let compiled_tile_map = match compile_tile_map(&document, compiled_tile_set.as_ref()) {
+        Ok(compiled) => Arc::new(compiled),
+        Err(_) => return Err(fields.invalid(EXPECTED).into()),
+    };
+    context.world.add_component(
+        entity,
+        TileMapPhysicsSource2d {
+            map: compiled_tile_map,
+            tile_set: compiled_tile_set,
+        },
+    )?;
     context.world.add_component(
         entity,
         ResolvedTileMap2d {
