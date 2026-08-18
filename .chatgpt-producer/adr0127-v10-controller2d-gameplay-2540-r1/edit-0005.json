@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/native_2d.rs","old":"    Option<&'a mut RigidBody2d>,\n    &'a Collider2d,\n    Option<&'a mut CharacterController2d>,\n","new":"    Option<&'a mut RigidBody2d>,\n    Option<&'a Collider2d>,\n    Option<&'a mut CharacterController2d>,\n"}
