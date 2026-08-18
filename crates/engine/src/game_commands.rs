@@ -6,7 +6,7 @@
 
 mod animation;
 
-use crate::asset::AssetManifest;
+use crate::asset::{AssetManifest, AssetServer};
 use crate::audio::{
     AudioRolloffMode, GameAudioCommand, GameAudioCommandQueue, GameSpatialAudioOptions,
     MAX_GAME_AUDIO_COMMANDS,
@@ -27,11 +27,13 @@ use crate::save::{
     GameSaveCommand, GameSaveCommandQueue, SaveData, SaveValue, MAX_GAME_SAVE_COMMANDS,
 };
 use crate::scene_manager::SceneManager;
+use crate::timeline::{prepare_timeline_asset, PreparedTimeline, TimelineRuntime};
 use crate::transform::Transform;
 use crate::ui_document::{UiBindingValue, UiBindings, UiDocumentRef, UiDocumentVisibility};
 use crate::vfx::VfxPlayer;
 use engine_authoring::{AssetId, ComponentTypeId, StableId, Value};
 use engine_ecs::{Entity, SystemId, World};
+use engine_timeline::{PlaybackRate, TimelineTick};
 use glam::{Quat, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -71,6 +73,7 @@ pub(crate) enum PreparedGameCommand {
     },
     LockOn(LockOnOperation),
     Animation(animation::PreparedAnimationCommand),
+    Timeline(TimelineOperation),
     Vfx {
         entity: Entity,
         operation: VfxPlaybackOperation,
@@ -155,6 +158,32 @@ pub(crate) enum LockOnOperation {
     Release,
 }
 
+pub(crate) enum TimelineOperation {
+    Start {
+        player_id: u64,
+        prepared: PreparedTimeline,
+        priority: i32,
+    },
+    Pause {
+        player_id: u64,
+    },
+    Resume {
+        player_id: u64,
+    },
+    Stop {
+        player_id: u64,
+    },
+    Seek {
+        player_id: u64,
+        tick: TimelineTick,
+    },
+    SetRate {
+        player_id: u64,
+        numerator: i32,
+        denominator: u32,
+    },
+}
+
 pub(crate) enum VfxPlaybackOperation {
     Start,
     Pause,
@@ -178,6 +207,13 @@ pub(crate) fn prepare_game_commands(
     let mut pending_prefab_requests = 0_usize;
     let mut virtual_components = BTreeMap::new();
     let mut virtual_hitboxes = BTreeMap::new();
+    let mut virtual_timeline_players = world.get_resource::<TimelineRuntime>().map(|runtime| {
+        runtime
+            .snapshots()
+            .into_iter()
+            .map(|snapshot| snapshot.player_id)
+            .collect::<BTreeSet<_>>()
+    });
     for (index, command) in commands.iter().enumerate() {
         match command.family {
             GameCommandFamily::Transform => {
@@ -300,6 +336,12 @@ pub(crate) fn prepare_game_commands(
                     &command.payload,
                 )?));
             }
+            GameCommandFamily::Timeline => prepared.push(parse_timeline_command(
+                world,
+                command,
+                index,
+                &mut virtual_timeline_players,
+            )?),
             GameCommandFamily::Vfx => {
                 let (target, entity) = targeted_entity(world, command, index, &despawned)?;
                 if world.get_component::<VfxPlayer>(entity).is_none() {
@@ -458,6 +500,37 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
                 }
             }
             PreparedGameCommand::Animation(command) => animation::apply(world, command),
+            PreparedGameCommand::Timeline(operation) => {
+                let runtime = world
+                    .get_resource_mut::<TimelineRuntime>()
+                    .expect("preflighted Timeline runtime must remain installed");
+                match operation {
+                    TimelineOperation::Start {
+                        player_id,
+                        prepared,
+                        priority,
+                    } => runtime.start_with_priority(player_id, prepared, priority),
+                    TimelineOperation::Pause { player_id } => runtime
+                        .pause(player_id)
+                        .expect("preflighted Timeline player must remain live"),
+                    TimelineOperation::Resume { player_id } => runtime
+                        .resume(player_id)
+                        .expect("preflighted Timeline player must remain live"),
+                    TimelineOperation::Stop { player_id } => runtime
+                        .stop(player_id)
+                        .expect("preflighted Timeline player must remain live"),
+                    TimelineOperation::Seek { player_id, tick } => runtime
+                        .seek(player_id, tick, false)
+                        .expect("preflighted Timeline player must remain live"),
+                    TimelineOperation::SetRate {
+                        player_id,
+                        numerator,
+                        denominator,
+                    } => runtime
+                        .set_rate(player_id, numerator, denominator)
+                        .expect("preflighted Timeline rate must remain valid"),
+                }
+            }
             PreparedGameCommand::Vfx { entity, operation } => {
                 let player = world
                     .get_component_mut::<VfxPlayer>(entity)
@@ -730,6 +803,101 @@ fn parse_lock_on_command(
         }
     };
     Ok(PreparedGameCommand::LockOn(operation))
+}
+
+fn parse_timeline_command(
+    world: &World,
+    command: &GameCommand,
+    index: usize,
+    virtual_players: &mut Option<BTreeSet<u64>>,
+) -> Result<PreparedGameCommand, GameCommandError> {
+    require_targetless(command, index, "Timeline")?;
+    let players = virtual_players
+        .as_mut()
+        .ok_or(GameCommandError::MissingTimelineRuntime { index })?;
+    let fields = object(&command.payload, index, "Timeline payload")?;
+    let player_id = runtime_id_field(fields, "player_id", index)?;
+    let operation = string_field(fields, "operation", index)?;
+    let require_player = |players: &BTreeSet<u64>| {
+        if players.contains(&player_id) {
+            Ok(())
+        } else {
+            Err(GameCommandError::UnknownTimelinePlayer { index, player_id })
+        }
+    };
+
+    let operation = match operation {
+        "start" => {
+            let text = string_field(fields, "asset_id", index)?;
+            let asset = AssetId::from_stable_id(StableId::new(text)).map_err(|_| {
+                GameCommandError::InvalidPayload {
+                    index,
+                    message: format!("field `asset_id` contains invalid stable ID `{text}`"),
+                }
+            })?;
+            let manifest = world
+                .get_resource::<AssetManifest>()
+                .ok_or(GameCommandError::MissingAssetManifest { index })?;
+            let server = world
+                .get_resource::<AssetServer>()
+                .ok_or(GameCommandError::MissingAssetServer { index })?;
+            let prepared = prepare_timeline_asset(&asset, manifest, server).map_err(|error| {
+                GameCommandError::InvalidPayload {
+                    index,
+                    message: error.to_string(),
+                }
+            })?;
+            let priority = i32_field(fields, "priority", index)?;
+            players.insert(player_id);
+            TimelineOperation::Start {
+                player_id,
+                prepared,
+                priority,
+            }
+        }
+        "pause" => {
+            require_player(players)?;
+            TimelineOperation::Pause { player_id }
+        }
+        "resume" => {
+            require_player(players)?;
+            TimelineOperation::Resume { player_id }
+        }
+        "stop" => {
+            require_player(players)?;
+            TimelineOperation::Stop { player_id }
+        }
+        "seek" => {
+            require_player(players)?;
+            TimelineOperation::Seek {
+                player_id,
+                tick: TimelineTick::new(i64_field(fields, "tick", index)?),
+            }
+        }
+        "set_rate" => {
+            require_player(players)?;
+            let numerator = i32_field(fields, "numerator", index)?;
+            let denominator = u32_field(fields, "denominator", index)?;
+            PlaybackRate::new(numerator, denominator).map_err(|_| {
+                GameCommandError::InvalidPayload {
+                    index,
+                    message: "Timeline playback rate is invalid".to_owned(),
+                }
+            })?;
+            TimelineOperation::SetRate {
+                player_id,
+                numerator,
+                denominator,
+            }
+        }
+        other => {
+            return Err(GameCommandError::InvalidPayload {
+                index,
+                message: format!("unknown Timeline operation `{other}`"),
+            })
+        }
+    };
+    Ok(PreparedGameCommand::Timeline(operation))
 }
 
 fn parse_ui_command(
@@ -1585,6 +1753,24 @@ fn u32_field(
     })
 }
 
+fn i64_field(
+    fields: &BTreeMap<String, Value>,
+    name: &str,
+    index: usize,
+) -> Result<i64, GameCommandError> {
+    match fields.get(name) {
+        Some(Value::I64(value)) => Ok(*value),
+        Some(Value::U64(value)) => i64::try_from(*value).map_err(|_| GameCommandError::InvalidPayload {
+            index,
+            message: format!("field `{name}` exceeds signed 64-bit range"),
+        }),
+        _ => Err(GameCommandError::InvalidPayload {
+            index,
+            message: format!("field `{name}` must be a signed 64-bit integer"),
+        }),
+    }
+}
+
 fn i32_field(
     fields: &BTreeMap<String, Value>,
     name: &str,
@@ -1731,6 +1917,23 @@ pub enum GameCommandError {
     MissingSceneManager {
         /// Zero-based command index.
         index: usize,
+    },
+    /// The host has no Timeline runtime installed.
+    MissingTimelineRuntime {
+        /// Zero-based command index.
+        index: usize,
+    },
+    /// The host has no asset server installed for stable Timeline loading.
+    MissingAssetServer {
+        /// Zero-based command index.
+        index: usize,
+    },
+    /// A Timeline control command references an inactive logical player.
+    UnknownTimelinePlayer {
+        /// Zero-based command index.
+        index: usize,
+        /// Missing caller-owned logical player ID.
+        player_id: u64,
     },
     /// The host has no bounded project-audio queue installed.
     MissingAudioQueue {
@@ -1945,6 +2148,16 @@ impl fmt::Display for GameCommandError {
             Self::MissingSceneManager { index } => {
                 write!(formatter, "game command {index} requires the SceneManager resource")
             }
+            Self::MissingTimelineRuntime { index } => {
+                write!(formatter, "game command {index} requires the TimelineRuntime resource")
+            }
+            Self::MissingAssetServer { index } => {
+                write!(formatter, "game command {index} requires the AssetServer resource")
+            }
+            Self::UnknownTimelinePlayer { index, player_id } => write!(
+                formatter,
+                "game command {index} references inactive Timeline player {player_id}"
+            ),
             Self::MissingAudioQueue { index } => {
                 write!(formatter, "game command {index} requires the project audio queue")
             }
@@ -2064,6 +2277,67 @@ mod tests {
             id: entity.id(),
             generation: entity.generation(),
         }
+    }
+
+    #[test]
+    fn timeline_commands_preflight_against_logical_player_state() {
+        let mut world = World::new();
+        let document =
+            engine_authoring::TimelineDocument::new("project", TimelineTick::new(96_000));
+        let prepared = crate::timeline::prepare_timeline_document(AssetId::generate(), &document)
+            .unwrap();
+        let mut runtime = TimelineRuntime::default();
+        runtime.start(41, prepared);
+        world.insert_resource(runtime);
+
+        let commands = vec![
+            GameCommand::pause_timeline(41),
+            GameCommand::seek_timeline(41, 24_000),
+            GameCommand::set_timeline_rate(41, 2, 1),
+            GameCommand::resume_timeline(41),
+        ];
+        let prepared = prepare_game_commands(&world, &commands).unwrap();
+        apply_prepared_game_commands(&mut world, prepared);
+
+        let snapshot = world
+            .get_resource::<TimelineRuntime>()
+            .unwrap()
+            .snapshots()
+            .into_iter()
+            .find(|snapshot| snapshot.player_id == 41)
+            .unwrap();
+        assert_eq!(
+            snapshot.state,
+            crate::timeline::TimelinePlaybackState::Playing
+        );
+        assert_eq!(snapshot.tick, TimelineTick::new(24_000));
+        assert_eq!(snapshot.rate_numerator, 2);
+        assert_eq!(snapshot.rate_denominator, 1);
+
+        let prepared =
+            prepare_game_commands(&world, &[GameCommand::stop_timeline(41)]).unwrap();
+        apply_prepared_game_commands(&mut world, prepared);
+        assert_eq!(
+            world
+                .get_resource::<TimelineRuntime>()
+                .unwrap()
+                .snapshots()[0]
+                .state,
+            crate::timeline::TimelinePlaybackState::Stopped
+        );
+    }
+
+    #[test]
+    fn timeline_commands_reject_unknown_players_before_mutation() {
+        let mut world = World::new();
+        world.insert_resource(TimelineRuntime::default());
+        assert!(matches!(
+            prepare_game_commands(&world, &[GameCommand::pause_timeline(99)]),
+            Err(GameCommandError::UnknownTimelinePlayer {
+                index: 0,
+                player_id: 99
+            })
+        ));
     }
 
     #[test]

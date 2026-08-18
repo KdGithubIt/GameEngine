@@ -79,6 +79,8 @@ pub enum GameEventStream {
     Hit,
     /// Animation events emitted while sampling clips.
     Animation,
+    /// Sequence-level Timeline marker and Event-track records.
+    Timeline,
     /// UI button and value-change events.
     Ui,
     /// Completed or failed deferred prefab spawn requests.
@@ -111,6 +113,8 @@ pub enum GameCommandFamily {
     Component,
     /// Animation clip and Animation Graph control.
     Animation,
+    /// Logical Timeline player control through the engine-owned runtime.
+    Timeline,
     /// Scene VFX playback control.
     Vfx,
     /// Attack hitbox creation, activation, and removal.
@@ -231,6 +235,8 @@ pub struct GameResourceAccess {
 pub enum GameHostViewKind {
     /// Current scene path, pending request, generation, and switch outcome.
     SceneState,
+    /// Copied logical Timeline player state keyed by caller-owned player ID.
+    TimelineState,
 }
 
 /// Access declaration for one engine-owned copied entity view.
@@ -989,6 +995,63 @@ impl GameCommand {
         }
     }
 
+    /// Starts or replaces one logical Timeline player by stable Timeline asset ID.
+    pub fn start_timeline(
+        player_id: u64,
+        asset_id: impl Into<String>,
+        priority: i32,
+    ) -> Self {
+        let mut command = timeline_player_command("start", player_id);
+        let Value::Object(payload) = &mut command.payload else {
+            unreachable!("timeline command always has an object payload");
+        };
+        payload.insert("asset_id".to_owned(), Value::String(asset_id.into()));
+        payload.insert("priority".to_owned(), Value::I64(i64::from(priority)));
+        command
+    }
+
+    /// Pauses one logical Timeline player without moving its playhead.
+    pub fn pause_timeline(player_id: u64) -> Self {
+        timeline_player_command("pause", player_id)
+    }
+
+    /// Resumes one logical Timeline player.
+    pub fn resume_timeline(player_id: u64) -> Self {
+        timeline_player_command("resume", player_id)
+    }
+
+    /// Stops one logical Timeline player and releases transient overrides.
+    pub fn stop_timeline(player_id: u64) -> Self {
+        timeline_player_command("stop", player_id)
+    }
+
+    /// Seeks one logical Timeline player to an exact canonical 48 kHz tick.
+    ///
+    /// Project gameplay seeks never preview sequence side effects. Event preview remains an
+    /// explicit Editor authoring feature.
+    pub fn seek_timeline(player_id: u64, tick: i64) -> Self {
+        let mut command = timeline_player_command("seek", player_id);
+        let Value::Object(payload) = &mut command.payload else {
+            unreachable!("timeline command always has an object payload");
+        };
+        payload.insert("tick".to_owned(), Value::I64(tick));
+        command
+    }
+
+    /// Sets one logical Timeline player's exact rational playback rate.
+    pub fn set_timeline_rate(player_id: u64, numerator: i32, denominator: u32) -> Self {
+        let mut command = timeline_player_command("set_rate", player_id);
+        let Value::Object(payload) = &mut command.payload else {
+            unreachable!("timeline command always has an object payload");
+        };
+        payload.insert("numerator".to_owned(), Value::I64(i64::from(numerator)));
+        payload.insert(
+            "denominator".to_owned(),
+            Value::I64(i64::from(denominator)),
+        );
+        command
+    }
+
     /// Requests a project-relative scene transition at the next frame boundary.
     pub fn request_scene(path: impl Into<String>) -> Self {
         GameCommand {
@@ -1144,6 +1207,24 @@ fn behavior_tree_result_command(
             ("kind".to_owned(), Value::String(kind.to_owned())),
             ("behavior_id".to_owned(), Value::String(behavior_id)),
             ("status".to_owned(), Value::String(status.to_owned())),
+        ])),
+    }
+}
+
+fn timeline_player_command(operation: &str, player_id: u64) -> GameCommand {
+    GameCommand {
+        family: GameCommandFamily::Timeline,
+        request_id: None,
+        target: None,
+        payload: Value::Object(BTreeMap::from([
+            (
+                "operation".to_owned(),
+                Value::String(operation.to_owned()),
+            ),
+            (
+                "player_id".to_owned(),
+                Value::String(player_id.to_string()),
+            ),
         ])),
     }
 }

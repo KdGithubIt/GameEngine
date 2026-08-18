@@ -305,6 +305,23 @@ without parent/current-directory components. Completion and failure are
 delivered on the declared `Scene` event stream with the resulting path and,
 for success, scene generation.
 
+## Timeline commands and state
+
+Declare `GameCommandFamily::Timeline` to control logical Timeline players through the
+same deferred command boundary as other engine services. `start_timeline` takes a stable
+Timeline `AssetId` string plus a caller-owned `u64` player ID and optional composition
+priority; pause/resume/stop, exact 48 kHz tick seek, and rational playback-rate changes
+reuse that logical ID. Project seeks always suppress sequence side effects. Runtime
+handles and mutable `TimelinePlayer` references never cross the ABI.
+
+Request `GameHostViewKind::TimelineState` to receive copied player snapshots. Player IDs
+and monotonic generations are decimal strings, Timeline asset/document IDs are stable
+authoring IDs, and ticks/rates/priorities are copied scalar values. Declare the `Timeline`
+event stream to consume sequence-level marker/Event-track records. Those records carry
+the logical player ID, stable Timeline asset and document identity, exact tick, event name,
+and bounded payload. The ordinary per-system event cursor still controls one-time
+consumption; one subscriber cannot consume another subscriber's Timeline events.
+
 ## Audio commands
 
 `play_sound_effect`, `play_background_music`, and

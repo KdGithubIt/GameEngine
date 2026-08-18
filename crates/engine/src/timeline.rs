@@ -235,7 +235,7 @@ impl TimelineEvents {
         self.events.iter()
     }
 
-    fn push(&mut self, mut event: TimelineEventRecord) {
+    pub(crate) fn push(&mut self, mut event: TimelineEventRecord) {
         if self.events.len() >= MAX_TIMELINE_EVENTS {
             self.events.pop_front();
         }

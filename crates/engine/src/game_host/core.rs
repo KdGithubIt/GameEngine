@@ -29,6 +29,7 @@ use crate::save::{SaveData, SaveValue};
 use crate::scene_manager::{SceneManager, SceneSwitchState};
 use crate::script_api::RuntimeEntityIdentity;
 use crate::time::{FixedTime, Time};
+use crate::timeline::{TimelineEvents, TimelinePlaybackState, TimelineRuntime};
 use crate::transform::{GlobalTransform, Transform};
 use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
 use crate::vfx::{VfxPlaybackState, VfxPlayer, VfxRuntimeBackend};
@@ -209,10 +210,60 @@ fn compile_host_views(
         .map(|view| {
             let value = match view {
                 GameHostViewKind::SceneState => scene_state_value(world),
+                GameHostViewKind::TimelineState => timeline_state_value(world),
             };
             (*view, value)
         })
         .collect()
+}
+
+fn timeline_state_value(world: &World) -> Value {
+    let players = world
+        .get_resource::<TimelineRuntime>()
+        .map(|runtime| runtime.snapshots())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|snapshot| {
+            let state = match snapshot.state {
+                TimelinePlaybackState::Playing => "playing",
+                TimelinePlaybackState::Paused => "paused",
+                TimelinePlaybackState::Stopped => "stopped",
+            };
+            Value::Object(BTreeMap::from([
+                (
+                    "player_id".to_owned(),
+                    Value::String(snapshot.player_id.to_string()),
+                ),
+                (
+                    "asset_id".to_owned(),
+                    Value::String(snapshot.asset.as_str().to_owned()),
+                ),
+                (
+                    "document_id".to_owned(),
+                    Value::String(snapshot.document_id.as_str().to_owned()),
+                ),
+                ("state".to_owned(), Value::String(state.to_owned())),
+                ("tick".to_owned(), Value::I64(snapshot.tick.get())),
+                (
+                    "generation".to_owned(),
+                    Value::String(snapshot.generation.to_string()),
+                ),
+                ("priority".to_owned(), Value::I64(i64::from(snapshot.priority))),
+                (
+                    "rate_numerator".to_owned(),
+                    Value::I64(i64::from(snapshot.rate_numerator)),
+                ),
+                (
+                    "rate_denominator".to_owned(),
+                    Value::I64(i64::from(snapshot.rate_denominator)),
+                ),
+            ]))
+        })
+        .collect();
+    Value::Object(BTreeMap::from([(
+        "players".to_owned(),
+        Value::Array(players),
+    )]))
 }
 
 fn scene_state_value(world: &World) -> Value {
@@ -292,6 +343,7 @@ pub struct GameHostRuntime {
     last_hit_generation: Option<u64>,
     last_animation_generation: Option<u64>,
     last_ui_generation: Option<u64>,
+    last_timeline_source_sequence: u64,
     last_timer_source_sequence: u64,
     last_spawn_source_sequence: u64,
     last_scene_observation: Option<SceneObservation>,
@@ -441,6 +493,9 @@ impl GameHostRuntime {
         if access.event_streams.contains(&GameEventStream::Animation) {
             self.capture_animation_events(world);
         }
+        if access.event_streams.contains(&GameEventStream::Timeline) {
+            self.capture_timeline_events(world);
+        }
         if access.event_streams.contains(&GameEventStream::Ui) {
             self.capture_ui_events(world);
         }
@@ -534,6 +589,41 @@ impl GameHostRuntime {
             .collect::<Vec<_>>();
         for payload in records {
             self.push_event(GameEventStream::Animation, payload);
+        }
+    }
+
+    fn capture_timeline_events(&mut self, world: &World) {
+        let Some(events) = world.get_resource::<TimelineEvents>() else {
+            return;
+        };
+        let records = events
+            .iter()
+            .filter(|event| event.source_sequence > self.last_timeline_source_sequence)
+            .cloned()
+            .collect::<Vec<_>>();
+        for event in records {
+            self.last_timeline_source_sequence =
+                self.last_timeline_source_sequence.max(event.source_sequence);
+            self.push_event(
+                GameEventStream::Timeline,
+                Value::Object(BTreeMap::from([
+                    (
+                        "player_id".to_owned(),
+                        Value::String(event.player_id.to_string()),
+                    ),
+                    (
+                        "asset_id".to_owned(),
+                        Value::String(event.asset.as_str().to_owned()),
+                    ),
+                    (
+                        "document_id".to_owned(),
+                        Value::String(event.document_id.as_str().to_owned()),
+                    ),
+                    ("tick".to_owned(), Value::I64(event.tick.get())),
+                    ("name".to_owned(), Value::String(event.name)),
+                    ("payload".to_owned(), Value::String(event.payload)),
+                ])),
+            );
         }
     }
 
@@ -1531,7 +1621,8 @@ mod tests {
     };
     use crate::game_prefab::GamePrefabEvents;
     use crate::game_timer::GameTimers;
-    use engine_authoring::ComponentTypeId;
+    use crate::timeline::{prepare_timeline_document, TimelineEventRecord};
+    use engine_authoring::{AssetId, ComponentTypeId, TimelineDocument, TimelineId};
     use glam::Vec3;
 
     fn frame() -> GameHostFrame {
@@ -1557,6 +1648,98 @@ mod tests {
             resources: BTreeMap::new(),
             events: Vec::new(),
         }
+    }
+
+    #[test]
+    fn timeline_host_view_copies_stable_player_state() {
+        let mut world = World::new();
+        let asset = AssetId::generate();
+        let document = TimelineDocument::new("project", crate::timeline::TimelineTick::new(96_000));
+        let document_id = document.id.clone();
+        let prepared = prepare_timeline_document(asset.clone(), &document).unwrap();
+        let mut timeline = TimelineRuntime::default();
+        timeline.start_with_priority(7, prepared, 3);
+        timeline.pause(7).unwrap();
+        world.insert_resource(timeline);
+
+        let access = GameSystemAccess {
+            host_views: vec![GameHostViewKind::TimelineState],
+            ..GameSystemAccess::default()
+        };
+        let invocation = compile_game_invocation(&world, "game.timeline", &access, &frame()).unwrap();
+        let Value::Object(state) = invocation
+            .host_views
+            .get(&GameHostViewKind::TimelineState)
+            .unwrap()
+        else {
+            panic!("Timeline state must be an object");
+        };
+        let Some(Value::Array(players)) = state.get("players") else {
+            panic!("Timeline state must contain players");
+        };
+        let Value::Object(player) = &players[0] else {
+            panic!("Timeline player must be an object");
+        };
+        assert_eq!(player.get("player_id"), Some(&Value::String("7".to_owned())));
+        assert_eq!(
+            player.get("asset_id"),
+            Some(&Value::String(asset.as_str().to_owned()))
+        );
+        assert_eq!(
+            player.get("document_id"),
+            Some(&Value::String(document_id.as_str().to_owned()))
+        );
+        assert_eq!(
+            player.get("state"),
+            Some(&Value::String("paused".to_owned()))
+        );
+        assert_eq!(player.get("priority"), Some(&Value::I64(3)));
+    }
+
+    #[test]
+    fn timeline_event_stream_preserves_source_identity_without_duplicate_capture() {
+        let mut world = World::new();
+        let asset = AssetId::generate();
+        let document_id = TimelineId::generate();
+        let mut timeline_events = TimelineEvents::default();
+        timeline_events.push(TimelineEventRecord {
+            source_sequence: 0,
+            player_id: 12,
+            asset: asset.clone(),
+            document_id: document_id.clone(),
+            tick: crate::timeline::TimelineTick::new(48_000),
+            name: "sequence.ready".to_owned(),
+            payload: "payload".to_owned(),
+        });
+        world.insert_resource(timeline_events);
+
+        let access = GameSystemAccess {
+            event_streams: vec![GameEventStream::Timeline],
+            ..GameSystemAccess::default()
+        };
+        let mut runtime = GameHostRuntime::default();
+        runtime.refresh_for_system(&world, "game.timeline", &access);
+        runtime.refresh_for_system(&world, "game.timeline", &access);
+
+        assert_eq!(runtime.event_log.len(), 1);
+        let event = runtime.event_log.front().unwrap();
+        assert_eq!(event.stream, GameEventStream::Timeline);
+        let Value::Object(payload) = &event.payload else {
+            panic!("Timeline event must be an object");
+        };
+        assert_eq!(
+            payload.get("player_id"),
+            Some(&Value::String("12".to_owned()))
+        );
+        assert_eq!(
+            payload.get("asset_id"),
+            Some(&Value::String(asset.as_str().to_owned()))
+        );
+        assert_eq!(
+            payload.get("document_id"),
+            Some(&Value::String(document_id.as_str().to_owned()))
+        );
+        assert_eq!(payload.get("tick"), Some(&Value::I64(48_000)));
     }
 
     #[test]
