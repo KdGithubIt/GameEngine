@@ -66,6 +66,7 @@ struct LoadedTyped<T> {
 
 impl<T: Native2dDocument> LoadedTyped<T> {
     fn open(project: &ProjectRoot, relative: &Path) -> Result<Self, String> {
+        let relative_path = relative.to_path_buf();
         let relative = relative
             .to_str()
             .ok_or_else(|| "Native 2D document path contains non-UTF-8 characters".to_owned())?;
@@ -75,7 +76,7 @@ impl<T: Native2dDocument> LoadedTyped<T> {
         let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
         let document: T = serde_json::from_str(&text).map_err(|error| error.to_string())?;
         Ok(Self {
-            relative: relative.to_path_buf(),
+            relative: relative_path,
             path,
             draft: document.clone(),
             document,
@@ -183,6 +184,7 @@ impl LoadedTileMap {
         manifest: &engine::AssetManifest,
         relative: &Path,
     ) -> Result<Self, String> {
+        let relative_path = relative.to_path_buf();
         let relative = relative
             .to_str()
             .ok_or_else(|| "Tile Map path contains non-UTF-8 characters".to_owned())?;
@@ -211,7 +213,7 @@ impl LoadedTileMap {
         .map_err(|error| error.to_string())?;
         let selected_tile = tiles.tiles.first().map(|tile| tile.id.clone());
         Ok(Self {
-            relative: relative.to_path_buf(),
+            relative: relative_path,
             path,
             service: engine_authoring::TileMapAuthoringService::new(document),
             tiles,
