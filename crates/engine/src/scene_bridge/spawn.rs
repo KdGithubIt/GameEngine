@@ -2984,6 +2984,32 @@ fn resolve_sprite_region_2d(
         )
     })?;
     let texture = resolve_native_2d_texture(&sprite.atlas, &region.source_texture, context)?;
+    let Some(right) = region.rect.x.checked_add(region.rect.width) else {
+        return Err(native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!("SpriteId `{}` pixel rect overflows u32", sprite.sprite.as_str()),
+        ));
+    };
+    let Some(bottom) = region.rect.y.checked_add(region.rect.height) else {
+        return Err(native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!("SpriteId `{}` pixel rect overflows u32", sprite.sprite.as_str()),
+        ));
+    };
+    if right > texture.width || bottom > texture.height {
+        return Err(native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!(
+                "SpriteId `{}` pixel rect exceeds source texture {}x{}",
+                sprite.sprite.as_str(),
+                texture.width,
+                texture.height
+            ),
+        ));
+    }
     Ok(ResolvedSpriteRegion2d {
         source_texture: region.source_texture,
         texture,
