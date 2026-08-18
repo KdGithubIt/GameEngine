@@ -1,0 +1,73 @@
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index c45fcae3e84c6292c0233d989ede91cecc6a2016..041699c925a3f1b054d49fdea7895dee27cc540b 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -974,6 +974,8 @@ impl SceneView {
+             animation_preview_elapsed: 0.0,
+             animation_preview_request: None,
+             animation_preview_status: None,
++            timeline_preview_request: None,
++            timeline_preview_status: None,
+             last_particle_frame: Instant::now(),
+             preview_notice: None,
+             preview_failure_since: None,
+@@ -1110,6 +1112,26 @@ impl SceneView {
+         self.animation_preview_status.as_ref()
+     }
+ 
++    /// Replaces the Timeline working-copy request consumed by the persistent PreviewWorld.
++    pub(crate) fn set_timeline_preview_request(&mut self, request: Option<TimelinePreviewRequest>) {
++        let toggled = self.timeline_preview_request.is_some() != request.is_some();
++        self.timeline_preview_request = request;
++        if toggled {
++            // Fixed-system order is immutable after installation. Rebuild once when Timeline
++            // preview enters or leaves so the production prepare/animation/transform order is
++            // installed exactly once; ordinary scrubs and edits keep the same world.
++            self.preview = None;
++        }
++        if self.timeline_preview_request.is_none() {
++            self.timeline_preview_status = None;
++        }
++    }
++
++    /// Returns copied state from the production TimelineRuntime in the Scene View.
++    pub(crate) fn timeline_preview_status(&self) -> Option<&TimelinePreviewStatus> {
++        self.timeline_preview_status.as_ref()
++    }
++
+     /// Returns the current editor-only animation preview time in seconds.
+     pub fn animation_preview_time(&self) -> f32 {
+         self.animation_preview_elapsed
+@@ -1735,6 +1757,10 @@ impl SceneView {
+                         animation_sampled_elapsed: -1.0,
+                         animation_fixed_step_remainder: 0.0,
+                         animation_transition_started: false,
++                        timeline_source_revision: None,
++                        timeline_transport_revision: None,
++                        timeline_fixed_step_remainder: 0.0,
++                        timeline_last_frame: Instant::now(),
+                     });
+                 }
+                 PreviewResidencyState::Pending => {
+@@ -1767,6 +1793,10 @@ impl SceneView {
+                             animation_sampled_elapsed: -1.0,
+                             animation_fixed_step_remainder: 0.0,
+                             animation_transition_started: false,
++                            timeline_source_revision: None,
++                            timeline_transport_revision: None,
++                            timeline_fixed_step_remainder: 0.0,
++                            timeline_last_frame: Instant::now(),
+                         });
+                     }
+                 }
+@@ -1801,6 +1831,10 @@ impl SceneView {
+                             animation_sampled_elapsed: -1.0,
+                             animation_fixed_step_remainder: 0.0,
+                             animation_transition_started: false,
++                            timeline_source_revision: None,
++                            timeline_transport_revision: None,
++                            timeline_fixed_step_remainder: 0.0,
++                            timeline_last_frame: Instant::now(),
+                         });
+                     }
+                 }
