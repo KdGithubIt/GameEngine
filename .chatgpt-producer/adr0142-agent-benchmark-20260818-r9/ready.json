@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0142-agent-benchmark-20260818-r9",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v4",
+  "expected_head_sha": "f1c2e698eeeb8a78209f49cdf5fd11be7b24f978",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json",
+    "edit-0016.json",
+    "edit-0017.json"
+  ],
+  "commit_message": "Harden ADR 0142 benchmark evidence identity",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Add the versioned GameEngine Agent Benchmark, machine-local evidence records, strict fail-closed comparison identity, loopback installed-model discovery, and evidence-derived curated model profiles.\n- Preserve ADR0152 writer coordination by comparing work-claim kind/count budgets without storing raw project target keys.\n- Freeze the selected benchmark task identity when inference or a native run starts so completed evidence cannot be relabeled after execution.\n- Expand the benchmark catalog section in visual-validation builds so its internal layout is captured and inspected.\n- Keep compatible/unverified and benchmark-qualified recommendations visibly distinct; no model weights are bundled or silently downloaded.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r9 -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
