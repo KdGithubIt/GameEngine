@@ -25,6 +25,7 @@ use crate::external_agent_provider::{
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
+use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
 use crate::native_agent::{
     InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
     ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
@@ -228,6 +229,7 @@ struct NativeRunBenchmarkContext {
     workload: InferenceWorkload,
     hardware: BenchmarkHardwareIdentity,
     inventory: Option<InstalledModelInventory>,
+    routed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1713,6 +1715,7 @@ impl AiStudioPanel {
                     self.resolved_workload,
                     self.resource_plan.reclaim
                 ));
+                ui.small(self.model_routing_status());
                 self.show_agent_benchmark(ui);
             });
     }
@@ -1804,6 +1807,23 @@ impl AiStudioPanel {
         });
     }
 
+    fn model_routing_status(&self) -> String {
+        let Ok(primary) = self.selected_native_model_config() else {
+            return format!(
+                "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · unavailable until a primary model is selected."
+            );
+        };
+        let policy = ModelRoutingPolicy::derive(
+            primary.clone(),
+            self.native_routing_candidates(&primary),
+            &self.benchmark_records,
+        );
+        format!(
+            "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · {} benchmark-qualified specialist workload(s) · one AgentRun with provider-independent context handoff.",
+            policy.adopted_specialist_count()
+        )
+    }
+
     fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
         let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');
         self.installed_model_inventory.as_ref().filter(|inventory| {
@@ -1868,6 +1888,7 @@ impl AiStudioPanel {
             .as_ref()
             .is_some_and(|benchmark| {
                 benchmark.task_id == task.id
+                    && !benchmark.routed
                     && self.host.run(&benchmark.run_id).is_ok_and(|run| {
                         matches!(
                             run.state,
@@ -1908,6 +1929,13 @@ impl AiStudioPanel {
                 );
                 return;
             };
+            if context.routed {
+                self.status = Some(
+                    "Routed native runs are not ADR 0142 single-model evidence. Run this corpus task without a specialist handoff before recording a model baseline."
+                        .to_owned(),
+                );
+                return;
+            }
             let run = match self.host.run(&context.run_id) {
                 Ok(run) => run.clone(),
                 Err(error) => {
@@ -1966,6 +1994,27 @@ impl AiStudioPanel {
         self.benchmark_records = records;
         self.model_catalog = catalog;
         Ok(())
+    }
+
+    fn native_routing_candidates(&self, primary: &NativeModelConfig) -> Vec<NativeModelConfig> {
+        let NativeModelConfig::Local(primary) = primary else {
+            return Vec::new();
+        };
+        self.current_installed_inventory()
+            .map(|inventory| {
+                inventory
+                    .models
+                    .iter()
+                    .filter(|model| model.name.trim() != primary.model.trim())
+                    .map(|model| {
+                        NativeModelConfig::Local(LocalModelConfig {
+                            endpoint: primary.endpoint.clone(),
+                            model: model.name.clone(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
@@ -2549,17 +2598,36 @@ impl AiStudioPanel {
         images: Vec<Vec<u8>>,
     ) -> Result<(), String> {
         let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
-        let runtime = self
-            .native_agent_runtime
-            .as_mut()
-            .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
-        runtime
-            .start_turn(&run, context.as_deref(), images)
-            .map_err(|error| error.to_string())?;
+        let (backend_label, routing_summary, routing_decisions) = {
+            let runtime = self
+                .native_agent_runtime
+                .as_mut()
+                .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
+            runtime
+                .start_turn(&run, context.as_deref(), images)
+                .map_err(|error| error.to_string())?;
+            (
+                runtime.backend_label(),
+                runtime.routing_policy_summary(),
+                runtime.take_routing_decisions(),
+            )
+        };
+        if routing_decisions.iter().any(|decision| decision.context_handoff)
+            && let Some(benchmark) = self.native_run_benchmark_context.as_mut()
+            && benchmark.run_id == run_id
+        {
+            benchmark.routed = true;
+        }
+        for decision in routing_decisions {
+            self.host
+                .record_semantic_progress(run_id, "model_routing", decision.audit_summary())
+                .map_err(|error| error.to_string())?;
+        }
         self.status = Some(format!(
-            "{} is reasoning in {:?}; managed tools remain host-owned.",
-            runtime.backend_label(),
-            run.state
+            "{} is reasoning in {:?}; {}. Managed tools remain host-owned.",
+            backend_label,
+            run.state,
+            routing_summary
         ));
         Ok(())
     }
@@ -3378,7 +3446,17 @@ impl AiStudioPanel {
         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
-        self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
+        let routing_candidates = native_config
+            .as_ref()
+            .map(|config| self.native_routing_candidates(config))
+            .unwrap_or_default();
+        self.native_agent_runtime = native_config.map(|config| {
+            NativeAgentRuntime::configured_routed(
+                config,
+                routing_candidates,
+                &self.benchmark_records,
+            )
+        });
         self.native_run_benchmark_context = native_benchmark_identity.map(
             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
                 run_id: run_id.clone(),
@@ -3389,6 +3467,7 @@ impl AiStudioPanel {
                 workload: benchmark_workload,
                 hardware: self.benchmark_hardware.clone(),
                 inventory,
+                routed: false,
             },
         );
         self.native_mcp_task = None;
