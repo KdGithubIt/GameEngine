@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"    let mut active_runs = Vec::new();\n    let mut recovered_sessions = BTreeSet::new();\n","new":"    let mut active_runs = BTreeSet::new();\n    let mut recovered_sessions = BTreeSet::new();\n"}
