@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use engine::{InputCommand, KeyCode, MouseButton};","new":"use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};"}
