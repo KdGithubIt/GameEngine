@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            read_question_record(\n                task.id,\n                &snapshot.metrics,\n","new":"            read_question_record(\n                &snapshot.policy.task_id,\n                &snapshot.metrics,\n"}

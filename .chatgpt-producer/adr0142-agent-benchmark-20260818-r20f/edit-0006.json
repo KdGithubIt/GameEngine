@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            agent_run_record(\n                task.id,\n                &run,\n","new":"            agent_run_record(\n                &context.task_id,\n                &run,\n"}
