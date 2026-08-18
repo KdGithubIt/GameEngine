@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/animation_set_editor.rs","old":"            clean_document: document.clone(),\n            document,\n            undo: Vec::new(),","new":"            clean_document: document.clone(),\n            document,\n            target_preview_skeleton: None,\n            undo: Vec::new(),"}
