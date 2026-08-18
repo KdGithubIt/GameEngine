@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/mod.rs","old":"mod animation_set_window;\nmod browser;","new":"mod animation_set_window;\nmod timeline_window;\nmod browser;"}

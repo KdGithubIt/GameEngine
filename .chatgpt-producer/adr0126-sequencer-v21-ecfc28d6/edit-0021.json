@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/mod.rs","old":"pub(in crate::ui) use animation_set_window::*;\npub(in crate::ui) use browser::*;","new":"pub(in crate::ui) use animation_set_window::*;\npub(in crate::ui) use timeline_window::*;\npub(in crate::ui) use browser::*;"}
