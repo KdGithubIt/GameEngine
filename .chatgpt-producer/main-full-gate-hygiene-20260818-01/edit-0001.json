@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/remote_ai_studio.rs",
+  "old": "            \"GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\\\Users\\\\private\\\\file\",",
+  "new": "            \"GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\\\Users\\\\...\\\\private\\\\file\","
+}
