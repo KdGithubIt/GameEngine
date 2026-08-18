@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "            \"fixture_instance_id\": fixture.instance_id,",
+  "new": "            \"fixture_instance_id\": fixture.instance_id.clone(),"
+}
