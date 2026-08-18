@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"struct NativeRunBenchmarkContext {\n    run_id: String,\n    backend_id: String,\n","new":"struct NativeRunBenchmarkContext {\n    run_id: String,\n    task_id: String,\n    backend_id: String,\n"}
