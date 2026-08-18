@@ -1,0 +1,1461 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 7f18999258f1effa9cc5bb05a35727031fbc8a39..839dea8fda5c5b02738b92651a78a83668922be5 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -16,7 +16,8 @@ use std::io::Write;
+ use std::path::PathBuf;
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+-pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 1;
++pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 2;
++const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
+ pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
+ pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
+ const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
+@@ -406,6 +407,20 @@ pub(crate) struct BenchmarkToolBudget {
+     pub(crate) work_claims: Vec<String>,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkExecutionIdentity {
++    pub(crate) campaign_harness_version: String,
++    pub(crate) schedule_policy_version: String,
++    pub(crate) comparison_class: String,
++    pub(crate) execution_profile: String,
++    pub(crate) execution_environment: String,
++    pub(crate) fixture_id: String,
++    pub(crate) fixture_version: String,
++    pub(crate) fixture_instance_id: String,
++    pub(crate) sampling_profile: String,
++    pub(crate) seed_policy: String,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub(crate) struct BenchmarkIdentity {
+     pub(crate) corpus_version: String,
+@@ -419,6 +434,8 @@ pub(crate) struct BenchmarkIdentity {
+     pub(crate) observed_workload: TelemetryValue<InferenceWorkload>,
+     pub(crate) tool_budget: BenchmarkToolBudget,
+     pub(crate) completion_criteria: Vec<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) execution: Option<BenchmarkExecutionIdentity>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+@@ -528,6 +545,9 @@ pub(crate) fn comparison_equivalence(
+     if left.identity.completion_criteria != right.identity.completion_criteria {
+         differences.push("completion_criteria");
+     }
++    if left.identity.execution != right.identity.execution {
++        differences.push("execution_identity");
++    }
+     if differences.is_empty() {
+         ComparisonEquivalence::EquivalentModelComparison
+     } else {
+@@ -596,9 +616,33 @@ impl BenchmarkStore {
+ }
+ 
+ fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
+-    if record.schema_version != BENCHMARK_SCHEMA_VERSION {
++    if !(MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION..=BENCHMARK_SCHEMA_VERSION)
++        .contains(&record.schema_version)
++    {
+         return Err(format!("unsupported benchmark schema version {}", record.schema_version));
+     }
++    if record.schema_version == 1 && record.identity.execution.is_some() {
++        return Err("benchmark schema v1 cannot carry campaign execution identity".to_owned());
++    }
++    if let Some(execution) = &record.identity.execution {
++        let complete = [
++            execution.campaign_harness_version.as_str(),
++            execution.schedule_policy_version.as_str(),
++            execution.comparison_class.as_str(),
++            execution.execution_profile.as_str(),
++            execution.execution_environment.as_str(),
++            execution.fixture_id.as_str(),
++            execution.fixture_version.as_str(),
++            execution.fixture_instance_id.as_str(),
++            execution.sampling_profile.as_str(),
++            execution.seed_policy.as_str(),
++        ]
++        .into_iter()
++        .all(|value| !value.trim().is_empty());
++        if !complete {
++            return Err("benchmark campaign execution identity must be complete".to_owned());
++        }
++    }
+     if record.identity.corpus_version != BENCHMARK_CORPUS_VERSION {
+         return Err(format!("unsupported benchmark corpus `{}`", record.identity.corpus_version));
+     }
+@@ -769,6 +813,7 @@ struct BenchmarkSuiteContext {
+     hardware: BenchmarkHardwareIdentity,
+     quality: QualityPreference,
+     workload_policy_version: String,
++    execution: Option<BenchmarkExecutionIdentity>,
+ }
+ 
+ impl BenchmarkSuiteContext {
+@@ -781,6 +826,7 @@ impl BenchmarkSuiteContext {
+             hardware: record.identity.hardware.clone(),
+             quality: record.identity.quality,
+             workload_policy_version: record.identity.workload_policy_version.clone(),
++            execution: record.identity.execution.clone(),
+         }
+     }
+ }
+@@ -971,6 +1017,7 @@ pub(crate) fn read_question_record(
+                 work_claims: Vec::new(),
+             },
+             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
++            execution: None,
+         },
+         metrics: BenchmarkMetrics {
+             acceptance_success: TelemetryValue::Measured(provenance_reported),
+@@ -1094,6 +1141,7 @@ pub(crate) fn agent_run_record(
+                     .collect(),
+             },
+             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
++            execution: None,
+         },
+         metrics: BenchmarkMetrics {
+             acceptance_success: TelemetryValue::Measured(run.completion.acceptance_criteria == CompletionStatus::Passed),
+@@ -1214,6 +1262,7 @@ mod tests {
+                 work_claims: vec!["code_path".to_owned()],
+             },
+             completion_criteria: BENCHMARK_TASKS[0].completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
++            execution: None,
+         }
+     }
+ 
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..478bb61f78748fdeed2593e2c6f02e7edc893c51
+--- /dev/null
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -0,0 +1,1427 @@
++//! ADR 0156 automated multi-model benchmark campaign orchestration.
++//!
++//! Campaign plans and progress are machine-local application data. Measured work is serialized,
++//! candidate-visible fixture data is separated from host-only evaluation state, and every automatic
++//! record is checked against the frozen campaign identity before it is accepted.
++
++use crate::agent_benchmark::{
++    benchmark_task, comparison_equivalence, BenchmarkExecutionIdentity, BenchmarkHardwareIdentity,
++    BenchmarkModelIdentity, BenchmarkRecord, BenchmarkTaskKind, BenchmarkToolBudget,
++    ComparisonEquivalence, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION,
++};
++use crate::resource_arbitration::{QualityPreference, TelemetryValue};
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, BTreeSet};
++use std::fs;
++use std::path::PathBuf;
++use std::time::{SystemTime, UNIX_EPOCH};
++
++pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 1;
++pub(crate) const CAMPAIGN_HARNESS_VERSION: &str = "gameengine-agent-benchmark-campaign-v1";
++pub(crate) const CAMPAIGN_SCHEDULE_VERSION: &str = "task-repetition-candidate-interleave-v1";
++pub(crate) const CAMPAIGN_FIXTURE_VERSION: &str = "gameengine-agent-fixture-v1";
++const MAX_REPETITIONS: u32 = 20;
++const MAX_PRE_MEASUREMENT_RETRIES: u32 = 2;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CampaignComparisonClass {
++    ModelComparison,
++    RuntimeCharacterization,
++}
++
++impl CampaignComparisonClass {
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::ModelComparison => "Model comparison",
++            Self::RuntimeCharacterization => "Runtime / platform characterization",
++        }
++    }
++
++    const fn identity(self) -> &'static str {
++        match self {
++            Self::ModelComparison => "model_comparison",
++            Self::RuntimeCharacterization => "runtime_characterization",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CampaignExecutionProfile {
++    Warm,
++    Cold,
++}
++
++impl CampaignExecutionProfile {
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::Warm => "Warm",
++            Self::Cold => "Cold",
++        }
++    }
++
++    const fn identity(self) -> &'static str {
++        match self {
++            Self::Warm => "warm",
++            Self::Cold => "cold",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CampaignExecutionEnvironment {
++    CompatibleBackend,
++    WindowsNative,
++    Wsl2Linux,
++}
++
++impl CampaignExecutionEnvironment {
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::CompatibleBackend => "Frozen compatible backend",
++            Self::WindowsNative => "Windows native",
++            Self::Wsl2Linux => "WSL2 Linux",
++        }
++    }
++
++    const fn identity(self) -> &'static str {
++        match self {
++            Self::CompatibleBackend => "compatible_backend",
++            Self::WindowsNative => "windows_native",
++            Self::Wsl2Linux => "wsl2_linux",
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
++pub(crate) struct CampaignRepresentation {
++    pub(crate) backend_id: String,
++    pub(crate) model_id: String,
++    pub(crate) model_version: String,
++    pub(crate) quantization: String,
++    pub(crate) representation_size_bytes: u64,
++    pub(crate) backend_runtime_version: String,
++}
++
++impl CampaignRepresentation {
++    pub(crate) fn from_model(model: &BenchmarkModelIdentity) -> Self {
++        Self {
++            backend_id: model.backend_id.clone(),
++            model_id: model.model_id.clone(),
++            model_version: measured_text(&model.model_version).unwrap_or_default(),
++            quantization: measured_text(&model.quantization).unwrap_or_default(),
++            representation_size_bytes: measured_u64(&model.representation_size_bytes)
++                .unwrap_or_default(),
++            backend_runtime_version: measured_text(&model.backend_runtime_version)
++                .unwrap_or_default(),
++        }
++    }
++
++    fn exact(&self) -> bool {
++        !self.backend_id.trim().is_empty()
++            && !self.model_id.trim().is_empty()
++            && !self.model_version.trim().is_empty()
++            && !self.quantization.trim().is_empty()
++            && self.representation_size_bytes > 0
++            && !self.backend_runtime_version.trim().is_empty()
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignCandidateSource {
++    pub(crate) source_reference: Option<String>,
++    pub(crate) license: Option<String>,
++    pub(crate) transfer_size_bytes: Option<u64>,
++    pub(crate) storage_size_bytes: Option<u64>,
++}
++
++impl CampaignCandidateSource {
++    pub(crate) fn installed() -> Self {
++        Self {
++            source_reference: None,
++            license: None,
++            transfer_size_bytes: None,
++            storage_size_bytes: None,
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignCandidate {
++    pub(crate) model: BenchmarkModelIdentity,
++    pub(crate) source: CampaignCandidateSource,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignFixtureIdentity {
++    pub(crate) fixture_id: String,
++    pub(crate) fixture_version: String,
++    pub(crate) instance_id: String,
++    host_seed: u64,
++}
++
++impl CampaignFixtureIdentity {
++    pub(crate) fn for_task(task_id: &str, host_seed: u64) -> Self {
++        Self {
++            fixture_id: format!("gameengine-agent-{task_id}"),
++            fixture_version: CAMPAIGN_FIXTURE_VERSION.to_owned(),
++            instance_id: format!(
++                "{:016x}",
++                stable_hash(format!("{task_id}:{host_seed}").as_bytes())
++            ),
++            host_seed,
++        }
++    }
++
++    pub(crate) fn candidate_contract(&self, task_id: &str) -> Result<CandidateTaskContract, String> {
++        let task =
++            benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
++        let visible_marker =
++            format!("fixture-{:08x}", (self.host_seed.rotate_left(17) ^ stable_hash(task_id.as_bytes())) as u32);
++        Ok(CandidateTaskContract {
++            task_id: task.id.to_owned(),
++            prompt: candidate_prompt(task.kind, &visible_marker),
++            completion_criteria: task
++                .completion_criteria
++                .iter()
++                .map(|value| (*value).to_owned())
++                .collect(),
++        })
++    }
++
++    fn host_evaluator(&self, task_id: &str) -> Result<HostOnlyEvaluator, String> {
++        let task =
++            benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
++        Ok(HostOnlyEvaluator {
++            task_id: task.id.to_owned(),
++            hidden_token: format!(
++                "host-{:016x}",
++                stable_hash(format!("{}:{}", task.id, self.host_seed.rotate_right(9)).as_bytes())
++            ),
++        })
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub(crate) struct CandidateTaskContract {
++    pub(crate) task_id: String,
++    pub(crate) prompt: String,
++    pub(crate) completion_criteria: Vec<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct HostOnlyEvaluator {
++    task_id: String,
++    hidden_token: String,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignTaskPlan {
++    pub(crate) task_id: String,
++    pub(crate) fixture: CampaignFixtureIdentity,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
++pub(crate) enum CampaignSeedPolicy {
++    Fixed(u64),
++    ProviderUnavailable,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkCampaignPlan {
++    pub(crate) schema_version: u32,
++    pub(crate) corpus_version: String,
++    pub(crate) benchmark_harness_version: String,
++    pub(crate) campaign_harness_version: String,
++    pub(crate) schedule_version: String,
++    pub(crate) candidates: Vec<CampaignCandidate>,
++    pub(crate) tasks: Vec<CampaignTaskPlan>,
++    pub(crate) repetitions: u32,
++    pub(crate) comparison_class: CampaignComparisonClass,
++    pub(crate) execution_profile: CampaignExecutionProfile,
++    pub(crate) execution_environments: Vec<CampaignExecutionEnvironment>,
++    pub(crate) quality: QualityPreference,
++    pub(crate) hardware: BenchmarkHardwareIdentity,
++    pub(crate) tool_budget: BenchmarkToolBudget,
++    pub(crate) sampling_profile: String,
++    pub(crate) seed_policy: CampaignSeedPolicy,
++}
++
++impl BenchmarkCampaignPlan {
++    pub(crate) fn validate(&self) -> Result<(), String> {
++        if self.schema_version != CAMPAIGN_SCHEMA_VERSION
++            || self.corpus_version != BENCHMARK_CORPUS_VERSION
++            || self.benchmark_harness_version != BENCHMARK_HARNESS_VERSION
++            || self.campaign_harness_version != CAMPAIGN_HARNESS_VERSION
++            || self.schedule_version != CAMPAIGN_SCHEDULE_VERSION
++        {
++            return Err("campaign schema or harness identity is incompatible with this build".to_owned());
++        }
++        if self.candidates.is_empty()
++            || self.tasks.is_empty()
++            || self.repetitions == 0
++            || self.repetitions > MAX_REPETITIONS
++            || self.sampling_profile.trim().is_empty()
++        {
++            return Err("campaign candidates/tasks/repetitions/sampling policy are invalid".to_owned());
++        }
++        if !hardware_exact(&self.hardware) {
++            return Err("campaign hardware identity must be measured before execution".to_owned());
++        }
++        let mut representations = BTreeSet::new();
++        for candidate in &self.candidates {
++            let representation = CampaignRepresentation::from_model(&candidate.model);
++            if !representation.exact() || !representations.insert(representation) {
++                return Err("campaign candidates require unique exact model representations".to_owned());
++            }
++        }
++        let mut task_ids = BTreeSet::new();
++        for task in &self.tasks {
++            if benchmark_task(&task.task_id).is_none()
++                || !task_ids.insert(task.task_id.clone())
++                || task.fixture.fixture_id.trim().is_empty()
++                || task.fixture.fixture_version.trim().is_empty()
++                || task.fixture.instance_id.trim().is_empty()
++            {
++                return Err("campaign task/fixture identity is invalid or duplicated".to_owned());
++            }
++        }
++        let environments = self
++            .execution_environments
++            .iter()
++            .copied()
++            .collect::<BTreeSet<_>>();
++        if environments.len() != self.execution_environments.len() {
++            return Err("campaign execution environments must be unique".to_owned());
++        }
++        match self.comparison_class {
++            CampaignComparisonClass::ModelComparison if self.execution_environments.len() == 1 => {}
++            CampaignComparisonClass::RuntimeCharacterization
++                if self.candidates.len() == 1
++                    && environments
++                        == BTreeSet::from([
++                            CampaignExecutionEnvironment::WindowsNative,
++                            CampaignExecutionEnvironment::Wsl2Linux,
++                        ]) => {}
++            CampaignComparisonClass::ModelComparison => {
++                return Err("model comparison must freeze one execution environment".to_owned());
++            }
++            CampaignComparisonClass::RuntimeCharacterization => {
++                return Err("runtime characterization requires one model and Windows native + WSL2 Linux".to_owned());
++            }
++        }
++        Ok(())
++    }
++
++    pub(crate) fn fingerprint(&self) -> Result<String, String> {
++        self.validate()?;
++        let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
++        Ok(format!("{:016x}{:016x}", stable_hash(&bytes), stable_hash_seed(&bytes, 0x8422_2325_cbf2_9ce4)))
++    }
++
++    fn schedule(&self) -> Result<Vec<CampaignScheduleEntry>, String> {
++        self.validate()?;
++        let mut result = Vec::new();
++        let mut ordinal = 0_u32;
++        for (task_index, task) in self.tasks.iter().enumerate() {
++            for repetition in 1..=self.repetitions {
++                match self.comparison_class {
++                    CampaignComparisonClass::ModelComparison => {
++                        let environment = self
++                            .execution_environments
++                            .first()
++                            .copied()
++                            .ok_or_else(|| "model comparison has no execution environment".to_owned())?;
++                        for candidate_index in 0..self.candidates.len() {
++                            result.push(CampaignScheduleEntry {
++                                ordinal,
++                                task_index,
++                                candidate_index,
++                                task_id: task.task_id.clone(),
++                                repetition,
++                                execution_environment: environment,
++                            });
++                            ordinal = ordinal.saturating_add(1);
++                        }
++                    }
++                    CampaignComparisonClass::RuntimeCharacterization => {
++                        for environment in &self.execution_environments {
++                            result.push(CampaignScheduleEntry {
++                                ordinal,
++                                task_index,
++                                candidate_index: 0,
++                                task_id: task.task_id.clone(),
++                                repetition,
++                                execution_environment: *environment,
++                            });
++                            ordinal = ordinal.saturating_add(1);
++                        }
++                    }
++                }
++            }
++        }
++        Ok(result)
++    }
++
++    pub(crate) fn resume_identity(&self) -> CampaignResumeIdentity {
++        CampaignResumeIdentity {
++            corpus_version: self.corpus_version.clone(),
++            benchmark_harness_version: self.benchmark_harness_version.clone(),
++            campaign_harness_version: self.campaign_harness_version.clone(),
++            schedule_version: self.schedule_version.clone(),
++            candidates: self
++                .candidates
++                .iter()
++                .map(|candidate| CampaignRepresentation::from_model(&candidate.model))
++                .collect(),
++            fixtures: self.tasks.iter().map(|task| task.fixture.clone()).collect(),
++            hardware: self.hardware.clone(),
++            execution_environments: self.execution_environments.clone(),
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignResumeIdentity {
++    pub(crate) corpus_version: String,
++    pub(crate) benchmark_harness_version: String,
++    pub(crate) campaign_harness_version: String,
++    pub(crate) schedule_version: String,
++    pub(crate) candidates: Vec<CampaignRepresentation>,
++    pub(crate) fixtures: Vec<CampaignFixtureIdentity>,
++    pub(crate) hardware: BenchmarkHardwareIdentity,
++    pub(crate) execution_environments: Vec<CampaignExecutionEnvironment>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignMissingCandidate {
++    pub(crate) representation: CampaignRepresentation,
++    pub(crate) source_reference: String,
++    pub(crate) license: String,
++    pub(crate) transfer_size_bytes: u64,
++    pub(crate) storage_size_bytes: u64,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignPreflight {
++    pub(crate) plan_fingerprint: String,
++    pub(crate) missing: Vec<CampaignMissingCandidate>,
++    pub(crate) total_transfer_size_bytes: u64,
++    pub(crate) total_storage_size_bytes: u64,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CampaignDownloadApproval {
++    pub(crate) plan_fingerprint: String,
++    pub(crate) approved_missing: Vec<CampaignRepresentation>,
++}
++
++impl CampaignDownloadApproval {
++    pub(crate) fn exact(preflight: &CampaignPreflight) -> Self {
++        Self {
++            plan_fingerprint: preflight.plan_fingerprint.clone(),
++            approved_missing: preflight
++                .missing
++                .iter()
++                .map(|candidate| candidate.representation.clone())
++                .collect(),
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum BenchmarkCampaignState {
++    Draft,
++    Running,
++    Paused,
++    Stopped,
++    Completed,
++    Incompatible,
++}
++
++impl BenchmarkCampaignState {
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::Draft => "Draft",
++            Self::Running => "Running",
++            Self::Paused => "Paused",
++            Self::Stopped => "Stopped",
++            Self::Completed => "Completed",
++            Self::Incompatible => "Incompatible",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CampaignRunStatus {
++    Pending,
++    Running,
++    Completed,
++    Failed,
++    Rejected,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CampaignFailureKind {
++    Oom,
++    BackendCrash,
++    InvalidToolBehavior,
++    ValidationFailed,
++    RepairBudgetExhausted,
++    RuntimeInteractionFailed,
++    VisualEvaluationFailed,
++    TaskTimeout,
++    IdentityMismatch,
++    InfrastructurePreMeasurement,
++    Cancelled,
++    Other,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignScheduleEntry {
++    pub(crate) ordinal: u32,
++    pub(crate) task_index: usize,
++    pub(crate) candidate_index: usize,
++    pub(crate) task_id: String,
++    pub(crate) repetition: u32,
++    pub(crate) execution_environment: CampaignExecutionEnvironment,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignRunProgress {
++    pub(crate) schedule: CampaignScheduleEntry,
++    pub(crate) status: CampaignRunStatus,
++    pub(crate) pre_measurement_failures: u32,
++    pub(crate) record: Option<BenchmarkRecord>,
++    pub(crate) failure: Option<CampaignFailureKind>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CampaignRunRequest {
++    pub(crate) campaign_id: String,
++    pub(crate) plan_fingerprint: String,
++    pub(crate) schedule: CampaignScheduleEntry,
++    pub(crate) candidate: CampaignCandidate,
++    pub(crate) fixture: CampaignFixtureIdentity,
++    pub(crate) execution_identity: BenchmarkExecutionIdentity,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkCampaign {
++    pub(crate) schema_version: u32,
++    pub(crate) campaign_id: String,
++    pub(crate) plan: BenchmarkCampaignPlan,
++    pub(crate) plan_fingerprint: String,
++    pub(crate) state: BenchmarkCampaignState,
++    pub(crate) created_unix_ms: u64,
++    pub(crate) started_unix_ms: Option<u64>,
++    pub(crate) updated_unix_ms: u64,
++    pub(crate) runs: Vec<CampaignRunProgress>,
++    Incompatible,
++}
++
++impl BenchmarkCampaignState {
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::Draft => "Draft",
++            Self::Running => "Running",
++            Self::Paused => "Paused",
++            Self::Stopped => "Stopped",
++            Self::Completed => "Completed",
++            Self::Incompatible => "Incompatible",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CampaignRunStatus {
++    Pending,
++    Running,
++    Completed,
++    Failed,
++    Rejected,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CampaignFailureKind {
++    Oom,
++    BackendCrash,
++    InvalidToolBehavior,
++    ValidationFailed,
++    RepairBudgetExhausted,
++    RuntimeInteractionFailed,
++    VisualEvaluationFailed,
++    TaskTimeout,
++    IdentityMismatch,
++    InfrastructurePreMeasurement,
++    Cancelled,
++    Other,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignScheduleEntry {
++    pub(crate) ordinal: u32,
++    pub(crate) task_index: usize,
++    pub(crate) candidate_index: usize,
++    pub(crate) task_id: String,
++    pub(crate) repetition: u32,
++    pub(crate) execution_environment: CampaignExecutionEnvironment,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct CampaignRunProgress {
++    pub(crate) schedule: CampaignScheduleEntry,
++    pub(crate) status: CampaignRunStatus,
++    pub(crate) pre_measurement_failures: u32,
++    pub(crate) record: Option<BenchmarkRecord>,
++    pub(crate) failure: Option<CampaignFailureKind>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CampaignRunRequest {
++    pub(crate) campaign_id: String,
++    pub(crate) plan_fingerprint: String,
++    pub(crate) schedule: CampaignScheduleEntry,
++    pub(crate) candidate: CampaignCandidate,
++    pub(crate) fixture: CampaignFixtureIdentity,
++    pub(crate) execution_identity: BenchmarkExecutionIdentity,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkCampaign {
++    pub(crate) schema_version: u32,
++    pub(crate) campaign_id: String,
++    pub(crate) plan: BenchmarkCampaignPlan,
++    pub(crate) plan_fingerprint: String,
++    pub(crate) state: BenchmarkCampaignState,
++    pub(crate) created_unix_ms: u64,
++    pub(crate) started_unix_ms: Option<u64>,
++    pub(crate) updated_unix_ms: u64,
++    pub(crate) runs: Vec<CampaignRunProgress>,
++}
++
++impl BenchmarkCampaign {
++    pub(crate) fn new(campaign_id: impl Into<String>, plan: BenchmarkCampaignPlan) -> Result<Self, String> {
++        plan.validate()?;
++        let campaign_id = campaign_id.into();
++        if !valid_campaign_id(&campaign_id) {
++            return Err("campaign id must contain only ASCII letters, digits, '-' or '_'".to_owned());
++        }
++        let now = unix_ms();
++        Ok(Self {
++            schema_version: CAMPAIGN_SCHEMA_VERSION,
++            campaign_id,
++            plan_fingerprint: plan.fingerprint()?,
++            runs: plan
++                .schedule()?
++                .into_iter()
++                .map(|schedule| CampaignRunProgress {
++                    schedule,
++                    status: CampaignRunStatus::Pending,
++                    pre_measurement_failures: 0,
++                    record: None,
++                    failure: None,
++                })
++                .collect(),
++            plan,
++            state: BenchmarkCampaignState::Draft,
++            created_unix_ms: now,
++            started_unix_ms: None,
++            updated_unix_ms: now,
++        })
++    }
++
++    pub(crate) fn preflight(&self, installed: &[BenchmarkModelIdentity]) -> Result<CampaignPreflight, String> {
++        self.ensure_plan_unchanged()?;
++        let installed = installed
++            .iter()
++            .map(CampaignRepresentation::from_model)
++            .collect::<BTreeSet<_>>();
++        let mut missing = Vec::new();
++        for candidate in &self.plan.candidates {
++            let representation = CampaignRepresentation::from_model(&candidate.model);
++            if installed.contains(&representation) {
++                continue;
++            }
++            let source_reference = candidate
++                .source
++                .source_reference
++                .clone()
++                .filter(|value| !value.trim().is_empty())
++                .ok_or_else(|| "missing candidate requires an exact source reference".to_owned())?;
++            let license = candidate
++                .source
++                .license
++                .clone()
++                .filter(|value| !value.trim().is_empty())
++                .ok_or_else(|| "missing candidate requires license/provenance review".to_owned())?;
++            let transfer_size_bytes = candidate
++                .source
++                .transfer_size_bytes
++                .filter(|value| *value > 0)
++                .ok_or_else(|| "missing candidate requires transfer size review".to_owned())?;
++            let storage_size_bytes = candidate
++                .source
++                .storage_size_bytes
++                .filter(|value| *value > 0)
++                .ok_or_else(|| "missing candidate requires storage size review".to_owned())?;
++            missing.push(CampaignMissingCandidate {
++                representation,
++                source_reference,
++                license,
++                transfer_size_bytes,
++                storage_size_bytes,
++            });
++        }
++        missing.sort_by(|left, right| left.representation.cmp(&right.representation));
++        Ok(CampaignPreflight {
++            plan_fingerprint: self.plan_fingerprint.clone(),
++            total_transfer_size_bytes: missing
++                .iter()
++                .map(|candidate| candidate.transfer_size_bytes)
++                .fold(0_u64, u64::saturating_add),
++            total_storage_size_bytes: missing
++                .iter()
++                .map(|candidate| candidate.storage_size_bytes)
++                .fold(0_u64, u64::saturating_add),
++            missing,
++        })
++    }
++
++    pub(crate) fn validate_download_approval(
++        &self,
++        preflight: &CampaignPreflight,
++        approval: &CampaignDownloadApproval,
++    ) -> Result<(), String> {
++        self.ensure_plan_unchanged()?;
++        let expected = preflight
++            .missing
++            .iter()
++            .map(|candidate| candidate.representation.clone())
++            .collect::<BTreeSet<_>>();
++        let approved = approval
++            .approved_missing
++            .iter()
++            .cloned()
++            .collect::<BTreeSet<_>>();
++        if preflight.plan_fingerprint != self.plan_fingerprint
++            || approval.plan_fingerprint != self.plan_fingerprint
++            || approved.len() != approval.approved_missing.len()
++            || approved != expected
++        {
++            return Err("Download & Run approval does not match the exact frozen missing set".to_owned());
++        }
++        Ok(())
++    }
++
++    pub(crate) fn start(&mut self, available: &[BenchmarkModelIdentity]) -> Result<(), String> {
++        self.ensure_plan_unchanged()?;
++        if self.state != BenchmarkCampaignState::Draft {
++            return Err("campaign can only start from Draft".to_owned());
++        }
++        let available = available
++            .iter()
++            .map(CampaignRepresentation::from_model)
++            .collect::<BTreeSet<_>>();
++        if self
++            .plan
++            .candidates
++            .iter()
++            .map(|candidate| CampaignRepresentation::from_model(&candidate.model))
++            .any(|candidate| !available.contains(&candidate))
++        {
++            return Err("all frozen candidates must be content-verified before campaign start".to_owned());
++        }
++        let now = unix_ms();
++        self.state = BenchmarkCampaignState::Running;
++        self.started_unix_ms = Some(now);
++        self.updated_unix_ms = now;
++        Ok(())
++    }
++
++    pub(crate) fn begin_next_run(&mut self) -> Result<Option<CampaignRunRequest>, String> {
++        self.ensure_plan_unchanged()?;
++        if self.state != BenchmarkCampaignState::Running {
++            return Err("campaign must be Running".to_owned());
++        }
++        if self.runs.iter().any(|run| run.status == CampaignRunStatus::Running) {
++            return Err("local measured inference is sequential; one run is already active".to_owned());
++        }
++        let Some(index) = self.runs.iter().position(|run| run.status == CampaignRunStatus::Pending) else {
++            self.state = BenchmarkCampaignState::Completed;
++            self.updated_unix_ms = unix_ms();
++            return Ok(None);
++        };
++        let schedule = self
++            .runs
++            .get(index)
++            .map(|run| run.schedule.clone())
++            .ok_or_else(|| "pending campaign run disappeared".to_owned())?;
++        let candidate = self
++            .plan
++            .candidates
++            .get(schedule.candidate_index)
++            .cloned()
++            .ok_or_else(|| "campaign schedule references an unknown candidate".to_owned())?;
++        let fixture = self
++            .plan
++            .tasks
++            .get(schedule.task_index)
++            .map(|task| task.fixture.clone())
++            .ok_or_else(|| "campaign schedule references an unknown fixture".to_owned())?;
++        if let Some(run) = self.runs.get_mut(index) {
++            run.status = CampaignRunStatus::Running;
++        }
++        self.updated_unix_ms = unix_ms();
++        Ok(Some(CampaignRunRequest {
++            campaign_id: self.campaign_id.clone(),
++            plan_fingerprint: self.plan_fingerprint.clone(),
++            execution_identity: BenchmarkExecutionIdentity {
++                campaign_harness_version: self.plan.campaign_harness_version.clone(),
++                schedule_policy_version: self.plan.schedule_version.clone(),
++                comparison_class: self.plan.comparison_class.identity().to_owned(),
++                execution_profile: self.plan.execution_profile.identity().to_owned(),
++                execution_environment: schedule.execution_environment.identity().to_owned(),
++                fixture_id: fixture.fixture_id.clone(),
++                fixture_version: fixture.fixture_version.clone(),
++                fixture_instance_id: fixture.instance_id.clone(),
++                sampling_profile: self.plan.sampling_profile.clone(),
++                seed_policy: match self.plan.seed_policy {
++                    CampaignSeedPolicy::Fixed(_) => "fixed".to_owned(),
++                    CampaignSeedPolicy::ProviderUnavailable => "provider_unavailable".to_owned(),
++                },
++            },
++            schedule,
++            candidate,
++            fixture,
++        }))
++    }
++
++    pub(crate) fn complete_run(
++        &mut self,
++        request: &CampaignRunRequest,
++        record: BenchmarkRecord,
++    ) -> Result<(), String> {
++        self.ensure_active(request)?;
++        validate_record_identity(request, &self.plan, &record)?;
++        let run = self
++            .runs
++            .iter_mut()
++            .find(|run| run.schedule.ordinal == request.schedule.ordinal)
++            .ok_or_else(|| "active campaign run disappeared".to_owned())?;
++        run.status = CampaignRunStatus::Completed;
++        run.failure = record_failure(&record);
++        run.record = Some(record);
++        self.after_run();
++        Ok(())
++    }
++
++    pub(crate) fn fail_measured_run(
++        &mut self,
++        request: &CampaignRunRequest,
++        failure: CampaignFailureKind,
++    ) -> Result<(), String> {
++        self.ensure_active(request)?;
++        if failure == CampaignFailureKind::InfrastructurePreMeasurement {
++            return Err("pre-measurement infrastructure failure is not measured evidence".to_owned());
++        }
++        let run = self
++            .runs
++            .iter_mut()
++            .find(|run| run.schedule.ordinal == request.schedule.ordinal)
++            .ok_or_else(|| "active campaign run disappeared".to_owned())?;
++        run.status = CampaignRunStatus::Failed;
++        run.failure = Some(failure);
++        self.after_run();
++        Ok(())
++    }
++
++    pub(crate) fn record_pre_measurement_failure(&mut self, ordinal: u32) -> Result<bool, String> {
++        let run = self
++            .runs
++            .iter_mut()
++            .find(|run| run.schedule.ordinal == ordinal)
++            .ok_or_else(|| format!("unknown campaign run ordinal {ordinal}"))?;
++        if run.status != CampaignRunStatus::Pending {
++            return Err("measured work already started; failure must remain evidence".to_owned());
++        }
++        run.pre_measurement_failures = run.pre_measurement_failures.saturating_add(1);
++        self.updated_unix_ms = unix_ms();
++        Ok(run.pre_measurement_failures <= MAX_PRE_MEASUREMENT_RETRIES)
++    }
++
++    pub(crate) fn pause(&mut self) -> Result<(), String> {
++        self.transition_at_boundary(BenchmarkCampaignState::Paused)
++    }
++
++    pub(crate) fn stop(&mut self) -> Result<(), String> {
++        self.transition_at_boundary(BenchmarkCampaignState::Stopped)
++    }
++
++    pub(crate) fn resume(&mut self, current: &CampaignResumeIdentity) -> Result<(), String> {
++        if !matches!(self.state, BenchmarkCampaignState::Paused | BenchmarkCampaignState::Stopped) {
++            return Err("only paused/stopped campaigns may resume".to_owned());
++        }
++        self.ensure_plan_unchanged()?;
++        if current != &self.plan.resume_identity() {
++            self.state = BenchmarkCampaignState::Incompatible;
++            self.updated_unix_ms = unix_ms();
++            return Err("campaign environment drifted; prior evidence was preserved".to_owned());
++        }
++        self.state = BenchmarkCampaignState::Running;
++        self.updated_unix_ms = unix_ms();
++        Ok(())
++    }
++
++    pub(crate) fn progress(&self) -> (usize, usize) {
++        let finished = self
++            .runs
++            .iter()
++            .filter(|run| matches!(run.status, CampaignRunStatus::Completed | CampaignRunStatus::Failed | CampaignRunStatus::Rejected))
++            .count();
++        (finished, self.runs.len())
++    }
++
++    pub(crate) fn report(&self) -> CampaignReport {
++        let mut groups = BTreeMap::<String, Vec<&CampaignRunProgress>>::new();
++        for run in &self.runs {
++            let model_id = self
++                .plan
++                .candidates
++                .get(run.schedule.candidate_index)
++                .map(|candidate| candidate.model.model_id.clone())
++                .unwrap_or_else(|| "unknown-candidate".to_owned());
++            let label = if self.plan.comparison_class == CampaignComparisonClass::RuntimeCharacterization {
++                format!("{model_id} · {}", run.schedule.execution_environment.label())
++            } else {
++                model_id
++            };
++            groups.entry(label).or_default().push(run);
++        }
++        let (finished_runs, total_runs) = self.progress();
++        CampaignReport {
++            campaign_id: self.campaign_id.clone(),
++            state: self.state,
++            finished_runs,
++            total_runs,
++            candidates: groups
++                .into_iter()
++                .map(|(label, runs)| report_candidate(label, runs))
++                .collect(),
++        }
++    }
++
++    fn ensure_plan_unchanged(&self) -> Result<(), String> {
++        if self.plan.fingerprint()? != self.plan_fingerprint {
++            return Err("campaign plan changed; create a new or derived campaign".to_owned());
++        }
++        Ok(())
++    }
++
++    fn ensure_active(&self, request: &CampaignRunRequest) -> Result<(), String> {
++        self.ensure_plan_unchanged()?;
++        if request.campaign_id != self.campaign_id || request.plan_fingerprint != self.plan_fingerprint {
++            return Err("run request belongs to another campaign plan".to_owned());
++        }
++        let active = self
++            .runs
++            .iter()
++            .find(|run| run.schedule.ordinal == request.schedule.ordinal)
++            .is_some_and(|run| run.status == CampaignRunStatus::Running && run.schedule == request.schedule);
++        if !active {
++            return Err("campaign run request is stale or not active".to_owned());
++        }
++        Ok(())
++    }
++
++    fn transition_at_boundary(&mut self, target: BenchmarkCampaignState) -> Result<(), String> {
++        if self.state != BenchmarkCampaignState::Running
++            || self.runs.iter().any(|run| run.status == CampaignRunStatus::Running)
++        {
++            return Err("pause/stop is only allowed at a measured-run boundary".to_owned());
++        }
++        self.state = target;
++        self.updated_unix_ms = unix_ms();
++        Ok(())
++    }
++
++    fn after_run(&mut self) {
++        self.updated_unix_ms = unix_ms();
++        if self.runs.iter().all(|run| {
++            matches!(run.status, CampaignRunStatus::Completed | CampaignRunStatus::Failed | CampaignRunStatus::Rejected)
++        }) {
++            self.state = BenchmarkCampaignState::Completed;
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CampaignReport {
++    pub(crate) campaign_id: String,
++    pub(crate) state: BenchmarkCampaignState,
++    pub(crate) finished_runs: usize,
++    pub(crate) total_runs: usize,
++    pub(crate) candidates: Vec<CampaignCandidateReport>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CampaignCandidateReport {
++    pub(crate) label: String,
++    pub(crate) attempted_runs: usize,
++    pub(crate) successful_runs: usize,
++    pub(crate) median_success_elapsed_ms: TelemetryValue<u64>,
++    pub(crate) median_generation_tokens_per_second_milli: TelemetryValue<u64>,
++    pub(crate) median_load_latency_ms: TelemetryValue<u64>,
++    pub(crate) peak_backend_gpu_memory_bytes: TelemetryValue<u64>,
++    pub(crate) oom_count: TelemetryValue<u64>,
++    pub(crate) human_interventions: TelemetryValue<u64>,
++    pub(crate) validation_attempts: TelemetryValue<u64>,
++    pub(crate) repair_loops: TelemetryValue<u64>,
++    pub(crate) per_task: Vec<(String, usize, usize)>,
++}
++
++pub(crate) struct BenchmarkCampaignStore {
++    root: PathBuf,
++}
++
++impl BenchmarkCampaignStore {
++    pub(crate) fn open(root: PathBuf) -> Result<Self, String> {
++        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
++        Ok(Self { root })
++    }
++
++    pub(crate) fn save(&self, campaign: &BenchmarkCampaign) -> Result<PathBuf, String> {
++        campaign.ensure_plan_unchanged()?;
++        let path = self.root.join(format!("{}.json", campaign.campaign_id));
++        let bytes = serde_json::to_vec_pretty(campaign).map_err(|error| error.to_string())?;
++        fs::write(&path, bytes).map_err(|error| error.to_string())?;
++        Ok(path)
++    }
++
++    pub(crate) fn load(&self, campaign_id: &str) -> Result<BenchmarkCampaign, String> {
++        if !valid_campaign_id(campaign_id) {
++            return Err("invalid campaign id".to_owned());
++        }
++        let path = self.root.join(format!("{campaign_id}.json"));
++        let bytes = fs::read(&path).map_err(|error| error.to_string())?;
++        let campaign = serde_json::from_slice::<BenchmarkCampaign>(&bytes)
++            .map_err(|error| error.to_string())?;
++        if campaign.schema_version != CAMPAIGN_SCHEMA_VERSION {
++            return Err(format!("unsupported campaign schema {}", campaign.schema_version));
++        }
++        campaign.ensure_plan_unchanged()?;
++        Ok(campaign)
++    }
++}
++
++pub(crate) fn apply_execution_identity(request: &CampaignRunRequest, record: &mut BenchmarkRecord) {
++    record.identity.execution = Some(request.execution_identity.clone());
++}
++
++pub(crate) fn reusable_baseline(baseline: &BenchmarkRecord, candidate: &BenchmarkRecord) -> bool {
++    baseline.identity.model != candidate.identity.model
++        && comparison_equivalence(baseline, candidate)
++            == ComparisonEquivalence::EquivalentModelComparison
++}
++
++fn validate_record_identity(
++    request: &CampaignRunRequest,
++    plan: &BenchmarkCampaignPlan,
++    record: &BenchmarkRecord,
++) -> Result<(), String> {
++    if record.identity.corpus_version != plan.corpus_version
++        || record.identity.harness_version != plan.benchmark_harness_version
++        || record.identity.task_id != request.schedule.task_id
++        || record.identity.model != request.candidate.model
++        || record.identity.hardware != plan.hardware
++        || record.identity.quality != plan.quality
++        || record.identity.tool_budget != plan.tool_budget
++        || record.identity.execution.as_ref() != Some(&request.execution_identity)
++    {
++        return Err("automatic record rejected incompatible campaign evidence".to_owned());
++    }
++    Ok(())
++}
++
++fn record_failure(record: &BenchmarkRecord) -> Option<CampaignFailureKind> {
++    if record.metrics.completion_success == TelemetryValue::Measured(true) {
++        None
++    } else if matches!(record.metrics.oom_failures, TelemetryValue::Measured(value) if value > 0) {
++        Some(CampaignFailureKind::Oom)
++    } else {
++        Some(CampaignFailureKind::Other)
++    }
++}
++
++fn report_candidate(label: String, runs: Vec<&CampaignRunProgress>) -> CampaignCandidateReport {
++    let records = runs.iter().filter_map(|run| run.record.as_ref()).collect::<Vec<_>>();
++    let successful = records
++        .iter()
++        .copied()
++        .filter(|record| record.metrics.completion_success == TelemetryValue::Measured(true))
++        .collect::<Vec<_>>();
++    let mut per_task = BTreeMap::<String, (usize, usize)>::new();
++    for run in &runs {
++        if !matches!(run.status, CampaignRunStatus::Completed | CampaignRunStatus::Failed | CampaignRunStatus::Rejected) {
++            continue;
++        }
++        let entry = per_task.entry(run.schedule.task_id.clone()).or_default();
++        entry.0 = entry.0.saturating_add(1);
++        if run.record.as_ref().is_some_and(|record| record.metrics.completion_success == TelemetryValue::Measured(true)) {
++            entry.1 = entry.1.saturating_add(1);
++        }
++    }
++    CampaignCandidateReport {
++        label,
++        attempted_runs: runs
++            .iter()
++            .filter(|run| matches!(run.status, CampaignRunStatus::Completed | CampaignRunStatus::Failed | CampaignRunStatus::Rejected))
++            .count(),
++        successful_runs: successful.len(),
++        median_success_elapsed_ms: median(successful.iter().filter_map(|record| measured_u64(&record.metrics.elapsed_ms)).collect()),
++        median_generation_tokens_per_second_milli: median(successful.iter().filter_map(|record| measured_u64(&record.metrics.generation_tokens_per_second_milli)).collect()),
++        median_load_latency_ms: median(records.iter().filter_map(|record| measured_u64(&record.metrics.load_latency_ms)).collect()),
++        peak_backend_gpu_memory_bytes: records
++            .iter()
++            .filter_map(|record| measured_u64(&record.metrics.peak_backend_gpu_memory_bytes))
++            .max()
++            .map(TelemetryValue::Measured)
++            .unwrap_or_default(),
++        oom_count: measured_sum(records.iter().map(|record| &record.metrics.oom_failures)),
++        human_interventions: measured_sum(records.iter().map(|record| &record.metrics.human_interventions)),
++        validation_attempts: measured_sum(records.iter().map(|record| &record.metrics.validation_attempts)),
++        repair_loops: measured_sum(records.iter().map(|record| &record.metrics.repair_loops)),
++        per_task: per_task
++            .into_iter()
++            .map(|(task, (attempted, passed))| (task, attempted, passed))
++            .collect(),
++    }
++}
++
++fn measured_sum<'a>(values: impl Iterator<Item = &'a TelemetryValue<u64>>) -> TelemetryValue<u64> {
++    let mut total = 0_u64;
++    let mut any = false;
++    for value in values {
++        if let TelemetryValue::Measured(value) = value {
++            total = total.saturating_add(*value);
++            any = true;
++        }
++    }
++    if any {
++        TelemetryValue::Measured(total)
++    } else {
++        TelemetryValue::Unavailable
++    }
++}
++
++fn median(mut values: Vec<u64>) -> TelemetryValue<u64> {
++    if values.is_empty() {
++        return TelemetryValue::Unavailable;
++    }
++    values.sort_unstable();
++    let middle = values.len() / 2;
++    let value = if values.len() % 2 == 0 {
++        values[middle - 1].saturating_add(values[middle]).saturating_div(2)
++    } else {
++        values[middle]
++    };
++    TelemetryValue::Measured(value)
++}
++
++fn hardware_exact(identity: &BenchmarkHardwareIdentity) -> bool {
++    !identity.platform.trim().is_empty()
++        && measured_text(&identity.gpu).is_some_and(|value| !value.trim().is_empty())
++        && measured_u64(&identity.total_gpu_memory_bytes).is_some_and(|value| value > 0)
++        && measured_u64(&identity.total_system_memory_bytes).is_some_and(|value| value > 0)
++}
++
++fn measured_text(value: &TelemetryValue<String>) -> Option<String> {
++    match value {
++        TelemetryValue::Measured(value) => Some(value.clone()),
++        TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Unavailable => None,
++    }
++}
++
++fn measured_u64(value: &TelemetryValue<u64>) -> Option<u64> {
++    match value {
++        TelemetryValue::Measured(value) => Some(*value),
++        TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Unavailable => None,
++    }
++}
++
++fn candidate_prompt(kind: BenchmarkTaskKind, marker: &str) -> String {
++    match kind {
++        BenchmarkTaskKind::ReadQuestion => format!("Answer the controlled read-only task `{marker}` and report production provenance."),
++        BenchmarkTaskKind::ProjectInspection => format!("Inspect controlled fixture `{marker}` without mutating it."),
++        BenchmarkTaskKind::CodeImplementation => format!("Implement the requested change in controlled code fixture `{marker}` through normal governed validation."),
++        BenchmarkTaskKind::TypedAuthoringMutation => format!("Apply the typed authoring change to controlled fixture `{marker}` through the normal Editor/MCP boundary."),
++        BenchmarkTaskKind::ValidationRepair => format!("Repair the seeded validation failure in controlled fixture `{marker}` using the normal repair loop."),
++        BenchmarkTaskKind::RuntimeInteraction => format!("Execute controlled playtest `{marker}` through the production runtime-debugging surface."),
++        BenchmarkTaskKind::VisualEvaluation => format!("Evaluate host-captured Game View evidence for controlled fixture `{marker}` through the production visual path."),
++    }
++}
++
++fn valid_campaign_id(value: &str) -> bool {
++    !value.is_empty()
++        && value.len() <= 96
++        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
++}
++
++fn stable_hash(bytes: &[u8]) -> u64 {
++    stable_hash_seed(bytes, 0xcbf2_9ce4_8422_2325)
++}
++
++fn stable_hash_seed(bytes: &[u8], seed: u64) -> u64 {
++    let mut hash = seed;
++    for byte in bytes {
++        hash ^= u64::from(*byte);
++        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
++    }
++    hash
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_millis()
++        .min(u128::from(u64::MAX)) as u64
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::agent_benchmark::{
++        BenchmarkIdentity, BenchmarkMetrics, BENCHMARK_SCHEMA_VERSION, BENCHMARK_TASKS,
++    };
++    use crate::resource_arbitration::InferenceWorkload;
++
++    fn hardware() -> BenchmarkHardwareIdentity {
++        BenchmarkHardwareIdentity {
++            platform: "windows-x86_64".to_owned(),
++            gpu: TelemetryValue::Measured("GPU".to_owned()),
++            total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
++            total_system_memory_bytes: TelemetryValue::Measured(32_000),
++        }
++    }
++
++    fn model(id: &str) -> BenchmarkModelIdentity {
++        BenchmarkModelIdentity {
++            backend_id: "ollama-compatible".to_owned(),
++            model_id: id.to_owned(),
++            model_version: TelemetryValue::Measured(format!("{id}-digest")),
++            quantization: TelemetryValue::Measured("Q4_K_M".to_owned()),
++            representation_size_bytes: TelemetryValue::Measured(4_000),
++            backend_runtime_version: TelemetryValue::Measured("runtime-v1".to_owned()),
++        }
++    }
++
++    fn plan() -> BenchmarkCampaignPlan {
++        BenchmarkCampaignPlan {
++            schema_version: CAMPAIGN_SCHEMA_VERSION,
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            benchmark_harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            campaign_harness_version: CAMPAIGN_HARNESS_VERSION.to_owned(),
++            schedule_version: CAMPAIGN_SCHEDULE_VERSION.to_owned(),
++            candidates: ["a", "b"]
++                .into_iter()
++                .map(|id| CampaignCandidate { model: model(id), source: CampaignCandidateSource::installed() })
++                .collect(),
++            tasks: BENCHMARK_TASKS[..2]
++                .iter()
++                .enumerate()
++                .map(|(index, task)| CampaignTaskPlan {
++                    task_id: task.id.to_owned(),
++                    fixture: CampaignFixtureIdentity::for_task(task.id, index as u64 + 1),
++                })
++                .collect(),
++            repetitions: 3,
++            comparison_class: CampaignComparisonClass::ModelComparison,
++            execution_profile: CampaignExecutionProfile::Warm,
++            execution_environments: vec![CampaignExecutionEnvironment::CompatibleBackend],
++            quality: QualityPreference::Balanced,
++            hardware: hardware(),
++            tool_budget: BenchmarkToolBudget {
++                max_model_turns: 24,
++                max_tool_failures: 4,
++                repair_budget: 2,
++                permission_budget: vec!["managed".to_owned()],
++                work_claims: vec!["code_path".to_owned()],
++            },
++            sampling_profile: "provider-default-v1".to_owned(),
++            seed_policy: CampaignSeedPolicy::ProviderUnavailable,
++        }
++    }
++
++    fn record(request: &CampaignRunRequest, plan: &BenchmarkCampaignPlan) -> BenchmarkRecord {
++        let task = benchmark_task(&request.schedule.task_id).expect("task");
++        BenchmarkRecord {
++            schema_version: BENCHMARK_SCHEMA_VERSION,
++            recorded_unix_ms: 1,
++            identity: BenchmarkIdentity {
++                corpus_version: plan.corpus_version.clone(),
++                task_id: task.id.to_owned(),
++                harness_version: plan.benchmark_harness_version.clone(),
++                runtime_harness_version: "native-write-v1".to_owned(),
++                model: request.candidate.model.clone(),
++                hardware: plan.hardware.clone(),
++                quality: plan.quality,
++                workload_policy_version: "adr0135-workload-policy-v1".to_owned(),
++                observed_workload: TelemetryValue::Measured(InferenceWorkload::InteractiveReasoning),
++                tool_budget: plan.tool_budget.clone(),
++                completion_criteria: task.completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
++                execution: Some(request.execution_identity.clone()),
++            },
++            metrics: BenchmarkMetrics {
++                acceptance_success: TelemetryValue::Measured(true),
++                completion_success: TelemetryValue::Measured(true),
++                model_turns: TelemetryValue::Measured(1),
++                tool_calls: TelemetryValue::Measured(1),
++                invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
++                code_edits: TelemetryValue::Measured(0),
++                validation_attempts: TelemetryValue::Measured(1),
++                repair_loops: TelemetryValue::Measured(0),
++                play_attempts: TelemetryValue::Measured(0),
++                frame_capture_attempts: TelemetryValue::Measured(0),
++                visual_evaluation_attempts: TelemetryValue::Measured(0),
++                human_interventions: TelemetryValue::Measured(0),
++                elapsed_ms: TelemetryValue::Measured(100),
++                prompt_tokens: TelemetryValue::Measured(10),
++                response_tokens: TelemetryValue::Measured(10),
++                load_latency_ms: TelemetryValue::Measured(5),
++                ttft_ms: TelemetryValue::Unavailable,
++                generation_tokens_per_second_milli: TelemetryValue::Measured(20_000),
++                peak_backend_gpu_memory_bytes: TelemetryValue::Measured(2_000),
++                peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
++                model_unload_reload_ms: TelemetryValue::Unavailable,
++                renderer_reclaim_resume_ms: TelemetryValue::Unavailable,
++                oom_failures: TelemetryValue::Measured(0),
++            },
++        }
++    }
++
++    #[test]
++    fn plan_schedule_is_frozen_and_interleaves_candidates() {
++        let mut campaign = BenchmarkCampaign::new("campaign-a", plan()).expect("campaign");
++        assert_eq!(
++            campaign.runs.iter().take(4).map(|run| run.schedule.candidate_index).collect::<Vec<_>>(),
++            vec![0, 1, 0, 1]
++        );
++        campaign.plan.repetitions = 1;
++        assert!(campaign.begin_next_run().is_err());
++    }
++
++    #[test]
++    fn runtime_characterization_holds_one_model_across_windows_and_wsl() {
++        let mut plan = plan();
++        plan.candidates.truncate(1);
++        plan.comparison_class = CampaignComparisonClass::RuntimeCharacterization;

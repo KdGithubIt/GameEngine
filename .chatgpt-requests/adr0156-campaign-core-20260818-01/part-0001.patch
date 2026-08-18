@@ -1,0 +1,128 @@
++        plan.execution_environments = vec![CampaignExecutionEnvironment::WindowsNative, CampaignExecutionEnvironment::Wsl2Linux];
++        assert!(plan.validate().is_ok());
++        plan.candidates.push(CampaignCandidate { model: model("b"), source: CampaignCandidateSource::installed() });
++        assert!(plan.validate().is_err());
++    }
++
++    #[test]
++    fn download_approval_matches_only_exact_frozen_missing_set() {
++        let mut plan = plan();
++        plan.candidates[1].source = CampaignCandidateSource {
++            source_reference: Some("https://example.invalid/b.gguf".to_owned()),
++            license: Some("license".to_owned()),
++            transfer_size_bytes: Some(4_000),
++            storage_size_bytes: Some(4_000),
++        };
++        let campaign = BenchmarkCampaign::new("campaign-a", plan).expect("campaign");
++        let preflight = campaign.preflight(&[model("a")]).expect("preflight");
++        let approval = CampaignDownloadApproval::exact(&preflight);
++        assert!(campaign.validate_download_approval(&preflight, &approval).is_ok());
++        let mut expanded = approval.clone();
++        expanded.approved_missing.push(CampaignRepresentation::from_model(&model("other")));
++        assert!(campaign.validate_download_approval(&preflight, &expanded).is_err());
++    }
++
++    #[test]
++    fn measured_failures_advance_without_retry() {
++        let plan = plan();
++        let available = plan.candidates.iter().map(|candidate| candidate.model.clone()).collect::<Vec<_>>();
++        let mut campaign = BenchmarkCampaign::new("campaign-a", plan).expect("campaign");
++        campaign.start(&available).expect("start");
++        let first = campaign.begin_next_run().expect("begin").expect("first");
++        assert!(campaign.begin_next_run().is_err());
++        campaign.fail_measured_run(&first, CampaignFailureKind::ValidationFailed).expect("fail");
++        let second = campaign.begin_next_run().expect("begin").expect("second");
++        assert_ne!(first.schedule.ordinal, second.schedule.ordinal);
++    }
++
++    #[test]
++    fn pre_measurement_retry_is_bounded() {
++        let mut campaign = BenchmarkCampaign::new("campaign-a", plan()).expect("campaign");
++        assert!(campaign.record_pre_measurement_failure(0).expect("retry one"));
++        assert!(campaign.record_pre_measurement_failure(0).expect("retry two"));
++        assert!(!campaign.record_pre_measurement_failure(0).expect("retry three"));
++    }
++
++    #[test]
++    fn resume_rejects_identity_drift_and_preserves_evidence() {
++        let plan = plan();
++        let available = plan.candidates.iter().map(|candidate| candidate.model.clone()).collect::<Vec<_>>();
++        let mut campaign = BenchmarkCampaign::new("campaign-a", plan.clone()).expect("campaign");
++        campaign.start(&available).expect("start");
++        let request = campaign.begin_next_run().expect("begin").expect("request");
++        campaign.complete_run(&request, record(&request, &plan)).expect("complete");
++        campaign.pause().expect("pause");
++        let preserved = campaign.runs[0].record.clone();
++        let mut drift = campaign.plan.resume_identity();
++        drift.hardware.platform = "different".to_owned();
++        assert!(campaign.resume(&drift).is_err());
++        assert_eq!(campaign.state, BenchmarkCampaignState::Incompatible);
++        assert_eq!(campaign.runs[0].record, preserved);
++    }
++
++    #[test]
++    fn candidate_contract_cannot_serialize_host_evaluator() {
++        let fixture = CampaignFixtureIdentity::for_task(BENCHMARK_TASKS[0].id, 99);
++        let contract = fixture.candidate_contract(BENCHMARK_TASKS[0].id).expect("contract");
++        let evaluator = fixture.host_evaluator(BENCHMARK_TASKS[0].id).expect("evaluator");
++        let text = serde_json::to_string(&contract).expect("json");
++        assert!(!text.contains(&evaluator.hidden_token));
++        assert_eq!(evaluator.task_id, BENCHMARK_TASKS[0].id);
++    }
++
++    #[test]
++    fn strict_campaign_identity_is_required_for_baseline_reuse() {
++        let plan = plan();
++        let available = plan.candidates.iter().map(|candidate| candidate.model.clone()).collect::<Vec<_>>();
++        let mut campaign = BenchmarkCampaign::new("campaign-a", plan.clone()).expect("campaign");
++        campaign.start(&available).expect("start");
++        let first = campaign.begin_next_run().expect("begin").expect("first");
++        let left = record(&first, &plan);
++        campaign.complete_run(&first, left.clone()).expect("complete");
++        let second = campaign.begin_next_run().expect("begin").expect("second");
++        let right = record(&second, &plan);
++        assert!(reusable_baseline(&left, &right));
++        let mut drift = right.clone();
++        drift.identity.execution.as_mut().expect("execution").fixture_instance_id = "different".to_owned();
++        assert!(!reusable_baseline(&left, &drift));
++    }
++
++    #[test]
++    fn store_and_report_preserve_machine_local_campaign_evidence() {
++        let root = tempfile::tempdir().expect("tempdir");
++        let store = BenchmarkCampaignStore::open(root.path().to_path_buf()).expect("store");
++        let campaign = BenchmarkCampaign::new("campaign-a", plan()).expect("campaign");
++        store.save(&campaign).expect("save");
++        assert_eq!(store.load("campaign-a").expect("load"), campaign);
++        let report = campaign.report();
++        assert_eq!(report.total_runs, 12);
++        assert_eq!(report.finished_runs, 0);
++    }
++}
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 11db348839a8d50eb02dd859e6f092d3df725f84..a9e0a2c5fd60604e011ea0417ded14f74639bee3 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -12,6 +12,10 @@
+ #[allow(dead_code)]
+ mod agent_asset_acquisition;
+ mod agent_benchmark;
++// ADR 0156 campaign orchestration includes host-only execution hooks that are consumed by
++// AI Studio and production runtime/model adapters incrementally.
++#[allow(dead_code)]
++mod agent_benchmark_campaign;
+ mod agent_host;
+ mod external_agent_provider;
+ mod hosted_model_backend;
+diff --git a/crates/editor/src/model_router.rs b/crates/editor/src/model_router.rs
+index 61565459083e413bf52a9f3f7e952d6ebcc93aa2..34c2207f5916ff95e6081d6b2789e930a49d4e83 100644
+--- a/crates/editor/src/model_router.rs
++++ b/crates/editor/src/model_router.rs
+@@ -429,6 +429,7 @@ mod tests {
+                     .iter()
+                     .map(|value| (*value).to_owned())
+                     .collect(),
++                execution: None,
+             },
+             metrics: BenchmarkMetrics {
+                 acceptance_success: TelemetryValue::Measured(successful),
