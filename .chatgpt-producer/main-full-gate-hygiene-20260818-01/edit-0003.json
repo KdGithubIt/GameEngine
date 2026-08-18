@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/remote_ai_studio.rs",
+  "old": "        assert!(!snapshot.contains(r\"C:\\Users\\private\"));",
+  "new": "        assert!(!snapshot.contains(r\"C:\\Users\\...\\private\"));"
+}
