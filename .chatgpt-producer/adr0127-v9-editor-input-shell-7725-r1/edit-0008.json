@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"pub use material_editor::MaterialEditorPanel;\npub use navmesh_bake::{","new":"pub use material_editor::MaterialEditorPanel;\npub use native_2d_editor::{Native2dEditorState, Native2dWorkspace, SpriteRegionDragPayload, TileTool2d};\npub use navmesh_bake::{"}
