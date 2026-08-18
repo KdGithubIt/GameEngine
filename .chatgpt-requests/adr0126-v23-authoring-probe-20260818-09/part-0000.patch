@@ -1,0 +1,12 @@
+diff --git a/crates/authoring/Cargo.toml b/crates/authoring/Cargo.toml
+index 724264c52abfe7ab9ad9445a1c8c81d78288ed4a..1ffb25b6b3cf23e4633e82ef620de19d139888f0 100644
+--- a/crates/authoring/Cargo.toml
++++ b/crates/authoring/Cargo.toml
+@@ -4,6 +4,7 @@ version = "0.1.0"
+ edition = "2024"
+ 
+ [dependencies]
++engine-timeline = { path = "../timeline", features = ["serde"] }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ ulid = "1.1"
