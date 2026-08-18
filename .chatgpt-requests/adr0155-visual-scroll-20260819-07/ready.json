@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-visual-scroll-20260819-07",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai",
+  "expected_head_sha": "cbce0e806cb380c0eef4b323eba5c3d3b16f7e56",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "patch_sha256": "f7d821c4cbdf9f3fe10e3691a0f349d66366a19e195e481a32a3f0101fbad2fd",
+  "patch_bytes": 849,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Show ADR0155 setup controls in visual validation",
+  "pr_title": "GameEngine: implement ADR0155 managed Local AI",
+  "pr_body": "## Summary\n\nImplements ADR 0155 managed Local AI, including Windows-safe SHA-256 verification and deterministic Visual Validation that exposes the initial Set up Local AI controls instead of scrolling past them.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
