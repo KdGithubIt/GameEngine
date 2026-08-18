@@ -1,0 +1,57 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 1ea41015d946b990a6da8164b24bfe50bf7579e5..2ef42d937e75d7929f45b6bba6d9e17d3850fa68 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -379,8 +379,12 @@ impl eframe::App for EditorShell {
+         let context = ui.ctx().clone();
+         eframe::App::ui(&mut self.app, ui, frame);
+         self.show_authoring_tools_launcher(&context);
+-        self.authoring_windows
+-            .show(&context, frame, self.app.project_root());
++        self.authoring_windows.show(
++            &context,
++            frame,
++            self.app.project_root(),
++            self.app.asset_manifest(),
++        );
+         #[cfg(not(feature = "visual-validation"))]
+         self.ai_studio.show(&context);
+         #[cfg(feature = "visual-validation")]
+diff --git a/crates/launcher/src/native_2d_template.rs b/crates/launcher/src/native_2d_template.rs
+index 33693690d5eaaf1dde63fa2d8b5eb1220eb25dd9..e4b6cd7620904279a971465fb11b86dbcccddd42 100644
+--- a/crates/launcher/src/native_2d_template.rs
++++ b/crates/launcher/src/native_2d_template.rs
+@@ -56,7 +56,7 @@ pub fn create_native_2d_project(final_path: &Path, name: &str) -> Result<PathBuf
+     let staging = parent.join(format!(
+         ".gameengine-native2d-{}-{stamp}-{}.staging",
+         std::process::id(),
+-        name.replace('/', "_").replace('\\', "_")
++        name.replace(['/', '\\'], "_")
+     ));
+     if staging.exists() {
+         return Err(format!("temporary project path already exists: {}", staging.display()));
+diff --git a/crates/mcp/src/generic_authoring.rs b/crates/mcp/src/generic_authoring.rs
+index 3d22236d461b3947844db49ef53e8940356e2ed5..bc80cbb4fafdc5a3c7c6e0cf3a6469319f7d9d7d 100644
+--- a/crates/mcp/src/generic_authoring.rs
++++ b/crates/mcp/src/generic_authoring.rs
+@@ -160,6 +160,7 @@ impl GenericAuthoringMcpTools {
+                 AuthoringDomain::Material,
+                 AuthoringDomain::ProjectSettings,
+                 AuthoringDomain::AnimationSet,
++                AuthoringDomain::Native2d,
+             ],
+         )
+     }
+@@ -345,7 +346,11 @@ mod tests {
+         assert!(names.contains(&"material.inspect".to_owned()));
+         assert!(names.contains(&"project_settings.apply".to_owned()));
+         assert!(names.contains(&"animation_set.validate".to_owned()));
+-        assert_eq!(names.len(), 24);
++        assert!(names.contains(&"sprite_atlas.apply".to_owned()));
++        assert!(names.contains(&"sprite_animation.validate".to_owned()));
++        assert!(names.contains(&"tile_set.preview".to_owned()));
++        assert!(names.contains(&"tile_map.inspect".to_owned()));
++        assert_eq!(names.len(), 40);
+     }
+ 
+     #[test]
