@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.last_captured_frame = None;\n        match mode {",
+  "new": "        self.last_captured_frame = None;\n        if mode == AgentRuntimeMode::Native\n            && self.benchmark_child_requires_initial_validation_failure()\n        {\n            self.prepare_native_workspace(&run_id)?;\n            self.host\n                .transition_run(\n                    &run_id,\n                    AgentRunState::Executing,\n                    \"Benchmark validation-repair baseline prepared; running the mandatory initial failing validation before model repair.\",\n                )\n                .map_err(|error| error.to_string())?;\n            self.host\n                .begin_managed_validation(&run_id, true)\n                .map_err(|error| error.to_string())?;\n            return Ok(run_id);\n        }\n        match mode {"
+}
