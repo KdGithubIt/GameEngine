@@ -109,21 +109,16 @@ pub enum PixelsPerUnit {
 }
 
 /// Blend policy for one SpriteRenderer2D.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpriteBlendMode {
     /// Straight-alpha source over destination.
+    #[default]
     Alpha,
     /// Premultiplied-alpha source over destination.
     PremultipliedAlpha,
     /// Add source color to the destination.
     Additive,
-}
-
-impl Default for SpriteBlendMode {
-    fn default() -> Self {
-        Self::Alpha
-    }
 }
 
 /// One stable sprite region in a Sprite Atlas document.

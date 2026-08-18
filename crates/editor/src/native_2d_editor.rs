@@ -255,7 +255,7 @@ pub struct Native2dEditorState {
     tile_map: Option<LoadedTileMap>,
     atlas_region: usize,
     animation_frame: usize,
-    animation_preview: engine::SpriteAnimationState2d,
+    animation_preview: engine::native_2d::SpriteAnimationState2d,
     tile_index: usize,
     tile_tool: TileTool2d,
     show_grid: bool,
@@ -316,7 +316,7 @@ impl Native2dEditorState {
             Ok(document) => {
                 self.animation = Some(document);
                 self.animation_frame = 0;
-                self.animation_preview = engine::SpriteAnimationState2d::default();
+                self.animation_preview = engine::native_2d::SpriteAnimationState2d::default();
                 self.status = None;
             }
             Err(error) => self.status = Some(error),
