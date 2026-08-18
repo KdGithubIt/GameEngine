@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::camera::Camera3D;
+use crate::native_2d::Camera2d;
 use crate::renderer::WorldRenderer;
 use crate::transform::Transform;
 
@@ -150,6 +151,35 @@ impl PreviewRenderer {
                 world,
                 camera,
                 camera_transform,
+                device,
+                queue,
+                color_view,
+                depth_view,
+            )
+            .map_err(|source| PreviewRendererError::RenderFrame {
+                message: source.to_string(),
+            })
+    }
+
+    /// Renders `world` through an explicit Native 2D camera.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_to_view_with_camera_2d(
+        &mut self,
+        world: &mut engine_ecs::World,
+        camera: &Camera2d,
+        camera_transform: &Transform,
+        viewport: [u32; 2],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+    ) -> Result<(), PreviewRendererError> {
+        self.renderer
+            .render_to_view_with_camera_2d(
+                world,
+                camera,
+                camera_transform,
+                viewport,
                 device,
                 queue,
                 color_view,
