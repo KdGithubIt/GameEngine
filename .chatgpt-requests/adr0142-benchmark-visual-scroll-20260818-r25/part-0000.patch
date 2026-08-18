@@ -1,0 +1,34 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 895605d7e763485faeb52047a1be980f7da8673a..a9da3f632744e7faf4a21c10ce7c68418c1c0b1e 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -985,7 +985,10 @@ impl AiStudioPanel {
+                     ui.small("Same project Agent Host · detached presentation");
+                 });
+                 ui.separator();
+-                self.show_contents(ui);
++                egui::ScrollArea::vertical()
++                    .id_salt("ai_studio_detached_contents")
++                    .auto_shrink([false, false])
++                    .show(ui, |ui| self.show_contents(ui));
+             },
+         );
+ 
+@@ -1713,7 +1716,7 @@ impl AiStudioPanel {
+     }
+ 
+     fn show_agent_benchmark(&mut self, ui: &mut egui::Ui) {
+-        egui::CollapsingHeader::new(format!(
++        let _response = egui::CollapsingHeader::new(format!(
+             "GameEngine Agent Benchmark · {} record(s) · {}",
+             self.benchmark_records.len(),
+             self.model_catalog.catalog_version
+@@ -1797,6 +1800,8 @@ impl AiStudioPanel {
+                 "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
+             );
+         });
++        #[cfg(feature = "visual-validation")]
++        ui.scroll_to_rect(_response.header_response.rect, Some(egui::Align::TOP));
+     }
+ 
+     fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
