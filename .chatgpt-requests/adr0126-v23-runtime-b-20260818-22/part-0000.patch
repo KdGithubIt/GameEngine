@@ -1,0 +1,781 @@
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+index bac0d86346855559e5c9c27ae6b320c397622404..ce48c3206d9978b67c518c7d7a2afa6c9ecb0b12 100644
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -6,7 +6,7 @@
+ 
+ mod animation;
+ 
+-use crate::asset::AssetManifest;
++use crate::asset::{AssetManifest, AssetServer};
+ use crate::audio::{
+     AudioRolloffMode, GameAudioCommand, GameAudioCommandQueue, GameSpatialAudioOptions,
+     MAX_GAME_AUDIO_COMMANDS,
+@@ -27,11 +27,13 @@ use crate::save::{
+     GameSaveCommand, GameSaveCommandQueue, SaveData, SaveValue, MAX_GAME_SAVE_COMMANDS,
+ };
+ use crate::scene_manager::SceneManager;
++use crate::timeline::{prepare_timeline_asset, PreparedTimeline, TimelineRuntime};
+ use crate::transform::Transform;
+ use crate::ui_document::{UiBindingValue, UiBindings, UiDocumentRef, UiDocumentVisibility};
+ use crate::vfx::VfxPlayer;
+ use engine_authoring::{AssetId, ComponentTypeId, StableId, Value};
+ use engine_ecs::{Entity, SystemId, World};
++use engine_timeline::{PlaybackRate, TimelineTick};
+ use glam::{Quat, Vec3};
+ use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+@@ -71,6 +73,7 @@ pub(crate) enum PreparedGameCommand {
+     },
+     LockOn(LockOnOperation),
+     Animation(animation::PreparedAnimationCommand),
++    Timeline(TimelineOperation),
+     Vfx {
+         entity: Entity,
+         operation: VfxPlaybackOperation,
+@@ -155,6 +158,23 @@ pub(crate) enum LockOnOperation {
+     Release,
+ }
+ 
++pub(crate) enum TimelineOperation {
++    Start {
++        player_id: u64,
++        prepared: PreparedTimeline,
++        priority: i32,
++    },
++    Pause { player_id: u64 },
++    Resume { player_id: u64 },
++    Stop { player_id: u64 },
++    Seek { player_id: u64, tick: TimelineTick },
++    SetRate {
++        player_id: u64,
++        numerator: i32,
++        denominator: u32,
++    },
++}
++
+ pub(crate) enum VfxPlaybackOperation {
+     Start,
+     Pause,
+@@ -178,6 +198,13 @@ pub(crate) fn prepare_game_commands(
+     let mut pending_prefab_requests = 0_usize;
+     let mut virtual_components = BTreeMap::new();
+     let mut virtual_hitboxes = BTreeMap::new();
++    let mut virtual_timeline_players = world.get_resource::<TimelineRuntime>().map(|runtime| {
++        runtime
++            .snapshots()
++            .into_iter()
++            .map(|snapshot| snapshot.player_id)
++            .collect::<BTreeSet<_>>()
++    });
+     for (index, command) in commands.iter().enumerate() {
+         match command.family {
+             GameCommandFamily::Transform => {
+@@ -300,6 +327,12 @@ pub(crate) fn prepare_game_commands(
+                     &command.payload,
+                 )?));
+             }
++            GameCommandFamily::Timeline => prepared.push(parse_timeline_command(
++                world,
++                command,
++                index,
++                &mut virtual_timeline_players,
++            )?),
+             GameCommandFamily::Vfx => {
+                 let (target, entity) = targeted_entity(world, command, index, &despawned)?;
+                 if world.get_component::<VfxPlayer>(entity).is_none() {
+@@ -458,6 +491,31 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
+                 }
+             }
+             PreparedGameCommand::Animation(command) => animation::apply(world, command),
++            PreparedGameCommand::Timeline(operation) => {
++                let runtime = world
++                    .get_resource_mut::<TimelineRuntime>()
++                    .expect("preflighted Timeline runtime must remain installed");
++                match operation {
++                    TimelineOperation::Start { player_id, prepared, priority } => {
++                        runtime.start_with_priority(player_id, prepared, priority)
++                    }
++                    TimelineOperation::Pause { player_id } => runtime
++                        .pause(player_id)
++                        .expect("preflighted Timeline player must remain live"),
++                    TimelineOperation::Resume { player_id } => runtime
++                        .resume(player_id)
++                        .expect("preflighted Timeline player must remain live"),
++                    TimelineOperation::Stop { player_id } => runtime
++                        .stop(player_id)
++                        .expect("preflighted Timeline player must remain live"),
++                    TimelineOperation::Seek { player_id, tick } => runtime
++                        .seek(player_id, tick, false)
++                        .expect("preflighted Timeline player must remain live"),
++                    TimelineOperation::SetRate { player_id, numerator, denominator } => runtime
++                        .set_rate(player_id, numerator, denominator)
++                        .expect("preflighted Timeline rate must remain valid"),
++                }
++            }
+             PreparedGameCommand::Vfx { entity, operation } => {
+                 let player = world
+                     .get_component_mut::<VfxPlayer>(entity)
+@@ -732,6 +790,93 @@ fn parse_lock_on_command(
+     Ok(PreparedGameCommand::LockOn(operation))
+ }
+ 
++fn parse_timeline_command(
++    world: &World,
++    command: &GameCommand,
++    index: usize,
++    virtual_players: &mut Option<BTreeSet<u64>>,
++) -> Result<PreparedGameCommand, GameCommandError> {
++    require_targetless(command, index, "Timeline")?;
++    let players = virtual_players
++        .as_mut()
++        .ok_or(GameCommandError::MissingTimelineRuntime { index })?;
++    let fields = object(&command.payload, index, "Timeline payload")?;
++    let player_id = runtime_id_field(fields, "player_id", index)?;
++    let operation = string_field(fields, "operation", index)?;
++    let require_player = |players: &BTreeSet<u64>| {
++        if players.contains(&player_id) {
++            Ok(())
++        } else {
++            Err(GameCommandError::UnknownTimelinePlayer { index, player_id })
++        }
++    };
++
++    let operation = match operation {
++        "start" => {
++            let text = string_field(fields, "asset_id", index)?;
++            let asset = AssetId::from_stable_id(StableId::new(text)).map_err(|_| {
++                GameCommandError::InvalidPayload {
++                    index,
++                    message: format!("field `asset_id` contains invalid stable ID `{text}`"),
++                }
++            })?;
++            let manifest = world
++                .get_resource::<AssetManifest>()
++                .ok_or(GameCommandError::MissingAssetManifest { index })?;
++            let server = world
++                .get_resource::<AssetServer>()
++                .ok_or(GameCommandError::MissingAssetServer { index })?;
++            let prepared = prepare_timeline_asset(&asset, manifest, server).map_err(|error| {
++                GameCommandError::InvalidPayload {
++                    index,
++                    message: error.to_string(),
++                }
++            })?;
++            let priority = i32_field(fields, "priority", index)?;
++            players.insert(player_id);
++            TimelineOperation::Start { player_id, prepared, priority }
++        }
++        "pause" => {
++            require_player(players)?;
++            TimelineOperation::Pause { player_id }
++        }
++        "resume" => {
++            require_player(players)?;
++            TimelineOperation::Resume { player_id }
++        }
++        "stop" => {
++            require_player(players)?;
++            TimelineOperation::Stop { player_id }
++        }
++        "seek" => {
++            require_player(players)?;
++            TimelineOperation::Seek {
++                player_id,
++                tick: TimelineTick::new(i64_field(fields, "tick", index)?),
++            }
++        }
++        "set_rate" => {
++            require_player(players)?;
++            let numerator = i32_field(fields, "numerator", index)?;
++            let denominator = u32_field(fields, "denominator", index)?;
++            PlaybackRate::new(numerator, denominator).map_err(|_| {
++                GameCommandError::InvalidPayload {
++                    index,
++                    message: "Timeline playback rate is invalid".to_owned(),
++                }
++            })?;
++            TimelineOperation::SetRate { player_id, numerator, denominator }
++        }
++        other => {
++            return Err(GameCommandError::InvalidPayload {
++                index,
++                message: format!("unknown Timeline operation `{other}`"),
++            })
++        }
++    };
++    Ok(PreparedGameCommand::Timeline(operation))
++}
++
+ fn parse_ui_command(
+     world: &World,
+     command: &GameCommand,
+@@ -1585,6 +1730,24 @@ fn u32_field(
+     })
+ }
+ 
++fn i64_field(
++    fields: &BTreeMap<String, Value>,
++    name: &str,
++    index: usize,
++) -> Result<i64, GameCommandError> {
++    match fields.get(name) {
++        Some(Value::I64(value)) => Ok(*value),
++        Some(Value::U64(value)) => i64::try_from(*value).map_err(|_| GameCommandError::InvalidPayload {
++            index,
++            message: format!("field `{name}` exceeds signed 64-bit range"),
++        }),
++        _ => Err(GameCommandError::InvalidPayload {
++            index,
++            message: format!("field `{name}` must be a signed 64-bit integer"),
++        }),
++    }
++}
++
+ fn i32_field(
+     fields: &BTreeMap<String, Value>,
+     name: &str,
+@@ -1732,6 +1895,23 @@ pub enum GameCommandError {
+         /// Zero-based command index.
+         index: usize,
+     },
++    /// The host has no Timeline runtime installed.
++    MissingTimelineRuntime {
++        /// Zero-based command index.
++        index: usize,
++    },
++    /// The host has no asset server installed for stable Timeline loading.
++    MissingAssetServer {
++        /// Zero-based command index.
++        index: usize,
++    },
++    /// A Timeline control command references an inactive logical player.
++    UnknownTimelinePlayer {
++        /// Zero-based command index.
++        index: usize,
++        /// Missing caller-owned logical player ID.
++        player_id: u64,
++    },
+     /// The host has no bounded project-audio queue installed.
+     MissingAudioQueue {
+         /// Zero-based command index.
+@@ -1945,6 +2125,16 @@ impl fmt::Display for GameCommandError {
+             Self::MissingSceneManager { index } => {
+                 write!(formatter, "game command {index} requires the SceneManager resource")
+             }
++            Self::MissingTimelineRuntime { index } => {
++                write!(formatter, "game command {index} requires the TimelineRuntime resource")
++            }
++            Self::MissingAssetServer { index } => {
++                write!(formatter, "game command {index} requires the AssetServer resource")
++            }
++            Self::UnknownTimelinePlayer { index, player_id } => write!(
++                formatter,
++                "game command {index} references inactive Timeline player {player_id}"
++            ),
+             Self::MissingAudioQueue { index } => {
+                 write!(formatter, "game command {index} requires the project audio queue")
+             }
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+index d3d0a1ff67818592327e5eab1b957c524abb0d98..eab0306c5bd3579650e16bf9cb9d2eaf5fb0ce3a 100644
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -29,6 +29,7 @@ use crate::save::{SaveData, SaveValue};
+ use crate::scene_manager::{SceneManager, SceneSwitchState};
+ use crate::script_api::RuntimeEntityIdentity;
+ use crate::time::{FixedTime, Time};
++use crate::timeline::{TimelineEvents, TimelinePlaybackState, TimelineRuntime};
+ use crate::transform::{GlobalTransform, Transform};
+ use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
+ use crate::vfx::{VfxPlaybackState, VfxPlayer, VfxRuntimeBackend};
+@@ -209,12 +210,41 @@ fn compile_host_views(
+         .map(|view| {
+             let value = match view {
+                 GameHostViewKind::SceneState => scene_state_value(world),
++                GameHostViewKind::TimelineState => timeline_state_value(world),
+             };
+             (*view, value)
+         })
+         .collect()
+ }
+ 
++fn timeline_state_value(world: &World) -> Value {
++    let players = world
++        .get_resource::<TimelineRuntime>()
++        .map(|runtime| runtime.snapshots())
++        .unwrap_or_default()
++        .into_iter()
++        .map(|snapshot| {
++            let state = match snapshot.state {
++                TimelinePlaybackState::Playing => "playing",
++                TimelinePlaybackState::Paused => "paused",
++                TimelinePlaybackState::Stopped => "stopped",
++            };
++            Value::Object(BTreeMap::from([
++                ("player_id".to_owned(), Value::String(snapshot.player_id.to_string())),
++                ("asset_id".to_owned(), Value::String(snapshot.asset.as_str().to_owned())),
++                ("document_id".to_owned(), Value::String(snapshot.document_id.as_str().to_owned())),
++                ("state".to_owned(), Value::String(state.to_owned())),
++                ("tick".to_owned(), Value::I64(snapshot.tick.get())),
++                ("generation".to_owned(), Value::String(snapshot.generation.to_string())),
++                ("priority".to_owned(), Value::I64(i64::from(snapshot.priority))),
++                ("rate_numerator".to_owned(), Value::I64(i64::from(snapshot.rate_numerator))),
++                ("rate_denominator".to_owned(), Value::I64(i64::from(snapshot.rate_denominator))),
++            ]))
++        })
++        .collect();
++    Value::Object(BTreeMap::from([("players".to_owned(), Value::Array(players))]))
++}
++
+ fn scene_state_value(world: &World) -> Value {
+     let manager = world.get_resource::<SceneManager>();
+     let (status, failure_path, failure_message) = match world.get_resource::<SceneSwitchState>() {
+@@ -292,6 +322,7 @@ pub struct GameHostRuntime {
+     last_hit_generation: Option<u64>,
+     last_animation_generation: Option<u64>,
+     last_ui_generation: Option<u64>,
++    last_timeline_source_sequence: u64,
+     last_timer_source_sequence: u64,
+     last_spawn_source_sequence: u64,
+     last_scene_observation: Option<SceneObservation>,
+@@ -441,6 +472,9 @@ impl GameHostRuntime {
+         if access.event_streams.contains(&GameEventStream::Animation) {
+             self.capture_animation_events(world);
+         }
++        if access.event_streams.contains(&GameEventStream::Timeline) {
++            self.capture_timeline_events(world);
++        }
+         if access.event_streams.contains(&GameEventStream::Ui) {
+             self.capture_ui_events(world);
+         }
+@@ -537,6 +571,32 @@ impl GameHostRuntime {
+         }
+     }
+ 
++    fn capture_timeline_events(&mut self, world: &World) {
++        let Some(events) = world.get_resource::<TimelineEvents>() else {
++            return;
++        };
++        let records = events
++            .iter()
++            .filter(|event| event.source_sequence > self.last_timeline_source_sequence)
++            .cloned()
++            .collect::<Vec<_>>();
++        for event in records {
++            self.last_timeline_source_sequence =
++                self.last_timeline_source_sequence.max(event.source_sequence);
++            self.push_event(
++                GameEventStream::Timeline,
++                Value::Object(BTreeMap::from([
++                    ("player_id".to_owned(), Value::String(event.player_id.to_string())),
++                    ("asset_id".to_owned(), Value::String(event.asset.as_str().to_owned())),
++                    ("document_id".to_owned(), Value::String(event.document_id.as_str().to_owned())),
++                    ("tick".to_owned(), Value::I64(event.tick.get())),
++                    ("name".to_owned(), Value::String(event.name)),
++                    ("payload".to_owned(), Value::String(event.payload)),
++                ])),
++            );
++        }
++    }
++
+     fn capture_ui_events(&mut self, world: &World) {
+         let Some(events) = world.get_resource::<UiEventFrame>() else {
+             return;
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index ddf43ac6775d599347b4dbc90cf1bc0c2325f95c..a47e837b8fb819556cd713ed6ab5b1c93a402a92 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -162,6 +162,8 @@ pub mod rig_pose;
+ pub mod runtime_metadata;
+ /// Shared system registration profiles used by runtime hosts and editor catalogs.
+ pub mod runtime_systems;
++/// Production Timeline composition, playback, and Project Rust-facing runtime state (ADR 0126).
++pub mod timeline;
+ /// Save data model and slot storage (Phase 56 / ADR 0048).
+ pub mod save;
+ /// Temporary bridge from authoring scene data to runtime ECS entities.
+diff --git a/crates/engine/src/lock_on.rs b/crates/engine/src/lock_on.rs
+index 3d106ac3213cf5dca75682a73bff79fd28c7dee1..1be020145ec469242587d388615007ac4151c902 100644
+--- a/crates/engine/src/lock_on.rs
++++ b/crates/engine/src/lock_on.rs
+@@ -8,11 +8,13 @@
+ //! frame the locked target and should be registered immediately after
+ //! [`lock_on_system`] in the frame schedule.
+ 
+-use engine_ecs::{Entity, Query, ResMut};
++use engine_ecs::{Entity, Query, Res, ResMut};
+ use glam::Vec3;
+ use hashbrown::HashMap;
+ 
+-use crate::camera::{select_active_game_camera, Camera3D, LockOnCamera};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, LockOnCamera,
++};
+ use crate::collision::{
+     segment_blocked_by_static, static_obstacle_aabbs, Collider, PhysicsBody, TriggerVolume,
+ };
+@@ -56,6 +58,7 @@ use engine_gameplay::lock_on::LockRequest;
+ /// configuration there is no `source` position or selection policy to use.
+ pub fn lock_on_system(
+     mut lock: ResMut<TargetLock>,
++    camera_override: Option<Res<GameCameraSelectionOverride>>,
+     cameras: Query<(&Camera3D, Option<&LockOnCamera>)>,
+     lock_targets: Query<&LockOnTarget>,
+     transforms: Query<&GlobalTransform>,
+@@ -68,7 +71,12 @@ pub fn lock_on_system(
+ ) {
+     let request = lock.pending.take();
+ 
+-    let Some((_, (_, Some(camera)))) = select_active_game_camera(cameras.iter()) else {
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let Some((_, (_, Some(camera)))) =
++        select_active_game_camera_with_override(cameras.iter(), override_target)
++    else {
+         log::debug!(
+             "lock_on_system: active camera has no LockOnCamera; lock-on request ignored"
+         );
+diff --git a/crates/engine/src/player.rs b/crates/engine/src/player.rs
+index de09a519fbadaba857e08aa420ed74538fcf94d2..03af122bb79bb4c2aa5070e84eb682e817d708c8 100644
+--- a/crates/engine/src/player.rs
++++ b/crates/engine/src/player.rs
+@@ -1,6 +1,8 @@
+ //! Player controller component and system.
+ 
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::game_io::GameInputActionState;
+ use crate::input::{GamepadAxis, GamepadAxisState, GamepadButton, Input, KeyCode, MouseButton};
+@@ -668,6 +670,7 @@ fn resolve_named_action(
+ pub fn player_character_motor_system(
+     fixed_time: engine_ecs::Res<FixedTime>,
+     intents: engine_ecs::Res<PlayerMovementIntents>,
++    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
+     cameras: engine_ecs::Query<(&Camera3D, &GlobalTransform)>,
+     mut players: engine_ecs::Query<
+         (
+@@ -678,10 +681,16 @@ pub fn player_character_motor_system(
+         engine_ecs::With<PlayerMarker>,
+     >,
+ ) {
+-    let camera_basis = select_active_game_camera(cameras.iter()).map(|(_, (_, global))| {
+-        let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
+-        planar_camera_basis(rotation)
+-    });
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let camera_basis =
++        select_active_game_camera_with_override(cameras.iter(), override_target).map(
++            |(_, (_, global))| {
++                let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
++                planar_camera_basis(rotation)
++            },
++        );
+ 
+     for (entity, (config, motor, transform)) in &mut players {
+         let intent = intents.get(entity).unwrap_or_default();
+diff --git a/crates/render-runtime/src/lod.rs b/crates/render-runtime/src/lod.rs
+index e4c447d332b99ce6352967b89350b1278a984f8f..ee6e128701e2eef336a1cfaba7a7bdfad35fdc0f 100644
+--- a/crates/render-runtime/src/lod.rs
++++ b/crates/render-runtime/src/lod.rs
+@@ -1,7 +1,9 @@
+ //! Level-of-detail (LOD) component and selection system (Phase 47).
+ 
+ use crate::asset::Handle;
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::mesh::Mesh;
+ use crate::transform::GlobalTransform;
+ use engine_ecs::Query;
+@@ -49,12 +51,17 @@ pub struct InstanceStats {
+ /// existing [`Handle<Mesh>`] alongside the [`LodGroup`]; groups with no
+ /// levels are skipped.
+ pub fn lod_selection_system(
++    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
+     cameras: Query<(&Camera3D, &GlobalTransform)>,
+     mut groups: Query<(&LodGroup, &GlobalTransform, &mut Handle<Mesh>)>,
+ ) {
+-    let camera_pos: glam::Vec3 = select_active_game_camera(cameras.iter())
+-        .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
+-        .unwrap_or(glam::Vec3::ZERO);
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let camera_pos: glam::Vec3 =
++        select_active_game_camera_with_override(cameras.iter(), override_target)
++            .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
++            .unwrap_or(glam::Vec3::ZERO);
+ 
+     for (_, (lod, tf, handle)) in groups.iter_mut() {
+         let Some(lowest_detail) = lod.levels.last() else {
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+index 9f8743a153703dfbc9488dd35c024d71793efe54..f71abd90c757622775c5d503ed6cdce0acfcff7a 100644
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -2,7 +2,9 @@ use bytemuck::{Pod, Zeroable};
+ use std::fmt;
+ use std::sync::{Arc, Weak};
+ 
+-use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, ViewportSize,
++};
+ use crate::debug_draw::{DebugLine, DebugLines};
+ use crate::environment::EnvironmentGpuState;
+ use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
+@@ -1882,8 +1884,11 @@ impl WorldRenderer {
+         use crate::transform::Transform;
+         use engine_ecs::Query;
+ 
++        let override_target = world
++            .get_resource::<GameCameraSelectionOverride>()
++            .and_then(GameCameraSelectionOverride::target);
+         let query = Query::<(&Camera3D, &Transform)>::new(world);
+-        select_active_game_camera(query.iter())
++        select_active_game_camera_with_override(query.iter(), override_target)
+             .map(|(_, (camera, transform))| (camera.clone(), transform.clone()))
+     }
+ 
+diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
+index 18a88dfffeddda28d3de1871aa725cf4475d88e9..64df26e0500539e963f1e12dcae1486c1d47be09 100644
+--- a/crates/render-runtime/src/renderer.rs
++++ b/crates/render-runtime/src/renderer.rs
+@@ -3,7 +3,9 @@
+ use std::fmt;
+ 
+ use crate::bloom::BloomPass;
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
+ use crate::transform::Transform;
+ 
+@@ -196,16 +198,21 @@ impl WorldRenderer {
+     fn active_temporal_camera(
+         world: &mut engine_ecs::World,
+     ) -> Option<TemporalCameraSample> {
++        let override_target = world
++            .get_resource::<GameCameraSelectionOverride>()
++            .and_then(GameCameraSelectionOverride::target);
+         let query = engine_ecs::Query::<(&Camera3D, &Transform)>::new(world);
+-        select_active_game_camera(query.iter()).map(|(entity, (camera, transform))| {
+-            TemporalCameraSample::new(
+-                TemporalCameraSource::WorldEntity {
+-                    id: entity.id(),
+-                    generation: entity.generation(),
+-                },
+-                camera.view_projection_matrix(transform),
+-            )
+-        })
++        select_active_game_camera_with_override(query.iter(), override_target).map(
++            |(entity, (camera, transform))| {
++                TemporalCameraSample::new(
++                    TemporalCameraSource::WorldEntity {
++                        id: entity.id(),
++                        generation: entity.generation(),
++                    },
++                    camera.view_projection_matrix(transform),
++                )
++            },
++        )
+     }
+ }
+ 
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+index e7cb90da8fbdfb64c3b98017d7a7d796d24dee86..c07a9e9ecc536df118c122df33233d48661ba5a8 100644
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -9,8 +9,8 @@
+ use std::collections::{BTreeMap, BTreeSet};
+ 
+ use engine_authoring::{
+-    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxEmitterId, VfxModuleId,
+-    VfxModuleOperation, VfxScalarValue, VfxShape, VfxVectorValue,
++    AssetId, CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxEmitterId,
++    VfxModuleId, VfxModuleOperation, VfxScalarValue, VfxShape, VfxVectorValue,
+ };
+ use engine_ecs::{Query, Res};
+ use glam::Vec3;
+@@ -433,11 +433,23 @@ pub enum VfxPlaybackState {
+     Paused,
+ }
+ 
++/// Stable authoring source attached to one resolved runtime VFX player.
++///
++/// This provenance is runtime-only and lets higher-level composition verify that a
++/// Timeline clip is controlling the production effect it names without persisting any
++/// process-local renderer handle.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct VfxSourceIdentity {
++    /// Stable VFX effect asset selected during scene conversion.
++    pub effect: AssetId,
++}
++
+ /// Transient scene runtime component that plays one compiled VFX effect.
+ #[derive(Debug, Clone)]
+ pub struct VfxPlayer {
+     instance: VfxInstance,
+     playback_state: VfxPlaybackState,
++    external_clock: bool,
+     /// Starts playback when the runtime component is created.
+     pub autoplay: bool,
+     /// Restarts immediately after a finite effect completes.
+@@ -468,6 +480,7 @@ impl VfxPlayer {
+             } else {
+                 VfxPlaybackState::Stopped
+             },
++            external_clock: false,
+             autoplay,
+             looping,
+             restart_policy,
+@@ -549,6 +562,25 @@ impl VfxPlayer {
+         self.playback_state = VfxPlaybackState::Playing;
+     }
+ 
++    /// Selects whether the normal frame-clock system or an owning composition layer
++    /// advances this player. Timeline uses external clocking so absolute scrub/replay
++    /// samples cannot also be advanced by the frame loop.
++    pub fn set_external_clock(&mut self, external: bool) {
++        self.external_clock = external;
++    }
++
++    /// Returns whether a composition layer currently owns this player's clock.
++    pub fn is_external_clocked(&self) -> bool {
++        self.external_clock
++    }
++
++    /// Reconstructs this production VFX instance at an exact elapsed time.
++    pub fn sample_external_time(&mut self, elapsed_seconds: f32, origin: Vec3) {
++        self.external_clock = true;
++        self.playback_state = VfxPlaybackState::Playing;
++        self.instance.seek_preview(elapsed_seconds.max(0.0), origin);
++    }
++
+     /// Advances playback and applies the configured completion policy.
+     pub fn step(&mut self, dt: f32, origin: Vec3) {
+         if !self.is_playing() {
+@@ -572,6 +604,9 @@ pub fn vfx_update_system(time: Res<'_, Time>, mut query: Query<'_, (&mut VfxPlay
+         return;
+     }
+     for (_, (player, transform)) in query.iter_mut() {
++        if player.is_external_clocked() {
++            continue;
++        }
+         let origin = transform.matrix().col(3).truncate();
+         player.step(dt, origin);
+     }
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+index 26a9dfc5be6993e50e2edc22db55b2a44a7fc415..75dba98b8a84bc5438ef786ab392d06a7528c206 100644
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -79,6 +79,8 @@ pub enum GameEventStream {
+     Hit,
+     /// Animation events emitted while sampling clips.
+     Animation,
++    /// Sequence-level Timeline marker and Event-track records.
++    Timeline,
+     /// UI button and value-change events.
+     Ui,
+     /// Completed or failed deferred prefab spawn requests.
+@@ -111,6 +113,8 @@ pub enum GameCommandFamily {
+     Component,
+     /// Animation clip and Animation Graph control.
+     Animation,
++    /// Logical Timeline player control through the engine-owned runtime.
++    Timeline,
+     /// Scene VFX playback control.
+     Vfx,
+     /// Attack hitbox creation, activation, and removal.
+@@ -231,6 +235,8 @@ pub struct GameResourceAccess {
+ pub enum GameHostViewKind {
+     /// Current scene path, pending request, generation, and switch outcome.
+     SceneState,
++    /// Copied logical Timeline player state keyed by caller-owned player ID.
++    TimelineState,
+ }
+ 
+ /// Access declaration for one engine-owned copied entity view.
+@@ -989,6 +995,56 @@ impl GameCommand {
+         }
+     }
+ 
++    /// Starts or replaces one logical Timeline player by stable Timeline asset ID.
++    pub fn start_timeline(player_id: u64, asset_id: impl Into<String>, priority: i32) -> Self {
++        let mut command = timeline_player_command("start", player_id);
++        let Value::Object(payload) = &mut command.payload else {
++            unreachable!("timeline command always has an object payload");
++        };
++        payload.insert("asset_id".to_owned(), Value::String(asset_id.into()));
++        payload.insert("priority".to_owned(), Value::I64(i64::from(priority)));
++        command
++    }
++
++    /// Pauses one logical Timeline player without moving its playhead.
++    pub fn pause_timeline(player_id: u64) -> Self {
++        timeline_player_command("pause", player_id)
++    }
++
++    /// Resumes one logical Timeline player.
++    pub fn resume_timeline(player_id: u64) -> Self {
++        timeline_player_command("resume", player_id)
++    }
++
++    /// Stops one logical Timeline player and releases transient overrides.
++    pub fn stop_timeline(player_id: u64) -> Self {
++        timeline_player_command("stop", player_id)
++    }
++
++    /// Seeks one logical Timeline player to an exact canonical 48 kHz tick.
++    ///
++    /// Project gameplay seeks never preview sequence side effects. Event preview remains an
++    /// explicit Editor authoring feature.
++    pub fn seek_timeline(player_id: u64, tick: i64) -> Self {
++        let mut command = timeline_player_command("seek", player_id);
++        let Value::Object(payload) = &mut command.payload else {
++            unreachable!("timeline command always has an object payload");
++        };
++        payload.insert("tick".to_owned(), Value::I64(tick));
++        command
++    }
++
++    /// Sets one logical Timeline player's exact rational playback rate.
++    pub fn set_timeline_rate(player_id: u64, numerator: i32, denominator: u32) -> Self {
++        let mut command = timeline_player_command("set_rate", player_id);
++        let Value::Object(payload) = &mut command.payload else {
++            unreachable!("timeline command always has an object payload");
++        };
++        payload.insert("numerator".to_owned(), Value::I64(i64::from(numerator)));
++        payload.insert("denominator".to_owned(), Value::I64(i64::from(denominator)));
++        command
++    }
++
+     /// Requests a project-relative scene transition at the next frame boundary.
+     pub fn request_scene(path: impl Into<String>) -> Self {
+         GameCommand {
+@@ -1148,6 +1204,18 @@ fn behavior_tree_result_command(
+     }
+ }
+ 
++fn timeline_player_command(operation: &str, player_id: u64) -> GameCommand {
++    GameCommand {
++        family: GameCommandFamily::Timeline,
++        request_id: None,
++        target: None,
++        payload: Value::Object(BTreeMap::from([
++            ("operation".to_owned(), Value::String(operation.to_owned())),
++            ("player_id".to_owned(), Value::String(player_id.to_string())),
++        ])),
++    }
++}
++
+ fn timer_command(
+     operation: &str,
+     timer_id: String,
