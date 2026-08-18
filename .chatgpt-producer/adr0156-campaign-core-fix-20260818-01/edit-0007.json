@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "    } else if matches!(record.metrics.oom_failures, TelemetryValue::Measured(value) if value > 0) {",
+  "new": "    } else if matches!(\n        &record.metrics.oom_failures,\n        TelemetryValue::Measured(value) if *value > 0\n    ) {"
+}
