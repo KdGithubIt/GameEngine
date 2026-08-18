@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"use engine::{\n    Camera3D, DebugLines, GlobalTransform, Transform, ViewportSize, PREVIEW_COLOR_FORMAT,","new":"use engine::{\n    Camera3D, DebugLines, GlobalTransform, Transform, ViewportSize, PREVIEW_COLOR_FORMAT,"}
