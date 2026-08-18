@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0143-model-resources-r8-20260818-08c",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources-r8",
+  "expected_head_sha": "142bc65229181aa8a830a51b5e0920696daeac0d",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "16de041b78c46ca010c36591e004879226e45f1a22a967b93e3d5f179cd02a4c",
+  "patch_bytes": 11394,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0143 verification and accept the decision",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\nCompletes ADR0143 on current main. Local Ollama-compatible ModelBackends expose truthful provider-owned residency telemetry and verified unload/reload/CPU-offload operations. AI Studio releases supported local model residency before Editor restoration and managed Play, reacquires local residency only after authoritative-state re-inspection, and preserves ADR0145 external provider selection/auth/work-claim/process ownership plus the existing AgentHost/native-runtime Resume path. Hosted API and Enterprise backends retain unavailable local GPU residency controls and existing Network/credential ownership.\n\nDeterministic adapter and orchestration tests cover truthful capability availability, verified unload/offload/reload transitions, Interrupt-for-Editing release before explicit Editor restoration, managed Play RuntimeRendering priority and reclaim, post-inspection Resume reload, and authoring-state-free resource planning. ADR0143 is Accepted.\n\n## Validation\n\nWindows Validation: affected. Visual Validation: required for AI Studio.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
