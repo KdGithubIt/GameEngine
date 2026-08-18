@@ -9,6 +9,8 @@ use engine_authoring::{
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 
+mod tile_map_pointer;
+
 #[derive(Debug, Clone)]
 pub struct SpriteRegionDragPayload {
     pub sprite: SpriteRef,
@@ -1058,7 +1060,7 @@ fn show_tile_map_canvas(
         );
     }
 
-    handle_tile_map_pointer(
+    tile_map_pointer::handle(
         ui,
         &response,
         loaded,
