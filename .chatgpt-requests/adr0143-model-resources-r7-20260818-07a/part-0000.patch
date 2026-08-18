@@ -1,0 +1,729 @@
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index 557ee305b85329bb7da3236b413a0ebe90aae5c1..ef61ebb6ecb0f6c3d4454fcba1c09044c9f9dc9b 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -7,7 +7,11 @@
+ //! [`crate::agent_host::AgentRun`] state machine.
+ 
+ use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};
+-use crate::resource_arbitration::ModelResourceCapabilities;
++use crate::resource_arbitration::{
++    CapabilityAvailability, ModelResourceCapabilities, ModelResourceOperation,
++    ModelResourceTelemetry, ModelResourceTransition, TelemetryValue,
++};
++use serde::de::DeserializeOwned;
+ use serde::{Deserialize, Serialize};
+ use std::cmp::Reverse;
+ use std::collections::BTreeSet;
+@@ -45,6 +49,8 @@ pub(crate) enum NativeAgentError {
+     EmptyResponse,
+     Interrupted,
+     WorkerDisconnected,
++    ResourceTransitionUnconfirmed(String),
++    ResourceWorkerDisconnected,
+     Hosted(HostedBackendError),
+     UnsupportedCapability(String),
+     Io(io::Error),
+@@ -77,6 +83,13 @@ impl fmt::Display for NativeAgentError {
+             Self::WorkerDisconnected => {
+                 write!(formatter, "native question worker disconnected unexpectedly")
+             }
++            Self::ResourceTransitionUnconfirmed(message) => write!(
++                formatter,
++                "local model resource transition was not confirmed: {message}"
++            ),
++            Self::ResourceWorkerDisconnected => {
++                write!(formatter, "native model resource worker disconnected unexpectedly")
++            }
+             Self::Hosted(error) => write!(formatter, "{error}"),
+             Self::UnsupportedCapability(capability) => {
+                 write!(formatter, "model backend does not support {capability}")
+@@ -133,7 +146,16 @@ impl LocalModelConfig {
+             context_limit: None,
+             streaming: Some(false),
+             usage: Some(true),
+-            resource_capabilities: ModelResourceCapabilities::default(),
++            resource_capabilities: ModelResourceCapabilities {
++                representation_size: CapabilityAvailability::Available,
++                gpu_residency: CapabilityAvailability::Available,
++                cpu_gpu_offload: CapabilityAvailability::Available,
++                selectable_device: CapabilityAvailability::Unavailable,
++                kv_context_placement: CapabilityAvailability::Unavailable,
++                inference_cache_release: CapabilityAvailability::Unavailable,
++                unload_reload: CapabilityAvailability::Available,
++                backend_memory_telemetry: CapabilityAvailability::Available,
++            },
+             benchmark_verified: false,
+         }
+     }
+@@ -279,6 +301,166 @@ pub(crate) struct NativeAnswer {
+     pub(crate) text: String,
+     pub(crate) sources: Vec<RetrievedSource>,
+     pub(crate) metrics: NativeMetrics,
++    pub(crate) resource_telemetry: ModelResourceTelemetry,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum BackendResidencyRequest {
++    CpuOnly,
++    Release,
++    Reload,
++}
++
++trait ModelResourceBackend {
++    fn observe(&mut self, model: &str) -> Result<ModelResourceTelemetry, NativeAgentError>;
++
++    /// Applies one provider-specific residency request and returns provider-reported load latency.
++    fn apply_residency(
++        &mut self,
++        model: &str,
++        request: BackendResidencyRequest,
++    ) -> Result<Option<u64>, NativeAgentError>;
++}
++
++struct OllamaResourceBackend {
++    endpoint: LocalHttpEndpoint,
++}
++
++impl OllamaResourceBackend {
++    fn new(config: &LocalModelConfig) -> Result<Self, NativeAgentError> {
++        Ok(Self {
++            endpoint: LocalHttpEndpoint::parse(&config.endpoint)?,
++        })
++    }
++}
++
++impl ModelResourceBackend for OllamaResourceBackend {
++    fn observe(&mut self, model: &str) -> Result<ModelResourceTelemetry, NativeAgentError> {
++        observe_ollama_model(&self.endpoint, model)
++    }
++
++    fn apply_residency(
++        &mut self,
++        model: &str,
++        request: BackendResidencyRequest,
++    ) -> Result<Option<u64>, NativeAgentError> {
++        request_ollama_residency(&self.endpoint, model, request)
++    }
++}
++
++pub(crate) struct ModelResourceTask {
++    result: Receiver<Result<ModelResourceTransition, NativeAgentError>>,
++}
++
++impl ModelResourceTask {
++    pub(crate) fn spawn(
++        config: LocalModelConfig,
++        operation: ModelResourceOperation,
++    ) -> Result<Self, NativeAgentError> {
++        if config.model.trim().is_empty() {
++            return Err(NativeAgentError::EmptyModel);
++        }
++        LocalHttpEndpoint::parse(&config.endpoint)?;
++        let (sender, result) = mpsc::channel();
++        std::thread::Builder::new()
++            .name("ai-model-resource".to_owned())
++            .spawn(move || {
++                let transition = execute_model_resource_operation(&config, operation);
++                let _ = sender.send(transition);
++            })?;
++        Ok(Self { result })
++    }
++
++    pub(crate) fn poll(
++        &self,
++    ) -> Option<Result<ModelResourceTransition, NativeAgentError>> {
++        match self.result.try_recv() {
++            Ok(result) => Some(result),
++            Err(TryRecvError::Empty) => None,
++            Err(TryRecvError::Disconnected) => {
++                Some(Err(NativeAgentError::ResourceWorkerDisconnected))
++            }
++        }
++    }
++}
++
++fn execute_model_resource_operation(
++    config: &LocalModelConfig,
++    operation: ModelResourceOperation,
++) -> Result<ModelResourceTransition, NativeAgentError> {
++    let mut backend = OllamaResourceBackend::new(config)?;
++    execute_model_resource_operation_with_backend(config.model.trim(), operation, &mut backend)
++}
++
++fn execute_model_resource_operation_with_backend(
++    model: &str,
++    operation: ModelResourceOperation,
++    backend: &mut impl ModelResourceBackend,
++) -> Result<ModelResourceTransition, NativeAgentError> {
++    let before = backend.observe(model)?;
++    let started = Instant::now();
++    let backend_load_latency = match operation {
++        ModelResourceOperation::Observe => None,
++        ModelResourceOperation::Release
++            if before.resident == TelemetryValue::Measured(false) =>
++        {
++            None
++        }
++        ModelResourceOperation::ReduceGpuResidency
++            if before.resident == TelemetryValue::Measured(false) =>
++        {
++            None
++        }
++        ModelResourceOperation::Release => {
++            backend.apply_residency(model, BackendResidencyRequest::Release)?
++        }
++        ModelResourceOperation::Reload => {
++            backend.apply_residency(model, BackendResidencyRequest::Reload)?
++        }
++        ModelResourceOperation::ReduceGpuResidency => {
++            backend.apply_residency(model, BackendResidencyRequest::CpuOnly)?
++        }
++    };
++    let after = if operation == ModelResourceOperation::Observe {
++        before.clone()
++    } else {
++        backend.observe(model)?
++    };
++    if !resource_transition_confirmed(operation, &before, &after) {
++        return Err(NativeAgentError::ResourceTransitionUnconfirmed(format!(
++            "{operation:?} did not produce provider telemetry that proves the requested residency state"
++        )));
++    }
++    Ok(ModelResourceTransition {
++        operation,
++        before,
++        after,
++        operation_latency_ms: TelemetryValue::Measured(duration_ms(started.elapsed())),
++        backend_load_latency_ms: backend_load_latency
++            .map(TelemetryValue::Measured)
++            .unwrap_or(TelemetryValue::Unavailable),
++    })
++}
++
++fn resource_transition_confirmed(
++    operation: ModelResourceOperation,
++    before: &ModelResourceTelemetry,
++    after: &ModelResourceTelemetry,
++) -> bool {
++    match operation {
++        ModelResourceOperation::Observe => true,
++        ModelResourceOperation::Release => after.resident == TelemetryValue::Measured(false),
++        ModelResourceOperation::Reload => after.resident == TelemetryValue::Measured(true),
++        ModelResourceOperation::ReduceGpuResidency => {
++            after.resident == TelemetryValue::Measured(false)
++                || after.gpu_residency_bytes == TelemetryValue::Measured(0)
++                || matches!(
++                    (&before.gpu_residency_bytes, &after.gpu_residency_bytes),
++                    (TelemetryValue::Measured(before), TelemetryValue::Measured(after))
++                        if after < before
++                )
++        }
++    }
+ }
+ 
+ pub(crate) struct NativeQuestionTask {
+@@ -626,6 +808,12 @@ fn answer_question(
+         return Err(NativeAgentError::EmptyResponse);
+     }
+     let sources = distinct_sources(&evidence);
++    let resource_telemetry = match config {
++        NativeModelConfig::Local(config) => LocalHttpEndpoint::parse(&config.endpoint)
++            .and_then(|endpoint| observe_ollama_model(&endpoint, config.model.trim()))
++            .unwrap_or_default(),
++        NativeModelConfig::Hosted(_) => ModelResourceTelemetry::default(),
++    };
+     Ok(NativeAnswer {
+         metrics: NativeMetrics {
+             harness_version: BASELINE_HARNESS_VERSION,
+@@ -647,6 +835,7 @@ fn answer_question(
+         },
+         text: backend.text,
+         sources,
++        resource_telemetry,
+     })
+ }
+ 
+@@ -678,6 +867,138 @@ fn generation_throughput_milli(tokens: Option<u64>, duration_nanos: Option<u64>)
+     Some(scaled.min(u128::from(u64::MAX)) as u64)
+ }
+ 
++#[derive(Debug, Deserialize)]
++struct RunningModelsResponse {
++    #[serde(default)]
++    models: Vec<RunningModel>,
++}
++
++#[derive(Debug, Deserialize)]
++struct RunningModel {
++    #[serde(default)]
++    name: String,
++    #[serde(default)]
++    model: String,
++    #[serde(default)]
++    size: Option<u64>,
++    #[serde(default)]
++    size_vram: Option<u64>,
++    #[serde(default)]
++    context_length: Option<u64>,
++}
++
++#[derive(Debug, Serialize)]
++struct ResourceGenerateRequest<'a> {
++    model: &'a str,
++    stream: bool,
++    keep_alive: i64,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    options: Option<ResourceGenerateOptions>,
++}
++
++#[derive(Debug, Serialize)]
++struct ResourceGenerateOptions {
++    num_gpu: i32,
++}
++
++fn observe_ollama_model(
++    endpoint: &LocalHttpEndpoint,
++    model: &str,
++) -> Result<ModelResourceTelemetry, NativeAgentError> {
++    let running: RunningModelsResponse = request_local_json(endpoint, "GET", "/api/ps", None)?;
++    let selected = model.trim();
++    let Some(model) = running
++        .models
++        .into_iter()
++        .find(|candidate| candidate.name == selected || candidate.model == selected)
++    else {
++        return Ok(ModelResourceTelemetry {
++            resident: TelemetryValue::Measured(false),
++            ..ModelResourceTelemetry::default()
++        });
++    };
++    Ok(ModelResourceTelemetry {
++        resident: TelemetryValue::Measured(true),
++        representation_size_bytes: measured_u64(model.size),
++        gpu_residency_bytes: measured_u64(model.size_vram),
++        context_length_tokens: measured_u64(model.context_length),
++    })
++}
++
++fn measured_u64(value: Option<u64>) -> TelemetryValue<u64> {
++    value
++        .map(TelemetryValue::Measured)
++        .unwrap_or(TelemetryValue::Unavailable)
++}
++
++fn request_ollama_residency(
++    endpoint: &LocalHttpEndpoint,
++    model: &str,
++    request: BackendResidencyRequest,
++) -> Result<Option<u64>, NativeAgentError> {
++    let (keep_alive, options) = match request {
++        BackendResidencyRequest::Release => (0, None),
++        BackendResidencyRequest::Reload => (-1, None),
++        BackendResidencyRequest::CpuOnly => (
++            -1,
++            Some(ResourceGenerateOptions { num_gpu: 0 }),
++        ),
++    };
++    let body = serde_json::to_vec(&ResourceGenerateRequest {
++        model,
++        stream: false,
++        keep_alive,
++        options,
++    })?;
++    let response: GenerateResponse =
++        request_local_json(endpoint, "POST", "/api/generate", Some(&body))?;
++    Ok(response.load_duration.map(|nanos| nanos / 1_000_000))
++}
++
++fn request_local_json<R: DeserializeOwned>(
++    endpoint: &LocalHttpEndpoint,
++    method: &str,
++    path: &str,
++    body: Option<&[u8]>,
++) -> Result<R, NativeAgentError> {
++    let mut stream = endpoint.connect()?;
++    match body {
++        Some(body) => {
++            write!(
++                stream,
++                "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++                endpoint.host_header(),
++                body.len()
++            )?;
++            stream.write_all(body)?;
++        }
++        None => {
++            write!(
++                stream,
++                "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
++                endpoint.host_header()
++            )?;
++        }
++    }
++    stream.flush()?;
++    let mut response = Vec::new();
++    stream
++        .take(MAX_HTTP_RESPONSE_BYTES + 1)
++        .read_to_end(&mut response)?;
++    if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
++        return Err(NativeAgentError::ResponseTooLarge);
++    }
++    let parsed = parse_http_response(&response)?;
++    if parsed.status != 200 {
++        let message = String::from_utf8_lossy(&parsed.body);
++        return Err(NativeAgentError::HttpStatus(
++            parsed.status,
++            truncate_text(message.trim(), 500),
++        ));
++    }
++    serde_json::from_slice(&parsed.body).map_err(Into::into)
++}
++
+ #[derive(Debug, Serialize)]
+ struct GenerateRequest<'a> {
+     model: &'a str,
+@@ -1257,4 +1578,153 @@ mod tests {
+         assert!(prompt.contains("Do not claim to edit files"));
+         assert!(prompt.contains("not established by the current sources"));
+     }
++
++    struct FakeResourceBackend {
++        observations: std::collections::VecDeque<ModelResourceTelemetry>,
++        requests: Vec<BackendResidencyRequest>,
++        load_latency_ms: Option<u64>,
++    }
++
++    impl FakeResourceBackend {
++        fn new(observations: Vec<ModelResourceTelemetry>) -> Self {
++            Self {
++                observations: observations.into(),
++                requests: Vec::new(),
++                load_latency_ms: None,
++            }
++        }
++    }
++
++    impl ModelResourceBackend for FakeResourceBackend {
++        fn observe(&mut self, _model: &str) -> Result<ModelResourceTelemetry, NativeAgentError> {
++            self.observations.pop_front().ok_or_else(|| {
++                NativeAgentError::BackendUnavailable("fake observation exhausted".to_owned())
++            })
++        }
++
++        fn apply_residency(
++            &mut self,
++            _model: &str,
++            request: BackendResidencyRequest,
++        ) -> Result<Option<u64>, NativeAgentError> {
++            self.requests.push(request);
++            Ok(self.load_latency_ms)
++        }
++    }
++
++    fn resource_sample(resident: bool, gpu_bytes: Option<u64>) -> ModelResourceTelemetry {
++        ModelResourceTelemetry {
++            resident: TelemetryValue::Measured(resident),
++            gpu_residency_bytes: measured_u64(gpu_bytes),
++            ..ModelResourceTelemetry::default()
++        }
++    }
++
++    #[test]
++    fn ollama_capability_profile_is_truthful_about_first_release_controls() {
++        let profile = LocalModelConfig {
++            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
++            model: "model:tag".to_owned(),
++        }
++        .capability_profile();
++        assert_eq!(
++            profile.resource_capabilities.unload_reload,
++            CapabilityAvailability::Available
++        );
++        assert_eq!(
++            profile.resource_capabilities.cpu_gpu_offload,
++            CapabilityAvailability::Available
++        );
++        assert_eq!(
++            profile.resource_capabilities.selectable_device,
++            CapabilityAvailability::Unavailable
++        );
++        assert_eq!(
++            profile.resource_capabilities.kv_context_placement,
++            CapabilityAvailability::Unavailable
++        );
++        assert_eq!(
++            profile.resource_capabilities.inference_cache_release,
++            CapabilityAvailability::Unavailable
++        );
++    }
++
++    // These are deterministic adapter-contract tests. Reference-machine GPU
++    // measurements remain separate because no test may fabricate hardware state.
++    #[test]
++    fn unload_requires_observed_non_residency() {
++        let mut success = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(false, None),
++        ]);
++        let transition = execute_model_resource_operation_with_backend(
++            "model:tag",
++            ModelResourceOperation::Release,
++            &mut success,
++        )
++        .expect("verified unload");
++        assert_eq!(success.requests, [BackendResidencyRequest::Release]);
++        assert_eq!(transition.after.resident, TelemetryValue::Measured(false));
++
++        let mut unconfirmed = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(true, Some(1024)),
++        ]);
++        assert!(matches!(
++            execute_model_resource_operation_with_backend(
++                "model:tag",
++                ModelResourceOperation::Release,
++                &mut unconfirmed,
++            ),
++            Err(NativeAgentError::ResourceTransitionUnconfirmed(_))
++        ));
++    }
++
++    #[test]
++    fn cpu_offload_requires_observed_gpu_residency_reduction() {
++        let mut success = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(true, Some(128)),
++        ]);
++        execute_model_resource_operation_with_backend(
++            "model:tag",
++            ModelResourceOperation::ReduceGpuResidency,
++            &mut success,
++        )
++        .expect("verified offload");
++        assert_eq!(success.requests, [BackendResidencyRequest::CpuOnly]);
++
++        let mut unconfirmed = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(true, Some(1024)),
++        ]);
++        assert!(matches!(
++            execute_model_resource_operation_with_backend(
++                "model:tag",
++                ModelResourceOperation::ReduceGpuResidency,
++                &mut unconfirmed,
++            ),
++            Err(NativeAgentError::ResourceTransitionUnconfirmed(_))
++        ));
++    }
++
++    #[test]
++    fn reload_requires_residency_and_retains_backend_load_timing() {
++        let mut backend = FakeResourceBackend::new(vec![
++            resource_sample(false, None),
++            resource_sample(true, Some(2048)),
++        ]);
++        backend.load_latency_ms = Some(42);
++        let transition = execute_model_resource_operation_with_backend(
++            "model:tag",
++            ModelResourceOperation::Reload,
++            &mut backend,
++        )
++        .expect("verified reload");
++        assert_eq!(backend.requests, [BackendResidencyRequest::Reload]);
++        assert_eq!(
++            transition.backend_load_latency_ms,
++            TelemetryValue::Measured(42)
++        );
++    }
+ }
+diff --git a/crates/editor/src/resource_arbitration.rs b/crates/editor/src/resource_arbitration.rs
+index f5035d2df6579caa0225ead0a7c6a898d8e92033..4beec8a8a7bc17066ac0b24b98c9fa97a81d6a9f 100644
+--- a/crates/editor/src/resource_arbitration.rs
++++ b/crates/editor/src/resource_arbitration.rs
+@@ -113,6 +113,19 @@ impl Default for ModelResourceCapabilities {
+     }
+ }
+ 
++/// Resource operation exposed by a concrete `ModelBackend` adapter.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum ModelResourceOperation {
++    /// Read backend-owned residency telemetry without changing model state.
++    Observe,
++    /// Move as much model residency as the backend can verify away from the GPU.
++    ReduceGpuResidency,
++    /// Release the selected model from backend residency.
++    Release,
++    /// Reacquire the selected model after an explicit release.
++    Reload,
++}
++
+ /// Resource telemetry provenance. Unknown values remain explicitly unavailable.
+ // First-release benchmark telemetry contract; exact backend wiring is capability-dependent.
+ #[allow(dead_code)]
+@@ -128,6 +141,51 @@ pub(crate) enum TelemetryValue<T> {
+     Unavailable,
+ }
+ 
++/// Backend-owned model residency telemetry.
++///
++/// Device-wide free memory is intentionally absent: a backend model snapshot
++/// cannot truthfully synthesize that renderer/platform-owned measurement.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub(crate) struct ModelResourceTelemetry {
++    pub(crate) resident: TelemetryValue<bool>,
++    pub(crate) representation_size_bytes: TelemetryValue<u64>,
++    pub(crate) gpu_residency_bytes: TelemetryValue<u64>,
++    pub(crate) context_length_tokens: TelemetryValue<u64>,
++}
++
++/// Verified result of one backend resource transition.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ModelResourceTransition {
++    pub(crate) operation: ModelResourceOperation,
++    pub(crate) before: ModelResourceTelemetry,
++    pub(crate) after: ModelResourceTelemetry,
++    pub(crate) operation_latency_ms: TelemetryValue<u64>,
++    pub(crate) backend_load_latency_ms: TelemetryValue<u64>,
++}
++
++/// Maps provider-independent residency intent to an actually supported backend operation.
++pub(crate) fn resource_operation_for_residency_request(
++    request: ModelResidencyRequest,
++    capabilities: ModelResourceCapabilities,
++) -> Option<ModelResourceOperation> {
++    match request {
++        ModelResidencyRequest::Keep => None,
++        ModelResidencyRequest::ReduceIfSupported => {
++            (capabilities.cpu_gpu_offload == CapabilityAvailability::Available)
++                .then_some(ModelResourceOperation::ReduceGpuResidency)
++        }
++        ModelResidencyRequest::ReleaseIfSupported => {
++            if capabilities.unload_reload == CapabilityAvailability::Available {
++                Some(ModelResourceOperation::Release)
++            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
++                Some(ModelResourceOperation::ReduceGpuResidency)
++            } else {
++                None
++            }
++        }
++    }
++}
++
+ /// Observed pressure used by the application-layer broker.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum MemoryPressure {
+@@ -214,6 +272,8 @@ pub(crate) fn resolve_resource_plan(
+             reclaim: ReclaimLevel::None,
+             model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
+                 ModelResidencyRequest::ReleaseIfSupported
++            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
++                ModelResidencyRequest::ReduceIfSupported
+             } else {
+                 ModelResidencyRequest::Keep
+             },
+@@ -226,7 +286,7 @@ pub(crate) fn resolve_resource_plan(
+             reclaim: ReclaimLevel::None,
+             model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
+                 ModelResidencyRequest::ReleaseIfSupported
+-            } else if capabilities.gpu_residency == CapabilityAvailability::Available {
++            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
+                 ModelResidencyRequest::ReduceIfSupported
+             } else {
+                 ModelResidencyRequest::Keep
+@@ -391,28 +451,89 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn runtime_observation_prioritizes_renderer_and_only_requests_supported_release() {
++    fn runtime_observation_prioritizes_renderer_and_only_requests_supported_controls() {
+         let unsupported = resolve_resource_plan(
+             InferenceWorkload::RuntimeObservation,
+             QualityPreference::Deep,
+             MemoryPressure::Constrained,
+-            ModelResourceCapabilities::default(),
++            ModelResourceCapabilities {
++                gpu_residency: CapabilityAvailability::Available,
++                ..ModelResourceCapabilities::default()
++            },
+         );
+         assert_eq!(unsupported.priority, ResourcePriority::RuntimeRendering);
+         assert_eq!(unsupported.model_residency, ModelResidencyRequest::Keep);
++        assert_eq!(
++            resource_operation_for_residency_request(
++                unsupported.model_residency,
++                ModelResourceCapabilities::default(),
++            ),
++            None
++        );
+ 
++        let offload = ModelResourceCapabilities {
++            cpu_gpu_offload: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
++        let offload_plan = resolve_resource_plan(
++            InferenceWorkload::RuntimeObservation,
++            QualityPreference::Deep,
++            MemoryPressure::Constrained,
++            offload,
++        );
++        assert_eq!(
++            offload_plan.model_residency,
++            ModelResidencyRequest::ReduceIfSupported
++        );
++        assert_eq!(
++            resource_operation_for_residency_request(offload_plan.model_residency, offload),
++            Some(ModelResourceOperation::ReduceGpuResidency)
++        );
++
++        let unload = ModelResourceCapabilities {
++            unload_reload: CapabilityAvailability::Available,
++            cpu_gpu_offload: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
+         let supported = resolve_resource_plan(
+             InferenceWorkload::RuntimeObservation,
+             QualityPreference::Deep,
+             MemoryPressure::Constrained,
+-            ModelResourceCapabilities {
+-                unload_reload: CapabilityAvailability::Available,
+-                ..ModelResourceCapabilities::default()
+-            },
++            unload,
+         );
+         assert_eq!(
+             supported.model_residency,
+             ModelResidencyRequest::ReleaseIfSupported
+         );
++        assert_eq!(
++            resource_operation_for_residency_request(supported.model_residency, unload),
++            Some(ModelResourceOperation::Release)
++        );
++    }
++
++    #[test]
++    fn release_request_falls_back_to_verified_offload_not_telemetry_only() {
++        let telemetry_only = ModelResourceCapabilities {
++            gpu_residency: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
++        assert_eq!(
++            resource_operation_for_residency_request(
++                ModelResidencyRequest::ReleaseIfSupported,
++                telemetry_only,
++            ),
++            None
++        );
++        let offload = ModelResourceCapabilities {
++            cpu_gpu_offload: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
++        assert_eq!(
++            resource_operation_for_residency_request(
++                ModelResidencyRequest::ReleaseIfSupported,
++                offload,
++            ),
++            Some(ModelResourceOperation::ReduceGpuResidency)
++        );
+     }
+ }
