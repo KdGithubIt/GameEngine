@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/timeline_editor.rs","old":"fn format_timeline_diagnostics(diagnostics: &[TimelineDiagnostic]) -> String {\n    diagnostics\n        .iter()\n        .map(|diagnostic| format!(\"[{}] {}\", diagnostic.code, diagnostic.message))\n        .collect::<Vec<_>>()\n        .join(\"; \")\n}\n\n#[cfg(test)]","new":"#[cfg(test)]"}

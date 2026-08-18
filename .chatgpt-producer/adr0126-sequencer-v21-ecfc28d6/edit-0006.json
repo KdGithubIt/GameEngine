@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/timeline_editor.rs","old":"        let mut state = state();\n        state.document();\n        let (tick, _) = state.snap_tick(TimelineTick::new(810), &[]);","new":"        let state = state();\n        let (tick, _) = state.snap_tick(TimelineTick::new(810), &[]);"}

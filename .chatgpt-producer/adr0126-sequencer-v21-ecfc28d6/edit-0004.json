@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/timeline_editor.rs","old":"        let service = TimelineAuthoringService::new(document.clone())\n            .map_err(|diagnostics| format_timeline_diagnostics(&diagnostics))?;","new":"        let service = TimelineAuthoringService::new(document.clone())\n            .map_err(|error| error.to_string())?;"}
