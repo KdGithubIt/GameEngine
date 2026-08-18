@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0156-main-sync-20260819-01",
+  "target_branch": "chatgpt/gameengine-adr0156-benchmark-campaigns-v2",
+  "expected_head_sha": "ad3d004b51874f799682f0b29b059d15c737ae7c",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json"
+  ],
+  "commit_message": "Sync ADR0156 branch with current main visual validation fixtures",
+  "pr_title": "GameEngine: implement ADR 0156 benchmark campaigns",
+  "pr_body": "## Summary\n\nKeeps the validated ADR 0156 campaign core and AI Studio campaign controls while incorporating current-main Visual Validation fixture/scenario changes from the merged ADR 0142/0143/0145/0154 final audit. This resolves the overlapping AI Studio/main.rs surface before the controlled-fixture campaign executor is added.\n\nCampaign execution remains disabled until the dedicated controlled-fixture worker lands; the active private project is not used as benchmark input.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
