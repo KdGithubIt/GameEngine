@@ -1,0 +1,459 @@
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+index 041b4385460f19f1a7b52a8b57cce62113dec776..a52c9c00409f00aade711e73ec0ce38019fa97e0 100644
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -1105,7 +1105,7 @@ fn collect_needed_humanoid_bakes(
+                             .iter()
+                             .find(|(_, map)| {
+                                 map.source_skeleton == *source_skeleton
+-                                    && map.target_skeleton == *target_skeleton
++                                    && map.target_skeleton == target_skeleton
+                             })
+                             .map(|(id, _)| id.clone())
+                     });
+diff --git a/crates/editor/src/preview_residency.rs b/crates/editor/src/preview_residency.rs
+index 01cff06e74a80157e6c322b96e3d56f8ca38762d..8836c8f8ebb69dcb3533ed863e08c16026f3867e 100644
+--- a/crates/editor/src/preview_residency.rs
++++ b/crates/editor/src/preview_residency.rs
+@@ -138,6 +138,97 @@ impl ProjectAssetResidency {
+         self.model_cache.clone()
+     }
+ 
++    /// Schedules one exact model source for non-blocking Editor preview materialization.
++    ///
++    /// Animation Set Target Preview uses this narrow entry point to resolve an imported
++    /// animation's real skin on multi-skeleton sources without parsing the model on the
++    /// UI thread. A source whose persisted import generation is stale stays pending
++    /// until the ordinary import worker refreshes it.
++    pub(crate) fn prepare_model_source(
++        &self,
++        source_id: &AssetId,
++        manifest: &AssetManifest,
++        assets_root: Option<&Path>,
++        priority: PreviewAssetPriority,
++    ) -> PreviewResidencyState {
++        let Some(assets_root) = assets_root else {
++            return PreviewResidencyState::Ready;
++        };
++        let Some(entry) = manifest.get(source_id) else {
++            return PreviewResidencyState::Failed(format!(
++                "model source `{}` is not registered",
++                source_id.as_str()
++            ));
++        };
++        if !engine::asset_path_matches_kind(
++            engine::AssetKind::GltfSource,
++            Path::new(&entry.path),
++        ) {
++            return PreviewResidencyState::Failed(format!(
++                "asset `{}` is not a model source",
++                source_id.as_str()
++            ));
++        }
++
++        let source_path = assets_root.join(&entry.path);
++        let dependencies = entry
++            .import_settings
++            .source_dependencies
++            .iter()
++            .map(|path| assets_root.join(path))
++            .collect::<Vec<_>>();
++        let current_stamp = SourceStamp::capture(&source_path, &dependencies).ok();
++        if entry.import_settings.source_fingerprint.is_none()
++            || entry
++                .import_settings
++                .source_stamp
++                .as_ref()
++                .is_some_and(|expected| current_stamp.as_ref() != Some(expected))
++        {
++            return PreviewResidencyState::Pending;
++        }
++
++        let skeleton_records = entry.import_settings.skeleton_records.clone();
++        let contact_bones = entry.import_settings.contact_bones.clone();
++        let state = self.prepare_source(
++            SourceRequest {
++                source_id: source_id.clone(),
++                generation: SourceGeneration {
++                    source_path,
++                    source_stamp: current_stamp,
++                    source_fingerprint: entry.import_settings.source_fingerprint.clone(),
++                    settings_fingerprint: settings_fingerprint(
++                        &skeleton_records,
++                        &contact_bones,
++                    ),
++                },
++                skeleton_records,
++                contact_bones,
++            },
++            priority,
++        );
++        self.launch_available();
++        state
++    }
++
++    /// Returns the current resident parse for one exact imported model generation.
++    pub(crate) fn cached_model_source(
++        &self,
++        source_id: &AssetId,
++        manifest: &AssetManifest,
++        assets_root: Option<&Path>,
++    ) -> Option<Arc<engine::GltfImportResult>> {
++        let assets_root = assets_root?;
++        let entry = manifest.get(source_id)?;
++        let source_path = assets_root.join(&entry.path);
++        self.model_cache.lookup_source(
++            source_id,
++            &source_path,
++            &entry.import_settings.skeleton_records,
++            &entry.import_settings.contact_bones,
++        )
++    }
++
+     pub(crate) fn gpu_mesh_cache(&self) -> SharedGpuMeshCache {
+         self.gpu_mesh_cache.clone()
+     }
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index db1c5ba17853ec8a7757259100dee738ce510692..0cc31af565569480e79609257cadf548b7277242 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -4,6 +4,9 @@
+ //! Clip sub-assets, together with the clip reference validation that keeps an
+ //! invalid binding from being written back to disk.
+ 
++use crate::preview_residency::{
++    PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,
++};
+ use crate::ui::*;
+ 
+ struct AnimationSetGraphModel {
+@@ -59,6 +62,7 @@ fn animation_target_preview_choices(
+ fn preview_motion_route(
+     manifest: &engine::AssetManifest,
+     assets_root: Option<&std::path::Path>,
++    preview_residency: Option<&ProjectAssetResidency>,
+     source: &engine_authoring::MotionSourceRef,
+     target_skeleton: &AssetId,
+ ) -> Option<engine::motion_binding::AnimationMotionRoute> {
+@@ -75,19 +79,17 @@ fn preview_motion_route(
+     let source_skeleton = if candidate_kind
+         == engine::motion_binding::AnimationMotionCandidateKind::ModelBound
+     {
+-        let model_entry = sub_asset
+-            .target_model_source
+-            .as_deref()
+-            .and_then(|id| {
+-                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
+-            })
+-            .and_then(|id| manifest.get(&id))
+-            .unwrap_or(owner_entry);
+-        (model_entry.import_settings.skeleton_records.len() == 1)
+-            .then(|| &model_entry.import_settings.skeleton_records[0].id)
+-            .and_then(|id| {
+-                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
+-            })
++        match preview_model_bound_source_skeleton(
++            manifest,
++            assets_root,
++            preview_residency,
++            owner_source,
++            owner_entry,
++            sub_asset,
++        ) {
++            PreviewSourceSkeletonState::Ready(source_skeleton) => source_skeleton,
++            PreviewSourceSkeletonState::Pending => return None,
++        }
+     } else {
+         None
+     };
+@@ -152,21 +154,144 @@ fn preview_motion_route(
+     ))
+ }
+ 
++enum PreviewSourceSkeletonState {
++    Ready(Option<AssetId>),
++    Pending,
++}
++
++fn preview_model_bound_source_skeleton(
++    manifest: &engine::AssetManifest,
++    assets_root: Option<&std::path::Path>,
++    preview_residency: Option<&ProjectAssetResidency>,
++    owner_source: &AssetId,
++    owner_entry: &engine::ManifestEntry,
++    sub_asset: &engine::ImportedSubAsset,
++) -> PreviewSourceSkeletonState {
++    if let Some(target_model_source) = sub_asset.target_model_source.as_deref() {
++        let Some(target_model_source) =
++            AssetId::from_stable_id(engine_authoring::StableId::new(target_model_source)).ok()
++        else {
++            return PreviewSourceSkeletonState::Ready(None);
++        };
++        let Some(target_entry) = manifest.get(&target_model_source) else {
++            return PreviewSourceSkeletonState::Ready(None);
++        };
++
++        let mut shared = target_entry
++            .import_settings
++            .skeleton_records
++            .iter()
++            .filter(|target_record| {
++                owner_entry
++                    .import_settings
++                    .skeleton_records
++                    .iter()
++                    .any(|record| record.id == target_record.id)
++            });
++        if let Some(record) = shared.next()
++            && shared.next().is_none()
++        {
++            return PreviewSourceSkeletonState::Ready(
++                AssetId::from_stable_id(engine_authoring::StableId::new(&record.id)).ok(),
++            );
++        }
++
++        return PreviewSourceSkeletonState::Ready(
++            (target_entry.import_settings.skeleton_records.len() == 1)
++                .then(|| &target_entry.import_settings.skeleton_records[0].id)
++                .and_then(|id| {
++                    AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
++                }),
++        );
++    }
++
++    if owner_entry.import_settings.skeleton_records.len() == 1 {
++        return PreviewSourceSkeletonState::Ready(
++            AssetId::from_stable_id(engine_authoring::StableId::new(
++                &owner_entry.import_settings.skeleton_records[0].id,
++            ))
++            .ok(),
++        );
++    }
++
++    let Some(residency) = preview_residency else {
++        return PreviewSourceSkeletonState::Ready(None);
++    };
++    match residency.prepare_model_source(
++        owner_source,
++        manifest,
++        assets_root,
++        PreviewAssetPriority::Visible,
++    ) {
++        PreviewResidencyState::Pending => return PreviewSourceSkeletonState::Pending,
++        PreviewResidencyState::Failed(_) => {
++            return PreviewSourceSkeletonState::Ready(None);
++        }
++        PreviewResidencyState::Ready => {}
++    }
++    let Some(imported) = residency.cached_model_source(owner_source, manifest, assets_root) else {
++        return PreviewSourceSkeletonState::Pending;
++    };
++    PreviewSourceSkeletonState::Ready(animation_source_skeleton_from_parts(
++        &sub_asset.id,
++        imported
++            .animations
++            .iter()
++            .map(|animation| (animation.id.as_str(), animation.skin_index)),
++        |skin_index| {
++            imported
++                .skins
++                .get(skin_index)
++                .map(|skin| skin.skeleton.id.clone())
++        },
++    ))
++}
++
++fn animation_source_skeleton_from_parts<'a>(
++    candidate_id: &str,
++    animations: impl IntoIterator<Item = (&'a str, usize)>,
++    skin_skeleton: impl Fn(usize) -> Option<AssetId>,
++) -> Option<AssetId> {
++    let skin_index = animations
++        .into_iter()
++        .find_map(|(id, skin_index)| (id == candidate_id).then_some(skin_index))?;
++    skin_skeleton(skin_index)
++}
++
+ fn show_motion_route_preview(
+     ui: &mut egui::Ui,
+     route: Option<&engine::motion_binding::AnimationMotionRoute>,
++    has_target: bool,
+ ) {
+     let Some(route) = route else {
+-        ui.small("Route: select Target Preview");
++        ui.small(if has_target {
++            "Route: resolving imported source"
++        } else {
++            "Route: select Target Preview"
++        });
+         return;
+     };
+-    let response = match route {
+-        engine::motion_binding::AnimationMotionRoute::Failed { .. } => {
+-            ui.colored_label(egui::Color32::RED, format!("Route: {}", route.badge()))
++    ui.horizontal_wrapped(|ui| {
++        let response = match route {
++            engine::motion_binding::AnimationMotionRoute::Failed { .. } => {
++                ui.colored_label(egui::Color32::RED, format!("Route: {}", route.badge()))
++            }
++            _ => ui.label(format!("Route: {}", route.badge())),
++        };
++        match route {
++            engine::motion_binding::AnimationMotionRoute::Retarget { map } => {
++                ui.small(format!("Map: {}", map.as_str()));
++            }
++            engine::motion_binding::AnimationMotionRoute::Humanoid { motion } => {
++                ui.small(format!("Motion: {}", motion.as_str()));
++            }
++            engine::motion_binding::AnimationMotionRoute::Failed { reason } => {
++                ui.small(format!("Reason: {reason}"));
++            }
++            engine::motion_binding::AnimationMotionRoute::Native => {}
+         }
+-        _ => ui.label(format!("Route: {}", route.badge())),
+-    };
+-    response.on_hover_text(route.attempted_routing());
++        response.on_hover_text(route.attempted_routing());
++    });
+ }
+ 
+ #[cfg(test)]
+@@ -209,14 +334,47 @@ mod tests {
+         );
+         let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
+ 
+-        let native = preview_motion_route(&manifest, None, &candidate, &source_skeleton)
+-            .expect("registered Animation candidate must produce a route");
+-        let failed = preview_motion_route(&manifest, None, &candidate, &other_skeleton)
+-            .expect("registered Animation candidate must produce a route");
++        let native = preview_motion_route(
++            &manifest,
++            None,
++            None,
++            &candidate,
++            &source_skeleton,
++        )
++        .expect("registered Animation candidate must produce a route");
++        let failed = preview_motion_route(
++            &manifest,
++            None,
++            None,
++            &candidate,
++            &other_skeleton,
++        )
++        .expect("registered Animation candidate must produce a route");
+ 
+         assert_eq!(native.badge(), "Native");
+         assert_eq!(failed.badge(), "Failed");
+     }
++
++    #[test]
++    fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
++        let first_animation = AssetId::generate();
++        let second_animation = AssetId::generate();
++        let first_skeleton = AssetId::generate();
++        let second_skeleton = AssetId::generate();
++        let animations = [
++            (first_animation.as_str(), 1_usize),
++            (second_animation.as_str(), 0_usize),
++        ];
++        let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
++
++        let resolved = animation_source_skeleton_from_parts(
++            first_animation.as_str(),
++            animations,
++            |skin_index| skeletons.get(skin_index).cloned(),
++        );
++
++        assert_eq!(resolved, Some(second_skeleton));
++    }
+ }
+ 
+ fn humanoid_motion_choices(
+@@ -540,6 +698,7 @@ impl EditorApp {
+         let target_preview_choices = animation_target_preview_choices(&self.asset_manifest);
+         let preview_manifest = self.asset_manifest.clone();
+         let preview_assets_root = assets_root.clone();
++        let preview_residency = self.preview_residency.clone();
+         let graph_model = read_only_state
+             .document
+             .graph
+@@ -782,11 +941,16 @@ impl EditorApp {
+                                             preview_motion_route(
+                                                 &preview_manifest,
+                                                 preview_assets_root.as_deref(),
++                                                Some(&preview_residency),
+                                                 &binding.clip,
+                                                 target,
+                                             )
+                                         });
+-                                    show_motion_route_preview(ui, primary_route.as_ref());
++                                    show_motion_route_preview(
++                                        ui,
++                                        primary_route.as_ref(),
++                                        state.target_preview_skeleton.is_some(),
++                                    );
+                                     ui.small("Overlays (later entries have higher priority)");
+                                     for (index, overlay) in binding.overlays.iter().enumerate() {
+                                         let overlay_route = state
+@@ -796,6 +960,7 @@ impl EditorApp {
+                                                 preview_motion_route(
+                                                     &preview_manifest,
+                                                     preview_assets_root.as_deref(),
++                                                    Some(&preview_residency),
+                                                     overlay,
+                                                     target,
+                                                 )
+@@ -808,6 +973,7 @@ impl EditorApp {
+                                             show_motion_route_preview(
+                                                 ui,
+                                                 overlay_route.as_ref(),
++                                                state.target_preview_skeleton.is_some(),
+                                             );
+                                             if ui.small_button("↑").clicked() && index > 0 {
+                                                 action = Some(AnimationSetUiAction::MoveOverlay {
+diff --git a/crates/editor/src/ui/assets/model_import.rs b/crates/editor/src/ui/assets/model_import.rs
+index 3695777521c3be0e63a77dcb83ff19f46566baf0..c128e2083dee6b024a537ac05fcf8379f1338c11 100644
+--- a/crates/editor/src/ui/assets/model_import.rs
++++ b/crates/editor/src/ui/assets/model_import.rs
+@@ -1083,13 +1083,15 @@ mod tests {
+         std::fs::write(&generated_prefab, b"{}")
+             .expect("generated prefab must be written");
+ 
+-        let mut import_settings = engine::ImportSettings::default();
+-        import_settings.source_fingerprint = Some("accepted-generation".to_owned());
+-        import_settings.source_stamp = Some(
+-            engine::SourceStamp::capture(&source_path, &[])
+-                .expect("initial source stamp must be captured"),
+-        );
+-        import_settings.generated_prefab = Some("generated/model.prefab.json".to_owned());
++        let import_settings = engine::ImportSettings {
++            source_fingerprint: Some("accepted-generation".to_owned()),
++            source_stamp: Some(
++                engine::SourceStamp::capture(&source_path, &[])
++                    .expect("initial source stamp must be captured"),
++            ),
++            generated_prefab: Some("generated/model.prefab.json".to_owned()),
++            ..engine::ImportSettings::default()
++        };
+         let entry = engine::ManifestEntry {
+             path: "model.glb".to_owned(),
+             name: Some("Model".to_owned()),
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index c5253df9a31d7041804f5b5339be8ebc939483ba..2f217cc7ef90349835db201140418349db39347a 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -133,7 +133,6 @@ contract unless and until their status becomes `Accepted`:
+ - [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) — VFX Effect Authoring and Runtime Architecture
+ - [0126](0126-timeline-sequencer-authoring-and-runtime.md) — Timeline / Sequencer Authoring and Runtime
+ - [0127](0127-native-2d-gameplay-and-authoring-architecture.md) — Native 2D Gameplay and Authoring Architecture
+-- [0154](0154-target-aware-animation-motion-binding-resolution.md) — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution
+ 
+ The later Accepted renderer records originally reused ADR 0122 and ADR 0123.
+ They are registered as ADR 0128 and ADR 0129 so the first-merged Proposed
+@@ -300,4 +299,4 @@ implementation contract.
+ | [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | Headless Write-Capable MCP Host and Project-Writer Ownership |
+ | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | Multi-Agent Writer Coordination and Conflict Ownership |
+ | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
+-| [0154](0154-target-aware-animation-motion-binding-resolution.md) | **Proposed** — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
++| [0154](0154-target-aware-animation-motion-binding-resolution.md) | Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
