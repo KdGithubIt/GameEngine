@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            .is_some_and(|benchmark| {\n                benchmark.task_id == task.id\n                    && self.host.run(&benchmark.run_id).is_ok_and(|run| {",
+  "new": "            .is_some_and(|benchmark| {\n                benchmark.task_id == task.id\n                    && !benchmark.routed\n                    && self.host.run(&benchmark.run_id).is_ok_and(|run| {"
+}
