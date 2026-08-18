@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr-first-release-audit-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0142-0143-0145-0154-final-audit",
+  "expected_head_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "7e119fc7cd94c1760cced21f1153278667d5a0d3ce7217ecb9618412311112c4",
+  "patch_bytes": 14046,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Harden final ADR visual evidence",
+  "pr_title": "GameEngine: finalize ADR 0142/0143/0145/0154 evidence",
+  "pr_body": "## Summary\n\nAdds deterministic visual-validation-only scenarios for ADR 0143 local model resources, ADR 0145 external AgentRuntime providers, and ADR 0154 Animation Set Target Preview routing evidence. Normal release behavior is unchanged. Also marks ADR 0145 Accepted now that its merged first-release implementation is being revalidated.\n\n## Audit scope\n\n- preserves the existing ADR 0142 hosted/benchmark exact-head scenario\n- exposes local residency/offload telemetry without requiring Ollama on the runner\n- exposes Claude Code, Codex, Generic fallback, credential ownership, and sanitized status presentation\n- opens deterministic Animation Set Target Preview evidence using the production route renderer for Native, Retarget, Humanoid, Failed, and pending states\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR 0143 Model Resources -->"
+}
