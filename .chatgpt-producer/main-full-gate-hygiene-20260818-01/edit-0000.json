@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/native_2d.rs",
+  "old": "        let mut settings = Project2dSettings::default();\n        settings.gravity = [2.5, -7.0];",
+  "new": "        let settings = Project2dSettings {\n            gravity: [2.5, -7.0],\n            ..Project2dSettings::default()\n        };"
+}
