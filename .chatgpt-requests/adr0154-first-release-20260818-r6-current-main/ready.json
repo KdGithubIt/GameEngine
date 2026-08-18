@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0154-first-release-20260818-r6-current-main",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "a777f2c01401bd3cb7c3495d95398323d5e355ed5dbaf0fd09dd4615d7f024d5",
+  "patch_bytes": 51844,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Reapply ADR0154 foundation on current main",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Rebuilds the ADR 0154 first-release implementation from current main after the previous Draft PR became stale. This request reapplies the shared target-aware planner, logical Humanoid identity/provenance foundation, Animation Set schema v3 candidate-only persistence, Scene Bridge routing, Play preflight, runtime debug evidence, candidate-only picker, and package reachability changes through canonical current-main preflight.\n\nThis supersedes the stale implementation branch only after validation; the PR remains Draft and must not be merged automatically."
+}
