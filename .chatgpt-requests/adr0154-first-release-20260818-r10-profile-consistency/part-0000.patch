@@ -1,0 +1,241 @@
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+index 995ef46988248ca8d237f7f7530d390f5a5d585f..ff0429ac71e6a6d6235bddd09116b37be70b0554 100644
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -462,6 +462,41 @@ impl HumanoidProfile {
+     pub fn bone_id(&self, semantic: HumanoidBone) -> Option<u32> {
+         self.bones.get(&semantic).copied()
+     }
++
++    /// Returns whether persisted profile metadata is structurally usable for
++    /// the matching imported skeleton record.
++    ///
++    /// This is the GUI-free metadata check used when no `SkeletonAsset` is
++    /// loaded. Runtime conversion still performs full hierarchy validation
++    /// against the concrete skeleton before selecting a Humanoid route.
++    pub fn is_structurally_usable_with_record(&self, record: &SkeletonRecord) -> bool {
++        if self.skeleton != record.id || self.skeleton_identity != record.identity {
++            return false;
++        }
++        if !HumanoidBone::REQUIRED
++            .iter()
++            .all(|bone| self.bones.contains_key(bone))
++        {
++            return false;
++        }
++
++        let known_bones = record
++            .bones
++            .iter()
++            .map(|bone| bone.bone_id)
++            .collect::<std::collections::BTreeSet<_>>();
++        if !self.bones.values().all(|bone| known_bones.contains(bone)) {
++            return false;
++        }
++        let mapped_bones = self.bones.values().copied().collect::<Vec<_>>();
++        if mapped_bones.iter().copied().collect::<std::collections::BTreeSet<_>>().len()
++            != mapped_bones.len()
++        {
++            return false;
++        }
++        self.motion_root
++            .is_none_or(|motion_root| known_bones.contains(&motion_root))
++    }
+ }
+ 
+ /// Persisted type of a deterministic imported sub-asset.
+@@ -892,6 +927,49 @@ mod tests {
+         assert_eq!(parsed.get(&id), manifest.get(&id));
+     }
+ 
++    #[test]
++    fn humanoid_profile_metadata_requires_current_record_and_known_required_bones() {
++        let bones = HumanoidBone::REQUIRED
++            .iter()
++            .copied()
++            .enumerate()
++            .map(|(index, semantic)| (semantic, index as u32))
++            .collect::<BTreeMap<_, _>>();
++        let record = SkeletonRecord {
++            id: "skeleton_test".to_owned(),
++            identity: 42,
++            next_bone_id: HumanoidBone::REQUIRED.len() as u32,
++            bones: HumanoidBone::REQUIRED
++                .iter()
++                .enumerate()
++                .map(|(index, semantic)| SkeletonBoneRecord {
++                    bone_id: index as u32,
++                    name: format!("{semantic:?}"),
++                })
++                .collect(),
++        };
++        let profile = HumanoidProfile {
++            skeleton: record.id.clone(),
++            skeleton_identity: record.identity,
++            bones,
++            motion_root: Some(0),
++            uncertain_bones: Vec::new(),
++            origin: HumanoidProfileOrigin::Automatic,
++        };
++
++        assert!(profile.is_structurally_usable_with_record(&record));
++
++        let mut stale = profile.clone();
++        stale.skeleton_identity += 1;
++        assert!(!stale.is_structurally_usable_with_record(&record));
++
++        let mut unknown_bone = profile;
++        unknown_bone
++            .bones
++            .insert(HumanoidBone::Hips, record.next_bone_id + 10);
++        assert!(!unknown_bone.is_structurally_usable_with_record(&record));
++    }
++
+     #[test]
+     fn motion_sub_asset_identity_includes_target_model() {
+         let motion = AssetId::generate();
+diff --git a/crates/authoring/src/animation_set.rs b/crates/authoring/src/animation_set.rs
+index 0df8d311a387bbbb7c8a6943458ffd3f15402f3a..9ab3c9e0c3058ef560854033a2d215159d9aea5d 100644
+--- a/crates/authoring/src/animation_set.rs
++++ b/crates/authoring/src/animation_set.rs
+@@ -22,8 +22,8 @@ pub const ANIMATION_SET_FILE_SUFFIX: &str = ".animset.json";
+ /// human-readable binding name can change without breaking graph references.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ pub struct AnimationSet {
+-    /// Persisted format version. Version 1 is currently the only accepted
+-    /// value.
++    /// Persisted format version. Schema v3 is the only accepted current
++    /// value; older route-policy formats are rejected rather than migrated.
+     pub schema_version: u32,
+     /// Animation graph whose motion-slot contract this set implements.
+     ///
+@@ -481,7 +481,7 @@ mod tests {
+         let slot = MotionSlotId::generate();
+         let clip = AssetId::generate();
+         let json = format!(
+-            "{{\"schema_version\":2,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":{{\"variant\":\"native\",\"asset\":\"{}\"}},\"events\":[]}}}}}}",
++            "{{\"schema_version\":3,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":{{\"asset\":\"{}\"}},\"events\":[]}}}}}}",
+             graph.as_str(),
+             slot.as_str(),
+             clip.as_str()
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index 8a17c53ff1603583755b037706173754c3bf9f29..8989aca018599eecded0822e8ebcea6a77e4f90c 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -122,23 +122,23 @@ fn preview_motion_route(
+                 sub_asset.index as usize,
+             )
+         });
+-    let target_identity = manifest
++    let target_humanoid_usable = manifest
+         .iter()
+-        .flat_map(|(_, entry)| entry.import_settings.skeleton_records.iter())
+-        .find(|record| record.id == target_skeleton.as_str())
+-        .map(|record| record.identity);
+-    let target_humanoid_usable = target_identity.is_some_and(|identity| {
+-        manifest
+-            .iter()
+-            .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
+-            .any(|profile| {
+-                profile.skeleton == target_skeleton.as_str()
+-                    && profile.skeleton_identity == identity
+-                    && engine::asset::HumanoidBone::REQUIRED
++        .find_map(|(_, entry)| {
++            entry
++                .import_settings
++                .skeleton_records
++                .iter()
++                .find(|record| record.id == target_skeleton.as_str())
++                .map(|record| {
++                    entry
++                        .import_settings
++                        .humanoid_profiles
+                         .iter()
+-                        .all(|bone| profile.bones.contains_key(bone))
+-            })
+-    });
++                        .any(|profile| profile.is_structurally_usable_with_record(record))
++                })
++        })
++        .unwrap_or(false);
+     Some(engine::motion_binding::plan_animation_motion(
+         &engine::motion_binding::AnimationMotionPlanInput {
+             candidate: source.asset.clone(),
+diff --git a/crates/editor/src/ui/assets/import_settings_window.rs b/crates/editor/src/ui/assets/import_settings_window.rs
+index 2317a101179bdeb8a58f452b8a4f25732c1b97b8..19658e3e74686913d893be5c01b074e539c22c21 100644
+--- a/crates/editor/src/ui/assets/import_settings_window.rs
++++ b/crates/editor/src/ui/assets/import_settings_window.rs
+@@ -260,17 +260,11 @@ fn humanoid_capable_pmx_models(
+         .filter(|(id, _)| {
+             manifest.get(id).is_some_and(|entry| {
+                 entry.import_settings.humanoid_profiles.iter().any(|profile| {
+-                    engine::asset::HumanoidBone::REQUIRED
++                    entry
++                        .import_settings
++                        .skeleton_records
+                         .iter()
+-                        .all(|bone| profile.bones.contains_key(bone))
+-                        && entry
+-                            .import_settings
+-                            .skeleton_records
+-                            .iter()
+-                            .any(|record| {
+-                                record.id == profile.skeleton
+-                                    && record.identity == profile.skeleton_identity
+-                            })
++                        .any(|record| profile.is_structurally_usable_with_record(record))
+                 })
+             })
+         })
+diff --git a/crates/editor/src/ui/assets/model_import.rs b/crates/editor/src/ui/assets/model_import.rs
+index f85b9b7e388bb65446e6ed84edf027ad78a9ac7f..3695777521c3be0e63a77dcb83ff19f46566baf0 100644
+--- a/crates/editor/src/ui/assets/model_import.rs
++++ b/crates/editor/src/ui/assets/model_import.rs
+@@ -457,17 +457,11 @@ impl EditorApp {
+             .humanoid_profiles
+             .iter()
+             .find(|profile| {
+-                engine::asset::HumanoidBone::REQUIRED
++                model_entry
++                    .import_settings
++                    .skeleton_records
+                     .iter()
+-                    .all(|bone| profile.bones.contains_key(bone))
+-                    && model_entry
+-                        .import_settings
+-                        .skeleton_records
+-                        .iter()
+-                        .any(|record| {
+-                            record.id == profile.skeleton
+-                                && record.identity == profile.skeleton_identity
+-                        })
++                    .any(|record| profile.is_structurally_usable_with_record(record))
+             })
+             .cloned()?;
+         Some(crate::asset_import::MotionHumanoidSource {
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 9bdd71b41ffa12905291c3ea54e9973189b8f6cd..1a43ac96da50f52156181bcfb72f3ce7d3d43dc4 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1840,8 +1840,7 @@ fn resolve_animation_binding_clip(
+         .iter()
+         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
+         .any(|profile| {
+-            profile.skeleton == target_skeleton.id.as_str()
+-                && profile.skeleton_identity == target_skeleton.identity.0
++            crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok()
+         });
+ 
+     if candidate_kind == crate::motion_binding::AnimationMotionCandidateKind::Humanoid {
+@@ -2202,10 +2201,7 @@ fn resolve_humanoid_animation_binding_clip(
+         .manifest
+         .iter()
+         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
+-        .find(|profile| {
+-            profile.skeleton == target_skeleton.id.as_str()
+-                && profile.skeleton_identity == target_skeleton.identity.0
+-        })
++        .find(|profile| crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok())
+         .cloned()
+         .ok_or_else(|| {
+             animation_binding_error(
