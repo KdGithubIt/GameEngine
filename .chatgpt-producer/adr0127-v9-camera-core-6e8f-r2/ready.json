@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v9-camera-core-6e8f-r2",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "6e8f9c03dad7e7a8de9f5602e51452c4c2b0468f",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "edit_parts": ["edit-0000.json","edit-0001.json"],
+  "commit_message": "Add shared Camera2D game-camera arbitration",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds the internal Camera2D/Camera3D arbitration and prepared projection contract used by the existing world renderer."
+}
