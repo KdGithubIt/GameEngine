@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v9-project-rust-f80d-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "f80dfbf8f316222dc8703168f79e313482b4ef4a",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "94491764dd4f2a61eb2d8a862ae28b3e22fedad0782ccf2a52d16ff4fd5530ca",
+  "patch_bytes": 22461,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0127 Project Rust SpriteAnimator2D API",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Continues ADR0127 Native 2D first-release completion with Project Rust SpriteAnimator2D gameplay integration on the current-main v9 branch."
+}
