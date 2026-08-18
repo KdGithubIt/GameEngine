@@ -1,0 +1,1399 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 0039eda7b4339e7b827cea764d01af42e9a9fb7f..5f60bb07b31e6f06c24c4d8949995874472ee618 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -42,11 +42,14 @@ use crate::remote_ai_studio::{
+     events_json, frame_bytes, sessions_json, snapshot_json, RemoteAiStudioRequest,
+     RemoteAiStudioResponse, RemoteAiStudioServer, RemoteOperation, RemotePermissionScope,
+ };
++use crate::runtime_debug::{
++    RuntimeDebugExecutionReport, RuntimeDebugObservation, RuntimeDebugPlan, RuntimeDebugPredicate,
++    RuntimeDebugScheduledInput, RuntimeDebugWaitResult,
++};
+ use eframe::egui;
+-use engine::{InputCommand, KeyCode, MouseButton};
++use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
+ use engine_authoring::ProjectRoot;
+ use serde::{Deserialize, Serialize};
+-use std::collections::VecDeque;
+ use std::ffi::OsString;
+ use std::fs;
+ use std::path::PathBuf;
+@@ -245,33 +248,169 @@ enum ProviderAgentEvent {
+ #[derive(Debug, Deserialize)]
+ #[serde(tag = "kind", rename_all = "snake_case")]
+ enum ProviderRuntimeInput {
+-    Key { key: String, pressed: bool },
+-    MouseButton { button: String, pressed: bool },
+-    MouseMove { x: f32, y: f32 },
+-    MouseDelta { x: f64, y: f64 },
+-    MouseScroll { amount: f32 },
++    Key {
++        key: String,
++        pressed: bool,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    HoldKey {
++        key: String,
++        ticks: u64,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    MouseButton {
++        button: String,
++        pressed: bool,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    HoldMouseButton {
++        button: String,
++        ticks: u64,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    GamepadButton {
++        gamepad: u32,
++        button: String,
++        pressed: bool,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    GamepadAxis {
++        gamepad: u32,
++        axis: String,
++        value: f32,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    MouseMove {
++        x: f32,
++        y: f32,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    MouseDelta {
++        x: f64,
++        y: f64,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
++    MouseScroll {
++        amount: f32,
++        #[serde(default)]
++        at_tick: Option<u64>,
++    },
+ }
+ 
+ impl ProviderRuntimeInput {
+-    fn command(&self) -> Result<InputCommand, String> {
++    fn scheduled_commands(
++        &self,
++        default_tick: u64,
++    ) -> Result<Vec<RuntimeDebugScheduledInput>, String> {
++        let schedule = |tick: u64, command: InputCommand| {
++            RuntimeDebugScheduledInput::at_tick(tick, command).map_err(|error| error.to_string())
++        };
+         match self {
+-            Self::Key { key, pressed } => Ok(InputCommand::Key {
+-                key: provider_key_code(key)?,
+-                pressed: *pressed,
+-            }),
+-            Self::MouseButton { button, pressed } => Ok(InputCommand::MouseButton {
+-                button: provider_mouse_button(button)?,
+-                pressed: *pressed,
+-            }),
+-            Self::MouseMove { x, y } if x.is_finite() && y.is_finite() => {
+-                Ok(InputCommand::MouseMove { position: (*x, *y) })
+-            }
+-            Self::MouseDelta { x, y } if x.is_finite() && y.is_finite() => {
+-                Ok(InputCommand::MouseDelta { delta: (*x, *y) })
+-            }
+-            Self::MouseScroll { amount } if amount.is_finite() => {
+-                Ok(InputCommand::MouseScroll { amount: *amount })
++            Self::Key { key, pressed, at_tick } => Ok(vec![schedule(
++                at_tick.unwrap_or(default_tick),
++                InputCommand::Key {
++                    key: provider_key_code(key)?,
++                    pressed: *pressed,
++                },
++            )?]),
++            Self::HoldKey { key, ticks, at_tick } => {
++                let start = at_tick.unwrap_or(default_tick);
++                let end = runtime_hold_end_tick(start, *ticks)?;
++                let key = provider_key_code(key)?;
++                Ok(vec![
++                    schedule(start, InputCommand::Key { key, pressed: true })?,
++                    schedule(end, InputCommand::Key { key, pressed: false })?,
++                ])
++            }
++            Self::MouseButton {
++                button,
++                pressed,
++                at_tick,
++            } => Ok(vec![schedule(
++                at_tick.unwrap_or(default_tick),
++                InputCommand::MouseButton {
++                    button: provider_mouse_button(button)?,
++                    pressed: *pressed,
++                },
++            )?]),
++            Self::HoldMouseButton {
++                button,
++                ticks,
++                at_tick,
++            } => {
++                let start = at_tick.unwrap_or(default_tick);
++                let end = runtime_hold_end_tick(start, *ticks)?;
++                let button = provider_mouse_button(button)?;
++                Ok(vec![
++                    schedule(
++                        start,
++                        InputCommand::MouseButton {
++                            button,
++                            pressed: true,
++                        },
++                    )?,
++                    schedule(
++                        end,
++                        InputCommand::MouseButton {
++                            button,
++                            pressed: false,
++                        },
++                    )?,
++                ])
+             }
++            Self::GamepadButton {
++                gamepad,
++                button,
++                pressed,
++                at_tick,
++            } => Ok(vec![schedule(
++                at_tick.unwrap_or(default_tick),
++                InputCommand::GamepadButton {
++                    gamepad: GamepadId(*gamepad),
++                    button: provider_gamepad_button(button)?,
++                    pressed: *pressed,
++                },
++            )?]),
++            Self::GamepadAxis {
++                gamepad,
++                axis,
++                value,
++                at_tick,
++            } if value.is_finite() => Ok(vec![schedule(
++                at_tick.unwrap_or(default_tick),
++                InputCommand::GamepadAxis {
++                    gamepad: GamepadId(*gamepad),
++                    axis: provider_gamepad_axis(axis)?,
++                    value: *value,
++                },
++            )?]),
++            Self::GamepadAxis { .. } => {
++                Err("runtime gamepad axis values must be finite".to_owned())
++            }
++            Self::MouseMove { x, y, at_tick } if x.is_finite() && y.is_finite() => Ok(vec![
++                schedule(
++                    at_tick.unwrap_or(default_tick),
++                    InputCommand::MouseMove { position: (*x, *y) },
++                )?,
++            ]),
++            Self::MouseDelta { x, y, at_tick } if x.is_finite() && y.is_finite() => Ok(vec![
++                schedule(
++                    at_tick.unwrap_or(default_tick),
++                    InputCommand::MouseDelta { delta: (*x, *y) },
++                )?,
++            ]),
++            Self::MouseScroll { amount, at_tick } if amount.is_finite() => Ok(vec![schedule(
++                at_tick.unwrap_or(default_tick),
++                InputCommand::MouseScroll { amount: *amount },
++            )?]),
+             Self::MouseMove { .. } | Self::MouseDelta { .. } | Self::MouseScroll { .. } => {
+                 Err("runtime input numeric values must be finite".to_owned())
+             }
+@@ -279,6 +418,24 @@ impl ProviderRuntimeInput {
+     }
+ }
+ 
++fn runtime_hold_end_tick(start: u64, ticks: u64) -> Result<u64, String> {
++    if ticks == 0 {
++        return Err("runtime hold duration must contain at least one fixed tick".to_owned());
++    }
++    start
++        .checked_add(ticks)
++        .ok_or_else(|| "runtime hold tick overflowed u64".to_owned())
++}
++
++fn next_runtime_input_tick(inputs: &[RuntimeDebugScheduledInput]) -> u64 {
++    inputs
++        .iter()
++        .map(RuntimeDebugScheduledInput::tick_offset)
++        .max()
++        .and_then(|tick| tick.checked_add(1))
++        .unwrap_or(0)
++}
++
+ /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
+ ///
+ /// The authorization token is intentionally private and is never serialized by
+@@ -300,7 +457,7 @@ impl AiStudioConnection {
+ }
+ 
+ /// Managed Editor-runtime operation requested by AI Studio after authorization.
+-#[derive(Debug, Clone, Copy, PartialEq)]
++#[derive(Debug, Clone, PartialEq)]
+ pub enum AiStudioRuntimeAction {
+     /// Suspend optional Editor presentation and release recreatable GPU resources.
+     EnterInferenceFocused {
+@@ -311,10 +468,37 @@ pub enum AiStudioRuntimeAction {
+     RestoreEditorPresentation,
+     /// Capture current authoritative Editor revision/generation before resuming a run.
+     InspectAuthoritativeState,
+-    /// Start the normal Editor Play path for the active project.
++    /// Start the normal Editor Play path for the active project. Managed starts are paused immediately.
+     StartPlaytest,
+-    /// Queue one provider-planned command through the normal AI Agent virtual-input source.
++    /// Compatibility path for one already-authorized virtual input command.
+     SendInput(InputCommand),
++    /// Pause normal Play advancement without destroying the runtime world.
++    PausePlaytest,
++    /// Resume normal Play advancement.
++    ResumePlaytest,
++    /// Advance a bounded number of fixed simulation ticks while paused.
++    StepPlaytest {
++        /// Number of fixed ticks to execute.
++        steps: u32,
++    },
++    /// Execute one frozen fixed-tick input plan through `InputSource::AiAgent`.
++    RunDebugPlan(RuntimeDebugPlan),
++    /// Capture bounded typed runtime state without mutating Play.
++    ObserveRuntime,
++    /// Advance paused Play until one allowlisted predicate matches or the budget expires.
++    WaitRuntime {
++        /// Host-owned typed predicate.
++        predicate: RuntimeDebugPredicate,
++        /// Maximum fixed ticks the host may advance.
++        max_ticks: u32,
++    },
++    /// Evaluate one allowlisted predicate without advancing Play.
++    AssertRuntime {
++        /// Host-owned typed predicate.
++        predicate: RuntimeDebugPredicate,
++    },
++    /// Re-run the most recent ADR 0064 input artifact through normal replay.
++    ReplayLast,
+     /// Capture the currently rendered Game View through the engine frame-capture path.
+     CaptureFrame,
+     /// Stop the managed Editor Play session.
+@@ -343,6 +527,24 @@ pub enum AiStudioRuntimeResult {
+     PlayStartPending,
+     /// One AI Agent input command was accepted by the normal runtime input queue.
+     RuntimeInputQueued(InputCommand),
++    /// Managed Play is paused and exposes the captured structured observation.
++    RuntimePaused(RuntimeDebugObservation),
++    /// Managed Play resumed from Pause.
++    RuntimeResumed(RuntimeDebugObservation),
++    /// Bounded fixed-step execution completed.
++    RuntimeStepped(RuntimeDebugObservation),
++    /// Frozen deterministic input plan completed and was recorded as replay evidence.
++    RuntimeDebugPlanCompleted(RuntimeDebugExecutionReport),
++    /// Deterministic input execution aborted and the Editor discarded the Play world.
++    RuntimeDebugPlanFailed(String),
++    /// Bounded typed runtime observation was captured.
++    RuntimeObserved(RuntimeDebugObservation),
++    /// Bounded host wait completed.
++    RuntimeWaited(RuntimeDebugWaitResult),
++    /// Host assertion completed.
++    RuntimeAsserted(RuntimeDebugWaitResult),
++    /// ADR 0064 replay reproduction completed.
++    RuntimeReplayCompleted(RuntimeDebugExecutionReport),
+     /// The managed Play session stopped.
+     PlayStopped,
+     /// A Game View frame was captured by the runtime renderer.
+@@ -351,14 +553,14 @@ pub enum AiStudioRuntimeResult {
+     Failed(String),
+ }
+ 
+-#[derive(Debug, Clone, Copy, PartialEq)]
++#[derive(Debug, Clone, PartialEq)]
+ enum PendingPermissionAction {
+     LaunchExternalAgent,
+     StartNativeAgent,
+     LaunchRuntimeEvaluation,
+     ApplyCodeChanges,
+     LaunchPlaytest,
+-    SendRuntimeInput(InputCommand),
++    RunRuntimeDebugPlan(RuntimeDebugPlan),
+     CaptureFrame,
+ }
+ 
+@@ -487,15 +689,17 @@ pub struct AiStudioPanel {
+     pending_code_changes: Vec<CodeChange>,
+     pending_permission: Option<PendingPermission>,
+     pending_runtime_action: Option<AiStudioRuntimeAction>,
+-    managed_input_plan: VecDeque<InputCommand>,
+-    managed_input_recipe: Vec<InputCommand>,
+-    managed_candidate_input_recipe: Vec<InputCommand>,
++    managed_input_recipe: Vec<RuntimeDebugScheduledInput>,
++    managed_candidate_input_recipe: Vec<RuntimeDebugScheduledInput>,
++    managed_runtime_plan_completed: bool,
++    managed_runtime_debug_observation: Option<String>,
+     managed_playtest_requested: bool,
+     managed_capture_requested: bool,
+     managed_repair_requested: bool,
+     managed_runtime_repairs: usize,
+     managed_runtime_observation: Option<ManagedRuntimeObservation>,
+     managed_evaluation_requested: bool,
++    native_evaluation_had_image: bool,
+     managed_playtest_started_at: Option<std::time::Instant>,
+     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
+     status: Option<String>,
+@@ -610,15 +814,17 @@ impl AiStudioPanel {
+             pending_code_changes: Vec::new(),
+             pending_permission: None,
+             pending_runtime_action: None,
+-            managed_input_plan: VecDeque::new(),
+             managed_input_recipe: Vec::new(),
+             managed_candidate_input_recipe: Vec::new(),
++            managed_runtime_plan_completed: false,
++            managed_runtime_debug_observation: None,
+             managed_playtest_requested: false,
+             managed_capture_requested: false,
+             managed_repair_requested: false,
+             managed_runtime_repairs: 0,
+             managed_runtime_observation: None,
+             managed_evaluation_requested: false,
++            native_evaluation_had_image: false,
+             managed_playtest_started_at: None,
+             last_captured_frame: None,
+             status: benchmark_status,
+@@ -799,7 +1005,8 @@ impl AiStudioPanel {
+                         "Managed Editor Play launched successfully.",
+                     ) {
+                         self.status = Some(error.to_string());
+-                    } else if self.managed_input_plan.is_empty() {
++                    } else if self.managed_input_recipe.is_empty() {
++                        self.managed_runtime_plan_completed = true;
+                         self.request_managed_frame_capture_if_ready(&run_id);
+                     }
+                 }
+@@ -814,15 +1021,113 @@ impl AiStudioPanel {
+                 {
+                     self.status = Some(error.to_string());
+                 } else {
+-                    self.status = Some(format!(
+-                        "Queued managed AI Agent runtime input; {} planned command(s) remain.",
+-                        self.managed_input_plan.len()
+-                    ));
+-                    if self.managed_input_plan.is_empty() {
+-                        self.request_managed_frame_capture_if_ready(&run_id);
++                    self.status = Some("Queued one compatibility AI Agent runtime input.".to_owned());
++                }
++            }
++            AiStudioRuntimeResult::RuntimePaused(observation) => {
++                self.managed_runtime_debug_observation = Some(observation.summary());
++                self.status = Some(format!(
++                    "Managed Play paused at fixed tick {}.",
++                    observation.fixed_tick()
++                ));
++            }
++            AiStudioRuntimeResult::RuntimeResumed(observation) => {
++                self.managed_runtime_debug_observation = Some(observation.summary());
++                self.status = Some(format!(
++                    "Managed Play resumed from fixed tick {}.",
++                    observation.fixed_tick()
++                ));
++            }
++            AiStudioRuntimeResult::RuntimeStepped(observation)
++            | AiStudioRuntimeResult::RuntimeObserved(observation) => {
++                let summary = observation.summary();
++                self.managed_runtime_debug_observation = Some(summary.clone());
++                let _ = self.host.record_semantic_progress(
++                    &run_id,
++                    "runtime_observation",
++                    summary.clone(),
++                );
++                self.status = Some(summary);
++            }
++            AiStudioRuntimeResult::RuntimeDebugPlanCompleted(report) => {
++                let summary = report.summary();
++                self.managed_runtime_plan_completed = true;
++                self.managed_runtime_debug_observation = Some(summary.clone());
++                if let Err(error) = self
++                    .host
++                    .record_managed_runtime_input(&run_id, summary.clone())
++                    .and_then(|()| {
++                        self.host.record_playtest_result(
++                            &run_id,
++                            true,
++                            Some(true),
++                            "Host executed the provider-planned interaction recipe on a frozen fixed-tick schedule.",
++                        )
++                    })
++                {
++                    self.status = Some(error.to_string());
++                } else {
++                    self.status = Some(summary);
++                    self.request_managed_frame_capture_if_ready(&run_id);
++                }
++            }
++            AiStudioRuntimeResult::RuntimeDebugPlanFailed(message) => {
++                self.managed_runtime_plan_completed = true;
++                self.managed_playtest_started_at = None;
++                if let Err(error) = self.host.record_playtest_result(
++                    &run_id,
++                    true,
++                    Some(false),
++                    message.clone(),
++                ) {
++                    self.status = Some(error.to_string());
++                } else {
++                    self.status = Some(message);
++                }
++            }
++            AiStudioRuntimeResult::RuntimeWaited(wait) => {
++                let summary = wait.summary();
++                self.managed_runtime_debug_observation = Some(summary.clone());
++                let _ = self.host.record_semantic_progress(
++                    &run_id,
++                    "runtime_wait",
++                    summary.clone(),
++                );
++                self.status = Some(summary);
++            }
++            AiStudioRuntimeResult::RuntimeAsserted(assertion) => {
++                let summary = assertion.summary();
++                let passed = assertion.matched() && assertion.unavailable().is_none();
++                self.managed_runtime_debug_observation = Some(summary.clone());
++                let _ = self.host.record_semantic_progress(
++                    &run_id,
++                    "runtime_assertion",
++                    summary.clone(),
++                );
++                if let Err(error) = self.host.record_playtest_result(
++                    &run_id,
++                    true,
++                    Some(passed),
++                    format!("Host-owned runtime assertion passed={passed}: {summary}"),
++                ) {
++                    self.status = Some(error.to_string());
++                } else {
++                    if !passed && self.pending_runtime_action.is_none() {
++                        self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+                     }
++                    self.status = Some(summary);
+                 }
+             }
++            AiStudioRuntimeResult::RuntimeReplayCompleted(report) => {
++                let summary = format!("ADR 0064 replay reproduction completed; {}", report.summary());
++                self.managed_runtime_debug_observation = Some(summary.clone());
++                let _ = self.host.record_semantic_progress(
++                    &run_id,
++                    "runtime_replay",
++                    summary.clone(),
++                );
++                self.status = Some(summary);
++            }
+             AiStudioRuntimeResult::PlayStopped => {
+                 self.managed_playtest_started_at = None;
+                 self.status = Some("Managed Play stopped.".to_owned());
+@@ -927,7 +1232,7 @@ impl AiStudioPanel {
+         self.request_managed_source_repair_if_ready();
+         self.request_managed_runtime_repair_if_ready();
+         self.request_managed_playtest_if_ready();
+-        self.request_next_managed_runtime_input_if_ready();
++        self.request_managed_runtime_debug_plan_if_ready();
+         self.poll_managed_playtest_timeout();
+ 
+         if !self.presentation.open {
+@@ -1143,7 +1448,7 @@ impl AiStudioPanel {
+                 if pending.run_id != run_id || pending.capability != capability {
+                     return RemoteAiStudioResponse::error(409, "permission_stale", "The permission request no longer matches the active decision.", false);
+                 }
+-                let action = pending.action;
++                let action = pending.action.clone();
+                 let approval = match scope {
+                     RemotePermissionScope::Once => ApprovalScope::Once,
+                     RemotePermissionScope::Run => ApprovalScope::Run,
+@@ -2815,22 +3120,31 @@ impl AiStudioPanel {
+                 );
+             }
+             NativeAgentAction::RuntimeInput { input } => {
++                let default_tick = next_runtime_input_tick(&self.managed_candidate_input_recipe);
+                 let result = serde_json::from_value::<ProviderRuntimeInput>(input)
+                     .map_err(|error| error.to_string())
+-                    .and_then(|input| input.command());
++                    .and_then(|input| input.scheduled_commands(default_tick));
+                 match result {
+-                    Ok(command) => {
+-                        self.managed_candidate_input_recipe.push(command);
++                    Ok(scheduled) => {
++                        let summary = scheduled
++                            .iter()
++                            .map(|input| {
++                                format!("tick {} {:?}", input.tick_offset(), input.command())
++                            })
++                            .collect::<Vec<_>>()
++                            .join(", " );
++                        self.managed_candidate_input_recipe
++                            .extend(scheduled.iter().cloned());
+                         let _ = self.host.record_semantic_progress(
+                             run_id,
+                             "runtime_input_plan",
+-                            format!("Native runtime planned managed input {command:?}."),
++                            format!("Native runtime planned fixed-tick input: {summary}."),
+                         );
+                         self.record_native_result_and_continue(
+                             run_id,
+                             "runtime_input",
+                             true,
+-                            "Input was added to the host-managed Play recipe.",
++                            "Input was added to the frozen host-managed Play recipe.",
+                         );
+                     }
+                     Err(error) => self.record_native_result_and_continue(
+@@ -2851,14 +3165,31 @@ impl AiStudioPanel {
+                     .record_completion_gate(run_id, &gate, status, message)
+                     .map_err(|error| error.to_string());
+                 if gate == "visual_evaluation" {
++                    if status == CompletionStatus::Passed && !self.native_evaluation_had_image {
++                        self.record_runtime_evaluation_failure(
++                            run_id,
++                            "Native model attempted to pass visual_evaluation without verified image input; false visual claims are rejected.".to_owned(),
++                        );
++                        return;
++                    }
+                     match result {
+                         Ok(()) => {
+-                            let interactions_passed = match status {
+-                                CompletionStatus::Passed => Some(true),
+-                                CompletionStatus::Failed => Some(false),
+-                                CompletionStatus::Pending | CompletionStatus::NotApplicable => None,
++                            let playtest_result = match status {
++                                CompletionStatus::Passed => self.host.record_playtest_result(
++                                    run_id,
++                                    true,
++                                    Some(true),
++                                    "Native visual evaluation completed against the host-captured managed Play frame.",
++                                ),
++                                CompletionStatus::Failed => self.host.record_playtest_result(
++                                    run_id,
++                                    true,
++                                    Some(false),
++                                    "Native visual evaluation failed against the host-captured managed Play frame.",
++                                ),
++                                CompletionStatus::Pending | CompletionStatus::NotApplicable => Ok(()),
+                             };
+-                            if let Err(error) = self.host.record_playtest_result(run_id, true, interactions_passed, "Native visual evaluation completed against the host-captured managed Play frame.") {
++                            if let Err(error) = playtest_result {
+                                 self.record_runtime_evaluation_failure(run_id, error.to_string());
+                             } else {
+                                 self.finish_runtime_evaluation(run_id, Some(0));
+@@ -3257,7 +3588,7 @@ impl AiStudioPanel {
+         };
+         let run_id = pending.run_id.clone();
+         let capability = pending.capability;
+-        let action = pending.action;
++        let action = pending.action.clone();
+         ui.separator();
+         ui.group(|ui| {
+             ui.strong("Approval required");
+@@ -3271,7 +3602,12 @@ impl AiStudioPanel {
+                     ("Deny", ApprovalScope::Deny),
+                 ] {
+                     if ui.button(label).clicked() {
+-                        self.resolve_pending_permission(&run_id, capability, action, scope);
++                        self.resolve_pending_permission(
++                            &run_id,
++                            capability,
++                            action.clone(),
++                            scope,
++                        );
+                     }
+                 }
+             });
+@@ -3475,15 +3811,17 @@ impl AiStudioPanel {
+         self.code_workspace = None;
+         self.pending_code_changes.clear();
+         self.pending_runtime_action = None;
+-        self.managed_input_plan.clear();
+         self.managed_input_recipe.clear();
+         self.managed_candidate_input_recipe.clear();
++        self.managed_runtime_plan_completed = false;
++        self.managed_runtime_debug_observation = None;
+         self.managed_playtest_requested = false;
+         self.managed_capture_requested = false;
+         self.managed_repair_requested = false;
+         self.managed_runtime_repairs = 0;
+         self.managed_runtime_observation = None;
+         self.managed_evaluation_requested = false;
++        self.native_evaluation_had_image = false;
+         self.managed_playtest_started_at = None;
+         self.last_captured_frame = None;
+         match mode {
+@@ -3529,6 +3867,16 @@ impl AiStudioPanel {
+                 });
+             }
+             Ok(PermissionCheck::Denied) => {
++                if matches!(action, PendingPermissionAction::RunRuntimeDebugPlan(_)) {
++                    self.managed_runtime_plan_completed = true;
++                    let _ = self.host.record_playtest_result(
++                        &run_id,
++                        true,
++                        Some(false),
++                        "Deterministic managed runtime input was denied by Runtime Input Control permission.",
++                    );
++                    self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
++                }
+                 self.status = Some(format!("Permission denied: {}.", capability.label()));
+             }
+             Err(error) => self.status = Some(error.to_string()),
+@@ -3551,6 +3899,16 @@ impl AiStudioPanel {
+             return;
+         }
+         if scope == ApprovalScope::Deny {
++            if matches!(action, PendingPermissionAction::RunRuntimeDebugPlan(_)) {
++                self.managed_runtime_plan_completed = true;
++                let _ = self.host.record_playtest_result(
++                    run_id,
++                    true,
++                    Some(false),
++                    "Deterministic managed runtime input approval was denied.",
++                );
++                self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
++            }
+             self.status = Some(format!("Denied {}.", capability.label()));
+             return;
+         }
+@@ -3578,8 +3936,8 @@ impl AiStudioPanel {
+             PendingPermissionAction::LaunchPlaytest => {
+                 self.pending_runtime_action = Some(AiStudioRuntimeAction::StartPlaytest);
+             }
+-            PendingPermissionAction::SendRuntimeInput(command) => {
+-                self.pending_runtime_action = Some(AiStudioRuntimeAction::SendInput(command));
++            PendingPermissionAction::RunRuntimeDebugPlan(plan) => {
++                self.pending_runtime_action = Some(AiStudioRuntimeAction::RunDebugPlan(plan));
+             }
+             PendingPermissionAction::CaptureFrame => {
+                 self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);
+@@ -4060,19 +4418,61 @@ impl AiStudioPanel {
+             return;
+         }
+         self.managed_evaluation_requested = true;
++        self.native_evaluation_had_image = false;
+         if self.active_runtime_mode == Some(AgentRuntimeMode::Native) {
+-            let Some(observation) = self.managed_runtime_observation.clone() else {
+-                self.record_runtime_evaluation_failure(run_id, "Native runtime evaluation requires a host-captured frame artifact.".to_owned());
+-                return;
+-            };
+-            let image = match fs::read(&observation.path) {
+-                Ok(image) => image,
+-                Err(error) => { self.record_runtime_evaluation_failure(run_id, format!("Could not read host-captured frame for native evaluation: {error}")); return; }
+-            };
+-            let context = format!("Evaluate the attached host-captured managed Play frame {} ({}x{}). Resolve visual_evaluation with host-reportable evidence; interaction success must be consistent with the observed frame and the immutable playtest plan.", observation.artifact_id, observation.width, observation.height);
+-            if let Err(error) = self.start_native_agent_turn(run_id, Some(context), vec![image]) { self.record_runtime_evaluation_failure(run_id, error); }
++            let structured = self
++                .managed_runtime_debug_observation
++                .clone()
++                .unwrap_or_else(|| "Structured runtime observation unavailable.".to_owned());
++            let visual_supported = self
++                .native_agent_runtime
++                .as_ref()
++                .is_some_and(NativeAgentRuntime::supports_visual_evaluation);
++            if visual_supported {
++                let Some(observation) = self.managed_runtime_observation.clone() else {
++                    self.record_runtime_evaluation_failure(
++                        run_id,
++                        "Native visual runtime evaluation requires a host-captured frame artifact."
++                            .to_owned(),
++                    );
++                    return;
++                };
++                let image = match fs::read(&observation.path) {
++                    Ok(image) => image,
++                    Err(error) => {
++                        self.record_runtime_evaluation_failure(
++                            run_id,
++                            format!("Could not read host-captured frame for native evaluation: {error}"),
++                        );
++                        return;
++                    }
++                };
++                self.native_evaluation_had_image = true;
++                let context = format!(
++                    "Evaluate the attached host-captured managed Play frame {} ({}x{}). Resolve visual_evaluation with host-reportable evidence. Deterministic structured runtime evidence: {structured}",
++                    observation.artifact_id, observation.width, observation.height
++                );
++                if let Err(error) =
++                    self.start_native_agent_turn(run_id, Some(context), vec![image])
++                {
++                    self.record_runtime_evaluation_failure(run_id, error);
++                }
++            } else {
++                let context = format!(
++                    "The selected Native ModelBackend has no verified image-input route. Do not claim visual inspection. Evaluate only deterministic structured host runtime evidence and report visual_evaluation as not_applicable unless host evidence proves a failure: {structured}"
++                );
++                if let Err(error) =
++                    self.start_native_agent_turn(run_id, Some(context), Vec::new())
++                {
++                    self.record_runtime_evaluation_failure(run_id, error);
++                }
++            }
+         } else {
+-            self.request_permission(run_id.to_owned(), AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchRuntimeEvaluation);
++            self.request_permission(
++                run_id.to_owned(),
++                AgentCapability::ExternalAgentProcess,
++                PendingPermissionAction::LaunchRuntimeEvaluation,
++            );
+         }
+     }
+ 
+@@ -4212,7 +4612,8 @@ impl AiStudioPanel {
+         if !self.host.run(&run_id).is_ok_and(|run| run.state == AgentRunState::Playtesting) {
+             return;
+         }
+-        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
++        self.managed_runtime_plan_completed = false;
++        self.managed_runtime_debug_observation = None;
+         self.managed_capture_requested = false;
+         self.managed_evaluation_requested = false;
+         self.managed_runtime_observation = None;
+@@ -4229,15 +4630,37 @@ impl AiStudioPanel {
+         );
+     }
+ 
+-    fn request_next_managed_runtime_input_if_ready(&mut self) {
++    fn request_managed_runtime_debug_plan_if_ready(&mut self) {
+         if self.managed_playtest_started_at.is_none()
++            || self.managed_runtime_plan_completed
++            || self.managed_input_recipe.is_empty()
+             || self.pending_permission.is_some()
+             || self.pending_runtime_action.is_some()
+         {
+             return;
+         }
+-        let Some(command) = self.managed_input_plan.pop_front() else {
+-            return;
++        let end_tick = self
++            .managed_input_recipe
++            .iter()
++            .map(RuntimeDebugScheduledInput::tick_offset)
++            .max()
++            .unwrap_or(0);
++        let plan = match RuntimeDebugPlan::new(self.managed_input_recipe.clone(), end_tick) {
++            Ok(plan) => plan,
++            Err(error) => {
++                self.managed_runtime_plan_completed = true;
++                if let Some(run_id) = self.active_run_id.clone() {
++                    let _ = self.host.record_playtest_result(
++                        &run_id,
++                        true,
++                        Some(false),
++                        format!("Managed deterministic runtime plan was invalid: {error}"),
++                    );
++                    self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
++                }
++                self.status = Some(error.to_string());
++                return;
++            }
+         };
+         let Some(run_id) = self.active_run_id.clone() else {
+             return;
+@@ -4245,7 +4668,7 @@ impl AiStudioPanel {
+         self.request_permission(
+             run_id,
+             AgentCapability::RuntimeInputControl,
+-            PendingPermissionAction::SendRuntimeInput(command),
++            PendingPermissionAction::RunRuntimeDebugPlan(plan),
+         );
+     }
+ 
+@@ -4285,6 +4708,7 @@ impl AiStudioPanel {
+ 
+     fn record_runtime_evaluation_failure(&mut self, run_id: &str, message: String) {
+         self.managed_evaluation_requested = false;
++        self.native_evaluation_had_image = false;
+         if let Err(error) = self.host.record_completion_gate(
+             run_id,
+             "visual_evaluation",
+@@ -4318,15 +4742,21 @@ impl AiStudioPanel {
+                     "Runtime evaluator finished with {exit_code:?}; visual evaluation failed and repair is required."
+                 ));
+             }
+-            CompletionStatus::Pending | CompletionStatus::NotApplicable => {
++            CompletionStatus::NotApplicable => {
++                self.status = Some(format!(
++                    "Runtime evaluator finished with {exit_code:?}; visual evaluation is not applicable because no verified image-input path was used. Structured runtime evidence remains authoritative."
++                ));
++            }
++            CompletionStatus::Pending => {
+                 self.record_runtime_evaluation_failure(
+                     run_id,
+                     format!(
+-                        "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation from the host-captured frame; runtime repair is required."
++                        "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation; runtime repair is required."
+                     ),
+                 );
+             }
+         }
++        self.native_evaluation_had_image = false;
+         if self.managed_playtest_started_at.is_some() && self.pending_runtime_action.is_none() {
+             self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+         }
+@@ -4351,7 +4781,8 @@ impl AiStudioPanel {
+         if !self.managed_candidate_input_recipe.is_empty() {
+             self.managed_input_recipe = std::mem::take(&mut self.managed_candidate_input_recipe);
+         }
+-        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
++        self.managed_runtime_plan_completed = false;
++        self.managed_runtime_debug_observation = None;
+         self.managed_repair_requested = false;
+         if let Err(error) = self
+             .host
+@@ -4429,13 +4860,20 @@ impl AiStudioPanel {
+                 {
+                     return Err("runtime_input planning is accepted only during provider execution, before managed Play evaluation".to_owned());
+                 }
+-                let command = input.command()?;
+-                self.managed_candidate_input_recipe.push(command);
++                let default_tick = next_runtime_input_tick(&self.managed_candidate_input_recipe);
++                let scheduled = input.scheduled_commands(default_tick)?;
++                let summary = scheduled
++                    .iter()
++                    .map(|input| format!("tick {} {:?}", input.tick_offset(), input.command()))
++                    .collect::<Vec<_>>()
++                    .join(", " );
++                self.managed_candidate_input_recipe
++                    .extend(scheduled.iter().cloned());
+                 self.host
+                     .record_semantic_progress(
+                         run_id,
+                         "runtime_input_plan",
+-                        format!("Queued provider-planned runtime input {command:?} for managed Editor Play."),
++                        format!("Queued provider-planned fixed-tick runtime input: {summary}."),
+                     )
+                     .map_err(|error| error.to_string())
+             }
+@@ -4677,6 +5115,32 @@ fn provider_mouse_button(button: &str) -> Result<MouseButton, String> {
+     }
+ }
+ 
++fn provider_gamepad_button(button: &str) -> Result<GamepadButton, String> {
++    match button.trim().to_ascii_lowercase().as_str() {
++        "south" | "a" => Ok(GamepadButton::South),
++        "east" | "b" => Ok(GamepadButton::East),
++        "west" | "x" => Ok(GamepadButton::West),
++        "north" | "y" => Ok(GamepadButton::North),
++        "left_shoulder" | "lb" => Ok(GamepadButton::LeftShoulder),
++        "right_shoulder" | "rb" => Ok(GamepadButton::RightShoulder),
++        "select" | "back" => Ok(GamepadButton::Select),
++        "start" | "menu" => Ok(GamepadButton::Start),
++        _ => Err(format!("unsupported managed runtime gamepad button `{button}`")),
++    }
++}
++
++fn provider_gamepad_axis(axis: &str) -> Result<GamepadAxis, String> {
++    match axis.trim().to_ascii_lowercase().as_str() {
++        "left_stick_x" => Ok(GamepadAxis::LeftStickX),
++        "left_stick_y" => Ok(GamepadAxis::LeftStickY),
++        "right_stick_x" => Ok(GamepadAxis::RightStickX),
++        "right_stick_y" => Ok(GamepadAxis::RightStickY),
++        "left_trigger" => Ok(GamepadAxis::LeftTrigger),
++        "right_trigger" => Ok(GamepadAxis::RightTrigger),
++        _ => Err(format!("unsupported managed runtime gamepad axis `{axis}`")),
++    }
++}
++
+ fn load_ai_studio_preferences(path: &std::path::Path) -> AiStudioPreferences {
+     let Ok(bytes) = fs::read(path) else {
+         return AiStudioPreferences::default();
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 11db348839a8d50eb02dd859e6f092d3df725f84..982f7bcee831b652b2147c553e0acd62c4f6280f 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -51,6 +51,7 @@ mod preview_residency;
+ pub mod problems;
+ pub mod project_settings_panel;
+ pub mod runtime;
++pub mod runtime_debug;
+ pub mod scene_view;
+ pub mod session;
+ pub mod skinned_model_bake;
+diff --git a/crates/editor/src/native_agent_runtime.rs b/crates/editor/src/native_agent_runtime.rs
+index 7fb44620cd4b95d336b76d149c7f040d619a7326..807f52edff89c84e2f45f487fa90447a4b069162 100644
+--- a/crates/editor/src/native_agent_runtime.rs
++++ b/crates/editor/src/native_agent_runtime.rs
+@@ -209,6 +209,11 @@ impl NativeAgentRuntime {
+         std::mem::take(&mut self.routing_decisions)
+     }
+     pub(crate) fn is_busy(&self) -> bool { self.active.is_some() }
++    pub(crate) fn supports_visual_evaluation(&self) -> bool {
++        self.routing
++            .select(RoutingWorkload::VisualEvaluation, true)
++            .is_ok()
++    }
+     pub(crate) fn interrupt(&mut self) {
+         if let Some(task) = self.active.as_ref() { task.interrupt(); }
+         self.active = None;
+@@ -339,7 +344,7 @@ fn build_prompt(run: &AgentRun, profile: &ModelCapabilityProfile, policy: Harnes
+         "Output {\"summary\":\"persistable facts\",\"working_state\":{},\"action\":ACTION}. ACTION one of:\n",
+         "{\"type\":\"mcp_call\",\"tool\":\"...\",\"arguments\":{}}\n",
+         "{\"type\":\"code_write\",\"path\":\"game/...\",\"text\":\"complete text\"}\n",
+-        "{\"type\":\"runtime_input\",\"input\":{...}}\n",
++        "{\"type\":\"runtime_input\",\"input\":{\"kind\":\"key|hold_key|mouse_button|hold_mouse_button|gamepad_button|gamepad_axis|mouse_move|mouse_delta|mouse_scroll\",\"at_tick\":0,...}} -- at_tick is a fixed simulation tick offset; hold_* requires integer ticks and expands host-side without model wall-clock timing\n",
+         "{\"type\":\"completion_gate\",\"gate\":\"acceptance_criteria|authoring_validation|visual_evaluation\",\"status\":\"passed|failed|not_applicable\",\"message\":\"...\"}\n",
+         "{\"type\":\"progress\",\"step\":\"...\",\"detail\":\"...\"}\n",
+         "{\"type\":\"await_user\",\"question\":\"...\"}\n{\"type\":\"ready_for_validation\"}\n"));
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+index eac9b09c636b395ca76c629a715186262c0325c9..53f57f0a7914de86d6a96fa5e9b1f3e2f4c5d626 100644
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -472,6 +472,23 @@ impl RuntimePlayState {
+         }
+     }
+ 
++    /// Advances exactly one fixed interval plus the normal frame schedule for
++    /// host-owned deterministic runtime debugging.
++    ///
++    /// This composes the existing Pause/Step primitive instead of introducing a
++    /// second simulation clock. The caller remains responsible for keeping
++    /// managed Play paused while a bounded sequence is executing.
++    pub(crate) fn tick_fixed_debug_step(&mut self) -> Result<(), PlayTickError> {
++        let was_paused = self.paused;
++        self.paused = true;
++        self.single_step_requested = true;
++        let result = self.tick();
++        self.paused = was_paused;
++        self.single_step_requested = false;
++        self.last_tick = Instant::now();
++        result
++    }
++
+     /// Returns the total fixed-step count owned by the runtime clock.
+     pub fn fixed_step_count(&self) -> u64 {
+         self.app
+@@ -613,6 +630,52 @@ impl RuntimePlayState {
+                 ),
+             ));
+         }
++        if let Some(graph) = world.get_component::<engine::AnimGraphPlayer>(entity) {
++            let state = graph
++                .current_state_info()
++                .map(|state| {
++                    state
++                        .motion_key()
++                        .map(str::to_owned)
++                        .unwrap_or_else(|| format!("node {} (no motion)", state.node_id.as_str()))
++                })
++                .unwrap_or_else(|| "unresolved".to_owned());
++            let transition = graph
++                .last_transition()
++                .map(|transition| {
++                    format!(
++                        "{} -> {} ({})",
++                        transition.from_node.as_str(),
++                        transition.to_node.as_str(),
++                        if transition.condition.is_empty() {
++                            "unconditional"
++                        } else {
++                            transition.condition.as_str()
++                        }
++                    )
++                })
++                .unwrap_or_else(|| "none".to_owned());
++            values.push((
++                "Animation Graph".to_owned(),
++                format!("state={state}; transition={transition}"),
++            ));
++        }
++        if let Some(runner) =
++            world.get_component::<engine::behavior_tree::BehaviorTreeRunner>(entity)
++        {
++            let snapshot = runner.snapshot();
++            values.push((
++                "Behavior Tree".to_owned(),
++                format!(
++                    "status={:?}; running_node={:?}; last_terminal={:?}/{:?}; error={:?}",
++                    snapshot.status,
++                    snapshot.running_node,
++                    snapshot.last_terminal_node,
++                    snapshot.last_terminal_status,
++                    snapshot.error
++                ),
++            ));
++        }
+         values
+     }
+ 
+diff --git a/crates/editor/src/runtime_debug.rs b/crates/editor/src/runtime_debug.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f27a47019327e8a3d8e49c9e7c69500f666c092
+--- /dev/null
++++ b/crates/editor/src/runtime_debug.rs
+@@ -0,0 +1,987 @@
++//! Deterministic AI runtime-debugging control for Editor Play (ADR 0157).
++//!
++//! This application-layer controller composes existing Play primitives. It does
++//! not create a second runtime clock, input path, replay format, or renderer.
++
++use crate::runtime::{PlayTickError, RuntimePlayState};
++use engine::{
++    GamepadAxis, GamepadButton, GamepadId, InputCommand, InputReplay, InputSource, KeyCode,
++    MouseButton,
++};
++use std::fmt;
++
++const MAX_PLAN_INPUTS: usize = 4_096;
++const MAX_PLAN_TICKS: u64 = 36_000;
++const MAX_STEP_TICKS: u32 = 3_600;
++const MAX_OBSERVED_ENTITIES: usize = 256;
++
++/// One virtual-input command scheduled relative to the start of a deterministic
++/// managed Play plan.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct RuntimeDebugScheduledInput {
++    tick_offset: u64,
++    command: InputCommand,
++}
++
++impl RuntimeDebugScheduledInput {
++    /// Schedules one existing engine [`InputCommand`] at an exact fixed-tick offset.
++    pub fn at_tick(tick_offset: u64, command: InputCommand) -> Result<Self, RuntimeDebugError> {
++        validate_command(command)?;
++        if tick_offset > MAX_PLAN_TICKS {
++            return Err(RuntimeDebugError::BudgetExceeded(format!(
++                "runtime input tick {tick_offset} exceeds the {MAX_PLAN_TICKS}-tick plan budget"
++            )));
++        }
++        Ok(Self {
++            tick_offset,
++            command,
++        })
++    }
++
++    /// Fixed-tick offset from the start of the managed plan.
++    pub fn tick_offset(&self) -> u64 {
++        self.tick_offset
++    }
++
++    /// Virtual input command that will be injected through `InputSource::AiAgent`.
++    pub fn command(&self) -> InputCommand {
++        self.command
++    }
++}
++
++/// Frozen, bounded deterministic runtime-input plan.
++#[derive(Debug, Clone, PartialEq)]
++pub struct RuntimeDebugPlan {
++    inputs: Vec<RuntimeDebugScheduledInput>,
++    end_tick: u64,
++}
++
++impl RuntimeDebugPlan {
++    /// Creates a bounded plan. Inputs are stably ordered by fixed-tick offset.
++    pub fn new(
++        mut inputs: Vec<RuntimeDebugScheduledInput>,
++        end_tick: u64,
++    ) -> Result<Self, RuntimeDebugError> {
++        if inputs.len() > MAX_PLAN_INPUTS {
++            return Err(RuntimeDebugError::BudgetExceeded(format!(
++                "runtime plan contains {} inputs; maximum is {MAX_PLAN_INPUTS}",
++                inputs.len()
++            )));
++        }
++        if end_tick > MAX_PLAN_TICKS {
++            return Err(RuntimeDebugError::BudgetExceeded(format!(
++                "runtime plan end tick {end_tick} exceeds the {MAX_PLAN_TICKS}-tick budget"
++            )));
++        }
++        if let Some(last) = inputs
++            .iter()
++            .map(RuntimeDebugScheduledInput::tick_offset)
++            .max()
++            && last > end_tick
++        {
++            return Err(RuntimeDebugError::InvalidPlan(format!(
++                "runtime input tick {last} is after plan end tick {end_tick}"
++            )));
++        }
++        inputs.sort_by_key(RuntimeDebugScheduledInput::tick_offset);
++        Ok(Self { inputs, end_tick })
++    }
++
++    /// Builds a compatibility plan where successive commands run on successive
++    /// fixed ticks instead of successive UI/model frames.
++    pub fn sequential(
++        commands: impl IntoIterator<Item = InputCommand>,
++    ) -> Result<Self, RuntimeDebugError> {
++        let mut inputs = Vec::new();
++        for (index, command) in commands.into_iter().enumerate() {
++            let tick = u64::try_from(index).map_err(|_| {
++                RuntimeDebugError::BudgetExceeded("runtime input sequence is too large".to_owned())
++            })?;
++            inputs.push(RuntimeDebugScheduledInput::at_tick(tick, command)?);
++        }
++        let end_tick = inputs
++            .last()
++            .map_or(0, RuntimeDebugScheduledInput::tick_offset);
++        Self::new(inputs, end_tick)
++    }
++
++    /// Ordered scheduled inputs in this frozen plan.
++    pub fn inputs(&self) -> &[RuntimeDebugScheduledInput] {
++        &self.inputs
++    }
++
++    /// Final fixed-tick offset that belongs to the plan.
++    pub fn end_tick(&self) -> u64 {
++        self.end_tick
++    }
++}
++
++/// One allowlisted, typed host-side runtime condition.
++#[derive(Debug, Clone, PartialEq)]
++pub struct RuntimeDebugPredicate {
++    kind: RuntimeDebugPredicateKind,
++}
++
++#[derive(Debug, Clone, PartialEq)]
++enum RuntimeDebugPredicateKind {
++    FixedTickAtLeast(u64),
++    AuthoringEntityExists(String),
++    AuthoringPositionNear {
++        authoring_id: String,
++        expected: [f32; 3],
++        tolerance: f32,
++    },
++    InputActionPressed(String),
++}
++
++impl RuntimeDebugPredicate {
++    /// Waits/asserts on the fixed simulation tick.
++    pub fn fixed_tick_at_least(tick: u64) -> Self {
++        Self {
++            kind: RuntimeDebugPredicateKind::FixedTickAtLeast(tick),
++        }
++    }
++
++    /// Waits/asserts until a stable authoring entity is present in the Play world.
++    pub fn authoring_entity_exists(authoring_id: impl Into<String>) -> Self {
++        Self {
++            kind: RuntimeDebugPredicateKind::AuthoringEntityExists(authoring_id.into()),
++        }
++    }
++
++    /// Waits/asserts until an authoring entity's local position is within
++    /// `tolerance` of `expected`.
++    pub fn authoring_position_near(
++        authoring_id: impl Into<String>,
++        expected: [f32; 3],
++        tolerance: f32,
++    ) -> Result<Self, RuntimeDebugError> {
++        if expected.iter().any(|value| !value.is_finite())
++            || !tolerance.is_finite()
++            || tolerance < 0.0
++        {
++            return Err(RuntimeDebugError::InvalidPredicate(
++                "position predicate values and tolerance must be finite and tolerance must be non-negative"
++                    .to_owned(),
++            ));
++        }
++        Ok(Self {
++            kind: RuntimeDebugPredicateKind::AuthoringPositionNear {
++                authoring_id: authoring_id.into(),
++                expected,
++                tolerance,
++            },
++        })
++    }
++
++    /// Waits/asserts on one existing typed Input Action by name.
++    pub fn input_action_pressed(action: impl Into<String>) -> Self {
++        Self {
++            kind: RuntimeDebugPredicateKind::InputActionPressed(action.into()),
++        }
++    }
++}
++
++/// Bounded, read-only runtime evidence captured by the Editor host.
++#[derive(Debug, Clone)]
++pub struct RuntimeDebugObservation {
++    fixed_tick: u64,
++    paused: bool,
++    entity_count: usize,
++    entities: Vec<RuntimeDebugEntityObservation>,
++    keyboard: Vec<String>,
++    mouse_buttons: Vec<String>,
++    gamepad_buttons: Vec<String>,
++    gamepad_axes: Vec<String>,
++    actions: Vec<(String, bool)>,
++    last_tick_ms: f64,
++    maximum_tick_ms: f64,
++    average_tick_ms: f64,
++}
++
++#[derive(Debug, Clone)]
++struct RuntimeDebugEntityObservation {
++    authoring_id: Option<String>,
++    name: String,
++    components: Vec<String>,
++    values: Vec<(String, String)>,
++    transform: Option<([f32; 3], [f32; 3], [f32; 3])>,
++}
++
++impl RuntimeDebugObservation {
++    /// Current fixed simulation tick.
++    pub fn fixed_tick(&self) -> u64 {
++        self.fixed_tick
++    }
++
++    /// Whether normal Play advancement is paused.
++    pub fn paused(&self) -> bool {
++        self.paused
++    }
++
++    /// Number of runtime entities in the current Play world.
++    pub fn entity_count(&self) -> usize {
++        self.entity_count
++    }
++
++    /// Produces a bounded provider-safe summary without exposing raw runtime memory.
++    pub fn summary(&self) -> String {
++        let entity_rows = self
++            .entities
++            .iter()
++            .take(16)
++            .map(|entity| {
++                format!(
++                    "{} authoring={:?} components={:?} values={:?} transform={:?}",
++                    entity.name, entity.authoring_id, entity.components, entity.values, entity.transform
++                )
++            })
++            .collect::<Vec<_>>()
++            .join(" | " );
++        format!(
++            "fixed_tick={} paused={} entities={} keyboard={:?} mouse={:?} gamepad_buttons={:?} gamepad_axes={:?} actions={:?} timing_ms(last={:.3}, max={:.3}, avg={:.3}) rows=[{}]",
++            self.fixed_tick,
++            self.paused,
++            self.entity_count,
++            self.keyboard,
++            self.mouse_buttons,
++            self.gamepad_buttons,
++            self.gamepad_axes,
++            self.actions,
++            self.last_tick_ms,
++            self.maximum_tick_ms,
++            self.average_tick_ms,
++            entity_rows
++        )
++    }
++}
++
++/// Host-owned result of one deterministic input plan or replay.
++#[derive(Debug, Clone)]
++pub struct RuntimeDebugExecutionReport {
++    start_fixed_tick: u64,
++    end_fixed_tick: u64,
++    scheduled_inputs: usize,
++    cleanup_inputs: usize,
++    replay_recorded: bool,
++    observation: RuntimeDebugObservation,
++}
++
++impl RuntimeDebugExecutionReport {
++    /// Fixed tick at which execution began.
++    pub fn start_fixed_tick(&self) -> u64 {
++        self.start_fixed_tick
++    }
++
++    /// Fixed tick observed after execution and cleanup.
++    pub fn end_fixed_tick(&self) -> u64 {
++        self.end_fixed_tick
++    }
++
++    /// Number of provider-planned virtual input commands executed.
++    pub fn scheduled_inputs(&self) -> usize {
++        self.scheduled_inputs
++    }
++
++    /// Number of host-generated release commands used to prevent stuck controls.
++    pub fn cleanup_inputs(&self) -> usize {
++        self.cleanup_inputs
++    }
++
++    /// Whether the execution produced an ADR 0064 replay artifact.
++    pub fn replay_recorded(&self) -> bool {
++        self.replay_recorded
++    }
++
++    /// Final structured runtime observation.
++    pub fn observation(&self) -> &RuntimeDebugObservation {
++        &self.observation
++    }
++
++    /// Compact audit description for Agent Host evidence.
++    pub fn summary(&self) -> String {
++        format!(
++            "deterministic runtime plan fixed_ticks={}..{} scheduled_inputs={} cleanup_inputs={} replay_recorded={}; {}",
++            self.start_fixed_tick,
++            self.end_fixed_tick,
++            self.scheduled_inputs,
++            self.cleanup_inputs,
++            self.replay_recorded,
++            self.observation.summary()
++        )
++    }
++}
++
++/// Outcome of a bounded host-side wait.
++#[derive(Debug, Clone)]
++pub struct RuntimeDebugWaitResult {
++    matched: bool,
++    unavailable: Option<String>,
++    advanced_ticks: u32,
++    observation: RuntimeDebugObservation,
++}
++
++impl RuntimeDebugWaitResult {
++    /// Whether the allowlisted predicate matched before the tick budget expired.
++    pub fn matched(&self) -> bool {
++        self.matched
++    }
++
++    /// Explicit reason that evidence was unavailable, if the requested typed
++    /// datum does not exist in the current runtime.
++    pub fn unavailable(&self) -> Option<&str> {
++        self.unavailable.as_deref()
++    }
++
++    /// Number of fixed ticks advanced while waiting.
++    pub fn advanced_ticks(&self) -> u32 {
++        self.advanced_ticks
++    }
++
++    /// Final structured runtime observation.
++    pub fn observation(&self) -> &RuntimeDebugObservation {
++        &self.observation
++    }
++
++    /// Compact host-evaluated result description.
++    pub fn summary(&self) -> String {
++        match &self.unavailable {
++            Some(reason) => format!(
++                "runtime wait unavailable after {} tick(s): {reason}; {}",
++                self.advanced_ticks,
++                self.observation.summary()
++            ),
++            None => format!(
++                "runtime wait matched={} after {} tick(s); {}",
++                self.matched,
++                self.advanced_ticks,
++                self.observation.summary()
++            ),
++        }
++    }
++}
++
++/// Deterministic runtime-debugging failure.
++#[derive(Debug, Clone, PartialEq)]
