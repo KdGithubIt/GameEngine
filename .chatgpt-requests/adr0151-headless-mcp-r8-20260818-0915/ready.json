@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0151-headless-mcp-r8-20260818-0915",
+  "target_branch": "chatgpt/gameengine-adr0151-headless-mcp-r8",
+  "expected_head_sha": "99cd9cf17c92eeeb1248bc6e15eca560d870db66",
+  "baseline_main_sha": "99cd9cf17c92eeeb1248bc6e15eca560d870db66",
+  "patch_sha256": "8313186fddbd61bd136075ebae521c0883c869df52218ba714ab1f185b273cc1",
+  "patch_bytes": 99978,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR 0151 headless MCP writer ownership",
+  "pr_title": "Implement ADR 0151 headless MCP writer ownership",
+  "pr_body": "Implements ADR 0151 on current main, including ADR0148 Launcher lifecycle integration for project-writer conflicts, Graph/GraphView saved-file rollback, and clippy follow-up. Adds a GUI-free headless MCP host over the existing engine-mcp inventory, explicit Editor/headless project-writer ownership over the existing OS lock, read-only saved-file coexistence, canonical mutation persistence and rollback, and accepted architecture/spec documentation. Cargo.lock/workspace membership changes require full Windows Validation. Visual Validation is not required because this change has no visible Editor/Launcher presentation changes."
+}
