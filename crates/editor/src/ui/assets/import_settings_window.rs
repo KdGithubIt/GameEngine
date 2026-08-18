@@ -260,17 +260,11 @@ fn humanoid_capable_pmx_models(
         .filter(|(id, _)| {
             manifest.get(id).is_some_and(|entry| {
                 entry.import_settings.humanoid_profiles.iter().any(|profile| {
-                    engine::asset::HumanoidBone::REQUIRED
+                    entry
+                        .import_settings
+                        .skeleton_records
                         .iter()
-                        .all(|bone| profile.bones.contains_key(bone))
-                        && entry
-                            .import_settings
-                            .skeleton_records
-                            .iter()
-                            .any(|record| {
-                                record.id == profile.skeleton
-                                    && record.identity == profile.skeleton_identity
-                            })
+                        .any(|record| profile.is_structurally_usable_with_record(record))
                 })
             })
         })

@@ -22,8 +22,8 @@ pub const ANIMATION_SET_FILE_SUFFIX: &str = ".animset.json";
 /// human-readable binding name can change without breaking graph references.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnimationSet {
-    /// Persisted format version. Version 1 is currently the only accepted
-    /// value.
+    /// Persisted format version. Schema v3 is the only accepted current
+    /// value; older route-policy formats are rejected rather than migrated.
     pub schema_version: u32,
     /// Animation graph whose motion-slot contract this set implements.
     ///
@@ -481,7 +481,7 @@ mod tests {
         let slot = MotionSlotId::generate();
         let clip = AssetId::generate();
         let json = format!(
-            "{{\"schema_version\":2,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":{{\"variant\":\"native\",\"asset\":\"{}\"}},\"events\":[]}}}}}}",
+            "{{\"schema_version\":3,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":{{\"asset\":\"{}\"}},\"events\":[]}}}}}}",
             graph.as_str(),
             slot.as_str(),
             clip.as_str()

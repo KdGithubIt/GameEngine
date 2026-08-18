@@ -457,17 +457,11 @@ impl EditorApp {
             .humanoid_profiles
             .iter()
             .find(|profile| {
-                engine::asset::HumanoidBone::REQUIRED
+                model_entry
+                    .import_settings
+                    .skeleton_records
                     .iter()
-                    .all(|bone| profile.bones.contains_key(bone))
-                    && model_entry
-                        .import_settings
-                        .skeleton_records
-                        .iter()
-                        .any(|record| {
-                            record.id == profile.skeleton
-                                && record.identity == profile.skeleton_identity
-                        })
+                    .any(|record| profile.is_structurally_usable_with_record(record))
             })
             .cloned()?;
         Some(crate::asset_import::MotionHumanoidSource {

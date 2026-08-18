@@ -1840,8 +1840,7 @@ fn resolve_animation_binding_clip(
         .iter()
         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
         .any(|profile| {
-            profile.skeleton == target_skeleton.id.as_str()
-                && profile.skeleton_identity == target_skeleton.identity.0
+            crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok()
         });
 
     if candidate_kind == crate::motion_binding::AnimationMotionCandidateKind::Humanoid {
@@ -2202,10 +2201,7 @@ fn resolve_humanoid_animation_binding_clip(
         .manifest
         .iter()
         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
-        .find(|profile| {
-            profile.skeleton == target_skeleton.id.as_str()
-                && profile.skeleton_identity == target_skeleton.identity.0
-        })
+        .find(|profile| crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok())
         .cloned()
         .ok_or_else(|| {
             animation_binding_error(

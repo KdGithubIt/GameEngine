@@ -122,23 +122,23 @@ fn preview_motion_route(
                 sub_asset.index as usize,
             )
         });
-    let target_identity = manifest
+    let target_humanoid_usable = manifest
         .iter()
-        .flat_map(|(_, entry)| entry.import_settings.skeleton_records.iter())
-        .find(|record| record.id == target_skeleton.as_str())
-        .map(|record| record.identity);
-    let target_humanoid_usable = target_identity.is_some_and(|identity| {
-        manifest
-            .iter()
-            .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
-            .any(|profile| {
-                profile.skeleton == target_skeleton.as_str()
-                    && profile.skeleton_identity == identity
-                    && engine::asset::HumanoidBone::REQUIRED
+        .find_map(|(_, entry)| {
+            entry
+                .import_settings
+                .skeleton_records
+                .iter()
+                .find(|record| record.id == target_skeleton.as_str())
+                .map(|record| {
+                    entry
+                        .import_settings
+                        .humanoid_profiles
                         .iter()
-                        .all(|bone| profile.bones.contains_key(bone))
-            })
-    });
+                        .any(|profile| profile.is_structurally_usable_with_record(record))
+                })
+        })
+        .unwrap_or(false);
     Some(engine::motion_binding::plan_animation_motion(
         &engine::motion_binding::AnimationMotionPlanInput {
             candidate: source.asset.clone(),

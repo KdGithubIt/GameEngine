@@ -462,6 +462,41 @@ impl HumanoidProfile {
     pub fn bone_id(&self, semantic: HumanoidBone) -> Option<u32> {
         self.bones.get(&semantic).copied()
     }
+
+    /// Returns whether persisted profile metadata is structurally usable for
+    /// the matching imported skeleton record.
+    ///
+    /// This is the GUI-free metadata check used when no `SkeletonAsset` is
+    /// loaded. Runtime conversion still performs full hierarchy validation
+    /// against the concrete skeleton before selecting a Humanoid route.
+    pub fn is_structurally_usable_with_record(&self, record: &SkeletonRecord) -> bool {
+        if self.skeleton != record.id || self.skeleton_identity != record.identity {
+            return false;
+        }
+        if !HumanoidBone::REQUIRED
+            .iter()
+            .all(|bone| self.bones.contains_key(bone))
+        {
+            return false;
+        }
+
+        let known_bones = record
+            .bones
+            .iter()
+            .map(|bone| bone.bone_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        if !self.bones.values().all(|bone| known_bones.contains(bone)) {
+            return false;
+        }
+        let mapped_bones = self.bones.values().copied().collect::<Vec<_>>();
+        if mapped_bones.iter().copied().collect::<std::collections::BTreeSet<_>>().len()
+            != mapped_bones.len()
+        {
+            return false;
+        }
+        self.motion_root
+            .is_none_or(|motion_root| known_bones.contains(&motion_root))
+    }
 }
 
 /// Persisted type of a deterministic imported sub-asset.
@@ -890,6 +925,49 @@ mod tests {
         let json = manifest.to_canonical_json().expect("manifest must serialize");
         let parsed = AssetManifest::from_json(&json).expect("manifest must parse");
         assert_eq!(parsed.get(&id), manifest.get(&id));
+    }
+
+    #[test]
+    fn humanoid_profile_metadata_requires_current_record_and_known_required_bones() {
+        let bones = HumanoidBone::REQUIRED
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, semantic)| (semantic, index as u32))
+            .collect::<BTreeMap<_, _>>();
+        let record = SkeletonRecord {
+            id: "skeleton_test".to_owned(),
+            identity: 42,
+            next_bone_id: HumanoidBone::REQUIRED.len() as u32,
+            bones: HumanoidBone::REQUIRED
+                .iter()
+                .enumerate()
+                .map(|(index, semantic)| SkeletonBoneRecord {
+                    bone_id: index as u32,
+                    name: format!("{semantic:?}"),
+                })
+                .collect(),
+        };
+        let profile = HumanoidProfile {
+            skeleton: record.id.clone(),
+            skeleton_identity: record.identity,
+            bones,
+            motion_root: Some(0),
+            uncertain_bones: Vec::new(),
+            origin: HumanoidProfileOrigin::Automatic,
+        };
+
+        assert!(profile.is_structurally_usable_with_record(&record));
+
+        let mut stale = profile.clone();
+        stale.skeleton_identity += 1;
+        assert!(!stale.is_structurally_usable_with_record(&record));
+
+        let mut unknown_bone = profile;
+        unknown_bone
+            .bones
+            .insert(HumanoidBone::Hips, record.next_bone_id + 10);
+        assert!(!unknown_bone.is_structurally_usable_with_record(&record));
     }
 
     #[test]
