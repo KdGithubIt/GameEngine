@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "agent-benchmark-process-20260818-r4",
+  "target_branch": "chatgpt/gameengine-agent-benchmark-experiment-runner",
+  "expected_head_sha": "d3669a09109d24f4df76f7692bbcec870a8f99bd",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": ["edit-0000.json", "edit-0001.json"],
+  "commit_message": "Add process-isolated benchmark coordinator",
+  "pr_title": "GameEngine: add reproducible local LLM benchmark experiments",
+  "pr_body": "## Summary\n\nAdds process-isolated benchmark orchestration on top of the reproducible ADR0142 experiment core. Every planned model/task/repetition run receives a fresh repository-owned fixture copy, a fresh Editor child process, an exact single-model child spec, and a dedicated result file. Parent orchestration records deterministic order, validates child attribution, supports stop-on-failure, and never reuses a private user project.\n\nThe remaining slice connects child scenario automation and AI Studio controls for all seven tasks.\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
