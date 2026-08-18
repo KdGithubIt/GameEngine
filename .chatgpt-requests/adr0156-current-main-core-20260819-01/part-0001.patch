@@ -1,0 +1,370 @@
++            "Implement the visible acceptance criteria in isolated fixture {marker}; use only governed tools."
++        ),
++        BenchmarkTaskKind::TypedAuthoringMutation => format!(
++            "Apply the visible typed authoring change in fixture {marker} through the production authoring API."
++        ),
++        BenchmarkTaskKind::ValidationRepair => format!(
++            "Repair the visible validation failure in fixture {marker} and prove it with managed validation."
++        ),
++        BenchmarkTaskKind::RuntimeInteraction => format!(
++            "Use the production runtime-debug surface for fixture {marker}; satisfy the visible interaction criteria."
++        ),
++        BenchmarkTaskKind::VisualEvaluation => format!(
++            "Use production runtime observation for fixture {marker}; evaluate the captured frame only if image input is available."
++        ),
++    }
++}
++
++fn measured_text(value: &TelemetryValue<String>) -> Option<String> {
++    match value {
++        TelemetryValue::Measured(value) if !value.trim().is_empty() => Some(value.clone()),
++        TelemetryValue::Measured(_)
++        | TelemetryValue::ConservativeEstimate(_)
++        | TelemetryValue::Unavailable => None,
++    }
++}
++
++fn measured_u64(value: &TelemetryValue<u64>) -> Option<u64> {
++    match value {
++        TelemetryValue::Measured(value) => Some(*value),
++        TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Unavailable => None,
++    }
++}
++
++fn measured_bool(value: &TelemetryValue<bool>) -> Option<bool> {
++    match value {
++        TelemetryValue::Measured(value) => Some(*value),
++        TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Unavailable => None,
++    }
++}
++
++fn push_measured(values: &mut Vec<u64>, value: &TelemetryValue<u64>) {
++    if let Some(value) = measured_u64(value) {
++        values.push(value);
++    }
++}
++
++fn median(values: &mut [u64]) -> TelemetryValue<u64> {
++    if values.is_empty() {
++        return TelemetryValue::Unavailable;
++    }
++    values.sort_unstable();
++    TelemetryValue::Measured(values[values.len() / 2])
++}
++
++fn maximum(values: &[u64]) -> TelemetryValue<u64> {
++    values
++        .iter()
++        .copied()
++        .max()
++        .map(TelemetryValue::Measured)
++        .unwrap_or_default()
++}
++
++fn stable_hash(bytes: &[u8]) -> u64 {
++    stable_hash_seed(bytes, 0xcbf2_9ce4_8422_2325)
++}
++
++fn stable_hash_seed(bytes: &[u8], seed: u64) -> u64 {
++    bytes.iter().fold(seed, |hash, byte| {
++        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
++    })
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_millis()
++        .min(u128::from(u64::MAX)) as u64
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::agent_benchmark::{BenchmarkIdentity, BenchmarkMetrics, BENCHMARK_TASKS};
++
++    fn model(name: &str) -> BenchmarkModelIdentity {
++        BenchmarkModelIdentity {
++            backend_id: "ollama-compatible".to_owned(),
++            model_id: name.to_owned(),
++            model_version: TelemetryValue::Measured(format!("{name}-digest")),
++            quantization: TelemetryValue::Measured("q4".to_owned()),
++            representation_size_bytes: TelemetryValue::Measured(1_000),
++            backend_runtime_version: TelemetryValue::Measured("runtime-v1".to_owned()),
++        }
++    }
++
++    fn hardware() -> BenchmarkHardwareIdentity {
++        BenchmarkHardwareIdentity {
++            platform: "windows-x86_64".to_owned(),
++            gpu: TelemetryValue::Measured("gpu".to_owned()),
++            total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
++            total_system_memory_bytes: TelemetryValue::Measured(32_000),
++        }
++    }
++
++    fn plan() -> BenchmarkCampaignPlan {
++        BenchmarkCampaignPlan {
++            schema_version: CAMPAIGN_SCHEMA_VERSION,
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            benchmark_harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            campaign_harness_version: CAMPAIGN_HARNESS_VERSION.to_owned(),
++            schedule_version: CAMPAIGN_SCHEDULE_VERSION.to_owned(),
++            candidates: vec![
++                CampaignCandidate {
++                    model: model("model-a"),
++                    source: CampaignCandidateSource::installed(),
++                },
++                CampaignCandidate {
++                    model: model("model-b"),
++                    source: CampaignCandidateSource::installed(),
++                },
++            ],
++            tasks: BENCHMARK_TASKS
++                .iter()
++                .take(2)
++                .enumerate()
++                .map(|(index, task)| {
++                    CampaignTaskPlan::for_task(task.id, 100 + index as u64).expect("task plan")
++                })
++                .collect(),
++            repetitions: 2,
++            comparison_class: CampaignComparisonClass::ModelComparison,
++            execution_profile: CampaignExecutionProfile::Warm,
++            execution_environments: vec![CampaignExecutionEnvironment::WindowsNative],
++            quality: QualityPreference::Balanced,
++            hardware: hardware(),
++            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++            sampling_profile: "temperature-0".to_owned(),
++            seed_policy: CampaignSeedPolicy::Fixed(7),
++        }
++    }
++
++    fn record(model_name: &str, task_id: &str) -> BenchmarkRecord {
++        let task = benchmark_task(task_id).expect("task");
++        let campaign_plan = plan();
++        let task_plan = campaign_plan
++            .tasks
++            .iter()
++            .find(|task| task.task_id == task_id)
++            .expect("campaign task plan");
++        BenchmarkRecord {
++            schema_version: BENCHMARK_SCHEMA_VERSION,
++            recorded_unix_ms: 1,
++            identity: BenchmarkIdentity {
++                corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++                task_id: task_id.to_owned(),
++                harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++                runtime_harness_version: task_plan.runtime_harness_version.clone(),
++                model: model(model_name),
++                hardware: hardware(),
++                quality: QualityPreference::Balanced,
++                workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++                observed_workload: TelemetryValue::Measured(task_plan.workload),
++                tool_budget: task_plan.tool_budget.clone(),
++                completion_criteria: task
++                    .completion_criteria
++                    .iter()
++                    .map(|criterion| (*criterion).to_owned())
++                    .collect(),
++                execution: None,
++            },
++            metrics: BenchmarkMetrics {
++                acceptance_success: TelemetryValue::Measured(true),
++                completion_success: TelemetryValue::Measured(true),
++                model_turns: TelemetryValue::Measured(1),
++                tool_calls: TelemetryValue::Measured(1),
++                invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
++                code_edits: TelemetryValue::Measured(0),
++                validation_attempts: TelemetryValue::Measured(1),
++                repair_loops: TelemetryValue::Measured(0),
++                play_attempts: TelemetryValue::Measured(0),
++                frame_capture_attempts: TelemetryValue::Measured(0),
++                visual_evaluation_attempts: TelemetryValue::Measured(0),
++                human_interventions: TelemetryValue::Measured(0),
++                elapsed_ms: TelemetryValue::Measured(10),
++                prompt_tokens: TelemetryValue::Measured(10),
++                response_tokens: TelemetryValue::Measured(10),
++                load_latency_ms: TelemetryValue::Measured(2),
++                ttft_ms: TelemetryValue::Unavailable,
++                generation_tokens_per_second_milli: TelemetryValue::Measured(2_000),
++                peak_backend_gpu_memory_bytes: TelemetryValue::Unavailable,
++                peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
++                model_unload_reload_ms: TelemetryValue::Unavailable,
++                renderer_reclaim_resume_ms: TelemetryValue::Unavailable,
++                oom_failures: TelemetryValue::Measured(0),
++            },
++        }
++    }
++
++    #[test]
++    fn all_seven_tasks_map_to_production_harnesses() {
++        for task in BENCHMARK_TASKS {
++            let harness = campaign_task_harness(task.id).expect("campaign task harness");
++            if matches!(
++                task.kind,
++                BenchmarkTaskKind::RuntimeInteraction | BenchmarkTaskKind::VisualEvaluation
++            ) {
++                assert_eq!(harness, CampaignTaskHarness::ProductionRuntimeDebug);
++                assert_eq!(
++                    campaign_task_workload(task.id).expect("workload"),
++                    InferenceWorkload::RuntimeObservation
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn schedule_is_deterministic_interleaved_and_sequential() {
++        let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
++        let schedule = campaign.plan.schedule().expect("schedule");
++        assert_eq!(schedule[0].candidate_index, 0);
++        assert_eq!(schedule[1].candidate_index, 1);
++        assert_eq!(schedule, campaign.plan.schedule().expect("same schedule"));
++        campaign
++            .start(&[model("model-a"), model("model-b")])
++            .expect("start");
++        let request = campaign.begin_next_run().expect("next").expect("request");
++        assert!(campaign.begin_next_run().is_err());
++        campaign.mark_measurement_started(&request).expect("measure");
++        assert!(campaign.begin_next_run().is_err());
++    }
++
++    #[test]
++    fn pre_measurement_retry_is_bounded_and_measured_failure_is_retained() {
++        let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
++        let verified = vec![model("model-a"), model("model-b")];
++        campaign.start(&verified).expect("start");
++        for attempt in 0..=MAX_PRE_MEASUREMENT_RETRIES {
++            let request = campaign.begin_next_run().expect("next").expect("request");
++            let disposition = campaign
++                .record_pre_measurement_failure(&request)
++                .expect("pre-measurement failure");
++            let expected = if attempt < MAX_PRE_MEASUREMENT_RETRIES {
++                PreMeasurementFailureDisposition::Retry
++            } else {
++                PreMeasurementFailureDisposition::Exhausted
++            };
++            assert_eq!(disposition, expected);
++        }
++        let request = campaign.begin_next_run().expect("next").expect("request");
++        campaign.mark_measurement_started(&request).expect("started");
++        assert!(campaign.record_pre_measurement_failure(&request).is_err());
++        campaign
++            .fail_measured_run(&request, CampaignFailureKind::ValidationFailure)
++            .expect("measured failure retained");
++    }
++
++    #[test]
++    fn candidate_contract_never_serializes_host_oracle() {
++        let fixture = CampaignFixtureIdentity::for_task(BENCHMARK_TASKS[0].id, 42);
++        let candidate = fixture
++            .candidate_contract(BENCHMARK_TASKS[0].id)
++            .expect("candidate contract");
++        let oracle = fixture
++            .host_evaluator(BENCHMARK_TASKS[0].id)
++            .expect("host evaluator");
++        let json = serde_json::to_string(&candidate).expect("candidate JSON");
++        assert!(!json.contains(&oracle.hidden_token));
++        assert_eq!(oracle.task_id, BENCHMARK_TASKS[0].id);
++    }
++
++    #[test]
++    fn automatic_recording_rejects_identity_mismatch() {
++        let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
++        campaign
++            .start(&[model("model-a"), model("model-b")])
++            .expect("start");
++        let request = campaign.begin_next_run().expect("next").expect("request");
++        campaign.mark_measurement_started(&request).expect("started");
++        let mismatched = record("model-b", &request.schedule.task_id);
++        assert!(campaign.complete_run(&request, mismatched).is_err());
++        assert_eq!(
++            campaign.runs[request.schedule.ordinal as usize].status,
++            CampaignRunStatus::Rejected
++        );
++    }
++
++    #[test]
++    fn pause_resume_rejects_environment_drift() {
++        let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
++        campaign
++            .start(&[model("model-a"), model("model-b")])
++            .expect("start");
++        campaign.pause().expect("pause");
++        let original = campaign.plan.resume_identity();
++        campaign.resume(original.clone()).expect("resume");
++        campaign.pause().expect("pause again");
++        let mut drift = original;
++        drift.hardware.platform = "different".to_owned();
++        assert!(campaign.resume(drift).is_err());
++        assert_eq!(campaign.state, BenchmarkCampaignState::Incompatible);
++    }
++
++    #[test]
++    fn campaign_store_replaces_existing_progress_file() {
++        let root = tempfile::tempdir().expect("campaign store tempdir");
++        let store = BenchmarkCampaignStore::open(root.path().to_path_buf())
++            .expect("campaign store");
++        let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
++        store.save(&campaign).expect("initial save");
++        campaign
++            .start(&[model("model-a"), model("model-b")])
++            .expect("start");
++        campaign.pause().expect("pause");
++        store.save(&campaign).expect("replace saved progress");
++        assert_eq!(
++            store
++                .load(&campaign.plan_fingerprint)
++                .expect("reload")
++                .state,
++            BenchmarkCampaignState::Paused
++        );
++    }
++
++    #[test]
++    fn campaign_execution_identity_keeps_fixture_exact() {
++        let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
++        campaign
++            .start(&[model("model-a"), model("model-b")])
++            .expect("start");
++        let request = campaign.begin_next_run().expect("next").expect("request");
++        campaign.mark_measurement_started(&request).expect("started");
++        let evidence = record("model-a", &request.schedule.task_id);
++        campaign.complete_run(&request, evidence).expect("complete");
++        let execution = campaign.runs[request.schedule.ordinal as usize]
++            .record
++            .as_ref()
++            .and_then(|record| record.identity.execution.as_ref())
++            .expect("execution identity");
++        assert_eq!(execution.fixture_instance_id, request.fixture.instance_id);
++    }
++}
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 982f7bcee831b652b2147c553e0acd62c4f6280f..c963e184a48adbd9d083c76a57f55090e9b36602 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -12,6 +12,10 @@
+ #[allow(dead_code)]
+ mod agent_asset_acquisition;
+ mod agent_benchmark;
++// ADR 0156 owns machine-local benchmark campaign orchestration above the benchmark primitives;
++// UI and execution adapters are added incrementally on the same task branch.
++#[allow(dead_code)]
++mod agent_benchmark_campaign;
+ mod agent_host;
+ mod external_agent_provider;
+ mod hosted_model_backend;
+diff --git a/crates/editor/src/model_router.rs b/crates/editor/src/model_router.rs
+index 61565459083e413bf52a9f3f7e952d6ebcc93aa2..34c2207f5916ff95e6081d6b2789e930a49d4e83 100644
+--- a/crates/editor/src/model_router.rs
++++ b/crates/editor/src/model_router.rs
+@@ -429,6 +429,7 @@ mod tests {
+                     .iter()
+                     .map(|value| (*value).to_owned())
+                     .collect(),
++                execution: None,
+             },
+             metrics: BenchmarkMetrics {
+                 acceptance_success: TelemetryValue::Measured(successful),
