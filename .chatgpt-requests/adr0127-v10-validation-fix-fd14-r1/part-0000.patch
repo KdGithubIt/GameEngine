@@ -1,0 +1,139 @@
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+index 1c371ec9f86339488d8add83e50ccebced4b9c14..f8f6be6021c58ae8b28678d7754155fda97c48ed 100644
+--- a/crates/editor/src/native_2d_editor.rs
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -365,13 +365,8 @@ impl Native2dEditorState {
+ fn manifest_paths(manifest: &engine::AssetManifest, suffix: &str) -> Vec<PathBuf> {
+     let mut paths = manifest
+         .iter()
+-        .filter_map(|(_, entry)| {
+-            entry
+-                .path
+-                .to_ascii_lowercase()
+-                .ends_with(suffix)
+-                .then(|| PathBuf::from(&entry.path))
+-        })
++        .filter(|(_, entry)| entry.path.to_ascii_lowercase().ends_with(suffix))
++        .map(|(_, entry)| PathBuf::from(&entry.path))
+         .collect::<Vec<_>>();
+     paths.sort();
+     paths.dedup();
+@@ -1072,17 +1067,19 @@ fn show_tile_map_canvas(
+     }
+ 
+     tile_map_pointer::handle(
+-        ui,
+-        &response,
++        tile_map_pointer::PointerContext {
++            ui,
++            response: &response,
++            layer: &layer_id,
++            visible_bounds: engine_authoring::TileRect::from_corners(
++                engine_authoring::TileCell { x: MIN_X, y: MIN_Y },
++                engine_authoring::TileCell { x: MAX_X, y: MAX_Y },
++            ),
++            work_budget: WORK_BUDGET,
++        },
+         loaded,
+-        &layer_id,
+         pointer_cell,
+         tool,
+-        engine_authoring::TileRect::from_corners(
+-            engine_authoring::TileCell { x: MIN_X, y: MIN_Y },
+-            engine_authoring::TileCell { x: MAX_X, y: MAX_Y },
+-        ),
+-        WORK_BUDGET,
+     )
+ }
+ 
+diff --git a/crates/editor/src/native_2d_editor/tile_map_pointer.rs b/crates/editor/src/native_2d_editor/tile_map_pointer.rs
+index 139ff1946fd7c126d966a8f9d2364a8e10b0c75f..89cb6581293466737750bf8c53809a4b1c399ad5 100644
+--- a/crates/editor/src/native_2d_editor/tile_map_pointer.rs
++++ b/crates/editor/src/native_2d_editor/tile_map_pointer.rs
+@@ -1,16 +1,27 @@
+ use super::{LoadedTileMap, TileTool2d};
+ use eframe::egui;
+ 
++pub(super) struct PointerContext<'a> {
++    pub(super) ui: &'a egui::Ui,
++    pub(super) response: &'a egui::Response,
++    pub(super) layer: &'a engine_authoring::TileLayerId,
++    pub(super) visible_bounds: engine_authoring::TileRect,
++    pub(super) work_budget: usize,
++}
++
+ pub(super) fn handle(
+-    ui: &egui::Ui,
+-    response: &egui::Response,
++    context: PointerContext<'_>,
+     loaded: &mut LoadedTileMap,
+-    layer: &engine_authoring::TileLayerId,
+     pointer_cell: Option<engine_authoring::TileCell>,
+     tool: TileTool2d,
+-    visible_bounds: engine_authoring::TileRect,
+-    work_budget: usize,
+ ) -> Result<(), String> {
++    let PointerContext {
++        ui,
++        response,
++        layer,
++        visible_bounds,
++        work_budget,
++    } = context;
+     if ui.input(|input| input.key_pressed(egui::Key::Escape)) && loaded.gesture_active {
+         loaded.cancel_gesture()?;
+         return Ok(());
+@@ -46,10 +57,8 @@ pub(super) fn handle(
+             }
+         }
+         TileTool2d::Eyedropper => {
+-            if response.clicked_by(primary) {
+-                if let Some(cell) = pointer_cell {
+-                    loaded.selected_tile = loaded.service.eyedropper(layer, cell);
+-                }
++            if response.clicked_by(primary) && let Some(cell) = pointer_cell {
++                loaded.selected_tile = loaded.service.eyedropper(layer, cell);
+             }
+         }
+         TileTool2d::SelectStamp => {
+@@ -185,13 +194,11 @@ fn handle_select_stamp(
+                     engine_authoring::TileRect::from_corners(start, end),
+                 );
+             }
+-        } else if response.clicked_by(primary) {
+-            if let Some(cell) = pointer_cell {
+-                loaded.stamp = loaded.service.copy_stamp(
+-                    layer,
+-                    engine_authoring::TileRect::from_corners(cell, cell),
+-                );
+-            }
++        } else if response.clicked_by(primary) && let Some(cell) = pointer_cell {
++            loaded.stamp = loaded.service.copy_stamp(
++                layer,
++                engine_authoring::TileRect::from_corners(cell, cell),
++            );
+         }
+         return Ok(());
+     }
+diff --git a/crates/engine/src/components/tests.rs b/crates/engine/src/components/tests.rs
+index 9d62bfd53295c58c68f22fb533914134f06c8e7d..04ae96a95f8449da35f6cf33bcab031526eaff9d 100644
+--- a/crates/engine/src/components/tests.rs
++++ b/crates/engine/src/components/tests.rs
+@@ -188,6 +188,9 @@ fn registry_iterates_in_registration_order() {
+             PARTICLE_EMITTER_COMPONENT,
+             UI_DOCUMENT_COMPONENT,
+             COLLIDER_COMPONENT,
++            CAMERA_2D_COMPONENT,
++            SPRITE_RENDERER_2D_COMPONENT,
++            SPRITE_ANIMATOR_2D_COMPONENT,
+             COLLIDER_2D_COMPONENT,
+             RIGID_BODY_2D_COMPONENT,
+             CHARACTER_CONTROLLER_2D_COMPONENT,
+@@ -211,6 +214,7 @@ fn registry_iterates_in_registration_order() {
+             NAVIGATION_LINK_COMPONENT,
+             NAVIGATION_MODIFIER_COMPONENT,
+             VFX_PLAYER_COMPONENT,
++            TILE_MAP_2D_COMPONENT,
+         ]
+     );
+ }
