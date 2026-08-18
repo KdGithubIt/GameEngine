@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "use crate::resource_arbitration::{QualityPreference, TelemetryValue};\nuse serde::{Deserialize, Serialize};\nuse std::collections::{BTreeMap, BTreeSet};\nuse std::fs;\nuse std::path::PathBuf;",
+  "new": "use crate::resource_arbitration::{QualityPreference, TelemetryValue};\nuse engine_project_lifecycle::create_standard_project;\nuse serde::{Deserialize, Serialize};\nuse std::collections::{BTreeMap, BTreeSet};\nuse std::fs;\nuse std::path::{Path, PathBuf};"
+}
