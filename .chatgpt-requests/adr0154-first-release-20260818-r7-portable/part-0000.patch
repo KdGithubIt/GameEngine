@@ -1,0 +1,1299 @@
+diff --git a/crates/animation/src/humanoid_motion.rs b/crates/animation/src/humanoid_motion.rs
+index 563c957521aaf1c2eae127211dbd7eed58f23607..ab2714c32f2dcb8750fc24aec71dc84e6a727264 100644
+--- a/crates/animation/src/humanoid_motion.rs
++++ b/crates/animation/src/humanoid_motion.rs
+@@ -26,6 +26,10 @@ pub const HUMANOID_BAKED_CLIP_SCHEMA_VERSION: u32 = 1;
+ pub const HUMANOID_CACHE_DOMAIN: &str = "humanoid_anim";
+ /// File extension used for serialized humanoid target bakes.
+ pub const HUMANOID_BAKED_CLIP_FILE_EXTENSION: &str = "clip.json";
++/// Derived-cache domain for import-owned portable Humanoid source motion.
++pub const HUMANOID_PORTABLE_CACHE_DOMAIN: &str = "humanoid_motion";
++/// File extension used for serialized portable Humanoid source motion.
++pub const HUMANOID_PORTABLE_FILE_EXTENSION: &str = "motion.json";
+ /// Diagnostic emitted when a packaged Humanoid source has no staged target bake.
+ pub const HUMANOID_BAKE_MISSING_FROM_PACKAGE_DIAGNOSTIC: &str =
+     "anim.humanoid_bake_missing_from_package";
+@@ -47,6 +51,71 @@ pub fn humanoid_packaged_bake_file_name(
+     )
+ }
+ 
++/// Computes the import-owned cache key for one portable Humanoid motion.
++///
++/// The stable motion AssetId defines user-facing identity. Source fingerprint
++/// and optional motion-only provenance define the imported content behind it,
++/// so changing source bytes or Humanoid source model never reuses stale data.
++pub fn imported_humanoid_motion_cache_key(
++    motion_asset: &AssetId,
++    source_fingerprint: &str,
++    provenance_model: Option<&AssetId>,
++) -> CacheKey {
++    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
++    hash_u64(&mut hash, u64::from(HUMANOID_RETARGET_ALGORITHM_VERSION));
++    hash_bytes(&mut hash, motion_asset.as_str().as_bytes());
++    hash_bytes(&mut hash, source_fingerprint.as_bytes());
++    if let Some(provenance_model) = provenance_model {
++        hash_bytes(&mut hash, provenance_model.as_str().as_bytes());
++    }
++    CacheKey(hash)
++}
++
++/// Stores one portable Humanoid motion produced by import/reimport.
++pub fn store_imported_humanoid_motion(
++    cache: &DerivedCache,
++    motion_asset: &AssetId,
++    source_fingerprint: &str,
++    provenance_model: Option<&AssetId>,
++    motion: &HumanoidMotion,
++) -> Result<(), HumanoidMotionError> {
++    let key = imported_humanoid_motion_cache_key(
++        motion_asset,
++        source_fingerprint,
++        provenance_model,
++    );
++    let bytes = serde_json::to_vec(motion).map_err(cache_error)?;
++    cache
++        .put(
++            HUMANOID_PORTABLE_CACHE_DOMAIN,
++            &key,
++            HUMANOID_PORTABLE_FILE_EXTENSION,
++            &bytes,
++        )
++        .map_err(|error| HumanoidMotionError::Cache(error.to_string()))
++}
++
++/// Loads a portable Humanoid motion previously published by import/reimport.
++pub fn load_imported_humanoid_motion(
++    cache: &DerivedCache,
++    motion_asset: &AssetId,
++    source_fingerprint: &str,
++    provenance_model: Option<&AssetId>,
++) -> Option<HumanoidMotion> {
++    let key = imported_humanoid_motion_cache_key(
++        motion_asset,
++        source_fingerprint,
++        provenance_model,
++    );
++    cache
++        .get(
++            HUMANOID_PORTABLE_CACHE_DOMAIN,
++            &key,
++            HUMANOID_PORTABLE_FILE_EXTENSION,
++        )
++        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
++}
++
+ const CACHE_DOMAIN: &str = HUMANOID_CACHE_DOMAIN;
+ const CACHE_EXTENSION: &str = HUMANOID_BAKED_CLIP_FILE_EXTENSION;
+ const QUAT_EPSILON: f32 = 1.0e-8;
+diff --git a/crates/editor/src/animation_set_editor.rs b/crates/editor/src/animation_set_editor.rs
+index 18445b03403ad97d25b589a0352efefe0c019167..c7dfcbe433175e3c97277c4cbd97c621cc78c058 100644
+--- a/crates/editor/src/animation_set_editor.rs
++++ b/crates/editor/src/animation_set_editor.rs
+@@ -20,6 +20,12 @@ pub struct AnimationSetEditorState {
+     pub absolute_path: PathBuf,
+     /// Editable Animation Set document.
+     pub document: AnimationSet,
++    /// Transient target skeleton used only to preview ADR 0154 routing.
++    ///
++    /// This is deliberately outside `document`, undo snapshots, save, and
++    /// canonical serialization so choosing a preview target never changes
++    /// runtime project data.
++    pub target_preview_skeleton: Option<AssetId>,
+     clean_document: AnimationSet,
+     undo: Vec<AnimationSet>,
+     redo: Vec<AnimationSet>,
+@@ -34,6 +40,7 @@ impl AnimationSetEditorState {
+             absolute_path,
+             clean_document: document.clone(),
+             document,
++            target_preview_skeleton: None,
+             undo: Vec::new(),
+             redo: Vec::new(),
+             authoring: TypedDocumentAuthoringState::new(),
+diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.rs
+index a224eee4b3f45a0fe99594720f0c3148481108d9..501ad6191107940777aad8d1d81e9c98b1d9781f 100644
+--- a/crates/editor/src/asset_import.rs
++++ b/crates/editor/src/asset_import.rs
+@@ -6,7 +6,9 @@
+ 
+ use engine::{
+     asset::HumanoidProfile,
+-    humanoid_import::{build_humanoid_import_catalog, humanoid_imported_sub_assets},
++    humanoid_import::{
++        build_humanoid_import_catalog, build_humanoid_motion_variant, humanoid_imported_sub_assets,
++    },
+     ImportedSubAsset, SkeletonRecord,
+ };
+ use engine_authoring::prefab::PrefabAsset;
+@@ -140,6 +142,9 @@ pub struct MotionImportJob {
+     /// Optional PMX whose MMD constraint rig is evaluated before the baked FK
+     /// result is retargeted to [`Self::targets`]. `None` selects direct bake.
+     pub original_model: Option<MotionImportTarget>,
++    /// Optional stable associated model whose baked motion and usable
++    /// HumanoidProfile define the one portable Humanoid candidate (ADR 0154).
++    pub humanoid_source: Option<MotionHumanoidSource>,
+     /// Registered explicit retarget maps available when `original_model` is
+     /// different from an output target.
+     pub retarget_maps: Vec<(AssetId, engine::RetargetMap)>,
+@@ -164,6 +169,15 @@ pub struct MotionImportTarget {
+     pub contact_bones: Vec<String>,
+ }
+ 
++/// Import-time provenance for one VMD portable Humanoid candidate (ADR 0154).
++#[derive(Debug, Clone)]
++pub struct MotionHumanoidSource {
++    /// Associated model whose rig receives the source bake.
++    pub model: MotionImportTarget,
++    /// Structurally usable profile owned by that model's skeleton.
++    pub profile: HumanoidProfile,
++}
++
+ /// Reports why a background import could not start.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum AssetImportStartError {
+@@ -356,6 +370,32 @@ impl AssetImportManager {
+             progress(0.95, "Publishing import result");
+             let mut humanoid_catalog =
+                 build_humanoid_import_catalog(&imported, &existing_humanoid_profiles);
++            let portable_cache = engine::DerivedCache::new(&project_path);
++            let mut portable_cache_diagnostics = Vec::new();
++            humanoid_catalog.motions.retain(|motion| {
++                match engine::humanoid_motion::store_imported_humanoid_motion(
++                    &portable_cache,
++                    &motion.id,
++                    &fingerprint,
++                    None,
++                    &motion.motion,
++                ) {
++                    Ok(()) => true,
++                    Err(error) => {
++                        portable_cache_diagnostics.push(Diagnostic::warning(
++                            "anim.humanoid_import_cache_failed",
++                            format!(
++                                "Humanoid candidate `{}` was not published because its import cache could not be written: {error}",
++                                motion.id.as_str()
++                            ),
++                        ));
++                        false
++                    }
++                }
++            });
++            humanoid_catalog
++                .diagnostics
++                .append(&mut portable_cache_diagnostics);
+             let mut sub_assets = imported.imported_sub_assets();
+             sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
+             let skeleton_records = imported.skeleton_records.clone();
+@@ -430,6 +470,7 @@ impl AssetImportManager {
+             source_path,
+             targets,
+             original_model,
++            humanoid_source,
+             retarget_maps,
+             existing_skeletons,
+             contact_bones,
+@@ -477,10 +518,14 @@ impl AssetImportManager {
+             if let Some(original) = &original_model {
+                 model_paths.push(original.model_path.clone());
+             }
++            if let Some(humanoid_source) = &humanoid_source {
++                model_paths.push(humanoid_source.model.model_path.clone());
++            }
+             let mut sub_assets = Vec::new();
+             let mut skeleton_records = Vec::new();
+             let mut animation_contacts = Vec::new();
+             let mut diagnostics = Vec::new();
++            let mut portable_humanoid_motions = Vec::new();
+             if let Some(original) = &original_model {
+                 progress(0.05, "Reading original PMX model");
+                 let original_rig = match engine::VmdBakeRig::from_model_path(
+@@ -682,6 +727,69 @@ impl AssetImportManager {
+                     );
+                 }
+             }
++
++            if let Some(humanoid_source) = &humanoid_source {
++                progress(0.80, "Building portable Humanoid motion");
++                match engine::VmdBakeRig::from_model_path(
++                    &humanoid_source.model.model_source_id,
++                    &humanoid_source.model.model_path,
++                    &existing_skeletons,
++                ) {
++                    Ok(humanoid_rig) => match engine::resolve_or_bake_vmd_path(
++                        &derived_cache,
++                        &source_id,
++                        &source_path,
++                        &humanoid_rig,
++                        &options,
++                    ) {
++                        Ok(mut humanoid_bake) => {
++                            diagnostics.append(&mut humanoid_bake.diagnostics);
++                            for baked in &humanoid_bake.clips {
++                                let logical_id =
++                                    engine::asset::imported_logical_humanoid_motion_sub_asset_id(
++                                        &source_id,
++                                        baked.source_index,
++                                    );
++                                match build_humanoid_motion_variant(
++                                    logical_id,
++                                    baked.source_index,
++                                    &baked.name,
++                                    0,
++                                    &baked.clip,
++                                    humanoid_rig.skeleton(),
++                                    &humanoid_source.profile,
++                                ) {
++                                    Ok((motion, mut motion_diagnostics)) => {
++                                        diagnostics.append(&mut motion_diagnostics);
++                                        portable_humanoid_motions.push(motion);
++                                    }
++                                    Err(error) => diagnostics.push(Diagnostic::warning(
++                                        "anim.humanoid_conversion_unavailable",
++                                        format!(
++                                            "motion `{}` keeps its Native candidates but has no Humanoid candidate: {error}",
++                                            baked.name
++                                        ),
++                                    )),
++                                }
++                            }
++                        }
++                        Err(error) => diagnostics.push(Diagnostic::warning(
++                            "anim.humanoid_source_bake_failed",
++                            format!(
++                                "portable Humanoid candidate was not published from source model `{}`: {error}",
++                                humanoid_source.model.model_source_id.as_str()
++                            ),
++                        )),
++                    },
++                    Err(error) => diagnostics.push(Diagnostic::warning(
++                        "anim.humanoid_source_unavailable",
++                        format!(
++                            "portable Humanoid candidate was not published because source model `{}` could not be imported: {error}",
++                            humanoid_source.model.model_source_id.as_str()
++                        ),
++                    )),
++                }
++            }
+             skeleton_records.sort_by(|left, right| left.id.cmp(&right.id));
+             skeleton_records.dedup_by(|left, right| left.id == right.id);
+             progress(0.85, "Cataloging target clips");
+@@ -698,6 +806,34 @@ impl AssetImportManager {
+                     return;
+                 }
+             };
++            let portable_cache = engine::DerivedCache::new(&project_path);
++            let provenance_model = humanoid_source
++                .as_ref()
++                .map(|source| &source.model.model_source_id);
++            for motion in portable_humanoid_motions {
++                match engine::humanoid_motion::store_imported_humanoid_motion(
++                    &portable_cache,
++                    &motion.id,
++                    &fingerprint,
++                    provenance_model,
++                    &motion.motion,
++                ) {
++                    Ok(()) => sub_assets.push(ImportedSubAsset {
++                        id: motion.id.as_str().to_owned(),
++                        kind: engine::ImportedSubAssetKind::HumanoidMotion,
++                        name: motion.name,
++                        index: u32::try_from(motion.source_index).unwrap_or(u32::MAX),
++                        target_model_source: None,
++                    }),
++                    Err(error) => diagnostics.push(Diagnostic::warning(
++                        "anim.humanoid_import_cache_failed",
++                        format!(
++                            "Humanoid candidate `{}` was not published because its import cache could not be written: {error}",
++                            motion.id.as_str()
++                        ),
++                    )),
++                }
++            }
+             let source_dependencies = engine::motion_source_dependencies_for_models(&model_paths);
+             let source_stamp = match engine::SourceStamp::capture(
+                 &source_path,
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+index d31327908b840cda6a4af793e1f413ec84c20ebc..a62ed7d374409a48932f40f34769c647827c6835 100644
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -100,6 +100,21 @@ pub enum BuildDiagnosticKind {
+         /// Registered map path.
+         path: String,
+     },
++    /// A reachable Animation Set motion candidate has no legal route for its target.
++    MotionBindingFailed {
++        /// Stable Animation Set asset ID.
++        animation_set: String,
++        /// Stable graph-owned motion slot ID.
++        motion_slot: String,
++        /// Stable selected motion candidate ID.
++        candidate: String,
++        /// Stable target skeleton ID.
++        target_skeleton: String,
++        /// Native -> Retarget -> Humanoid routing evidence.
++        attempted_routing: String,
++        /// Stable planner failure detail.
++        reason: String,
++    },
+     /// Pre-baking or staging a skeleton-independent Humanoid motion failed.
+     HumanoidBakeFailed {
+         /// Stable HumanoidMotion sub-asset ID.
+@@ -709,8 +724,8 @@ fn bake_registered_humanoid_clips(
+     let assets_root = config.project_root.join("assets");
+     let cache = engine::DerivedCache::new(&config.project_root);
+     let mut imports: BTreeMap<AssetId, engine::GltfImportResult> = BTreeMap::new();
+-    let mut diagnostics = Vec::new();
+-    let required_bakes = collect_needed_humanoid_bakes(manifest, &assets_root, &mut imports);
++    let (required_bakes, mut diagnostics) =
++        collect_needed_humanoid_bakes(manifest, &assets_root, &mut imports);
+ 
+     let mut first_profiles = BTreeMap::<AssetId, engine::asset::HumanoidProfile>::new();
+     let mut motion_sources = Vec::<(AssetId, Vec<AssetId>)>::new();
+@@ -777,51 +792,56 @@ fn bake_registered_humanoid_clips(
+         let Some(entry) = manifest.get(&source_id) else {
+             continue;
+         };
+-        let existing_profiles = entry.import_settings.humanoid_profiles.clone();
+         let source_path = entry.path.clone();
+-        let Some(imported) =
+-            import_source_for_reachability(&source_id, manifest, &assets_root, &mut imports)
+-        else {
++        let Some(source_fingerprint) = entry.import_settings.source_fingerprint.as_deref() else {
+             for motion_id in registered_motion_ids {
+-                diagnostics.push(BuildDiagnostic::blocking(
+-                    BuildDiagnosticKind::HumanoidBakeFailed {
+-                        motion: motion_id.as_str().to_owned(),
+-                        target_skeleton: None,
+-                        reason: "owning model source could not be imported".to_owned(),
+-                    },
+-                    format!(
+-                        "Humanoid motion '{}' is registered by source '{}' but that model could not be imported during packaging",
+-                        motion_id.as_str(),
+-                        source_path
+-                    ),
+-                ));
++                if required_bakes.iter().any(|(required, _)| required == &motion_id) {
++                    diagnostics.push(BuildDiagnostic::blocking(
++                        BuildDiagnosticKind::HumanoidBakeFailed {
++                            motion: motion_id.as_str().to_owned(),
++                            target_skeleton: None,
++                            reason: "owning source has no import fingerprint".to_owned(),
++                        },
++                        format!(
++                            "Humanoid motion '{}' is registered by source '{}' without an import fingerprint; reimport before packaging",
++                            motion_id.as_str(),
++                            source_path
++                        ),
++                    ));
++                }
+             }
+             continue;
+         };
+-
+-        let catalog =
+-            engine::humanoid_import::build_humanoid_import_catalog(imported, &existing_profiles);
++        let provenance_model = entry
++            .import_settings
++            .motion_humanoid_source_model
++            .as_deref()
++            .and_then(|id| AssetId::from_stable_id(StableId::new(id)).ok());
+         for motion_id in registered_motion_ids {
+-            let Some(portable) = catalog
+-                .motions
+-                .iter()
+-                .find(|motion| motion.id == motion_id)
+-            else {
++            if !required_bakes.iter().any(|(required, _)| required == &motion_id) {
++                continue;
++            }
++            let Some(portable) = engine::humanoid_motion::load_imported_humanoid_motion(
++                &cache,
++                &motion_id,
++                source_fingerprint,
++                provenance_model.as_ref(),
++            ) else {
+                 diagnostics.push(BuildDiagnostic::blocking(
+                     BuildDiagnosticKind::HumanoidBakeFailed {
+                         motion: motion_id.as_str().to_owned(),
+                         target_skeleton: None,
+-                        reason: "registered HumanoidMotion is no longer produced by import".to_owned(),
++                        reason: "import-owned portable Humanoid content is missing or stale".to_owned(),
+                     },
+                     format!(
+-                        "Humanoid motion '{}' is registered by source '{}' but reimport no longer produces it; reimport the source before packaging",
++                        "Humanoid motion '{}' is registered by source '{}' but its imported portable content is missing or stale; reimport before packaging",
+                         motion_id.as_str(),
+                         source_path
+                     ),
+                 ));
+                 continue;
+             };
+-            motions.insert(motion_id, portable.motion.clone());
++            motions.insert(motion_id, portable);
+         }
+     }
+ 
+@@ -857,31 +877,15 @@ fn bake_registered_humanoid_clips(
+     }
+ 
+     let mut copies = Vec::new();
+-    for (motion_id, motion) in &motions {
+-        for (target_id, (target, profile)) in &targets {
+-            let key = match engine::humanoid_motion::humanoid_bake_cache_key(
+-                motion, target, profile,
+-            ) {
+-                Ok(key) => key,
+-                Err(error) => {
+-                    diagnostics.push(BuildDiagnostic::blocking(
+-                        BuildDiagnosticKind::HumanoidBakeFailed {
+-                            motion: motion_id.as_str().to_owned(),
+-                            target_skeleton: Some(target_id.as_str().to_owned()),
+-                            reason: error.to_string(),
+-                        },
+-                        format!(
+-                            "failed to compute Humanoid bake key for motion '{}' and target skeleton '{}': {error}",
+-                            motion_id.as_str(),
+-                            target_id.as_str()
+-                        ),
+-                    ));
+-                    continue;
+-                }
+-            };
+-            if let Err(error) = engine::humanoid_motion::resolve_or_bake_humanoid_motion(
+-                &cache, motion, target, profile,
+-            ) {
++    for (motion_id, target_id) in &required_bakes {
++        let (Some(motion), Some((target, profile))) =
++            (motions.get(motion_id), targets.get(target_id))
++        else {
++            continue;
++        };
++        let key = match engine::humanoid_motion::humanoid_bake_cache_key(motion, target, profile) {
++            Ok(key) => key,
++            Err(error) => {
+                 diagnostics.push(BuildDiagnostic::blocking(
+                     BuildDiagnosticKind::HumanoidBakeFailed {
+                         motion: motion_id.as_str().to_owned(),
+@@ -889,69 +893,73 @@ fn bake_registered_humanoid_clips(
+                         reason: error.to_string(),
+                     },
+                     format!(
+-                        "failed to bake Humanoid motion '{}' for target skeleton '{}': {error}",
++                        "failed to compute Humanoid bake key for motion '{}' and target skeleton '{}': {error}",
+                         motion_id.as_str(),
+                         target_id.as_str()
+                     ),
+                 ));
+                 continue;
+             }
+-
+-            let cache_file_name = format!(
+-                "{}.{}",
+-                key.file_stem(),
+-                engine::humanoid_motion::HUMANOID_BAKED_CLIP_FILE_EXTENSION
+-            );
+-            let package_file_name =
+-                engine::humanoid_motion::humanoid_packaged_bake_file_name(
+-                    motion_id, target_id,
+-                );
+-            copies.push(PackageCopy {
+-                source: PathBuf::from(".engine/cache")
+-                    .join(engine::humanoid_motion::HUMANOID_CACHE_DOMAIN)
+-                    .join(cache_file_name),
+-                destination: PathBuf::from("baked_anim")
+-                    .join("humanoid")
+-                    .join(package_file_name),
+-            });
++        };
++        if let Err(error) = engine::humanoid_motion::resolve_or_bake_humanoid_motion(
++            &cache, motion, target, profile,
++        ) {
++            diagnostics.push(BuildDiagnostic::blocking(
++                BuildDiagnosticKind::HumanoidBakeFailed {
++                    motion: motion_id.as_str().to_owned(),
++                    target_skeleton: Some(target_id.as_str().to_owned()),
++                    reason: error.to_string(),
++                },
++                format!(
++                    "failed to bake Humanoid motion '{}' for target skeleton '{}': {error}",
++                    motion_id.as_str(),
++                    target_id.as_str()
++                ),
++            ));
++            continue;
+         }
++
++        let cache_file_name = format!(
++            "{}.{}",
++            key.file_stem(),
++            engine::humanoid_motion::HUMANOID_BAKED_CLIP_FILE_EXTENSION
++        );
++        let package_file_name = engine::humanoid_motion::humanoid_packaged_bake_file_name(
++            motion_id, target_id,
++        );
++        copies.push(PackageCopy {
++            source: PathBuf::from(".engine/cache")
++                .join(engine::humanoid_motion::HUMANOID_CACHE_DOMAIN)
++                .join(cache_file_name),
++            destination: PathBuf::from("baked_anim")
++                .join("humanoid")
++                .join(package_file_name),
++        });
+     }
+ 
+     (copies, diagnostics)
+ }
+ 
+-/// Returns the logical HumanoidMotion candidate required by the target-aware
+-/// route after Native and explicit Retarget Map opportunities are exhausted.
+-fn required_humanoid_motion_asset(
++fn logical_humanoid_fallback(
+     source: &engine_authoring::MotionSourceRef,
+     manifest: &AssetManifest,
+-    same_skeleton_native: bool,
+-    explicit_retarget_map: bool,
+ ) -> Option<AssetId> {
+     let (owner_source, entry, sub_asset) = manifest.imported_sub_asset(&source.asset)?;
+-    match sub_asset.kind {
+-        engine::ImportedSubAssetKind::HumanoidMotion => Some(source.asset.clone()),
+-        engine::ImportedSubAssetKind::Animation
+-            if !same_skeleton_native && !explicit_retarget_map =>
+-        {
+-            entry
+-                .import_settings
+-                .sub_assets
+-                .iter()
+-                .find(|candidate| {
+-                    candidate.kind == engine::ImportedSubAssetKind::HumanoidMotion
+-                        && candidate.index == sub_asset.index
+-                        && candidate.target_model_source.is_none()
+-                })
+-                .map(|_| {
+-                    engine::asset::imported_logical_humanoid_motion_sub_asset_id(
+-                        owner_source,
+-                        sub_asset.index as usize,
+-                    )
+-                })
+-        }
+-        _ => None,
+-    }
++    (sub_asset.kind == engine::ImportedSubAssetKind::Animation)
++        .then(|| {
++            entry.import_settings.sub_assets.iter().any(|candidate| {
++                candidate.kind == engine::ImportedSubAssetKind::HumanoidMotion
++                    && candidate.index == sub_asset.index
++                    && candidate.target_model_source.is_none()
++            })
++        })
++        .filter(|available| *available)
++        .map(|_| {
++            engine::asset::imported_logical_humanoid_motion_sub_asset_id(
++                owner_source,
++                sub_asset.index as usize,
++            )
++        })
+ }
+ 
+ /// Finds Humanoid target bakes that statically reachable scene/prefab controllers
+@@ -966,9 +974,10 @@ fn collect_needed_humanoid_bakes(
+     manifest: &AssetManifest,
+     assets_root: &Path,
+     imports: &mut BTreeMap<AssetId, engine::GltfImportResult>,
+-) -> BTreeSet<(AssetId, AssetId)> {
++) -> (BTreeSet<(AssetId, AssetId)>, Vec<BuildDiagnostic>) {
+     let retarget_maps = engine::load_registered_retarget_maps(assets_root, manifest);
+     let mut needed = BTreeSet::new();
++    let mut diagnostics = Vec::new();
+ 
+     for path in animation_controller_document_paths(manifest, assets_root) {
+         let Some(entities) = load_animation_document_entities(&path) else {
+@@ -1002,6 +1011,12 @@ fn collect_needed_humanoid_bakes(
+             else {
+                 continue;
+             };
++            let target_humanoid_usable = target_humanoid_profile_is_usable(
++                &target_skeleton,
++                manifest,
++                assets_root,
++                imports,
++            );
+             let engine_authoring::Value::Object(fields) = controller else {
+                 continue;
+             };
+@@ -1020,50 +1035,157 @@ fn collect_needed_humanoid_bakes(
+                 continue;
+             };
+ 
+-            for binding in animation_set.bindings.values() {
++            for (motion_slot, binding) in &animation_set.bindings {
+                 for source in std::iter::once(&binding.clip).chain(&binding.overlays) {
+-                    let model_bound = manifest
+-                        .imported_sub_asset(&source.asset)
+-                        .is_some_and(|(_, _, sub_asset)| {
+-                            sub_asset.kind == engine::ImportedSubAssetKind::Animation
+-                        });
+-                    let source_skeletons = if model_bound {
+-                        resolve_clip_source_skeleton_ids(
+-                            &source.asset,
+-                            manifest,
+-                            assets_root,
+-                            imports,
+-                        )
+-                    } else {
+-                        Vec::new()
++                    let Some((_, _, sub_asset)) = manifest.imported_sub_asset(&source.asset) else {
++                        diagnostics.push(BuildDiagnostic::blocking(
++                            BuildDiagnosticKind::MotionBindingFailed {
++                                animation_set: animation_set_id.as_str().to_owned(),
++                                motion_slot: motion_slot.as_str().to_owned(),
++                                candidate: source.asset.as_str().to_owned(),
++                                target_skeleton: target_skeleton.as_str().to_owned(),
++                                attempted_routing: "catalog lookup -> Failed".to_owned(),
++                                reason: "candidate is not a registered imported sub-asset".to_owned(),
++                            },
++                            format!(
++                                "Animation Set '{}' slot '{}' candidate '{}' is not registered for target skeleton '{}'",
++                                animation_set_id.as_str(),
++                                motion_slot.as_str(),
++                                source.asset.as_str(),
++                                target_skeleton.as_str()
++                            ),
++                        ));
++                        continue;
+                     };
+-                    let same_skeleton_native = source_skeletons
+-                        .iter()
+-                        .any(|source_skeleton| source_skeleton == &target_skeleton);
+-                    let explicit_retarget_map = !same_skeleton_native
+-                        && source_skeletons.iter().any(|source_skeleton| {
+-                            engine::find_retarget_map_for_pair(
+-                                &retarget_maps,
+-                                source_skeleton,
+-                                &target_skeleton,
+-                            )
+-                            .is_some()
+-                        });
+-
+-                    if let Some(motion) = required_humanoid_motion_asset(
+-                        source,
+-                        manifest,
+-                        same_skeleton_native,
+-                        explicit_retarget_map,
+-                    ) {
+-                        needed.insert((motion, target_skeleton.clone()));
++                    let candidate_kind = match sub_asset.kind {
++                        engine::ImportedSubAssetKind::Animation => {
++                            engine::motion_binding::AnimationMotionCandidateKind::ModelBound
++                        }
++                        engine::ImportedSubAssetKind::HumanoidMotion => {
++                            engine::motion_binding::AnimationMotionCandidateKind::Humanoid
++                        }
++                        _ => {
++                            diagnostics.push(BuildDiagnostic::blocking(
++                                BuildDiagnosticKind::MotionBindingFailed {
++                                    animation_set: animation_set_id.as_str().to_owned(),
++                                    motion_slot: motion_slot.as_str().to_owned(),
++                                    candidate: source.asset.as_str().to_owned(),
++                                    target_skeleton: target_skeleton.as_str().to_owned(),
++                                    attempted_routing: "catalog kind -> Failed".to_owned(),
++                                    reason: "candidate is neither Animation nor HumanoidMotion".to_owned(),
++                                },
++                                format!(
++                                    "Animation Set '{}' slot '{}' candidate '{}' has unsupported imported kind for target skeleton '{}'",
++                                    animation_set_id.as_str(),
++                                    motion_slot.as_str(),
++                                    source.asset.as_str(),
++                                    target_skeleton.as_str()
++                                ),
++                            ));
++                            continue;
++                        }
++                    };
++                    let source_skeleton =
++                        (candidate_kind == engine::motion_binding::AnimationMotionCandidateKind::ModelBound)
++                            .then(|| {
++                                resolve_clip_source_skeleton_ids(
++                                    &source.asset,
++                                    manifest,
++                                    assets_root,
++                                    imports,
++                                )
++                                .into_iter()
++                                .next()
++                            })
++                            .flatten();
++                    let retarget_map = source_skeleton.as_ref().and_then(|source_skeleton| {
++                        retarget_maps
++                            .iter()
++                            .find(|(_, map)| {
++                                map.source_skeleton == *source_skeleton
++                                    && map.target_skeleton == target_skeleton
++                            })
++                            .map(|(id, _)| id.clone())
++                    });
++                    let route = engine::motion_binding::plan_animation_motion(
++                        &engine::motion_binding::AnimationMotionPlanInput {
++                            candidate: source.asset.clone(),
++                            candidate_kind,
++                            source_skeleton,
++                            target_skeleton: target_skeleton.clone(),
++                            retarget_map,
++                            humanoid_fallback: logical_humanoid_fallback(source, manifest),
++                            target_humanoid_usable,
++                        },
++                    );
++                    match &route {
++                        engine::motion_binding::AnimationMotionRoute::Humanoid { motion } => {
++                            needed.insert((motion.clone(), target_skeleton.clone()));
++                        }
++                        engine::motion_binding::AnimationMotionRoute::Failed { reason } => {
++                            diagnostics.push(BuildDiagnostic::blocking(
++                                BuildDiagnosticKind::MotionBindingFailed {
++                                    animation_set: animation_set_id.as_str().to_owned(),
++                                    motion_slot: motion_slot.as_str().to_owned(),
++                                    candidate: source.asset.as_str().to_owned(),
++                                    target_skeleton: target_skeleton.as_str().to_owned(),
++                                    attempted_routing: route.attempted_routing(),
++                                    reason: reason.to_string(),
++                                },
++                                format!(
++                                    "Animation Set '{}' slot '{}' candidate '{}' cannot resolve for target skeleton '{}'. Attempted routing: {}. Failure: {reason}",
++                                    animation_set_id.as_str(),
++                                    motion_slot.as_str(),
++                                    source.asset.as_str(),
++                                    target_skeleton.as_str(),
++                                    route.attempted_routing()
++                                ),
++                            ));
++                        }
++                        engine::motion_binding::AnimationMotionRoute::Native
++                        | engine::motion_binding::AnimationMotionRoute::Retarget { .. } => {}
+                     }
+                 }
+             }
+         }
+     }
+ 
+-    needed
++    (needed, diagnostics)
++}
++
++fn target_humanoid_profile_is_usable(
++    target_id: &AssetId,
++    manifest: &AssetManifest,
++    assets_root: &Path,
++    imports: &mut BTreeMap<AssetId, engine::GltfImportResult>,
++) -> bool {
++    let Some(target_source_id) =
++        locate_skeleton_source_id(target_id, manifest, assets_root, imports)
++    else {
++        return false;
++    };
++    let Some(target) = imports
++        .get(&target_source_id)
++        .and_then(|imported| {
++            imported
++                .skins
++                .iter()
++                .find(|skin| skin.skeleton.id == *target_id)
++        })
++        .map(|skin| skin.skeleton.clone())
++    else {
++        return false;
++    };
++    manifest
++        .iter()
++        .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
++        .find(|profile| {
++            profile.skeleton == target_id.as_str()
++                && profile.skeleton_identity == target.identity.0
++        })
++        .is_some_and(|profile| {
++            engine::humanoid::validate_humanoid_profile(profile, &target).is_ok()
++        })
+ }
+ 
+ fn animation_controller_document_paths(
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index 8f301d7112dca346f00b32e470ceef4ae8675f28..0302671c2279754524ca7ec70372b9f5fd351b60 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -17,6 +17,152 @@ struct MotionSourceChoice {
+     source: engine_authoring::MotionSourceRef,
+ }
+ 
++#[derive(Clone)]
++struct AnimationTargetPreviewChoice {
++    label: String,
++    skeleton: AssetId,
++}
++
++fn animation_target_preview_choices(
++    manifest: &engine::AssetManifest,
++) -> Vec<AnimationTargetPreviewChoice> {
++    let mut choices = Vec::new();
++    for (_, source) in manifest.iter() {
++        let source_label = source.name.as_deref().unwrap_or(&source.path);
++        let multiple = source.import_settings.skeleton_records.len() > 1;
++        for record in &source.import_settings.skeleton_records {
++            let Ok(skeleton) =
++                AssetId::from_stable_id(engine_authoring::StableId::new(&record.id))
++            else {
++                continue;
++            };
++            choices.push(AnimationTargetPreviewChoice {
++                label: if multiple {
++                    format!("{source_label} / {}", record.id)
++                } else {
++                    source_label.to_owned()
++                },
++                skeleton,
++            });
++        }
++    }
++    choices.sort_by(|left, right| left.label.cmp(&right.label));
++    choices
++}
++
++fn preview_motion_route(
++    manifest: &engine::AssetManifest,
++    assets_root: Option<&std::path::Path>,
++    source: &engine_authoring::MotionSourceRef,
++    target_skeleton: &AssetId,
++) -> Option<engine::motion_binding::AnimationMotionRoute> {
++    let (owner_source, owner_entry, sub_asset) = manifest.imported_sub_asset(&source.asset)?;
++    let candidate_kind = match sub_asset.kind {
++        engine::ImportedSubAssetKind::Animation => {
++            engine::motion_binding::AnimationMotionCandidateKind::ModelBound
++        }
++        engine::ImportedSubAssetKind::HumanoidMotion => {
++            engine::motion_binding::AnimationMotionCandidateKind::Humanoid
++        }
++        _ => return None,
++    };
++    let source_skeleton = if candidate_kind
++        == engine::motion_binding::AnimationMotionCandidateKind::ModelBound
++    {
++        let model_entry = sub_asset
++            .target_model_source
++            .as_deref()
++            .and_then(|id| {
++                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
++            })
++            .and_then(|id| manifest.get(&id))
++            .unwrap_or(owner_entry);
++        (model_entry.import_settings.skeleton_records.len() == 1)
++            .then(|| &model_entry.import_settings.skeleton_records[0].id)
++            .and_then(|id| {
++                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
++            })
++    } else {
++        None
++    };
++    let retarget_maps = assets_root
++        .map(|root| engine::load_registered_retarget_maps(root, manifest))
++        .unwrap_or_default();
++    let retarget_map = source_skeleton.as_ref().and_then(|source_skeleton| {
++        retarget_maps
++            .iter()
++            .find(|(_, map)| {
++                &map.source_skeleton == source_skeleton
++                    && &map.target_skeleton == target_skeleton
++            })
++            .map(|(id, _)| id.clone())
++    });
++    let humanoid_fallback = (sub_asset.kind == engine::ImportedSubAssetKind::Animation)
++        .then(|| {
++            owner_entry
++                .import_settings
++                .sub_assets
++                .iter()
++                .any(|candidate| {
++                    candidate.kind == engine::ImportedSubAssetKind::HumanoidMotion
++                        && candidate.index == sub_asset.index
++                        && candidate.target_model_source.is_none()
++                })
++        })
++        .filter(|available| *available)
++        .map(|_| {
++            engine::asset::imported_logical_humanoid_motion_sub_asset_id(
++                owner_source,
++                sub_asset.index as usize,
++            )
++        });
++    let target_identity = manifest
++        .iter()
++        .flat_map(|(_, entry)| entry.import_settings.skeleton_records.iter())
++        .find(|record| record.id == target_skeleton.as_str())
++        .map(|record| record.identity);
++    let target_humanoid_usable = target_identity.is_some_and(|identity| {
++        manifest
++            .iter()
++            .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
++            .any(|profile| {
++                profile.skeleton == target_skeleton.as_str()
++                    && profile.skeleton_identity == identity
++                    && engine::asset::HumanoidBone::REQUIRED
++                        .iter()
++                        .all(|bone| profile.bones.contains_key(bone))
++            })
++    });
++    Some(engine::motion_binding::plan_animation_motion(
++        &engine::motion_binding::AnimationMotionPlanInput {
++            candidate: source.asset.clone(),
++            candidate_kind,
++            source_skeleton,
++            target_skeleton: target_skeleton.clone(),
++            retarget_map,
++            humanoid_fallback,
++            target_humanoid_usable,
++        },
++    ))
++}
++
++fn show_motion_route_preview(
++    ui: &mut egui::Ui,
++    route: Option<&engine::motion_binding::AnimationMotionRoute>,
++) {
++    let Some(route) = route else {
++        ui.small("Route: select Target Preview");
++        return;
++    };
++    let response = match route {
++        engine::motion_binding::AnimationMotionRoute::Failed { .. } => {
++            ui.colored_label(egui::Color32::RED, format!("Route: {}", route.badge()))
++        }
++        _ => ui.label(format!("Route: {}", route.badge())),
++    };
++    response.on_hover_text(route.attempted_routing());
++}
++
+ fn humanoid_motion_choices(
+     manifest: &engine::AssetManifest,
+     assets_root: Option<&std::path::Path>,
+@@ -335,6 +481,9 @@ impl EditorApp {
+             humanoid_motion_choices(&self.asset_manifest, assets_root.as_deref());
+         let motion_source_choices =
+             animation_set_motion_source_choices(&native_clip_choices, &humanoid_clip_choices);
++        let target_preview_choices = animation_target_preview_choices(&self.asset_manifest);
++        let preview_manifest = self.asset_manifest.clone();
++        let preview_assets_root = assets_root.clone();
+         let graph_model = read_only_state
+             .document
+             .graph
+@@ -436,6 +585,37 @@ impl EditorApp {
+                     }
+                 });
+ 
++                let target_preview_label = state
++                    .target_preview_skeleton
++                    .as_ref()
++                    .and_then(|selected| {
++                        target_preview_choices
++                            .iter()
++                            .find(|choice| &choice.skeleton == selected)
++                            .map(|choice| choice.label.as_str())
++                    })
++                    .unwrap_or("No target - routing unresolved");
++                control_row(ui, |ui| {
++                    ui.label("Target Preview");
++                    egui::ComboBox::from_id_salt("animation_set_target_preview")
++                        .selected_text(target_preview_label)
++                        .show_ui(ui, |ui| {
++                            ui.selectable_value(
++                                &mut state.target_preview_skeleton,
++                                None,
++                                "No target - routing unresolved",
++                            );
++                            for choice in &target_preview_choices {
++                                ui.selectable_value(
++                                    &mut state.target_preview_skeleton,
++                                    Some(choice.skeleton.clone()),
++                                    &choice.label,
++                                );
++                            }
++                        });
++                });
++                ui.small("Preview-only: this target is never saved into the Animation Set.");
++
+                 match &graph_model {
+                     Some(Err(error)) => {
+                         ui.colored_label(
+@@ -539,13 +719,40 @@ impl EditorApp {
+                                         });
+                                     }
+                                 if let Some(binding) = state.document.bindings.get(&slot.id) {
++                                    let primary_route = state
++                                        .target_preview_skeleton
++                                        .as_ref()
++                                        .and_then(|target| {
++                                            preview_motion_route(
++                                                &preview_manifest,
++                                                preview_assets_root.as_deref(),
++                                                &binding.clip,
++                                                target,
++                                            )
++                                        });
++                                    show_motion_route_preview(ui, primary_route.as_ref());
+                                     ui.small("Overlays (later entries have higher priority)");
+                                     for (index, overlay) in binding.overlays.iter().enumerate() {
++                                        let overlay_route = state
++                                            .target_preview_skeleton
++                                            .as_ref()
++                                            .and_then(|target| {
++                                                preview_motion_route(
++                                                    &preview_manifest,
++                                                    preview_assets_root.as_deref(),
++                                                    overlay,
++                                                    target,
++                                                )
++                                            });
+                                         ui.horizontal(|ui| {
+                                             ui.label(motion_source_display_label(
+                                                 overlay,
+                                                 &motion_source_choices,
+                                             ));
++                                            show_motion_route_preview(
++                                                ui,
++                                                overlay_route.as_ref(),
++                                            );
+                                             if ui.small_button("↑").clicked() && index > 0 {
+                                                 action = Some(AnimationSetUiAction::MoveOverlay {
+                                                     slot: slot.id.clone(),
+diff --git a/crates/editor/src/ui/assets/import_settings_window.rs b/crates/editor/src/ui/assets/import_settings_window.rs
+index a2e3578bb4e5a94d6967d084f8454cedc6584f8e..2317a101179bdeb8a58f452b8a4f25732c1b97b8 100644
+--- a/crates/editor/src/ui/assets/import_settings_window.rs
++++ b/crates/editor/src/ui/assets/import_settings_window.rs
+@@ -9,7 +9,9 @@ use super::humanoid_profile_editor::{
+     HumanoidProfileEditorState,
+ };
+ use super::manifest::save_asset_manifest;
+-use super::motion_pairing::show_motion_pairing_editor;
++use super::motion_pairing::{
++    motion_humanoid_source_is_valid, show_motion_pairing_editor,
++};
+ use super::retarget_window::{pmx_model_paths, pmx_model_sources, registered_model_retarget_pairs};
+ 
+ impl EditorApp {
+@@ -63,6 +65,19 @@ impl EditorApp {
+                 })
+                 .unwrap_or_default(),
+             candidates: pmx_model_sources(&self.asset_manifest),
++            humanoid_source: self
++                .asset_manifest
++                .get(&source_id)
++                .and_then(|entry| {
++                    entry
++                        .import_settings
++                        .motion_humanoid_source_model
++                        .as_deref()
++                })
++                .and_then(|source| {
++                    AssetId::from_stable_id(engine_authoring::StableId::new(source)).ok()
++                }),
++            humanoid_capable_models: humanoid_capable_pmx_models(&self.asset_manifest),
+             candidate_paths: self
+                 .project_root
+                 .as_ref()
+@@ -167,6 +182,16 @@ impl EditorApp {
+         let Some(project) = self.project_root.clone() else {
+             return;
+         };
++        if let Some(pairing) = &state.motion_pairing
++            && !motion_humanoid_source_is_valid(pairing)
++        {
++            self.session
++                .push_diagnostic(engine_authoring::Diagnostic::error(
++                    "asset.motion_humanoid_source_invalid",
++                    "Humanoid source model must remain associated with this motion and have a usable Humanoid profile before Import Settings can be saved",
++                ));
++            return;
++        }
+         let source_id = state.source_id.clone();
+         let humanoid_profiles = persisted_humanoid_profiles(&state.humanoid_profiles);
+         let contact_bones = state.contact_bones.clone();
+@@ -184,6 +209,12 @@ impl EditorApp {
+                 .as_ref()
+                 .map(|id| id.as_str().to_owned())
+         });
++        let motion_humanoid_source_model = state.motion_pairing.as_ref().and_then(|pairing| {
++            pairing
++                .humanoid_source
++                .as_ref()
++                .map(|id| id.as_str().to_owned())
++        });
+         let mut manifest = self.asset_manifest.clone();
+         let Some(entry) = manifest.get_mut(&source_id) else {
+             return;
+@@ -196,6 +227,7 @@ impl EditorApp {
+         if let Some(paired) = motion_model_sources {
+             entry.import_settings.motion_model_sources = paired;
+             entry.import_settings.motion_original_model_source = motion_original_model_source;
++            entry.import_settings.motion_humanoid_source_model = motion_humanoid_source_model;
+         }
+         if let Err(error) = save_asset_manifest(&project, &manifest) {
+             self.session
+@@ -220,6 +252,31 @@ impl EditorApp {
+ 
+ }
+ 
++fn humanoid_capable_pmx_models(
++    manifest: &engine::AssetManifest,
++) -> Vec<(AssetId, String)> {
++    pmx_model_sources(manifest)
++        .into_iter()
++        .filter(|(id, _)| {
++            manifest.get(id).is_some_and(|entry| {
++                entry.import_settings.humanoid_profiles.iter().any(|profile| {
++                    engine::asset::HumanoidBone::REQUIRED
++                        .iter()
++                        .all(|bone| profile.bones.contains_key(bone))
++                        && entry
++                            .import_settings
++                            .skeleton_records
++                            .iter()
++                            .any(|record| {
++                                record.id == profile.skeleton
++                                    && record.identity == profile.skeleton_identity
++                            })
++                })
++            })
++        })
++        .collect()
++}
++
+ /// Open document state for a glTF/GLB source's Import Settings window
+ /// (contact-bones override editing + contact interval display, AP-5).
+ pub(in crate::ui) struct ImportSettingsEditorState {
+diff --git a/crates/editor/src/ui/assets/model_import.rs b/crates/editor/src/ui/assets/model_import.rs
+index 5d4ddce0268e7d662613e9b864743bc60e697e22..f85b9b7e388bb65446e6ed84edf027ad78a9ac7f 100644
+--- a/crates/editor/src/ui/assets/model_import.rs
++++ b/crates/editor/src/ui/assets/model_import.rs
+@@ -298,6 +298,25 @@ impl EditorApp {
+                 self.start_next_model_import();
+                 return;
+             }
++            let humanoid_source_is_configured = self
++                .asset_manifest
++                .get(&asset_id)
++                .is_some_and(|entry| {
++                    entry
++                        .import_settings
++                        .motion_humanoid_source_model
++                        .is_some()
++                });
++            let humanoid_source = self.motion_humanoid_source(&asset_id);
++            if humanoid_source_is_configured && humanoid_source.is_none() {
++                self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
++                    "asset.motion_humanoid_source_invalid",
++                    format!(
++                        "`{}` keeps its Native candidates, but its configured Humanoid source model is no longer associated or has no structurally usable Humanoid profile",
++                        source_path.display()
++                    ),
++                ));
++            }
+             let retarget_maps = engine::load_registered_retarget_maps(
+                 &project.assets_root(),
+                 &self.asset_manifest,
+@@ -323,6 +342,7 @@ impl EditorApp {
+                         })
+                         .collect(),
+                     original_model,
++                    humanoid_source,
+                     retarget_maps,
+                     existing_skeletons,
+                     contact_bones,
+@@ -403,6 +423,63 @@ impl EditorApp {
+         Some((model_id, entry.path.clone()))
+     }
+ 
++    /// Resolves persisted VMD Humanoid provenance to one associated usable model.
++    fn motion_humanoid_source(
++        &self,
++        motion_id: &engine_authoring::AssetId,
++    ) -> Option<crate::asset_import::MotionHumanoidSource> {
++        let project = self.project_root.as_ref()?;
++        let motion_entry = self.asset_manifest.get(motion_id)?;
++        let configured = motion_entry
++            .import_settings
++            .motion_humanoid_source_model
++            .as_deref()?;
++        let associated = motion_entry
++            .import_settings
++            .resolved_motion_model_sources()
++            .into_iter()
++            .any(|model| model == configured)
++            || motion_entry
++                .import_settings
++                .motion_original_model_source
++                .as_deref()
++                == Some(configured);
++        if !associated {
++            return None;
++        }
++        let model_id = engine_authoring::AssetId::from_stable_id(
++            engine_authoring::StableId::new(configured),
++        )
++        .ok()?;
++        let model_entry = self.asset_manifest.get(&model_id)?;
++        let profile = model_entry
++            .import_settings
++            .humanoid_profiles
++            .iter()
++            .find(|profile| {
++                engine::asset::HumanoidBone::REQUIRED
++                    .iter()
++                    .all(|bone| profile.bones.contains_key(bone))
++                    && model_entry
++                        .import_settings
++                        .skeleton_records
++                        .iter()
++                        .any(|record| {
++                            record.id == profile.skeleton
++                                && record.identity == profile.skeleton_identity
++                        })
++            })
++            .cloned()?;
++        Some(crate::asset_import::MotionHumanoidSource {
++            model: crate::asset_import::MotionImportTarget {
++                model_source_id: model_id,
++                model_path: project.assets_root().join(&model_entry.path),
++                contact_bones: model_entry.import_settings.contact_bones.clone(),
++            },
++            profile,
++        })
++    }
++
+     /// Queues every registered or unregistered model in the project.
+     ///
+     /// The watcher only reports changes after its first snapshot, so opening
+diff --git a/crates/editor/src/ui/assets/motion_pairing.rs b/crates/editor/src/ui/assets/motion_pairing.rs
+index 202de32131d24814fb32409fc5ebcaf231266af8..48ee7c9014cab19dfa8b9259d8c42da97e6bf8eb 100644
+--- a/crates/editor/src/ui/assets/motion_pairing.rs
++++ b/crates/editor/src/ui/assets/motion_pairing.rs
+@@ -23,6 +23,12 @@ pub(in crate::ui) struct MotionPairingState {
+     /// Absolute PMX paths parallel to `candidates`, retained because the
+     /// compatibility button parses current source bytes on demand.
+     pub(in crate::ui) candidate_paths: Vec<(AssetId, PathBuf)>,
++    /// Explicit stable associated model supplying semantic Humanoid conversion
++    /// provenance for the one target-independent portable motion (ADR 0154).
++    pub(in crate::ui) humanoid_source: Option<AssetId>,
++    /// Registered PMX models with a structurally usable persisted HumanoidProfile.
++    /// Association with this motion is evaluated from `original`/`selected` live.
++    pub(in crate::ui) humanoid_capable_models: Vec<(AssetId, String)>,
+     /// Model-source pairs backed by a currently registered Retarget Map.
+     /// Stored as source/target model IDs so the UI can report readiness
+     /// without exposing internal skeleton sub-asset IDs.
+@@ -147,9 +153,87 @@ pub(super) fn show_motion_pairing_editor(ui: &mut egui::Ui, pairing: &mut Motion
+             ui.label("Missing maps must be created as explicit Retarget Map assets before reimport.");
+         }
+     }
++
++    ui.add_space(8.0);
++    ui.separator();
++    ui.strong("Humanoid source model (optional)");
++    ui.label(
++        "Publishes one portable Humanoid motion on reimport. This is conversion provenance, not another output target.",
++    );
++    let humanoid_choices = humanoid_source_choices(pairing);
++    let selected_label = pairing
