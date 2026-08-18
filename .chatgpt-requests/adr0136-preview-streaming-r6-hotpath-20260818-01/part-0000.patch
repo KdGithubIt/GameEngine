@@ -1,0 +1,254 @@
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+index 21612810c6952af50c85409d7afaffcea81cc1cd..1c9dd3ad293e815ae923f87502df96eff75d659f 100644
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -18,6 +18,14 @@ struct AnimationClipChoice {
+     label: String,
+ }
+ 
++#[derive(Clone)]
++struct AnimationClipChoicesCache {
++    animation_set: AssetId,
++    path: std::path::PathBuf,
++    stamp: engine::SourceStamp,
++    choices: Arc<Vec<AnimationClipChoice>>,
++}
++
+ /// Editor-only state for the dedicated animation inspection workflow.
+ pub(super) struct AnimationPreviewWindow {
+     pub(super) open: bool,
+@@ -27,6 +35,7 @@ pub(super) struct AnimationPreviewWindow {
+     preview_scene: Option<AuthoringScene>,
+     scene_revision: u64,
+     target: Option<EntityId>,
++    clip_choices_cache: Option<AnimationClipChoicesCache>,
+     view: SceneView,
+     tab: AnimationPreviewTab,
+     clip: String,
+@@ -62,6 +71,7 @@ impl AnimationPreviewWindow {
+             preview_scene: None,
+             scene_revision: 0,
+             target: None,
++            clip_choices_cache: None,
+             view,
+             tab: AnimationPreviewTab::Graph,
+             clip: String::new(),
+@@ -205,12 +215,16 @@ impl AnimationPreviewWindow {
+         manifest: &engine::AssetManifest,
+         assets_root: Option<&Path>,
+     ) {
+-        let choices = self
+-            .scene
+-            .as_ref()
+-            .zip(self.target.as_ref())
+-            .map(|(scene, target)| animation_clip_choices(scene, target, manifest, assets_root))
+-            .unwrap_or_default();
++        let choices = match self.scene.as_ref().zip(self.target.as_ref()) {
++            Some((scene, target)) => animation_clip_choices_cached(
++                &mut self.clip_choices_cache,
++                scene,
++                target,
++                manifest,
++                assets_root,
++            ),
++            None => Arc::new(Vec::new()),
++        };
+         if !choices
+             .iter()
+             .any(|choice| choice.value.as_str() == self.clip.as_str())
+@@ -305,19 +319,16 @@ impl AnimationPreviewWindow {
+             .as_ref()
+             .map(animation_controller_entities)
+             .unwrap_or_default();
+-        let clip_choices = self
+-            .scene
+-            .as_ref()
+-            .zip(self.target.as_ref())
+-            .map(|(scene, target)| {
+-                animation_clip_choices(
+-                    scene,
+-                    target,
+-                    manifest,
+-                    project_root.map(ProjectRoot::assets_root).as_deref(),
+-                )
+-            })
+-            .unwrap_or_default();
++        let clip_choices = match self.scene.as_ref().zip(self.target.as_ref()) {
++            Some((scene, target)) => animation_clip_choices_cached(
++                &mut self.clip_choices_cache,
++                scene,
++                target,
++                manifest,
++                project_root.map(ProjectRoot::assets_root).as_deref(),
++            ),
++            None => Arc::new(Vec::new()),
++        };
+         let mut target_changed = false;
+         let mut restart = false;
+ 
+@@ -832,27 +843,50 @@ fn animation_controller_value<'a>(
+         .get(&animation_controller_type())
+ }
+ 
+-fn animation_clip_choices(
++fn animation_clip_choices_cached(
++    cache: &mut Option<AnimationClipChoicesCache>,
+     scene: &AuthoringScene,
+     entity: &EntityId,
+     manifest: &engine::AssetManifest,
+     assets_root: Option<&Path>,
+-) -> Vec<AnimationClipChoice> {
++) -> Arc<Vec<AnimationClipChoice>> {
+     let Some(Value::Object(fields)) = animation_controller_value(scene, entity) else {
+-        return Vec::new();
++        return Arc::new(Vec::new());
+     };
+     // The controller names its clips through the assigned Animation Set only.
+     let (Some(Value::AssetRef(animation_set)), Some(assets_root)) =
+         (fields.get("animation_set"), assets_root)
+     else {
+-        return Vec::new();
++        return Arc::new(Vec::new());
+     };
+-    manifest
+-        .get(animation_set)
+-        .and_then(|entry| std::fs::read_to_string(assets_root.join(&entry.path)).ok())
++    let Some(entry) = manifest.get(animation_set) else {
++        return Arc::new(Vec::new());
++    };
++    let path = assets_root.join(&entry.path);
++    let Ok(stamp) = engine::SourceStamp::capture(&path, &[]) else {
++        return Arc::new(Vec::new());
++    };
++    if let Some(cached) = cache.as_ref()
++        && cached.animation_set == *animation_set
++        && cached.path == path
++        && cached.stamp == stamp
++    {
++        return Arc::clone(&cached.choices);
++    }
++
++    let choices = std::fs::read_to_string(&path)
++        .ok()
+         .and_then(|json| engine_authoring::AnimationSet::from_json(&json).ok())
+         .map(|set| animation_set_clip_choices(&set))
+-        .unwrap_or_default()
++        .unwrap_or_default();
++    let choices = Arc::new(choices);
++    *cache = Some(AnimationClipChoicesCache {
++        animation_set: animation_set.clone(),
++        path,
++        stamp,
++        choices: Arc::clone(&choices),
++    });
++    choices
+ }
+ 
+ fn animation_set_clip_choices(set: &engine_authoring::AnimationSet) -> Vec<AnimationClipChoice> {
+@@ -1089,7 +1123,9 @@ mod tests {
+             .commit(&mut scene)
+             .expect("preview scene fixture must commit");
+ 
+-        assert!(animation_clip_choices(
++        let mut cache = None;
++        assert!(animation_clip_choices_cached(
++            &mut cache,
+             &scene,
+             &entity,
+             &engine::AssetManifest::default(),
+@@ -1119,4 +1155,95 @@ mod tests {
+         assert_eq!(choices[0].label, "Idle");
+         assert_eq!(clip_display_name(slot.as_str(), &choices), "Idle");
+     }
++
++    #[test]
++    fn animation_set_choice_cache_reuses_parse_until_file_stamp_changes() {
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .expect("test clock must be after Unix epoch")
++            .as_nanos();
++        let root = std::env::temp_dir().join(format!(
++            "gameengine-adr0136-animation-set-cache-{}-{unique}",
++            std::process::id()
++        ));
++        std::fs::create_dir_all(&root).expect("cache test directory must be created");
++
++        let animation_set_id = AssetId::generate();
++        let slot = engine_authoring::MotionSlotId::generate();
++        let mut set = engine_authoring::AnimationSet::new(AssetId::generate());
++        set.bindings.insert(
++            slot.clone(),
++            engine_authoring::AnimationBinding {
++                name: "Idle".to_owned(),
++                clip: engine_authoring::MotionSourceRef::native(AssetId::generate()),
++                overlays: Vec::new(),
++                events: Vec::new(),
++            },
++        );
++        let set_path = root.join("hero.animset.json");
++        std::fs::write(
++            &set_path,
++            set.to_canonical_json().expect("animation set must serialize"),
++        )
++        .expect("animation set fixture must be written");
++
++        let mut manifest = engine::AssetManifest::default();
++        manifest.insert(
++            animation_set_id.clone(),
++            engine::ManifestEntry {
++                path: "hero.animset.json".to_owned(),
++                name: Some("Hero".to_owned()),
++                import_settings: engine::ImportSettings::default(),
++            },
++        );
++
++        let entity = EntityId::generate();
++        let mut scene = AuthoringScene::new();
++        let mut transaction = Transaction::begin(&scene);
++        transaction.apply(AuthoringCommand::CreateEntity {
++            id: entity.clone(),
++            name: "Hero".into(),
++            parent: None,
++        });
++        transaction.apply(AuthoringCommand::AddComponent {
++            entity: entity.clone(),
++            component_type: animation_controller_type(),
++            value: Value::Object(std::collections::BTreeMap::from([(
++                "animation_set".to_owned(),
++                Value::AssetRef(animation_set_id),
++            )])),
++        });
++        transaction
++            .commit(&mut scene)
++            .expect("preview scene fixture must commit");
++
++        let mut cache = None;
++        let first =
++            animation_clip_choices_cached(&mut cache, &scene, &entity, &manifest, Some(&root));
++        let second =
++            animation_clip_choices_cached(&mut cache, &scene, &entity, &manifest, Some(&root));
++        assert!(Arc::ptr_eq(&first, &second));
++        assert_eq!(first.len(), 1);
++
++        set.bindings.insert(
++            engine_authoring::MotionSlotId::generate(),
++            engine_authoring::AnimationBinding {
++                name: "Run".to_owned(),
++                clip: engine_authoring::MotionSourceRef::native(AssetId::generate()),
++                overlays: Vec::new(),
++                events: Vec::new(),
++            },
++        );
++        std::fs::write(
++            &set_path,
++            set.to_canonical_json().expect("updated animation set must serialize"),
++        )
++        .expect("updated animation set fixture must be written");
++        let updated =
++            animation_clip_choices_cached(&mut cache, &scene, &entity, &manifest, Some(&root));
++        assert!(!Arc::ptr_eq(&first, &updated));
++        assert_eq!(updated.len(), 2);
++
++        let _ = std::fs::remove_dir_all(root);
++    }
+ }
