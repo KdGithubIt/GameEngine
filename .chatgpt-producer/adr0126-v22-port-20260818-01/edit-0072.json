@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/scripting/src/game_io.rs","old":"    /// Current scene path, pending request, generation, and switch outcome.\n    SceneState,\n}","new":"    /// Current scene path, pending request, generation, and switch outcome.\n    SceneState,\n    /// Copied logical Timeline player state keyed by caller-owned player ID.\n    TimelineState,\n}"}
