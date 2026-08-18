@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/animation_preview.rs","old":"    target: Option<EntityId>,\n    view: SceneView,\n","new":"    target: Option<EntityId>,\n    clip_choices_cache: Option<AnimationClipChoicesCache>,\n    view: SceneView,\n"}
