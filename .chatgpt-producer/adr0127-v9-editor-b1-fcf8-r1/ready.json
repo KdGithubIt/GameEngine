@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v9-editor-b1-fcf8-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "fcf8dccc6094f74e4675de45621b6bde8ff0e27b",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "edit_parts": ["edit-0000.json","edit-0001.json","edit-0002.json","edit-0003.json","edit-0004.json"],
+  "commit_message": "Add ADR0127 Native 2D Editor services",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Continues ADR0127 Native 2D first-release completion with service-backed Native 2D Editor workspace state."
+}
