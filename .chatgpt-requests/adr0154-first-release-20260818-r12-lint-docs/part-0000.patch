@@ -1,0 +1,129 @@
+diff --git a/crates/animation/src/motion_binding.rs b/crates/animation/src/motion_binding.rs
+index b51992112d81e7d615130b84be416df7e71af34f..e8b41c80724614cb6661a1abc56feb4b00d92e6c 100644
+--- a/crates/animation/src/motion_binding.rs
++++ b/crates/animation/src/motion_binding.rs
+@@ -138,12 +138,12 @@ pub fn plan_animation_motion(input: &AnimationMotionPlanInput) -> AnimationMotio
+     if let Some(map) = &input.retarget_map {
+         return AnimationMotionRoute::Retarget { map: map.clone() };
+     }
+-    if input.target_humanoid_usable {
+-        if let Some(motion) = &input.humanoid_fallback {
+-            return AnimationMotionRoute::Humanoid {
+-                motion: motion.clone(),
+-            };
+-        }
++    if input.target_humanoid_usable
++        && let Some(motion) = &input.humanoid_fallback
++    {
++        return AnimationMotionRoute::Humanoid {
++            motion: motion.clone(),
++        };
+     }
+     AnimationMotionRoute::Failed {
+         reason: AnimationMotionFailure::NoCompatibleRoute,
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+index ff0429ac71e6a6d6235bddd09116b37be70b0554..a5579b798d7b41d12befe527cd0a7b618ee68c02 100644
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -488,10 +488,12 @@ impl HumanoidProfile {
+         if !self.bones.values().all(|bone| known_bones.contains(bone)) {
+             return false;
+         }
+-        let mapped_bones = self.bones.values().copied().collect::<Vec<_>>();
+-        if mapped_bones.iter().copied().collect::<std::collections::BTreeSet<_>>().len()
+-            != mapped_bones.len()
+-        {
++        let mapped_bones = self
++            .bones
++            .values()
++            .copied()
++            .collect::<std::collections::BTreeSet<_>>();
++        if mapped_bones.len() != self.bones.len() {
+             return false;
+         }
+         self.motion_root
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index 1086121278197128c67d5f339807b75fb86038b3..26a2be641c6ad767c399f7d683e27a1ab5578b46 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -562,6 +562,38 @@ selector index 0. The former `rigid_body_rig` kind and `rigidbodyrig` derivation
+ namespace are not compatibility aliases and MUST NOT be silently interpreted as
+ the current kind (ADR 0112, ADR 0115).
+ 
++### 8.4 Animation Motion Candidate and Humanoid Provenance Contract
++
++ADR 0154 makes Animation Set motion bindings candidate-oriented and target-aware.
++The current `*.animset.json` schema is version 3. Each primary binding and
++overlay persists only the stable imported candidate `AssetId`; it MUST NOT
++persist an Auto/Native/Humanoid route policy. `ImportedSubAssetKind::Animation`
++identifies a model-bound candidate, while `HumanoidMotion` identifies the
++explicit portable candidate. Schema-2 route-policy documents are obsolete
++current-format input and MUST be rejected rather than silently reinterpreted.
++
++For a concrete target skeleton, tools MUST use the shared GUI-free motion
++planner. Model-bound candidates resolve in the fixed order Native -> explicit
++Retarget Map -> logical Humanoid fallback -> Failed. An explicitly selected
++HumanoidMotion resolves only Humanoid or Failed. Target Preview state and the
++computed Native/Retarget/Humanoid/Failed result are transient derived state and
++MUST NOT be serialized into the Animation Set. A Failed route is an authoring
++error for each affected scene/controller target, is surfaced through Problems
++before Play, and blocks Play/package preflight without blocking Animation Set
++save.
++
++Motion-only import settings keep concrete Native output targets in
++`motion_model_sources`. The optional `motion_humanoid_source_model` is a
++different stable provenance field: it names one associated model with a usable
++Humanoid profile that import/reimport uses to generate the logical,
++target-independent HumanoidMotion sibling. Humanoid is never inserted as a fake
++`motion_model_sources` target. Reordering or adding concrete output targets MUST
++NOT silently change persisted Humanoid provenance, and changing provenance MUST
++regenerate portable motion content and invalidate dependent derived bakes while
++keeping the logical Humanoid candidate identity target-independent. Runtime,
++Editor preview/Problems, and packaging MUST consume imported portable motion;
++they MUST NOT create it lazily as a side effect of resolving a binding.
++
+ ## 9. Domain-Neutral Graph Model
+ 
+ Shader Graph, Behavior Tree, Animation Graph, and future graph types MUST share
+diff --git a/docs/adr/0154-target-aware-animation-motion-binding-resolution.md b/docs/adr/0154-target-aware-animation-motion-binding-resolution.md
+index 0b876238399308383bc1a4da0969be3cda1cd48e..484f859c4767aa2a760c26eebec5af458b40f293 100644
+--- a/docs/adr/0154-target-aware-animation-motion-binding-resolution.md
++++ b/docs/adr/0154-target-aware-animation-motion-binding-resolution.md
+@@ -1,6 +1,6 @@
+ # ADR 0154: Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-18
+ Amends: ADR 0085, ADR 0099, ADR 0110
+ Relates to: ADR 0024, ADR 0079, ADR 0091, ADR 0115, ADR 0137
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 49cec5750ab457ac1e9a1d082833bfb020dda82c..7fbab010859fbaa3301b23f8520217b6f8483d6e 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -111,8 +111,9 @@ the beginning:
+   [0096](0096-rapier-physics-adoption-and-mmd-rigid-body-bridge.md),
+   [0106](0106-layered-rig-pose-and-pose-graph-boundary.md),
+   [0110](0110-humanoid-profiles-and-skeleton-independent-motion.md),
+-  [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md), and
+-  [0116](0116-animation-events-owned-by-animation-set-bindings.md).
++  [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md),
++  [0116](0116-animation-events-owned-by-animation-set-bindings.md), and
++  [0154](0154-target-aware-animation-motion-binding-resolution.md).
+ - **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
+   [0035](0035-ai-agent-bridge-ipc.md),
+   [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md),
+@@ -133,7 +134,6 @@ contract unless and until their status becomes `Accepted`:
+ - [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) — VFX Effect Authoring and Runtime Architecture
+ - [0126](0126-timeline-sequencer-authoring-and-runtime.md) — Timeline / Sequencer Authoring and Runtime
+ - [0127](0127-native-2d-gameplay-and-authoring-architecture.md) — Native 2D Gameplay and Authoring Architecture
+-- [0154](0154-target-aware-animation-motion-binding-resolution.md) — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution
+ 
+ The later Accepted renderer records originally reused ADR 0122 and ADR 0123.
+ They are registered as ADR 0128 and ADR 0129 so the first-merged Proposed
+@@ -300,4 +300,4 @@ implementation contract.
+ | [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | Headless Write-Capable MCP Host and Project-Writer Ownership |
+ | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | Multi-Agent Writer Coordination and Conflict Ownership |
+ | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
+-| [0154](0154-target-aware-animation-motion-binding-resolution.md) | **Proposed** — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
++| [0154](0154-target-aware-animation-motion-binding-resolution.md) | Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
