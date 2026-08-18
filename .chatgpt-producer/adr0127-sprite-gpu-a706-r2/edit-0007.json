@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/render_backend.rs","old":"    render: RenderState,\n    debug: DebugRenderState,","new":"    render: RenderState,\n    debug: DebugRenderState,\n    native_2d: crate::native_2d::Native2dGpuRenderer,"}
