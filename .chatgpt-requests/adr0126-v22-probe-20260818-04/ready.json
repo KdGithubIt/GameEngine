@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v22-probe-20260818-04",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v22",
+  "expected_head_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "37a9b0a85b482ea349f7c659bccbde54769cd114a792414efcdea0a1fb44cabc",
+  "patch_bytes": 360,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0126 Timeline workspace member",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nBegins the current-main ADR 0126 completion with the Timeline workspace member. Further implementation requests follow before final validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
