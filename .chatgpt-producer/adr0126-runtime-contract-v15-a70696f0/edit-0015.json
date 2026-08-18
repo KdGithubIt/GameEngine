@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    /// Stable Timeline asset.\n    pub asset: AssetId,\n    /// Canonical event tick.","new":"    /// Stable Timeline asset.\n    pub asset: AssetId,\n    /// Stable semantic Timeline document identity.\n    pub document_id: TimelineId,\n    /// Canonical event tick."}

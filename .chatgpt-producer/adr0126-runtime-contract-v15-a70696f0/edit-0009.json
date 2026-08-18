@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    runtime.desired_transforms.clear();\n\n    for active in &frame.active {","new":"    runtime.desired_transforms.clear();\n    let mut conflicts = BTreeSet::new();\n\n    for active in &frame.active {"}
