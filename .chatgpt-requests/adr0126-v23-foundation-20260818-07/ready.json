@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-foundation-20260818-07",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "b33736f5dca10411c804eb9ea51f83d2e1b8e2c9ad775afa66d095cd9db491c8",
+  "patch_bytes": 5289,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0126 Timeline animation foundation",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0126 against current main. This first current-main segment adds the Timeline workspace member and production animation ownership hooks; subsequent segments add authoring/runtime/Sequencer integration before final validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
