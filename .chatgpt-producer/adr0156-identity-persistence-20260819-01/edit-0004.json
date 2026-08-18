@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark_campaign.rs","old":"            || self.schedule_version != CAMPAIGN_SCHEDULE_VERSION\n        {\n","new":"            || self.schedule_version != CAMPAIGN_SCHEDULE_VERSION\n            || self.workload_policy_version != WORKLOAD_POLICY_VERSION\n        {\n"}
