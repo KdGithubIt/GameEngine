@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"        let renderer_ready = self.ensure_renderer_ready(render_state, response.ctx());\n","new":"        let renderer_ready = self.ensure_renderer_ready(render_state, &response.ctx);\n"}

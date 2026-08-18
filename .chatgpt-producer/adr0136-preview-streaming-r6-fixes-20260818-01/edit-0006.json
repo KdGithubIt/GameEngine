@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"            return false;\n        }\n\n        #[cfg(target_arch = \"wasm32\")]\n","new":"            false\n        }\n\n        #[cfg(target_arch = \"wasm32\")]\n"}
