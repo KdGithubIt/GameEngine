@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/main.rs","old":"        {\n            let visual_scenario = std::env::var(\"GAMEENGINE_VISUAL_AUTHORING_TOOL\").ok();\n            let ai_studio_scenario = matches!(\n","new":"        {\n            let visual_scenario = visual_authoring_tool_scenario();\n            let ai_studio_scenario = matches!(\n"}
