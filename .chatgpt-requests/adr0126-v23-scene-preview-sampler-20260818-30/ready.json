@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-scene-preview-sampler-20260818-30",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "7b2498883500deee59df219e5e5dc504d80611d0",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "ecf7492225bb78ee8bd05cfada6f9398d871b3d59e2ea8f65e7ad6bf36cd5854",
+  "patch_bytes": 6240,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0126 Scene View Timeline preview sampler",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nAdds deterministic Scene View Timeline preview sampling through the production TimelineRuntime, including source revision, transport revision, looping, stop/pause/resume, and copied status.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
