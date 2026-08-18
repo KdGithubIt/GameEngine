@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r15h",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v8",
+  "expected_head_sha": "795d7f02b60d3400a5048d24e6a553bc6f28389e",
+  "baseline_main_sha": "61c5afcd0ba773edce49c5fea711ba23c8331cc7",
+  "patch_sha256": "e0d9f9f08b2384ca24f43ea89a909097669bac4096b1d71f5f6cefdf4007a298",
+  "patch_bytes": 35968,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0142 benchmark evidence contracts",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Complete ADR 0142 benchmark evidence contracts on current main.\n- Keep required benchmark gates fail-closed and hardware evidence measured when available.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r15h -->\n"
+}
