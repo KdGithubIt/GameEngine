@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v7-foundation-2a41-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v7",
+  "expected_head_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "64b829de6bc1c57237956e3689c435d0ffcbff2a6e5b5b23d46dbf3da58e1c42",
+  "patch_bytes": 146771,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch"
+  ],
+  "commit_message": "Complete ADR0127 Native 2D current-main foundation",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Rebuilds the audited ADR0127 core, CLI/MCP parity, and runtime integration on current main after Visual Validation workflow-only advancement. The request preserves the exact previously successful edit order, stays within the producer 64-part limit, and does not merge stale branches or PR #242."
+}
