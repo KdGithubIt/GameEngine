@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-wsl-hardening-20260819-1620-01",
+  "target_branch": "chatgpt/gameengine-adr0155-wsl-hardening-v1",
+  "expected_head_sha": "4344dffd0f22a54609b8d5bc266456921f97c261",
+  "baseline_main_sha": "4344dffd0f22a54609b8d5bc266456921f97c261",
+  "patch_sha256": "4e5104d1f2f17885a074a7e450a971408513c331b4e2c68c7a0e9b51209c6463",
+  "patch_bytes": 9844,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Harden ADR0155 WSL CUDA setup",
+  "pr_title": "GameEngine: harden ADR0155 WSL CUDA setup",
+  "pr_body": "## Summary\n\nHardens the ADR0155 WSL2 managed llama.cpp path after representative-machine setup exposed POSIX shell and CUDA-runtime relocation risks.\n\n- replaces fragile numeric package-count shell logic with exact per-package dpkg status checks\n- adds CUDA 12.4 install RPATH plus $ORIGIN and verifies staged binaries after source deletion\n- removes the `{ ... } || ...` pattern that can suppress POSIX `set -e` failures and tails the build log through an EXIT trap instead\n- stages GGUF transfers under a temporary WSL path, verifies SHA-256, then atomically renames into the final model location\n- adds focused regression coverage for the WSL shell/build contract\n\nWindows-native setup is unchanged. Visual Validation is not required because no UI layout/rendering behavior changes."
+}
