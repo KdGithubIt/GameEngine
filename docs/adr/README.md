@@ -123,7 +123,8 @@ the beginning:
   [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md),
   [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md),
   [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md),
-  and [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md).
+  [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md),
+  and [0158](0158-conversation-first-ai-studio-presentation-and-transcript-projection.md).
 
 ## Proposed Decisions
 
@@ -306,3 +307,4 @@ implementation contract.
 | [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md) | GameEngine-Managed Local Inference Runtime and Platform Selection |
 | [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md) | Automated Multi-Model Benchmark Campaigns and Reproducible Runtime Characterization |
 | [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md) | AI Runtime Debugging, Deterministic Playtest Control, and Host-Owned Observation |
+| [0158](0158-conversation-first-ai-studio-presentation-and-transcript-projection.md) | **Proposed** — Conversation-First AI Studio Presentation and Transcript Projection |
