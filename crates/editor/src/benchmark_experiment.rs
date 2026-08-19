@@ -6,7 +6,11 @@
 
 #![allow(dead_code)]
 
-use crate::agent_benchmark::{benchmark_task, BenchmarkRecord, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION};
+use crate::agent_benchmark_campaign::CandidateTaskContract;
+use crate::agent_benchmark::{
+    benchmark_task, BenchmarkExecutionIdentity, BenchmarkRecord, BENCHMARK_CORPUS_VERSION,
+    BENCHMARK_HARNESS_VERSION,
+};
 use crate::resource_arbitration::{QualityPreference, TelemetryValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,6 +62,19 @@ pub(crate) struct BenchmarkExperimentSpec {
     pub(crate) execution_order: BenchmarkExecutionOrder,
     pub(crate) stop_on_failure: bool,
     pub(crate) output_destination: PathBuf,
+    /// ADR 0156 execution identity to stamp onto each task's record.
+    ///
+    /// Empty for a standalone experiment. A campaign fills this so the
+    /// child stamps identity at measurement time rather than the campaign
+    /// asserting it afterwards, which would make the check circular.
+    #[serde(default)]
+    pub(crate) execution_identity_by_task: BTreeMap<String, BenchmarkExecutionIdentity>,
+    /// ADR 0156 candidate-visible task contracts.
+    ///
+    /// Only this side of the fixture reaches a child process. Host-only
+    /// evaluation material is not representable here, so it cannot travel.
+    #[serde(default)]
+    pub(crate) candidate_contract_by_task: BTreeMap<String, CandidateTaskContract>,
 }
 
 impl BenchmarkExperimentSpec {
@@ -86,6 +103,8 @@ impl BenchmarkExperimentSpec {
             execution_order: BenchmarkExecutionOrder::ModelTaskRepeat,
             stop_on_failure: false,
             output_destination,
+            execution_identity_by_task: BTreeMap::new(),
+            candidate_contract_by_task: BTreeMap::new(),
         }
     }
 

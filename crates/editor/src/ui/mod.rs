@@ -50,6 +50,8 @@ use std::{
     path::{Path, PathBuf},
 };
 mod animation_graph_parameters;
+#[cfg(feature = "visual-validation")]
+mod adr_visual_scenarios;
 mod audio_authoring;
 mod behavior_debug;
 mod animation_preview;
@@ -959,6 +961,8 @@ impl eframe::App for EditorApp {
         // 全パネルの描画後にTooltipレイヤーへ出すことで、
         // Asset Browserから別パネルへ移動してもプレビューを常に最前面へ表示する。
         show_asset_drag_preview(ui.ctx());
+        #[cfg(feature = "visual-validation")]
+        self.show_adr_visual_scenario(ui.ctx());
         self.show_notifications(ui.ctx());
         self.show_play_build_overlay(ui.ctx());
         if self.inference_restore_pending && !self.inference_focused {

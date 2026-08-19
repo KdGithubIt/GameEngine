@@ -453,6 +453,7 @@ mod tests {
                 "answer_returned".to_owned(),
                 "provenance_reported".to_owned(),
             ],
+            execution: None,
         }
     }
 

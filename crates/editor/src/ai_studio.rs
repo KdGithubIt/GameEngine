@@ -5,6 +5,7 @@
 //! workspace rules live in the GUI-free `agent_host` module.
 
 mod benchmark_child;
+mod benchmark_campaign_ui;
 mod benchmark_experiment_ui;
 
 use crate::agent_benchmark::{
@@ -728,6 +729,7 @@ pub struct AiStudioPanel {
     managed_playtest_started_at: Option<std::time::Instant>,
     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
     benchmark_child: Option<benchmark_child::BenchmarkChildState>,
+    benchmark_campaign: benchmark_campaign_ui::BenchmarkCampaignPanel,
     benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel,
     benchmark_experiment_root: PathBuf,
     status: Option<String>,
@@ -867,6 +869,7 @@ impl AiStudioPanel {
             managed_playtest_started_at: None,
             last_captured_frame: None,
             benchmark_child: None,
+            benchmark_campaign: benchmark_campaign_ui::BenchmarkCampaignPanel::default(),
             benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel::default(),
             benchmark_experiment_root,
             status: benchmark_status,
@@ -1133,6 +1136,56 @@ impl AiStudioPanel {
         self.visual_scroll_offset = 0.0;
         self.visual_external_provider_evidence = false;
         Ok(())
+    }
+
+    /// Prepares AI Studio presentation state for one named ADR visual scenario.
+    ///
+    /// Unknown scenario names fall back to the hosted-backend fixture so a
+    /// capture never renders an unprepared panel.
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_adr_visual_validation(&mut self, scenario: &str) {
+        match scenario {
+            "adr0144-hosted-backend" => {
+                self.prepare_hosted_backend_visual_validation();
+                self.status = Some(
+                    "Hosted API selected · remote processing · credential stored outside project data · secret value hidden."
+                        .to_owned(),
+                );
+            }
+            "adr0144-enterprise-backend" => {
+                self.model_backend = ModelBackendPreference::Enterprise;
+                self.hosted_model_endpoint =
+                    "https://enterprise.example/v1/chat/completions".to_owned();
+                self.hosted_model_name = "enterprise-governed-model".to_owned();
+                self.hosted_secret_draft.clear();
+                self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+                self.external_provider_status =
+                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+                self.status = Some(
+                    "Enterprise backend selected · organization-managed remote processing · credential value hidden."
+                        .to_owned(),
+                );
+            }
+            "adr0149-live-observation" => {
+                self.model_backend = ModelBackendPreference::Local;
+                self.status = Some(
+                    "Live Game View observation · engine-native readback · PNG transport · 6 FPS cap · latest-frame-only retention · metrics enabled."
+                        .to_owned(),
+                );
+            }
+            "adr0153-confinement" => {
+                self.confinement_requirement =
+                    AgentConfinementRequirement::RequireProviderOrOsConfinement;
+                self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+                self.external_provider_status =
+                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+                self.status = Some(
+                    "Confinement required · provider/OS enforcement must be proven before launch · fail closed when unavailable · no OS-sandbox claim is active."
+                        .to_owned(),
+                );
+            }
+            _ => self.prepare_hosted_backend_visual_validation(),
+        }
     }
 
     #[cfg(feature = "visual-validation")]
@@ -1500,6 +1553,7 @@ impl AiStudioPanel {
         self.poll_managed_playtest_timeout();
         self.poll_benchmark_child();
         self.poll_benchmark_experiment();
+        self.poll_benchmark_campaign();
 
         if !self.presentation.open {
             return;
@@ -2681,6 +2735,8 @@ impl AiStudioPanel {
             );
             ui.separator();
             self.show_benchmark_experiment(ui);
+            ui.separator();
+            self.show_benchmark_campaign(ui);
         });
     }
 
