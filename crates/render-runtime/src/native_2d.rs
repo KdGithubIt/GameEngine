@@ -438,9 +438,14 @@ mod tests {
 
     #[test]
     fn camera_validation_rejects_scale_without_rewriting_transform() {
-        let mut transform = Transform::default();
-        transform.scale = Vec3::splat(2.0);
-        assert_eq!(validate_camera_transform(&transform), Err(Camera2dDiagnostic::IncompatibleScale));
+        let transform = Transform {
+            scale: Vec3::splat(2.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_camera_transform(&transform),
+            Err(Camera2dDiagnostic::IncompatibleScale)
+        );
         assert_eq!(transform.scale, Vec3::splat(2.0));
     }
 }
