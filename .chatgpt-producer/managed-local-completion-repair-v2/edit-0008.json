@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "        let managed_execution_environment = if backend_id == MANAGED_BACKEND_ID {\n            Some(self.execution_environment.managed_environment().ok_or_else(|| {\n                \"GameEngine-managed campaigns require Windows native or WSL2 Linux execution\"\n                    .to_owned()\n            })?)\n        } else {",
+  "new": "        let managed_execution_environment = if backend_id == MANAGED_BACKEND_ID {\n            Some(\n                self.execution_environment\n                    .managed_environment()\n                    .ok_or_else(|| {\n                        \"GameEngine-managed campaigns require Windows native or WSL2 Linux execution\"\n                            .to_owned()\n                    })?,\n            )\n        } else {"
+}
