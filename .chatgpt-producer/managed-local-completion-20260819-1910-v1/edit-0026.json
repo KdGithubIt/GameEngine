@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "        if endpoint.trim().is_empty() {\n            return Err(\"benchmark local-model endpoint must be non-empty\".to_owned());\n        }",
+  "new": "        if spec.backend_id != MANAGED_BACKEND_ID && endpoint.trim().is_empty() {\n            return Err(\"benchmark compatible-backend endpoint must be non-empty\".to_owned());\n        }"
+}
