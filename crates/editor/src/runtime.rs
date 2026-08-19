@@ -98,7 +98,7 @@ pub(crate) struct RuntimeAnimationDebugSnapshot {
     pub(crate) motion_slot: Option<engine_authoring::MotionSlotId>,
     pub(crate) motion_slot_name: Option<String>,
     pub(crate) motion_source: Option<engine_authoring::MotionSourceRef>,
-    pub(crate) resolved_motion_variant: Option<engine_authoring::MotionSourceVariant>,
+    pub(crate) resolved_motion_route: Option<engine::motion_binding::AnimationMotionRoute>,
     pub(crate) recent_events: Vec<String>,
     pub(crate) runtime_error: Option<String>,
 }
@@ -123,6 +123,11 @@ pub struct RuntimePlayState {
     single_step_requested: bool,
     replay_recorder: Option<ReplayRecorder>,
     replay_player: Option<ReplayPlayer>,
+    /// Monotonic count of human-origin virtual-input commands observed by this Play world.
+    ///
+    /// Deterministic AI runtime plans use this application-owned signal to reject a Play
+    /// session that a human has already influenced instead of claiming comparable evidence.
+    human_input_generation: u64,
     /// Offscreen renderer kept across Game View resizes so panel drags do not
     /// rebuild shaders and pipelines every frame.
     renderer: Option<engine::PreviewRenderer>,
@@ -300,6 +305,7 @@ impl RuntimePlayState {
             },
             None => ProjectSettings::default(),
         };
+        engine::native_2d::apply_project_2d_settings(&mut app, &project_settings.native_2d);
         let (input_actions, input_diagnostics) =
             engine::InputActionMap::from_project_settings(&project_settings);
         app.insert_resource(input_actions);
@@ -318,6 +324,13 @@ impl RuntimePlayState {
         diagnostics.extend(system_settings_diagnostics(report));
 
         diagnostics.extend(entity_map.asset_diagnostics.iter().cloned());
+        if diagnostics.iter().any(|diagnostic| {
+            diagnostic.is_blocking()
+                && diagnostic.code
+                    == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC
+        }) {
+            return Err(PlayError::InvalidScene { diagnostics });
+        }
 
         if !has_camera(app.world_mut()) {
             insert_default_camera(app.world_mut()).map_err(PlayError::DefaultCamera)?;
@@ -342,6 +355,7 @@ impl RuntimePlayState {
                 single_step_requested: false,
                 replay_recorder: None,
                 replay_player: None,
+                human_input_generation: 0,
                 renderer: None,
                 game_view: None,
                 scene_view: None,
@@ -464,6 +478,23 @@ impl RuntimePlayState {
         }
     }
 
+    /// Advances exactly one fixed interval plus the normal frame schedule for
+    /// host-owned deterministic runtime debugging.
+    ///
+    /// This composes the existing Pause/Step primitive instead of introducing a
+    /// second simulation clock. The caller remains responsible for keeping
+    /// managed Play paused while a bounded sequence is executing.
+    pub(crate) fn tick_fixed_debug_step(&mut self) -> Result<(), PlayTickError> {
+        let was_paused = self.paused;
+        self.paused = true;
+        self.single_step_requested = true;
+        let result = self.tick();
+        self.paused = was_paused;
+        self.single_step_requested = false;
+        self.last_tick = Instant::now();
+        result
+    }
+
     /// Returns the total fixed-step count owned by the runtime clock.
     pub fn fixed_step_count(&self) -> u64 {
         self.app
@@ -483,6 +514,9 @@ impl RuntimePlayState {
 
     /// Queues one virtual input command for the next runtime tick.
     pub fn queue_input(&mut self, source: InputSource, command: InputCommand) {
+        if source == InputSource::Human {
+            self.human_input_generation = self.human_input_generation.saturating_add(1);
+        }
         if source != InputSource::Replay
             && let Some(recorder) = &mut self.replay_recorder {
                 let tick = self
@@ -495,6 +529,11 @@ impl RuntimePlayState {
         if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
             queue.push(source, command);
         }
+    }
+
+    /// Returns the monotonic number of human-origin commands observed in this Play world.
+    pub(crate) fn human_input_generation(&self) -> u64 {
+        self.human_input_generation
     }
 
     /// Starts recording virtual input from the next fixed boundary.
@@ -541,9 +580,17 @@ impl RuntimePlayState {
     /// Polls the desktop controller adapter into the shared virtual queue.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn poll_gamepads(&mut self, context: &mut engine::gamepad::GilrsContext) {
-        if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
-            context.poll(queue);
-        }
+        let queued_human_commands =
+            if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
+                let before = queue.len();
+                context.poll(queue);
+                queue.len().saturating_sub(before)
+            } else {
+                0
+            };
+        self.human_input_generation = self
+            .human_input_generation
+            .saturating_add(queued_human_commands as u64);
     }
 
     /// Queues a focus-boundary release for the next runtime tick.
@@ -602,6 +649,52 @@ impl RuntimePlayState {
                     animator.time,
                     animator.playback_speed,
                     if animator.looping { " (loop)" } else { "" }
+                ),
+            ));
+        }
+        if let Some(graph) = world.get_component::<engine::AnimGraphPlayer>(entity) {
+            let state = graph
+                .current_state_info()
+                .map(|state| {
+                    state
+                        .motion_key()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("node {} (no motion)", state.node_id.as_str()))
+                })
+                .unwrap_or_else(|| "unresolved".to_owned());
+            let transition = graph
+                .last_transition()
+                .map(|transition| {
+                    format!(
+                        "{} -> {} ({})",
+                        transition.from_node.as_str(),
+                        transition.to_node.as_str(),
+                        if transition.condition.is_empty() {
+                            "unconditional"
+                        } else {
+                            transition.condition.as_str()
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "none".to_owned());
+            values.push((
+                "Animation Graph".to_owned(),
+                format!("state={state}; transition={transition}"),
+            ));
+        }
+        if let Some(runner) =
+            world.get_component::<engine::behavior_tree::BehaviorTreeRunner>(entity)
+        {
+            let snapshot = runner.snapshot();
+            values.push((
+                "Behavior Tree".to_owned(),
+                format!(
+                    "status={:?}; running_node={:?}; last_terminal={:?}/{:?}; error={:?}",
+                    snapshot.status,
+                    snapshot.running_node,
+                    snapshot.last_terminal_node,
+                    snapshot.last_terminal_status,
+                    snapshot.error
                 ),
             ));
         }
@@ -1057,7 +1150,7 @@ fn collect_animator_debug_snapshot(
                 motion_slot: None,
                 motion_slot_name: None,
                 motion_source: None,
-                resolved_motion_variant: None,
+                resolved_motion_route: None,
                 recent_events: recent_events
                     .iter()
                     .filter(|(key, _)| *key == (entity.id(), entity.generation()))
@@ -1190,7 +1283,7 @@ fn collect_animation_debug_snapshot_matching(
                 motion_slot: state.and_then(|state| state.motion_slot.clone()),
                 motion_slot_name: binding.map(|binding| binding.display_name.clone()),
                 motion_source: binding.map(|binding| binding.source.clone()),
-                resolved_motion_variant: binding.map(|binding| binding.resolved_variant),
+                resolved_motion_route: binding.map(|binding| binding.resolved_route.clone()),
                 recent_events: recent_events
                     .iter()
                     .filter(|(key, _)| *key == (entity.id(), entity.generation()))

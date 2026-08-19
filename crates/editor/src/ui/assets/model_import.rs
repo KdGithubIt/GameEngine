@@ -8,6 +8,46 @@ use crate::ui::*;
 use super::instantiate::write_generated_prefab;
 use super::manifest::{normalize_manifest_path, save_asset_manifest};
 
+fn import_catalog_is_current(
+    project_path: &Path,
+    assets_root: &Path,
+    entry: &engine::ManifestEntry,
+) -> bool {
+    if entry.import_settings.source_fingerprint.is_none() {
+        return false;
+    }
+    let source_path = assets_root.join(&entry.path);
+    let dependencies = entry
+        .import_settings
+        .source_dependencies
+        .iter()
+        .map(|path| assets_root.join(path))
+        .collect::<Vec<_>>();
+    let stamp_matches = entry
+        .import_settings
+        .source_stamp
+        .as_ref()
+        .is_some_and(|expected| {
+            engine::SourceStamp::capture(&source_path, &dependencies)
+                .is_ok_and(|current| &current == expected)
+        });
+    if !stamp_matches {
+        return false;
+    }
+
+    // A motion source draws nothing, so it never generates a placement prefab.
+    let needs_prefab = !engine::asset_path_matches_kind(
+        engine::AssetKind::MotionSource,
+        Path::new(&entry.path),
+    );
+    !needs_prefab
+        || entry
+            .import_settings
+            .generated_prefab
+            .as_ref()
+            .is_some_and(|relative| project_path.join(relative).is_file())
+}
+
 impl EditorApp {
     /// Registers a model source if needed and queues it for import.
     ///
@@ -258,6 +298,25 @@ impl EditorApp {
                 self.start_next_model_import();
                 return;
             }
+            let humanoid_source_is_configured = self
+                .asset_manifest
+                .get(&asset_id)
+                .is_some_and(|entry| {
+                    entry
+                        .import_settings
+                        .motion_humanoid_source_model
+                        .is_some()
+                });
+            let humanoid_source = self.motion_humanoid_source(&asset_id);
+            if humanoid_source_is_configured && humanoid_source.is_none() {
+                self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
+                    "asset.motion_humanoid_source_invalid",
+                    format!(
+                        "`{}` keeps its Native candidates, but its configured Humanoid source model is no longer associated or has no structurally usable Humanoid profile",
+                        source_path.display()
+                    ),
+                ));
+            }
             let retarget_maps = engine::load_registered_retarget_maps(
                 &project.assets_root(),
                 &self.asset_manifest,
@@ -283,6 +342,7 @@ impl EditorApp {
                         })
                         .collect(),
                     original_model,
+                    humanoid_source,
                     retarget_maps,
                     existing_skeletons,
                     contact_bones,
@@ -363,6 +423,57 @@ impl EditorApp {
         Some((model_id, entry.path.clone()))
     }
 
+    /// Resolves persisted VMD Humanoid provenance to one associated usable model.
+    fn motion_humanoid_source(
+        &self,
+        motion_id: &engine_authoring::AssetId,
+    ) -> Option<crate::asset_import::MotionHumanoidSource> {
+        let project = self.project_root.as_ref()?;
+        let motion_entry = self.asset_manifest.get(motion_id)?;
+        let configured = motion_entry
+            .import_settings
+            .motion_humanoid_source_model
+            .as_deref()?;
+        let associated = motion_entry
+            .import_settings
+            .resolved_motion_model_sources()
+            .into_iter()
+            .any(|model| model == configured)
+            || motion_entry
+                .import_settings
+                .motion_original_model_source
+                .as_deref()
+                == Some(configured);
+        if !associated {
+            return None;
+        }
+        let model_id = engine_authoring::AssetId::from_stable_id(
+            engine_authoring::StableId::new(configured),
+        )
+        .ok()?;
+        let model_entry = self.asset_manifest.get(&model_id)?;
+        let profile = model_entry
+            .import_settings
+            .humanoid_profiles
+            .iter()
+            .find(|profile| {
+                model_entry
+                    .import_settings
+                    .skeleton_records
+                    .iter()
+                    .any(|record| profile.is_structurally_usable_with_record(record))
+            })
+            .cloned()?;
+        Some(crate::asset_import::MotionHumanoidSource {
+            model: crate::asset_import::MotionImportTarget {
+                model_source_id: model_id,
+                model_path: project.assets_root().join(&model_entry.path),
+                contact_bones: model_entry.import_settings.contact_bones.clone(),
+            },
+            profile,
+        })
+    }
+
     /// Queues every registered or unregistered model in the project.
     ///
     /// The watcher only reports changes after its first snapshot, so opening
@@ -374,18 +485,7 @@ impl EditorApp {
         };
         let assets_root = project.assets_root();
         let already_imported = |entry: &engine::ManifestEntry| {
-            // A motion source draws nothing, so it never generates a
-            // placement prefab; requiring one would requeue every `.vmd` on
-            // every project open.
-            let needs_prefab =
-                !engine::asset_path_matches_kind(engine::AssetKind::MotionSource, Path::new(&entry.path));
-            entry.import_settings.source_fingerprint.is_some()
-                && (!needs_prefab
-                    || entry
-                        .import_settings
-                        .generated_prefab
-                        .as_ref()
-                        .is_some_and(|relative| project.path().join(relative).is_file()))
+            import_catalog_is_current(project.path(), &assets_root, entry)
         };
         let pending: Vec<(engine_authoring::AssetId, PathBuf)> = self
             .asset_manifest
@@ -689,7 +789,7 @@ impl EditorApp {
             ));
     }
 
-    pub(in crate::ui) fn handle_asset_import_result(&mut self, result: AssetImportResult) {
+    pub(in crate::ui) fn handle_asset_import_result(&mut self, mut result: AssetImportResult) {
         let Some(project) = self.project_root.clone() else {
             return;
         };
@@ -730,6 +830,42 @@ impl EditorApp {
             self.session.push_diagnostic(diagnostic);
             self.refresh_scene_problems();
             return;
+        }
+
+        if result.conversion_ready_model.is_some() {
+            let current_stamp =
+                engine::SourceStamp::capture(&result.source_path, &result.source_dependencies).ok();
+            let current_contact_bones = self
+                .asset_manifest
+                .get(&result.source_id)
+                .map(|entry| entry.import_settings.contact_bones.clone())
+                .unwrap_or_default();
+            let current_humanoid_profiles = self
+                .asset_manifest
+                .get(&result.source_id)
+                .map(|entry| entry.import_settings.humanoid_profiles.clone())
+                .unwrap_or_default();
+            let current_existing_skeletons = self
+                .asset_manifest
+                .iter()
+                .flat_map(|(_, entry)| entry.import_settings.skeleton_records.iter().cloned())
+                .collect::<Vec<_>>();
+            if current_stamp != result.source_stamp
+                || current_contact_bones != result.conversion_ready_contact_bones
+                || current_humanoid_profiles != result.conversion_ready_humanoid_profiles
+                || current_existing_skeletons != result.conversion_ready_existing_skeletons
+            {
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::info(
+                        "asset.import_stale_completion",
+                        format!(
+                            "discarded stale import completion for `{}` and queued the newest generation",
+                            result.source_path.display()
+                        ),
+                    ));
+                self.queue_model_import(result.source_id.clone(), result.source_path.clone());
+                return;
+            }
         }
 
         let assets_root = project.assets_root();
@@ -779,6 +915,7 @@ impl EditorApp {
         // Captured before the overwrite so the skeleton bind report (ADR
         // 0077 §6, AP-5) can compare the previous and current bone ledgers.
         let previous_skeleton_records = entry.import_settings.skeleton_records.clone();
+        let residency_fingerprint = result.source_fingerprint.clone();
         entry.import_settings.source_fingerprint = result.source_fingerprint;
         entry.import_settings.source_stamp = result.source_stamp;
         entry.import_settings.source_dependencies = dependencies;
@@ -821,6 +958,20 @@ impl EditorApp {
             return;
         }
         self.asset_manifest = manifest;
+
+        // Promotion happens only after the manifest accepted this exact generation.
+        if let Some(imported) = result.conversion_ready_model.take() {
+            self.preview_residency.publish_import_result(
+                &result.source_id,
+                &result.source_path,
+                &result.source_dependencies,
+                residency_fingerprint,
+                &result.skeleton_records,
+                &result.conversion_ready_contact_bones,
+                imported,
+                std::mem::take(&mut result.conversion_ready_textures),
+            );
+        }
 
         // AP-5: rebuild this source's bind report and contact interval
         // summary from the fresh import result, in memory only.
@@ -900,5 +1051,58 @@ impl EditorApp {
         for (motion_id, motion_path) in paired {
             self.queue_model_import(motion_id, motion_path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_catalog_requeues_source_changed_while_editor_was_closed() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock must be after Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gameengine-adr0136-startup-{}-{unique}",
+            std::process::id()
+        ));
+        let assets_root = root.join("assets");
+        std::fs::create_dir_all(&assets_root).expect("test assets directory must be created");
+        let source_path = assets_root.join("model.glb");
+        std::fs::write(&source_path, b"generation-one")
+            .expect("test model source must be written");
+        let generated_prefab = root.join("generated/model.prefab.json");
+        std::fs::create_dir_all(
+            generated_prefab
+                .parent()
+                .expect("generated prefab must have a parent"),
+        )
+        .expect("generated prefab directory must be created");
+        std::fs::write(&generated_prefab, b"{}")
+            .expect("generated prefab must be written");
+
+        let import_settings = engine::ImportSettings {
+            source_fingerprint: Some("accepted-generation".to_owned()),
+            source_stamp: Some(
+                engine::SourceStamp::capture(&source_path, &[])
+                    .expect("initial source stamp must be captured"),
+            ),
+            generated_prefab: Some("generated/model.prefab.json".to_owned()),
+            ..engine::ImportSettings::default()
+        };
+        let entry = engine::ManifestEntry {
+            path: "model.glb".to_owned(),
+            name: Some("Model".to_owned()),
+            import_settings,
+        };
+
+        assert!(import_catalog_is_current(&root, &assets_root, &entry));
+        std::fs::write(&source_path, b"generation-two-is-different")
+            .expect("offline source edit must be written");
+        assert!(!import_catalog_is_current(&root, &assets_root, &entry));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

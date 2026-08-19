@@ -1,9 +1,9 @@
 # ADR 0142: GameEngine Agent Benchmark and Curated Model Catalog
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131, ADR 0135, ADR 0141
-Relates to: ADR 0143, ADR 0150
+Relates to: ADR 0143, ADR 0150, ADR 0152
 
 ## Context
 
@@ -25,7 +25,7 @@ Each comparable result records at least:
 - backend/runtime version;
 - hardware identity and total GPU/system memory;
 - quality/workload policy;
-- available tool/permission budget; and
+- available tool/permission/work-claim kind/count budget without raw project target keys; and
 - completion criteria used by the task.
 
 A comparison that changes multiple dimensions must be labeled non-equivalent rather than presented as a model-only ranking.
@@ -51,6 +51,16 @@ Model weights are never bundled merely because an entry is recommended. Download
 No hard-coded `VRAM >= N => model X` rule is architectural truth. Recommendations combine measured success, latency, memory pressure, model capabilities, licensing/provenance, and supported backend behavior. Hardware-specific recommendations may exist as product data.
 
 The RTX 4070 Ti 12 GB remains the first reference profile from ADR 0135, not a minimum requirement. Additional hardware profiles may be added independently.
+
+## Implementation
+
+The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim kind/count budget, completion criteria, and measured Agent Host evidence. The selected benchmark task identity and ADR 0135 workload classification are frozen when inference or a native run starts. Read-question evidence satisfies its provenance completion gate only when the read harness actually retrieved at least one evidence chunk; a plain model answer without retrieved provenance remains a recorded failure and cannot qualify a catalog recommendation. On Windows, the first release snapshots the active Editor wgpu adapter identity, accepts dedicated GPU memory only from one matching non-software DXGI adapter, and measures total physical system memory through the operating system. Ambiguous adapter matching, API failure, zero dedicated-memory reporting, and unsupported platforms remain explicitly unavailable rather than being estimated.
+
+Model-only comparison is permitted only when corpus/task, both harness identities, backend runtime, hardware profile, quality/workload policy, tool/permission/work-claim kind/count budget, and completion criteria match. Changed dimensions are returned as an explicit non-equivalent comparison instead of being ranked as if only the model changed. Write-capable benchmark success is task-specific: every completion gate named by the versioned task descriptor must be `Passed`; generic Agent Host `NotApplicable` completion is not sufficient for a required benchmark gate, and the validation/repair task additionally requires at least one repair/revalidation cycle represented by two managed validation attempts. The benchmark store intentionally omits prompts, conversation history, retrieved source text, project paths, raw work-claim target keys, and credentials. Recording local evidence is an explicit AI Studio action rather than silent collection or upload.
+
+The curated catalog is bundled as versioned product data separate from model weights. A candidate records exact model/runtime representation plus source, license, transfer/storage size, memory guidance, context, modality, and tool-capability metadata. Lightweight, Balanced, and High Quality recommendation slots are derived only from complete comparable GameEngine corpus evidence; an empty or incomplete evidence set produces no recommendation rather than a guessed default. The first catalog ships without invented candidate recommendations and becomes populated only from measured evidence with explicit provenance.
+
+The initial Ollama-compatible loopback backend can discover its installed model inventory and backend version through its supported local HTTP API. AI Studio keeps exact custom model entry available, clearly distinguishes compatible/unverified selections from benchmark-qualified recommendations, and exposes unknown provider/resource capability data as unavailable. ADR 0144 hosted/enterprise backends remain on the same provider-independent `NativeModelConfig` path; representation metadata unavailable from those providers is not inferred. Discovery never reaches a non-loopback endpoint, and model acquisition remains outside this ADR so no weights are silently downloaded.
 
 ## Dependencies and parallel work
 

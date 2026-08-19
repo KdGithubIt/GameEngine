@@ -6,7 +6,15 @@
 //! not acquire mutation permissions or participate in the write-capable
 //! [`crate::agent_host::AgentRun`] state machine.
 
-use crate::resource_arbitration::ModelResourceCapabilities;
+use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};
+use crate::managed_local_runtime::{
+    ManagedLocalModelConfig, ManagedLocalRuntime, MANAGED_BACKEND_ID,
+};
+use crate::resource_arbitration::{
+    CapabilityAvailability, ModelResourceCapabilities, ModelResourceOperation,
+    ModelResourceTelemetry, ModelResourceTransition, TelemetryValue,
+};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
@@ -24,7 +32,17 @@ pub(crate) const DEFAULT_LOCAL_MODEL_ENDPOINT: &str = "http://127.0.0.1:11434";
 pub(crate) const BASELINE_HARNESS_VERSION: &str = "native-read-v1";
 const BACKEND_ID: &str = "ollama-compatible";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const IO_TIMEOUT: Duration = Duration::from_secs(120);
+/// Read/write budget for one loopback backend exchange.
+///
+/// This is not a model-quality budget; it is the point at which the backend is
+/// declared unreachable. It has to cover a cold weight load, because a local
+/// backend answers nothing until the model is resident. A 27B GGUF on a 12 GB
+/// card evicting a previous model needs well over two minutes, and the earlier
+/// 120 second budget recorded exactly that working model as `os error 10060`
+/// at 120.5 seconds. For a benchmark that compares model sizes this is worse
+/// than slow: it systematically reports the largest models as broken. Waiting
+/// longer on a loopback socket costs nothing, and the caller can interrupt.
+const IO_TIMEOUT: Duration = Duration::from_secs(900);
 const MAX_HTTP_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024;
 const MAX_SCANNED_FILES: usize = 1_200;
@@ -44,6 +62,10 @@ pub(crate) enum NativeAgentError {
     EmptyResponse,
     Interrupted,
     WorkerDisconnected,
+    ResourceTransitionUnconfirmed(String),
+    ResourceWorkerDisconnected,
+    Hosted(HostedBackendError),
+    UnsupportedCapability(String),
     Io(io::Error),
     Json(serde_json::Error),
 }
@@ -74,6 +96,17 @@ impl fmt::Display for NativeAgentError {
             Self::WorkerDisconnected => {
                 write!(formatter, "native question worker disconnected unexpectedly")
             }
+            Self::ResourceTransitionUnconfirmed(message) => write!(
+                formatter,
+                "local model resource transition was not confirmed: {message}"
+            ),
+            Self::ResourceWorkerDisconnected => {
+                write!(formatter, "native model resource worker disconnected unexpectedly")
+            }
+            Self::Hosted(error) => write!(formatter, "{error}"),
+            Self::UnsupportedCapability(capability) => {
+                write!(formatter, "model backend does not support {capability}")
+            }
             Self::Io(error) => write!(formatter, "native agent I/O error: {error}"),
             Self::Json(error) => write!(formatter, "native agent JSON error: {error}"),
         }
@@ -93,6 +126,12 @@ impl std::error::Error for NativeAgentError {
 impl From<io::Error> for NativeAgentError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
+    }
+}
+
+impl From<HostedBackendError> for NativeAgentError {
+    fn from(value: HostedBackendError) -> Self {
+        Self::Hosted(value)
     }
 }
 
@@ -118,9 +157,94 @@ impl LocalModelConfig {
             image_input: None,
             reasoning: None,
             context_limit: None,
-            resource_capabilities: ModelResourceCapabilities::default(),
+            streaming: Some(false),
+            usage: Some(true),
+            resource_capabilities: ModelResourceCapabilities {
+                representation_size: CapabilityAvailability::Available,
+                gpu_residency: CapabilityAvailability::Available,
+                cpu_gpu_offload: CapabilityAvailability::Available,
+                selectable_device: CapabilityAvailability::Unavailable,
+                kv_context_placement: CapabilityAvailability::Unavailable,
+                inference_cache_release: CapabilityAvailability::Unavailable,
+                unload_reload: CapabilityAvailability::Available,
+                backend_memory_telemetry: CapabilityAvailability::Available,
+            },
             benchmark_verified: false,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum NativeModelConfig {
+    Local(LocalModelConfig),
+    Managed(ManagedLocalModelConfig),
+    Hosted(HostedModelConfig),
+}
+
+impl NativeModelConfig {
+    pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
+        match self {
+            Self::Local(config) => config.capability_profile(),
+            Self::Managed(config) => ModelCapabilityProfile {
+                backend_id: MANAGED_BACKEND_ID,
+                model_id: config.model_id.clone(),
+                structured_output: Some(false),
+                tool_use: Some(false),
+                image_input: Some(false),
+                reasoning: None,
+                context_limit: None,
+                streaming: Some(false),
+                usage: Some(true),
+                resource_capabilities: ModelResourceCapabilities {
+                    representation_size: CapabilityAvailability::Available,
+                    gpu_residency: CapabilityAvailability::Unavailable,
+                    cpu_gpu_offload: CapabilityAvailability::Unavailable,
+                    selectable_device: CapabilityAvailability::Unavailable,
+                    kv_context_placement: CapabilityAvailability::Unavailable,
+                    inference_cache_release: CapabilityAvailability::Unavailable,
+                    unload_reload: CapabilityAvailability::Available,
+                    backend_memory_telemetry: CapabilityAvailability::Unavailable,
+                },
+                benchmark_verified: false,
+            },
+            Self::Hosted(config) => ModelCapabilityProfile {
+                backend_id: config.auth_mode.backend_id(),
+                model_id: config.model.trim().to_owned(),
+                structured_output: Some(false),
+                tool_use: Some(false),
+                image_input: Some(false),
+                reasoning: None,
+                context_limit: None,
+                streaming: Some(false),
+                usage: Some(true),
+                resource_capabilities: ModelResourceCapabilities::default(),
+                benchmark_verified: false,
+            },
+        }
+    }
+
+    pub(crate) fn requires_network(&self) -> bool {
+        matches!(self, Self::Hosted(_))
+    }
+
+    pub(crate) fn backend_id(&self) -> &'static str {
+        match self {
+            Self::Local(_) => BACKEND_ID,
+            Self::Managed(_) => MANAGED_BACKEND_ID,
+            Self::Hosted(config) => config.auth_mode.backend_id(),
+        }
+    }
+
+    pub(crate) fn model_id(&self) -> String {
+        match self {
+            Self::Local(config) => config.model.trim().to_owned(),
+            Self::Managed(config) => config.model_id.clone(),
+            Self::Hosted(config) => config.model.trim().to_owned(),
+        }
+    }
+
+    pub(crate) fn label(&self) -> String {
+        format!("native:{}:{}", self.backend_id(), self.model_id())
     }
 }
 
@@ -133,11 +257,12 @@ pub(crate) struct ModelCapabilityProfile {
     pub(crate) image_input: Option<bool>,
     pub(crate) reasoning: Option<bool>,
     pub(crate) context_limit: Option<u64>,
+    pub(crate) streaming: Option<bool>,
+    pub(crate) usage: Option<bool>,
     /// Resource controls verified for this backend adapter.
     ///
-    /// The initial generic loopback adapter deliberately reports every
-    /// provider-specific control as unavailable until a governed implementation
-    /// exists; AI Studio must never imply support by guessing from the server.
+    /// Backend-specific remote GPU controls are deliberately not projected into
+    /// local ADR 0135 resource capabilities. Unsupported controls stay unavailable.
     pub(crate) resource_capabilities: ModelResourceCapabilities,
     pub(crate) benchmark_verified: bool,
 }
@@ -214,6 +339,306 @@ pub(crate) struct NativeAnswer {
     pub(crate) text: String,
     pub(crate) sources: Vec<RetrievedSource>,
     pub(crate) metrics: NativeMetrics,
+    pub(crate) resource_telemetry: ModelResourceTelemetry,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledLocalModel {
+    pub(crate) name: String,
+    pub(crate) digest: Option<String>,
+    pub(crate) size_bytes: Option<u64>,
+    pub(crate) parameter_size: Option<String>,
+    pub(crate) quantization_level: Option<String>,
+    pub(crate) family: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledModelInventory {
+    pub(crate) endpoint: String,
+    pub(crate) backend_version: Option<String>,
+    pub(crate) models: Vec<InstalledLocalModel>,
+}
+
+pub(crate) struct InstalledModelDiscoveryTask {
+    result: Receiver<Result<InstalledModelInventory, NativeAgentError>>,
+}
+
+impl InstalledModelDiscoveryTask {
+    pub(crate) fn spawn(endpoint: String) -> Result<Self, NativeAgentError> {
+        LocalHttpEndpoint::parse(&endpoint)?;
+        let (sender, result) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("ai-local-model-discovery".to_owned())
+            .spawn(move || {
+                let inventory = discover_installed_models(&endpoint);
+                let _ = sender.send(inventory);
+            })?;
+        Ok(Self { result })
+    }
+
+    pub(crate) fn poll(&self) -> Option<Result<InstalledModelInventory, NativeAgentError>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(NativeAgentError::BackendUnavailable(
+                "local model discovery worker disconnected unexpectedly".to_owned(),
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendResidencyRequest {
+    CpuOnly,
+    Release,
+    Reload,
+}
+
+trait ModelResourceBackend {
+    fn observe(&mut self, model: &str) -> Result<ModelResourceTelemetry, NativeAgentError>;
+
+    /// Applies one provider-specific residency request and returns provider-reported load latency.
+    fn apply_residency(
+        &mut self,
+        model: &str,
+        request: BackendResidencyRequest,
+    ) -> Result<Option<u64>, NativeAgentError>;
+}
+
+struct OllamaResourceBackend {
+    endpoint: LocalHttpEndpoint,
+}
+
+impl OllamaResourceBackend {
+    fn new(config: &LocalModelConfig) -> Result<Self, NativeAgentError> {
+        Ok(Self {
+            endpoint: LocalHttpEndpoint::parse(&config.endpoint)?,
+        })
+    }
+}
+
+impl ModelResourceBackend for OllamaResourceBackend {
+    fn observe(&mut self, model: &str) -> Result<ModelResourceTelemetry, NativeAgentError> {
+        observe_ollama_model(&self.endpoint, model)
+    }
+
+    fn apply_residency(
+        &mut self,
+        model: &str,
+        request: BackendResidencyRequest,
+    ) -> Result<Option<u64>, NativeAgentError> {
+        request_ollama_residency(&self.endpoint, model, request)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum LocalModelResourceConfig {
+    Ollama(LocalModelConfig),
+    Managed(ManagedLocalModelConfig),
+}
+
+impl LocalModelResourceConfig {
+    pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
+        match self {
+            Self::Ollama(config) => config.capability_profile(),
+            Self::Managed(config) => NativeModelConfig::Managed(config.clone()).capability_profile(),
+        }
+    }
+}
+
+pub(crate) struct ModelResourceTask {
+    result: Receiver<Result<ModelResourceTransition, NativeAgentError>>,
+}
+
+impl ModelResourceTask {
+    pub(crate) fn spawn(
+        config: LocalModelResourceConfig,
+        operation: ModelResourceOperation,
+    ) -> Result<Self, NativeAgentError> {
+        match &config {
+            LocalModelResourceConfig::Ollama(config) => {
+                if config.model.trim().is_empty() {
+                    return Err(NativeAgentError::EmptyModel);
+                }
+                LocalHttpEndpoint::parse(&config.endpoint)?;
+            }
+            LocalModelResourceConfig::Managed(config) => {
+                if config.model_id.trim().is_empty() {
+                    return Err(NativeAgentError::EmptyModel);
+                }
+            }
+        }
+        let (sender, result) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("ai-model-resource".to_owned())
+            .spawn(move || {
+                let transition = execute_model_resource_operation(&config, operation);
+                let _ = sender.send(transition);
+            })?;
+        Ok(Self { result })
+    }
+
+    pub(crate) fn poll(
+        &self,
+    ) -> Option<Result<ModelResourceTransition, NativeAgentError>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                Some(Err(NativeAgentError::ResourceWorkerDisconnected))
+            }
+        }
+    }
+}
+
+fn execute_model_resource_operation(
+    config: &LocalModelResourceConfig,
+    operation: ModelResourceOperation,
+) -> Result<ModelResourceTransition, NativeAgentError> {
+    match config {
+        LocalModelResourceConfig::Ollama(config) => {
+            let mut backend = OllamaResourceBackend::new(config)?;
+            execute_model_resource_operation_with_backend(
+                config.model.trim(),
+                operation,
+                &mut backend,
+            )
+        }
+        LocalModelResourceConfig::Managed(config) => {
+            execute_managed_resource_operation(config, operation)
+        }
+    }
+}
+
+fn execute_managed_resource_operation(
+    config: &ManagedLocalModelConfig,
+    operation: ModelResourceOperation,
+) -> Result<ModelResourceTransition, NativeAgentError> {
+    let before = observe_managed_model(config);
+    let started = Instant::now();
+    match operation {
+        ModelResourceOperation::Observe => {}
+        ModelResourceOperation::Release => ManagedLocalRuntime::stop_for_config(config)
+            .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?,
+        ModelResourceOperation::Reload => {
+            ManagedLocalRuntime::ensure_endpoint(config)
+                .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
+        }
+        ModelResourceOperation::ReduceGpuResidency => {
+            return Err(NativeAgentError::UnsupportedCapability(
+                "partial GPU residency reduction for managed llama.cpp".to_owned(),
+            ));
+        }
+    }
+    let after = if operation == ModelResourceOperation::Observe {
+        before.clone()
+    } else {
+        observe_managed_model(config)
+    };
+    if !resource_transition_confirmed(operation, &before, &after) {
+        return Err(NativeAgentError::ResourceTransitionUnconfirmed(format!(
+            "{operation:?} did not produce managed runtime state that proves the requested residency state"
+        )));
+    }
+    Ok(ModelResourceTransition {
+        operation,
+        before,
+        after,
+        operation_latency_ms: TelemetryValue::Measured(duration_ms(started.elapsed())),
+        backend_load_latency_ms: TelemetryValue::Unavailable,
+    })
+}
+
+fn execute_model_resource_operation_with_backend(
+    model: &str,
+    operation: ModelResourceOperation,
+    backend: &mut impl ModelResourceBackend,
+) -> Result<ModelResourceTransition, NativeAgentError> {
+    let before = backend.observe(model)?;
+    let started = Instant::now();
+    let backend_load_latency = match operation {
+        ModelResourceOperation::Observe => None,
+        ModelResourceOperation::Release
+            if before.resident == TelemetryValue::Measured(false) =>
+        {
+            None
+        }
+        ModelResourceOperation::ReduceGpuResidency
+            if before.resident == TelemetryValue::Measured(false) =>
+        {
+            None
+        }
+        ModelResourceOperation::Release => {
+            backend.apply_residency(model, BackendResidencyRequest::Release)?
+        }
+        ModelResourceOperation::Reload => {
+            backend.apply_residency(model, BackendResidencyRequest::Reload)?
+        }
+        ModelResourceOperation::ReduceGpuResidency => {
+            backend.apply_residency(model, BackendResidencyRequest::CpuOnly)?
+        }
+    };
+    let after = if operation == ModelResourceOperation::Observe {
+        before.clone()
+    } else {
+        backend.observe(model)?
+    };
+    if !resource_transition_confirmed(operation, &before, &after) {
+        return Err(NativeAgentError::ResourceTransitionUnconfirmed(format!(
+            "{operation:?} did not produce provider telemetry that proves the requested residency state"
+        )));
+    }
+    Ok(ModelResourceTransition {
+        operation,
+        before,
+        after,
+        operation_latency_ms: TelemetryValue::Measured(duration_ms(started.elapsed())),
+        backend_load_latency_ms: backend_load_latency
+            .map(TelemetryValue::Measured)
+            .unwrap_or(TelemetryValue::Unavailable),
+    })
+}
+
+fn resource_transition_confirmed(
+    operation: ModelResourceOperation,
+    before: &ModelResourceTelemetry,
+    after: &ModelResourceTelemetry,
+) -> bool {
+    match operation {
+        ModelResourceOperation::Observe => true,
+        ModelResourceOperation::Release => after.resident == TelemetryValue::Measured(false),
+        ModelResourceOperation::Reload => after.resident == TelemetryValue::Measured(true),
+        ModelResourceOperation::ReduceGpuResidency => {
+            after.resident == TelemetryValue::Measured(false)
+                || after.gpu_residency_bytes == TelemetryValue::Measured(0)
+                || matches!(
+                    (&before.gpu_residency_bytes, &after.gpu_residency_bytes),
+                    (TelemetryValue::Measured(before), TelemetryValue::Measured(after))
+                        if after < before
+                )
+        }
+    }
+}
+
+fn validate_native_model_config(config: &NativeModelConfig) -> Result<(), NativeAgentError> {
+    match config {
+        NativeModelConfig::Local(config) => {
+            if config.model.trim().is_empty() {
+                return Err(NativeAgentError::EmptyModel);
+            }
+            LocalHttpEndpoint::parse(&config.endpoint)?;
+        }
+        NativeModelConfig::Managed(config) => {
+            if config.model_id.trim().is_empty() || config.model_path.as_os_str().is_empty() {
+                return Err(NativeAgentError::EmptyModel);
+            }
+        }
+        NativeModelConfig::Hosted(config) if config.model.trim().is_empty() => {
+            return Err(NativeAgentError::EmptyModel);
+        }
+        NativeModelConfig::Hosted(_) => {}
+    }
+    Ok(())
 }
 
 pub(crate) struct NativeQuestionTask {
@@ -224,16 +649,11 @@ pub(crate) struct NativeQuestionTask {
 
 impl NativeQuestionTask {
     pub(crate) fn spawn(
-        config: LocalModelConfig,
+        config: NativeModelConfig,
         project_root: PathBuf,
         conversation: Vec<QuestionMessage>,
     ) -> Result<Self, NativeAgentError> {
-        if config.model.trim().is_empty() {
-            return Err(NativeAgentError::EmptyModel);
-        }
-        // Validate before spawning so malformed/non-loopback endpoints fail at
-        // the UI boundary instead of looking like a model timeout.
-        LocalHttpEndpoint::parse(&config.endpoint)?;
+        validate_native_model_config(&config)?;
         let (sender, result) = mpsc::channel();
         let interrupted = Arc::new(AtomicBool::new(false));
         let active_stream = Arc::new(Mutex::new(None));
@@ -274,6 +694,109 @@ impl NativeQuestionTask {
     }
 
     pub(crate) fn poll(&self) -> Option<Result<NativeAnswer, NativeAgentError>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(NativeAgentError::WorkerDisconnected)),
+        }
+    }
+}
+
+/// Cancellable raw model turn used by the write-capable native AgentRuntime.
+pub(crate) struct NativeModelTask {
+    result: Receiver<Result<String, NativeAgentError>>,
+    interrupted: Arc<AtomicBool>,
+    active_stream: Arc<Mutex<Option<TcpStream>>>,
+}
+
+impl NativeModelTask {
+    pub(crate) fn spawn(
+        config: NativeModelConfig,
+        prompt: String,
+        images: Vec<Vec<u8>>,
+    ) -> Result<Self, NativeAgentError> {
+        validate_native_model_config(&config)?;
+        let (sender, result) = mpsc::channel();
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_stream = Arc::new(Mutex::new(None));
+        let worker_interrupted = Arc::clone(&interrupted);
+        let worker_stream = Arc::clone(&active_stream);
+        std::thread::Builder::new()
+            .name("ai-native-model-turn".to_owned())
+            .spawn(move || {
+                let result = match &config {
+                    NativeModelConfig::Local(config) => generate_local(
+                        config,
+                        &prompt,
+                        &images,
+                        &worker_interrupted,
+                        &worker_stream,
+                    )
+                    .and_then(|response| {
+                        let text = response.response.trim().to_owned();
+                        if text.is_empty() {
+                            Err(NativeAgentError::EmptyResponse)
+                        } else {
+                            Ok(text)
+                        }
+                    }),
+                    NativeModelConfig::Managed(_) if !images.is_empty() => {
+                        Err(NativeAgentError::UnsupportedCapability(
+                            "image input for the managed llama.cpp adapter".to_owned(),
+                        ))
+                    }
+                    NativeModelConfig::Managed(config) => generate_managed(
+                        config,
+                        &prompt,
+                        &worker_interrupted,
+                        &worker_stream,
+                    )
+                    .and_then(|response| {
+                        if response.text.is_empty() {
+                            Err(NativeAgentError::EmptyResponse)
+                        } else {
+                            Ok(response.text)
+                        }
+                    }),
+                    NativeModelConfig::Hosted(_) if !images.is_empty() => {
+                        Err(NativeAgentError::UnsupportedCapability(
+                            "image input for the configured hosted adapter".to_owned(),
+                        ))
+                    }
+                    NativeModelConfig::Hosted(config) => generate_hosted(
+                        config,
+                        &prompt,
+                        &worker_interrupted,
+                    )
+                    .map_err(NativeAgentError::from)
+                    .and_then(|response| {
+                        let text = response.text.trim().to_owned();
+                        if text.is_empty() {
+                            Err(NativeAgentError::EmptyResponse)
+                        } else {
+                            Ok(text)
+                        }
+                    }),
+                };
+                let _ = sender.send(result);
+            })?;
+        Ok(Self {
+            result,
+            interrupted,
+            active_stream,
+        })
+    }
+
+    pub(crate) fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::Release);
+        if let Ok(guard) = self.active_stream.lock()
+            && let Some(stream) = guard.as_ref()
+        {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+
+    pub(crate) fn poll(&self) -> Option<Result<String, NativeAgentError>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -399,8 +922,81 @@ fn is_loopback_host(host: &str) -> bool {
         .is_ok_and(|address| address.is_loopback())
 }
 
+#[derive(Debug, Deserialize)]
+struct LocalTagsResponse {
+    #[serde(default)]
+    models: Vec<LocalTagModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalTagModel {
+    name: String,
+    #[serde(default)]
+    digest: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    details: LocalTagDetails,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LocalTagDetails {
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    parameter_size: Option<String>,
+    #[serde(default)]
+    quantization_level: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalVersionResponse {
+    version: String,
+}
+
+fn discover_installed_models(
+    endpoint_value: &str,
+) -> Result<InstalledModelInventory, NativeAgentError> {
+    let endpoint = LocalHttpEndpoint::parse(endpoint_value)?;
+    let tags: LocalTagsResponse = request_local_json(&endpoint, "GET", "/api/tags", None)?;
+    let backend_version = request_local_json::<LocalVersionResponse>(
+        &endpoint,
+        "GET",
+        "/api/version",
+        None,
+    )
+    .ok()
+    .map(|response| response.version)
+    .filter(|version| !version.trim().is_empty());
+    let mut models = tags
+        .models
+        .into_iter()
+        .filter(|model| !model.name.trim().is_empty())
+        .map(|model| InstalledLocalModel {
+            name: model.name,
+            digest: model.digest.filter(|digest| !digest.trim().is_empty()),
+            size_bytes: model.size,
+            parameter_size: model
+                .details
+                .parameter_size
+                .filter(|value| !value.trim().is_empty()),
+            quantization_level: model
+                .details
+                .quantization_level
+                .filter(|value| !value.trim().is_empty()),
+            family: model.details.family.filter(|value| !value.trim().is_empty()),
+        })
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(InstalledModelInventory {
+        endpoint: endpoint_value.to_owned(),
+        backend_version,
+        models,
+    })
+}
+
 fn answer_question(
-    config: &LocalModelConfig,
+    config: &NativeModelConfig,
     project_root: &Path,
     conversation: &[QuestionMessage],
     interrupted: &AtomicBool,
@@ -422,39 +1018,85 @@ fn answer_question(
     if interrupted.load(Ordering::Acquire) {
         return Err(NativeAgentError::Interrupted);
     }
-    let backend = generate_local(config, &prompt, interrupted, active_stream)?;
-    let text = backend.response.trim().to_owned();
-    if text.is_empty() {
+    let backend = match config {
+        NativeModelConfig::Local(config) => {
+            let response = generate_local(config, &prompt, &[], interrupted, active_stream)?;
+            BackendGeneration {
+                text: response.response.trim().to_owned(),
+                prompt_tokens: response.prompt_eval_count,
+                response_tokens: response.eval_count,
+                backend_duration_ms: response.total_duration.map(|nanos| nanos / 1_000_000),
+                load_latency_ms: response.load_duration.map(|nanos| nanos / 1_000_000),
+                prompt_eval_duration_ms: response.prompt_eval_duration.map(|nanos| nanos / 1_000_000),
+                generation_duration_ms: response.eval_duration.map(|nanos| nanos / 1_000_000),
+                generation_tokens_per_second_milli: generation_throughput_milli(
+                    response.eval_count,
+                    response.eval_duration,
+                ),
+            }
+        }
+        NativeModelConfig::Managed(config) => {
+            generate_managed(config, &prompt, interrupted, active_stream)?
+        }
+        NativeModelConfig::Hosted(config) => {
+            let response = generate_hosted(config, &prompt, interrupted)?;
+            BackendGeneration {
+                text: response.text.trim().to_owned(),
+                prompt_tokens: response.prompt_tokens,
+                response_tokens: response.response_tokens,
+                backend_duration_ms: None,
+                load_latency_ms: None,
+                prompt_eval_duration_ms: None,
+                generation_duration_ms: None,
+                generation_tokens_per_second_milli: None,
+            }
+        }
+    };
+    if backend.text.is_empty() {
         return Err(NativeAgentError::EmptyResponse);
     }
     let sources = distinct_sources(&evidence);
+    let resource_telemetry = match config {
+        NativeModelConfig::Local(config) => LocalHttpEndpoint::parse(&config.endpoint)
+            .and_then(|endpoint| observe_ollama_model(&endpoint, config.model.trim()))
+            .unwrap_or_default(),
+        NativeModelConfig::Managed(config) => observe_managed_model(config),
+        NativeModelConfig::Hosted(_) => ModelResourceTelemetry::default(),
+    };
     Ok(NativeAnswer {
         metrics: NativeMetrics {
             harness_version: BASELINE_HARNESS_VERSION,
-            backend_id: BACKEND_ID,
-            model_id: config.model.trim().to_owned(),
+            backend_id: config.backend_id(),
+            model_id: config.model_id(),
             model_turns: 1,
             retrieval_chunks: evidence.len(),
             prompt_chars: prompt.chars().count(),
-            response_chars: text.chars().count(),
+            response_chars: backend.text.chars().count(),
             elapsed_ms: duration_ms(started.elapsed()),
-            prompt_eval_tokens: backend.prompt_eval_count,
-            response_tokens: backend.eval_count,
-            backend_duration_ms: backend.total_duration.map(|nanos| nanos / 1_000_000),
-            load_latency_ms: backend.load_duration.map(|nanos| nanos / 1_000_000),
-            prompt_eval_duration_ms: backend
-                .prompt_eval_duration
-                .map(|nanos| nanos / 1_000_000),
-            generation_duration_ms: backend.eval_duration.map(|nanos| nanos / 1_000_000),
-            generation_tokens_per_second_milli: generation_throughput_milli(
-                backend.eval_count,
-                backend.eval_duration,
-            ),
+            prompt_eval_tokens: backend.prompt_tokens,
+            response_tokens: backend.response_tokens,
+            backend_duration_ms: backend.backend_duration_ms,
+            load_latency_ms: backend.load_latency_ms,
+            prompt_eval_duration_ms: backend.prompt_eval_duration_ms,
+            generation_duration_ms: backend.generation_duration_ms,
+            generation_tokens_per_second_milli: backend.generation_tokens_per_second_milli,
             ttft_ms: None,
         },
-        text,
+        text: backend.text,
         sources,
+        resource_telemetry,
     })
+}
+
+struct BackendGeneration {
+    text: String,
+    prompt_tokens: Option<u64>,
+    response_tokens: Option<u64>,
+    backend_duration_ms: Option<u64>,
+    load_latency_ms: Option<u64>,
+    prompt_eval_duration_ms: Option<u64>,
+    generation_duration_ms: Option<u64>,
+    generation_tokens_per_second_milli: Option<u64>,
 }
 
 fn duration_ms(duration: Duration) -> u64 {
@@ -474,11 +1116,302 @@ fn generation_throughput_milli(tokens: Option<u64>, duration_nanos: Option<u64>)
     Some(scaled.min(u128::from(u64::MAX)) as u64)
 }
 
+#[derive(Debug, Deserialize)]
+struct RunningModelsResponse {
+    #[serde(default)]
+    models: Vec<RunningModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunningModel {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    size_vram: Option<u64>,
+    #[serde(default)]
+    context_length: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceGenerateRequest<'a> {
+    model: &'a str,
+    stream: bool,
+    keep_alive: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<ResourceGenerateOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceGenerateOptions {
+    num_gpu: i32,
+}
+
+fn observe_ollama_model(
+    endpoint: &LocalHttpEndpoint,
+    model: &str,
+) -> Result<ModelResourceTelemetry, NativeAgentError> {
+    let running: RunningModelsResponse = request_local_json(endpoint, "GET", "/api/ps", None)?;
+    let selected = model.trim();
+    let Some(model) = running
+        .models
+        .into_iter()
+        .find(|candidate| candidate.name == selected || candidate.model == selected)
+    else {
+        return Ok(ModelResourceTelemetry {
+            resident: TelemetryValue::Measured(false),
+            ..ModelResourceTelemetry::default()
+        });
+    };
+    Ok(ModelResourceTelemetry {
+        resident: TelemetryValue::Measured(true),
+        representation_size_bytes: measured_u64(model.size),
+        gpu_residency_bytes: measured_u64(model.size_vram),
+        context_length_tokens: measured_u64(model.context_length),
+    })
+}
+
+fn measured_u64(value: Option<u64>) -> TelemetryValue<u64> {
+    value
+        .map(TelemetryValue::Measured)
+        .unwrap_or(TelemetryValue::Unavailable)
+}
+
+fn request_ollama_residency(
+    endpoint: &LocalHttpEndpoint,
+    model: &str,
+    request: BackendResidencyRequest,
+) -> Result<Option<u64>, NativeAgentError> {
+    let (keep_alive, options) = match request {
+        BackendResidencyRequest::Release => (0, None),
+        BackendResidencyRequest::Reload => (-1, None),
+        BackendResidencyRequest::CpuOnly => (
+            -1,
+            Some(ResourceGenerateOptions { num_gpu: 0 }),
+        ),
+    };
+    let body = serde_json::to_vec(&ResourceGenerateRequest {
+        model,
+        stream: false,
+        keep_alive,
+        options,
+    })?;
+    let response: GenerateResponse =
+        request_local_json(endpoint, "POST", "/api/generate", Some(&body))?;
+    Ok(response.load_duration.map(|nanos| nanos / 1_000_000))
+}
+
+fn request_local_json<R: DeserializeOwned>(
+    endpoint: &LocalHttpEndpoint,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<R, NativeAgentError> {
+    let mut stream = endpoint.connect()?;
+    match body {
+        Some(body) => {
+            write!(
+                stream,
+                "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                endpoint.host_header(),
+                body.len()
+            )?;
+            stream.write_all(body)?;
+        }
+        None => {
+            write!(
+                stream,
+                "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+                endpoint.host_header()
+            )?;
+        }
+    }
+    stream.flush()?;
+    let mut response = Vec::new();
+    stream
+        .take(MAX_HTTP_RESPONSE_BYTES + 1)
+        .read_to_end(&mut response)?;
+    if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
+        return Err(NativeAgentError::ResponseTooLarge);
+    }
+    let parsed = parse_http_response(&response)?;
+    if parsed.status != 200 {
+        let message = String::from_utf8_lossy(&parsed.body);
+        return Err(NativeAgentError::HttpStatus(
+            parsed.status,
+            truncate_text(message.trim(), 500),
+        ));
+    }
+    serde_json::from_slice(&parsed.body).map_err(Into::into)
+}
+
+#[derive(Debug, Serialize)]
+struct ManagedChatRequest<'a> {
+    model: &'a str,
+    messages: [ManagedChatMessage<'a>; 1],
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ManagedChatMessage<'a> {
+    role: &'static str,
+    content: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManagedChatResponse {
+    #[serde(default)]
+    choices: Vec<ManagedChatChoice>,
+    #[serde(default)]
+    usage: Option<ManagedChatUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManagedChatChoice {
+    message: ManagedChatResponseMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManagedChatResponseMessage {
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManagedChatUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+}
+
+fn generate_managed(
+    config: &ManagedLocalModelConfig,
+    prompt: &str,
+    interrupted: &AtomicBool,
+    active_stream: &Mutex<Option<TcpStream>>,
+) -> Result<BackendGeneration, NativeAgentError> {
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
+    let startup_started = Instant::now();
+    let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)
+        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
+    let load_latency_ms = (!managed_endpoint.reused_process)
+        .then(|| duration_ms(startup_started.elapsed()));
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
+    let endpoint = LocalHttpEndpoint::parse(&managed_endpoint.url)?;
+    let request = ManagedChatRequest {
+        model: &config.model_id,
+        messages: [ManagedChatMessage {
+            role: "user",
+            content: prompt,
+        }],
+        stream: false,
+    };
+    let body = serde_json::to_vec(&request)?;
+    let response: ManagedChatResponse = request_local_json_interruptible(
+        &endpoint,
+        "POST",
+        "/v1/chat/completions",
+        &body,
+        interrupted,
+        active_stream,
+    )?;
+    let text = response
+        .choices
+        .into_iter()
+        .next()
+        .map(|choice| choice.message.content.trim().to_owned())
+        .unwrap_or_default();
+    let (prompt_tokens, response_tokens) = response
+        .usage
+        .map(|usage| (usage.prompt_tokens, usage.completion_tokens))
+        .unwrap_or((None, None));
+    Ok(BackendGeneration {
+        text,
+        prompt_tokens,
+        response_tokens,
+        backend_duration_ms: None,
+        load_latency_ms,
+        prompt_eval_duration_ms: None,
+        generation_duration_ms: None,
+        generation_tokens_per_second_milli: None,
+    })
+}
+
+fn request_local_json_interruptible<R: DeserializeOwned>(
+    endpoint: &LocalHttpEndpoint,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    interrupted: &AtomicBool,
+    active_stream: &Mutex<Option<TcpStream>>,
+) -> Result<R, NativeAgentError> {
+    let mut stream = endpoint.connect()?;
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
+    if let Ok(mut guard) = active_stream.lock() {
+        *guard = stream.try_clone().ok();
+    }
+    let result = (|| {
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            endpoint.host_header(),
+            body.len()
+        )?;
+        stream.write_all(body)?;
+        stream.flush()?;
+        let mut response = Vec::new();
+        stream
+            .take(MAX_HTTP_RESPONSE_BYTES + 1)
+            .read_to_end(&mut response)?;
+        if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
+            return Err(NativeAgentError::ResponseTooLarge);
+        }
+        let parsed = parse_http_response(&response)?;
+        if parsed.status != 200 {
+            let message = String::from_utf8_lossy(&parsed.body);
+            return Err(NativeAgentError::HttpStatus(
+                parsed.status,
+                truncate_text(message.trim(), 500),
+            ));
+        }
+        serde_json::from_slice(&parsed.body).map_err(Into::into)
+    })();
+    if let Ok(mut guard) = active_stream.lock() {
+        *guard = None;
+    }
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
+    result
+}
+
+fn observe_managed_model(config: &ManagedLocalModelConfig) -> ModelResourceTelemetry {
+    let resident = ManagedLocalRuntime::is_resident(config)
+        .map(TelemetryValue::Measured)
+        .unwrap_or(TelemetryValue::Unavailable);
+    ModelResourceTelemetry {
+        resident,
+        representation_size_bytes: TelemetryValue::Measured(config.model_size_bytes),
+        ..ModelResourceTelemetry::default()
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct GenerateRequest<'a> {
     model: &'a str,
     prompt: &'a str,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -501,14 +1434,22 @@ struct GenerateResponse {
 fn generate_local(
     config: &LocalModelConfig,
     prompt: &str,
+    images: &[Vec<u8>],
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<GenerateResponse, NativeAgentError> {
     let endpoint = LocalHttpEndpoint::parse(&config.endpoint)?;
+    let encoded_images = (!images.is_empty()).then(|| {
+        images
+            .iter()
+            .map(|image| encode_base64(image))
+            .collect::<Vec<_>>()
+    });
     let body = serde_json::to_vec(&GenerateRequest {
         model: config.model.trim(),
         prompt,
         stream: false,
+        images: encoded_images,
     })?;
     let mut stream = endpoint.connect()?;
     if interrupted.load(Ordering::Acquire) {
@@ -549,6 +1490,29 @@ fn generate_local(
         ));
     }
     serde_json::from_slice(&parsed.body).map_err(Into::into)
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(TABLE[(first >> 2) as usize] as char);
+        output.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(third & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
 }
 
 struct ParsedHttpResponse {
@@ -945,6 +1909,56 @@ fn discover_engine_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn installed_model_discovery_reads_loopback_tags_and_version() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let worker = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept discovery request");
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 512];
+                    let read = stream.read(&mut chunk).expect("read discovery request");
+                    if read == 0 {
+                        panic!("discovery request closed before HTTP headers completed");
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if find_bytes(&request, b"\r\n\r\n").is_some() {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
+                let body = if request.starts_with("GET /api/tags " ) {
+                    r#"{"models":[{"name":"test-model:q4","digest":"sha256:test","size":42,"details":{"family":"test","parameter_size":"1B","quantization_level":"Q4_K_M"}}]}"#
+                } else {
+                    r#"{"version":"1.2.3"}"#
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                )
+                .expect("write discovery response");
+                stream.flush().expect("flush discovery response");
+                stream
+                    .shutdown(Shutdown::Write)
+                    .expect("finish discovery response");
+            }
+        });
+        let endpoint = format!("http://127.0.0.1:{}", address.port());
+        let inventory = discover_installed_models(&endpoint).expect("discover installed models");
+        worker.join().expect("discovery server");
+        assert_eq!(inventory.backend_version.as_deref(), Some("1.2.3"));
+        assert_eq!(inventory.models.len(), 1);
+        assert_eq!(inventory.models[0].name, "test-model:q4");
+        assert_eq!(
+            inventory.models[0].quantization_level.as_deref(),
+            Some("Q4_K_M")
+        );
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "gameengine-native-agent-{name}-{}",
@@ -1019,5 +2033,154 @@ mod tests {
         assert!(prompt.contains("not a write-capable AgentRun"));
         assert!(prompt.contains("Do not claim to edit files"));
         assert!(prompt.contains("not established by the current sources"));
+    }
+
+    struct FakeResourceBackend {
+        observations: std::collections::VecDeque<ModelResourceTelemetry>,
+        requests: Vec<BackendResidencyRequest>,
+        load_latency_ms: Option<u64>,
+    }
+
+    impl FakeResourceBackend {
+        fn new(observations: Vec<ModelResourceTelemetry>) -> Self {
+            Self {
+                observations: observations.into(),
+                requests: Vec::new(),
+                load_latency_ms: None,
+            }
+        }
+    }
+
+    impl ModelResourceBackend for FakeResourceBackend {
+        fn observe(&mut self, _model: &str) -> Result<ModelResourceTelemetry, NativeAgentError> {
+            self.observations.pop_front().ok_or_else(|| {
+                NativeAgentError::BackendUnavailable("fake observation exhausted".to_owned())
+            })
+        }
+
+        fn apply_residency(
+            &mut self,
+            _model: &str,
+            request: BackendResidencyRequest,
+        ) -> Result<Option<u64>, NativeAgentError> {
+            self.requests.push(request);
+            Ok(self.load_latency_ms)
+        }
+    }
+
+    fn resource_sample(resident: bool, gpu_bytes: Option<u64>) -> ModelResourceTelemetry {
+        ModelResourceTelemetry {
+            resident: TelemetryValue::Measured(resident),
+            gpu_residency_bytes: measured_u64(gpu_bytes),
+            ..ModelResourceTelemetry::default()
+        }
+    }
+
+    #[test]
+    fn ollama_capability_profile_is_truthful_about_first_release_controls() {
+        let profile = LocalModelConfig {
+            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+            model: "model:tag".to_owned(),
+        }
+        .capability_profile();
+        assert_eq!(
+            profile.resource_capabilities.unload_reload,
+            CapabilityAvailability::Available
+        );
+        assert_eq!(
+            profile.resource_capabilities.cpu_gpu_offload,
+            CapabilityAvailability::Available
+        );
+        assert_eq!(
+            profile.resource_capabilities.selectable_device,
+            CapabilityAvailability::Unavailable
+        );
+        assert_eq!(
+            profile.resource_capabilities.kv_context_placement,
+            CapabilityAvailability::Unavailable
+        );
+        assert_eq!(
+            profile.resource_capabilities.inference_cache_release,
+            CapabilityAvailability::Unavailable
+        );
+    }
+
+    // These are deterministic adapter-contract tests. Reference-machine GPU
+    // measurements remain separate because no test may fabricate hardware state.
+    #[test]
+    fn unload_requires_observed_non_residency() {
+        let mut success = FakeResourceBackend::new(vec![
+            resource_sample(true, Some(1024)),
+            resource_sample(false, None),
+        ]);
+        let transition = execute_model_resource_operation_with_backend(
+            "model:tag",
+            ModelResourceOperation::Release,
+            &mut success,
+        )
+        .expect("verified unload");
+        assert_eq!(success.requests, [BackendResidencyRequest::Release]);
+        assert_eq!(transition.after.resident, TelemetryValue::Measured(false));
+
+        let mut unconfirmed = FakeResourceBackend::new(vec![
+            resource_sample(true, Some(1024)),
+            resource_sample(true, Some(1024)),
+        ]);
+        assert!(matches!(
+            execute_model_resource_operation_with_backend(
+                "model:tag",
+                ModelResourceOperation::Release,
+                &mut unconfirmed,
+            ),
+            Err(NativeAgentError::ResourceTransitionUnconfirmed(_))
+        ));
+    }
+
+    #[test]
+    fn cpu_offload_requires_observed_gpu_residency_reduction() {
+        let mut success = FakeResourceBackend::new(vec![
+            resource_sample(true, Some(1024)),
+            resource_sample(true, Some(128)),
+        ]);
+        execute_model_resource_operation_with_backend(
+            "model:tag",
+            ModelResourceOperation::ReduceGpuResidency,
+            &mut success,
+        )
+        .expect("verified offload");
+        assert_eq!(success.requests, [BackendResidencyRequest::CpuOnly]);
+
+        let mut unconfirmed = FakeResourceBackend::new(vec![
+            resource_sample(true, Some(1024)),
+            resource_sample(true, Some(1024)),
+        ]);
+        assert!(matches!(
+            execute_model_resource_operation_with_backend(
+                "model:tag",
+                ModelResourceOperation::ReduceGpuResidency,
+                &mut unconfirmed,
+            ),
+            Err(NativeAgentError::ResourceTransitionUnconfirmed(_))
+        ));
+    }
+
+    #[test]
+    fn reload_requires_residency_and_retains_backend_load_timing() {
+        let mut backend = FakeResourceBackend::new(vec![
+            resource_sample(false, None),
+            resource_sample(true, Some(2048)),
+        ]);
+        backend.load_latency_ms = Some(42);
+        let transition = execute_model_resource_operation_with_backend(
+            "model:tag",
+            ModelResourceOperation::Reload,
+            &mut backend,
+        )
+        .expect("verified reload");
+        assert_eq!(backend.requests, [BackendResidencyRequest::Reload]);
+        assert_eq!(
+            transition.backend_load_latency_ms,
+            TelemetryValue::Measured(42)
+        );
     }
 }

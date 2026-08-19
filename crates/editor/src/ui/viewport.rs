@@ -146,6 +146,19 @@ impl EditorApp {
                 }
                 ui.separator();
             }
+            for mode in [
+                crate::scene_view::native_2d_mode::SceneViewMode::ThreeD,
+                crate::scene_view::native_2d_mode::SceneViewMode::TwoD,
+            ] {
+                ui.selectable_value(&mut self.scene_view.mode, mode, mode.label())
+                    .on_hover_text(match mode {
+                        crate::scene_view::native_2d_mode::SceneViewMode::ThreeD =>
+                            "Perspective 3D Scene View",
+                        crate::scene_view::native_2d_mode::SceneViewMode::TwoD =>
+                            "Orthographic XY Native 2D Scene View",
+                    });
+            }
+            ui.separator();
             self.show_gizmo_selectors(ui);
             ui.separator();
             self.show_camera_menu(ui);
@@ -190,8 +203,12 @@ impl EditorApp {
         // Refresh Problems only when the visible Scene View diagnostic changes.
         // The existing Problems-to-Console mirror then records a new appearance
         // once without flooding Console on every rendered frame.
-        if self.scene_view_problem != output.preview_diagnostic {
+        let motion_binding_diagnostics = self.scene_view.current_motion_binding_diagnostics();
+        if self.scene_view_problem != output.preview_diagnostic
+            || self.scene_view_motion_binding_diagnostics != motion_binding_diagnostics
+        {
             self.scene_view_problem = output.preview_diagnostic.clone();
+            self.scene_view_motion_binding_diagnostics = motion_binding_diagnostics;
             self.refresh_scene_problems();
         }
         if let Some(entity) = output.picked_entity {
@@ -250,7 +267,12 @@ impl EditorApp {
                     )),
             }
         }
-        if output.response.dnd_hover_payload::<DragPayload>().is_some() {
+        let asset_hover = output.response.dnd_hover_payload::<DragPayload>().is_some();
+        let sprite_hover = output
+            .response
+            .dnd_hover_payload::<crate::native_2d_editor::SpriteRegionDragPayload>()
+            .is_some();
+        if asset_hover || sprite_hover {
             ui.painter().rect_stroke(
                 output.response.rect,
                 0.0,
@@ -263,6 +285,41 @@ impl EditorApp {
                 self.create_entity_from_dropped_asset(&payload, None);
             } else if payload.kind == AssetKind::Material {
                 self.assign_dropped_material(ui, payload.asset_id.clone());
+            }
+        }
+        if let Some(payload) = output
+            .response
+            .dnd_release_payload::<crate::native_2d_editor::SpriteRegionDragPayload>()
+        {
+            let sorting_layer = self
+                .project_root
+                .as_ref()
+                .and_then(|project| ProjectSettings::load(project.path()).ok())
+                .and_then(|settings| settings.native_2d.sorting_layers.first().cloned())
+                .map(|layer| layer.id)
+                .unwrap_or_else(|| {
+                    engine_authoring::Project2dSettings::default().sorting_layers[0]
+                        .id
+                        .clone()
+                });
+            match self
+                .session
+                .create_entity_from_sprite_ref(payload.sprite.clone(), sorting_layer, None)
+            {
+                Ok(entity) => {
+                    let target = self.scene_view.camera.target;
+                    let _ = self.session.set_scene_entity_positions(
+                        [entity.clone()],
+                        [
+                            Some(f64::from(target.x)),
+                            Some(f64::from(target.y)),
+                            Some(0.0),
+                        ],
+                    );
+                    self.select_single_entity(Some(entity));
+                    self.refresh_scene_problems();
+                }
+                Err(error) => self.apply_ui_result::<(), _>(Err(error)),
             }
         }
     }

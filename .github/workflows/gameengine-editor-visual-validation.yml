@@ -5,13 +5,13 @@ run-name: >-
   ${{ github.event.pull_request.head.sha }}
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, edited, reopened]
 
 permissions: {}
 
 concurrency:
-  group: gameengine-editor-visual-validation-${{ github.event.pull_request.number }}
+  group: gameengine-editor-visual-validation-pull-request-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -126,6 +126,8 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    outputs:
+      target: ${{ steps.target.outputs.target }}
 
     steps:
       - name: Check out exact visual-validation head

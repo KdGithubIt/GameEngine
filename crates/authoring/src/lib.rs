@@ -57,6 +57,12 @@ pub mod graph_view;
 pub mod id;
 pub mod load;
 pub mod material_asset;
+/// Native 2D project settings and stable sorting-layer contracts (ADR 0127).
+pub mod native_2d;
+/// Native 2D sprite, animation, and tile document contracts (ADR 0127).
+pub mod native_2d_assets;
+/// GUI-free Native 2D authoring services shared by every client.
+pub mod native_2d_services;
 pub mod persist;
 pub mod prefab;
 pub mod prefab_authoring;
@@ -86,7 +92,6 @@ pub use animation_graph::{
 };
 pub use animation_set::{
     AnimationBinding, AnimationSet, AnimationSetError, AnimationSetEvent, MotionSourceRef,
-    MotionSourceVariant,
     ANIMATION_SET_FILE_SUFFIX, ANIMATION_SET_SCHEMA_VERSION,
 };
 pub use behavior_tree::{
@@ -148,6 +153,22 @@ pub use material_asset::{
     LinearRgba, MaterialAlphaMode, MaterialAsset, MaterialAssetError, MaterialCullMode,
     MaterialOutline, MaterialShadingModel, MaterialSphereBlendMode,
     MaterialSphereCoordinateSource, ToonLitProperties, MATERIAL_SCHEMA_VERSION,
+};
+pub use native_2d::{
+    PixelPreviewPolicy, Project2dSettings, SortingLayer, SortingLayerId, SortingLayerIdError,
+    SpriteFiltering,
+};
+pub use native_2d_assets::{
+    Native2dIdError, PixelRect, PixelsPerUnit, SpriteAnimationDocument, SpriteAnimationFrame,
+    SpriteAnimator2d, SpriteAtlasDocument, SpriteBlendMode, SpriteId, SpriteRef, SpriteRegion,
+    SpriteRenderer2d, TileCell, TileCellEntry, TileChunk, TileChunkCoord, TileCollisionMaterial,
+    TileCollisionShape, TileDefinition, TileId, TileLayerId, TileMapDocument, TileMapLayer,
+    TileSetDocument, SPRITE_ANIMATION_SCHEMA_VERSION, SPRITE_ATLAS_SCHEMA_VERSION,
+    TILE_MAP_SCHEMA_VERSION, TILE_SET_SCHEMA_VERSION,
+};
+pub use native_2d_services::{
+    Native2dAuthoringError, SpriteAtlasAuthoringService, TileMapAuthoringService,
+    TileMapChunkKey, TileMapGestureCommit, TileRect, TileStamp,
 };
 pub use persist::{replace_file_contents, PersistError, PersistOperation};
 pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};

@@ -2,7 +2,13 @@ use bytemuck::{Pod, Zeroable};
 use std::fmt;
 use std::sync::{Arc, Weak};
 
-use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
+use crate::camera::{Camera3D, ViewportSize};
+use crate::game_camera::PreparedCamera;
+use crate::native_2d::{
+    cull_tile_chunks, sort_and_batch_sprites, Camera2d, Camera2dDiagnostic, Native2dRenderMetrics,
+    ResolvedSpriteRegion2d, ResolvedTileMap2d, SpriteInstance2d, TileChunkBounds2d, TileMap2d,
+    ViewRect2d,
+};
 use crate::debug_draw::{DebugLine, DebugLines};
 use crate::environment::EnvironmentGpuState;
 use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
@@ -11,7 +17,8 @@ use crate::material::{
     AlphaMode, CullMode, Material, MaterialSlots, ShadingModel, SphereBlendMode,
     SphereCoordinateSource,
 };
-use crate::material::{DecodedTexture, Texture};
+use crate::gpu_streaming::{GpuUploadBudget, GpuUploadFrame, GpuUploadReport};
+use crate::material::{DecodedTexture, GpuTextureEncoding, SharedGpuTextureCache, Texture};
 use crate::mesh::{
     GpuMesh, GpuMeshCache, InstanceData, Mesh, MeshValidationError, TangentVertexData, Vertex,
 };
@@ -19,6 +26,9 @@ use crate::postprocess::{PostProcessSettings, ToneMapOperator};
 use crate::render_limits::{MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS};
 use crate::shadow::{
     cascade_view_projections, EnvironmentLighting, ShadowSettings, SHADOW_CASCADE_COUNT,
+};
+use engine_authoring::{
+    PixelsPerUnit, Project2dSettings, SpriteBlendMode, SpriteFiltering, SpriteRenderer2d,
 };
 use engine_rig::skinning::{JointPalette, SkinnedMesh, MAX_JOINTS};
 use crate::transform::{GlobalTransform, Parent};
@@ -280,6 +290,7 @@ impl From<engine_ecs::WorldError> for RenderPreparationError {
 pub(crate) enum RenderFrameError {
     Preparation(RenderPreparationError),
     Target(MainPassTargetError),
+    Camera2d(Camera2dDiagnostic),
 }
 
 impl fmt::Display for RenderFrameError {
@@ -287,6 +298,7 @@ impl fmt::Display for RenderFrameError {
         match self {
             Self::Preparation(error) => error.fmt(formatter),
             Self::Target(error) => error.fmt(formatter),
+            Self::Camera2d(error) => write!(formatter, "invalid Camera2D for rendering: {error:?}"),
         }
     }
 }
@@ -296,6 +308,7 @@ impl std::error::Error for RenderFrameError {
         match self {
             Self::Preparation(error) => Some(error),
             Self::Target(error) => Some(error),
+            Self::Camera2d(_) => None,
         }
     }
 }
@@ -862,22 +875,6 @@ fn create_material_pipeline(
     })
 }
 
-/// Declares how one material texture slot interprets stored RGBA8 values.
-///
-/// Color textures are stored with the sRGB transfer function and decode to
-/// scene-linear RGB when sampled. Numeric/vector data textures must bypass
-/// that transfer function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextureSampleEncoding {
-    SrgbColor,
-    LinearData,
-}
-
-struct CachedDecodedTexture {
-    source: Weak<DecodedTexture>,
-    texture: Arc<Texture>,
-}
-
 struct CachedMaterialBindGroup {
     base: Weak<Texture>,
     normal: Weak<Texture>,
@@ -1047,14 +1044,365 @@ impl MainPassColorTarget {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct SpriteGpuInstance {
+    model: [[f32; 4]; 4],
+    size_pivot: [f32; 4],
+    uv_rect: [f32; 4],
+    tint: [f32; 4],
+}
+
+impl SpriteGpuInstance {
+    const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &wgpu::vertex_attr_array![
+            0 => Float32x4,
+            1 => Float32x4,
+            2 => Float32x4,
+            3 => Float32x4,
+            4 => Float32x4,
+            5 => Float32x4,
+            6 => Float32x4,
+        ],
+    };
+}
+
+struct PreparedSpriteGpu {
+    instance: SpriteGpuInstance,
+    texture: Arc<DecodedTexture>,
+    blend: SpriteBlendMode,
+    filtering: SpriteFiltering,
+}
+
+struct SpriteGpuBatch {
+    pipeline_index: usize,
+    bind_group: wgpu::BindGroup,
+    first: u32,
+    count: u32,
+    _texture: Arc<Texture>,
+}
+
+struct SpriteGpuFrame {
+    instance_buffer: Option<wgpu::Buffer>,
+    batches: Vec<SpriteGpuBatch>,
+}
+
+struct SpriteRenderState {
+    texture_bgl: wgpu::BindGroupLayout,
+    samplers: [wgpu::Sampler; 2],
+    pipelines: [wgpu::RenderPipeline; 3],
+}
+
+impl SpriteRenderState {
+    async fn new(
+        device: &wgpu::Device,
+        camera_bgl: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, RenderStateError> {
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Native 2D sprite texture BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let nearest = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Native 2D nearest sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let linear = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Native 2D linear sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Native 2D sprite shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("shaders/native_2d_sprite.wgsl").into(),
+            ),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Native 2D sprite pipeline layout"),
+            bind_group_layouts: &[Some(camera_bgl), Some(&texture_bgl)],
+            immediate_size: 0,
+        });
+        let pipelines = [
+            create_sprite_pipeline(
+                device,
+                &layout,
+                &shader,
+                format,
+                SpriteBlendMode::Alpha,
+                "Native 2D alpha pipeline",
+            ),
+            create_sprite_pipeline(
+                device,
+                &layout,
+                &shader,
+                format,
+                SpriteBlendMode::PremultipliedAlpha,
+                "Native 2D premultiplied alpha pipeline",
+            ),
+            create_sprite_pipeline(
+                device,
+                &layout,
+                &shader,
+                format,
+                SpriteBlendMode::Additive,
+                "Native 2D additive pipeline",
+            ),
+        ];
+        if let Some(error) = error_scope.pop().await {
+            return Err(RenderStateError(error));
+        }
+        Ok(Self {
+            texture_bgl,
+            samplers: [nearest, linear],
+            pipelines,
+        })
+    }
+
+    fn draw<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        camera_bind_group: &'a wgpu::BindGroup,
+        frame: &'a SpriteGpuFrame,
+    ) {
+        let Some(buffer) = frame.instance_buffer.as_ref() else {
+            return;
+        };
+        pass.set_bind_group(0, camera_bind_group, &[]);
+        pass.set_vertex_buffer(0, buffer.slice(..));
+        for batch in &frame.batches {
+            pass.set_pipeline(&self.pipelines[batch.pipeline_index]);
+            pass.set_bind_group(1, &batch.bind_group, &[]);
+            pass.draw(0..6, batch.first..batch.first + batch.count);
+        }
+    }
+}
+
+fn sprite_pipeline_index(blend: SpriteBlendMode) -> usize {
+    match blend {
+        SpriteBlendMode::Alpha => 0,
+        SpriteBlendMode::PremultipliedAlpha => 1,
+        SpriteBlendMode::Additive => 2,
+    }
+}
+
+fn sprite_sampler_index(filtering: SpriteFiltering) -> usize {
+    match filtering {
+        SpriteFiltering::Nearest => 0,
+        SpriteFiltering::Linear => 1,
+    }
+}
+
+fn sprite_blend_state(blend: SpriteBlendMode) -> wgpu::BlendState {
+    match blend {
+        SpriteBlendMode::Alpha => wgpu::BlendState::ALPHA_BLENDING,
+        SpriteBlendMode::PremultipliedAlpha => wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+        },
+        SpriteBlendMode::Additive => wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        },
+    }
+}
+
+fn create_sprite_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    blend: SpriteBlendMode,
+    label: &'static str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[SpriteGpuInstance::LAYOUT],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(sprite_blend_state(blend)),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: main_multisample_state(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn native_2d_default_material_key(blend: SpriteBlendMode) -> u64 {
+    (0xcbf29ce484222325_u64 << 2) ^ sprite_pipeline_index(blend) as u64
+}
+
+fn native_2d_view_rect(camera: Option<&PreparedCamera>) -> Option<ViewRect2d> {
+    let camera = camera.filter(|camera| camera.shadow_camera.is_none())?;
+    let inverse = camera.view_projection.inverse();
+    if !inverse.is_finite() {
+        return None;
+    }
+    let corners = [
+        inverse.project_point3(glam::Vec3::new(-1.0, -1.0, 0.0)),
+        inverse.project_point3(glam::Vec3::new(1.0, -1.0, 0.0)),
+        inverse.project_point3(glam::Vec3::new(1.0, 1.0, 0.0)),
+        inverse.project_point3(glam::Vec3::new(-1.0, 1.0, 0.0)),
+    ];
+    if corners.iter().any(|corner| !corner.is_finite()) {
+        return None;
+    }
+    let mut min = corners[0].truncate();
+    let mut max = min;
+    for corner in &corners[1..] {
+        min = min.min(corner.truncate());
+        max = max.max(corner.truncate());
+    }
+    Some(ViewRect2d { min, max })
+}
+
+fn transformed_tile_chunk_bounds(
+    model: glam::Mat4,
+    coord: engine_authoring::TileChunkCoord,
+    chunk_size: u16,
+) -> (glam::Vec2, glam::Vec2) {
+    let size = f32::from(chunk_size.max(1));
+    let min_local = glam::Vec2::new(coord.x as f32 * size, coord.y as f32 * size);
+    let max_local = min_local + glam::Vec2::splat(size);
+    let corners = [
+        model.transform_point3(min_local.extend(0.0)).truncate(),
+        model
+            .transform_point3(glam::Vec3::new(max_local.x, min_local.y, 0.0))
+            .truncate(),
+        model.transform_point3(max_local.extend(0.0)).truncate(),
+        model
+            .transform_point3(glam::Vec3::new(min_local.x, max_local.y, 0.0))
+            .truncate(),
+    ];
+    let mut min = corners[0];
+    let mut max = corners[0];
+    for corner in &corners[1..] {
+        min = min.min(*corner);
+        max = max.max(*corner);
+    }
+    (min, max)
+}
+
+fn tile_instance_key(
+    owner: engine_ecs::Entity,
+    layer: &engine_authoring::TileLayerId,
+    x: i32,
+    y: i32,
+    sprite: &engine_authoring::SpriteRef,
+) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in u64::from(owner.id())
+        .to_le_bytes()
+        .into_iter()
+        .chain(u64::from(owner.generation()).to_le_bytes())
+        .chain(x.to_le_bytes())
+        .chain(y.to_le_bytes())
+        .chain(layer.as_str().bytes())
+        .chain(sprite.atlas.as_str().bytes())
+        .chain(sprite.sprite.as_str().bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn native_2d_material_key(renderer: &SpriteRenderer2d) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in renderer
+        .material_override
+        .as_ref()
+        .map(|asset| asset.as_str())
+        .unwrap_or("")
+        .bytes()
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (hash << 2) ^ sprite_pipeline_index(renderer.blend) as u64
+}
+
 pub(crate) struct WorldRenderer {
     render: RenderState,
     debug: DebugRenderState,
+    sprite: SpriteRenderState,
     color_format: wgpu::TextureFormat,
     main_color_target: Option<MainPassColorTarget>,
     outline_targets: Option<OutlineTargets>,
-    decoded_srgb_cache: std::collections::HashMap<usize, CachedDecodedTexture>,
-    decoded_linear_cache: std::collections::HashMap<usize, CachedDecodedTexture>,
+    shared_texture_cache: SharedGpuTextureCache,
+    upload_budget: GpuUploadBudget,
+    upload_frame: GpuUploadFrame,
     material_bind_group_cache:
         std::collections::HashMap<MaterialBindGroupKey, CachedMaterialBindGroup>,
 }
@@ -1067,16 +1415,416 @@ impl WorldRenderer {
     ) -> Result<Self, RenderStateError> {
         let render = RenderState::new(device, queue, format).await?;
         let debug = DebugRenderState::new(device, &render.camera_bgl, format).await?;
+        let sprite = SpriteRenderState::new(device, &render.camera_bgl, format).await?;
         Ok(Self {
             render,
             debug,
+            sprite,
             color_format: format,
             main_color_target: None,
             outline_targets: None,
-            decoded_srgb_cache: Default::default(),
-            decoded_linear_cache: Default::default(),
+            shared_texture_cache: SharedGpuTextureCache::default(),
+            upload_budget: GpuUploadBudget::unlimited(),
+            upload_frame: GpuUploadFrame::new(GpuUploadBudget::unlimited()),
             material_bind_group_cache: Default::default(),
         })
+    }
+
+    pub(crate) fn set_shared_texture_cache(&mut self, cache: SharedGpuTextureCache) {
+        self.material_bind_group_cache.clear();
+        self.shared_texture_cache = cache;
+    }
+
+    pub(crate) fn set_upload_budget(&mut self, budget: GpuUploadBudget) {
+        self.upload_budget = budget;
+    }
+
+    pub(crate) const fn upload_report(&self) -> GpuUploadReport {
+        self.upload_frame.report()
+    }
+
+    pub(crate) fn release_recreatable_resources(&mut self) {
+        self.main_color_target = None;
+        self.outline_targets = None;
+        self.material_bind_group_cache.clear();
+    }
+
+    fn prepare_sprite_frame(
+        &mut self,
+        world: &mut engine_ecs::World,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        camera: Option<&PreparedCamera>,
+    ) -> SpriteGpuFrame {
+        let settings = world
+            .get_resource::<Project2dSettings>()
+            .cloned()
+            .unwrap_or_default();
+        type SpriteQuery<'w> = engine_ecs::Query<
+            'w,
+            (
+                &'w SpriteRenderer2d,
+                &'w ResolvedSpriteRegion2d,
+                &'w GlobalTransform,
+            ),
+        >;
+        let query = SpriteQuery::new(world);
+        let entries = query
+            .iter()
+            .map(|(entity, (renderer, region, global))| {
+                (entity, renderer.clone(), region.clone(), global.matrix())
+            })
+            .collect::<Vec<_>>();
+
+        let mut logical = Vec::with_capacity(entries.len());
+        let mut prepared = std::collections::HashMap::with_capacity(entries.len());
+        for (entity, renderer, region, model) in entries {
+            let pixels_per_unit = match region.pixels_per_unit {
+                PixelsPerUnit::ProjectDefault => settings.default_pixels_per_unit,
+                PixelsPerUnit::Override(value) => value,
+            };
+            if !pixels_per_unit.is_finite() || pixels_per_unit <= 0.0 {
+                continue;
+            }
+            let filtering = region.filtering.unwrap_or(settings.default_filtering);
+            let layer_rank = settings
+                .sorting_layers
+                .iter()
+                .position(|layer| layer.id == renderer.sorting_layer)
+                .map(|index| index as u32)
+                .unwrap_or(u32::MAX);
+            let [x, y, width, height] = region.rect;
+            let Some(right) = x.checked_add(width) else {
+                continue;
+            };
+            let Some(bottom) = y.checked_add(height) else {
+                continue;
+            };
+            if width == 0
+                || height == 0
+                || right > region.texture.width
+                || bottom > region.texture.height
+            {
+                continue;
+            }
+            let texture_width = region.texture.width as f32;
+            let texture_height = region.texture.height as f32;
+            let mut uv_rect = [
+                x as f32 / texture_width,
+                y as f32 / texture_height,
+                right as f32 / texture_width,
+                bottom as f32 / texture_height,
+            ];
+            if filtering == SpriteFiltering::Linear {
+                let inset_u = 0.5 / texture_width;
+                let inset_v = 0.5 / texture_height;
+                uv_rect[0] = (uv_rect[0] + inset_u).min(uv_rect[2]);
+                uv_rect[1] = (uv_rect[1] + inset_v).min(uv_rect[3]);
+                uv_rect[2] = (uv_rect[2] - inset_u).max(uv_rect[0]);
+                uv_rect[3] = (uv_rect[3] - inset_v).max(uv_rect[1]);
+            }
+            if renderer.flip_x {
+                uv_rect.swap(0, 2);
+            }
+            if renderer.flip_y {
+                uv_rect.swap(1, 3);
+            }
+            let (scale, rotation, translation) = model.to_scale_rotation_translation();
+            let (_, _, rotation_radians) = rotation.to_euler(glam::EulerRot::XYZ);
+            let base_size = glam::Vec2::new(
+                width as f32 / pixels_per_unit,
+                height as f32 / pixels_per_unit,
+            );
+            let entity_key =
+                (u64::from(entity.generation()) << 32) | u64::from(entity.id());
+            let texture_key = Arc::as_ptr(&region.texture) as usize as u64;
+            let material_key = native_2d_material_key(&renderer);
+            let sampler_key = sprite_sampler_index(filtering) as u64;
+            logical.push(SpriteInstance2d {
+                entity_key,
+                sprite: renderer.sprite.clone(),
+                sorting_layer: renderer.sorting_layer.clone(),
+                layer_rank,
+                order_in_layer: renderer.order_in_layer,
+                texture_key,
+                material_key,
+                sampler_key,
+                position: translation.truncate(),
+                size: glam::Vec2::new(
+                    base_size.x * scale.x.abs(),
+                    base_size.y * scale.y.abs(),
+                ),
+                pivot: glam::Vec2::from_array(region.pivot),
+                rotation_radians,
+                uv_rect,
+                tint: renderer.tint,
+                flip_x: renderer.flip_x,
+                flip_y: renderer.flip_y,
+                visible: renderer.visible,
+            });
+            prepared.insert(
+                entity_key,
+                PreparedSpriteGpu {
+                    instance: SpriteGpuInstance {
+                        model: model.to_cols_array_2d(),
+                        size_pivot: [
+                            base_size.x,
+                            base_size.y,
+                            region.pivot[0],
+                            region.pivot[1],
+                        ],
+                        uv_rect,
+                        tint: renderer.tint,
+                    },
+                    texture: Arc::clone(&region.texture),
+                    blend: renderer.blend,
+                    filtering,
+                },
+            );
+        }
+        let standalone_sprite_count = logical.iter().filter(|sprite| sprite.visible).count();
+
+        type TileMapQuery<'w> = engine_ecs::Query<
+            'w,
+            (&'w TileMap2d, &'w ResolvedTileMap2d, &'w GlobalTransform),
+        >;
+        let tile_maps = TileMapQuery::new(world)
+            .iter()
+            .map(|(entity, (tile_map, resolved, global))| {
+                (entity, tile_map.clone(), resolved.clone(), global.matrix())
+            })
+            .collect::<Vec<_>>();
+        let view_rect = native_2d_view_rect(camera);
+        let mut visible_tile_chunks = 0_usize;
+        for (entity, tile_map, resolved, map_model) in tile_maps {
+            if !tile_map.visible {
+                continue;
+            }
+            let enabled = |layer: &engine_authoring::TileLayerId| {
+                resolved
+                    .document
+                    .layers
+                    .iter()
+                    .find(|candidate| &candidate.id == layer)
+                    .is_some_and(|candidate| candidate.enabled)
+            };
+            let visible = if let Some(view) = view_rect {
+                cull_tile_chunks(
+                    resolved
+                        .chunks
+                        .iter()
+                        .filter(|chunk| enabled(&chunk.layer))
+                        .map(|chunk| {
+                            let (min, max) = transformed_tile_chunk_bounds(
+                                map_model,
+                                chunk.coord,
+                                resolved.document.chunk_size,
+                            );
+                            TileChunkBounds2d {
+                                layer: &chunk.layer,
+                                coord: chunk.coord,
+                                min,
+                                max,
+                            }
+                        }),
+                    view,
+                )
+                .into_iter()
+                .map(|chunk| (chunk.layer, chunk.coord))
+                .collect::<std::collections::BTreeSet<_>>()
+            } else {
+                resolved
+                    .chunks
+                    .iter()
+                    .filter(|chunk| enabled(&chunk.layer))
+                    .map(|chunk| (chunk.layer.clone(), chunk.coord))
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            visible_tile_chunks += visible.len();
+            let chunk_size = i64::from(resolved.document.chunk_size.max(1));
+            for chunk in resolved.chunks.iter().filter(|chunk| {
+                visible.contains(&(chunk.layer.clone(), chunk.coord))
+            }) {
+                let layer_rank = settings
+                    .sorting_layers
+                    .iter()
+                    .position(|layer| layer.id == chunk.sorting_layer)
+                    .map(|index| index as u32)
+                    .unwrap_or(u32::MAX);
+                for cell in &chunk.cells {
+                    let region = &cell.region;
+                    let pixels_per_unit = match region.pixels_per_unit {
+                        PixelsPerUnit::ProjectDefault => settings.default_pixels_per_unit,
+                        PixelsPerUnit::Override(value) => value,
+                    };
+                    if !pixels_per_unit.is_finite() || pixels_per_unit <= 0.0 {
+                        continue;
+                    }
+                    let filtering = region.filtering.unwrap_or(settings.default_filtering);
+                    let [x, y, width, height] = region.rect;
+                    let Some(right) = x.checked_add(width) else {
+                        continue;
+                    };
+                    let Some(bottom) = y.checked_add(height) else {
+                        continue;
+                    };
+                    if width == 0
+                        || height == 0
+                        || right > region.texture.width
+                        || bottom > region.texture.height
+                    {
+                        continue;
+                    }
+                    let texture_width = region.texture.width as f32;
+                    let texture_height = region.texture.height as f32;
+                    let mut uv_rect = [
+                        x as f32 / texture_width,
+                        y as f32 / texture_height,
+                        right as f32 / texture_width,
+                        bottom as f32 / texture_height,
+                    ];
+                    if filtering == SpriteFiltering::Linear {
+                        let inset_u = 0.5 / texture_width;
+                        let inset_v = 0.5 / texture_height;
+                        uv_rect[0] = (uv_rect[0] + inset_u).min(uv_rect[2]);
+                        uv_rect[1] = (uv_rect[1] + inset_v).min(uv_rect[3]);
+                        uv_rect[2] = (uv_rect[2] - inset_u).max(uv_rect[0]);
+                        uv_rect[3] = (uv_rect[3] - inset_v).max(uv_rect[1]);
+                    }
+                    let world_x = i64::from(chunk.coord.x) * chunk_size + i64::from(cell.cell.x);
+                    let world_y = i64::from(chunk.coord.y) * chunk_size + i64::from(cell.cell.y);
+                    let local = glam::Mat4::from_translation(glam::Vec3::new(
+                        world_x as f32 + 0.5,
+                        world_y as f32 + 0.5,
+                        0.0,
+                    ));
+                    let model = map_model * local;
+                    let (scale, rotation, translation) = model.to_scale_rotation_translation();
+                    let (_, _, rotation_radians) = rotation.to_euler(glam::EulerRot::XYZ);
+                    let base_size = glam::Vec2::new(
+                        width as f32 / pixels_per_unit,
+                        height as f32 / pixels_per_unit,
+                    );
+                    let entity_key = tile_instance_key(
+                        entity,
+                        &chunk.layer,
+                        world_x as i32,
+                        world_y as i32,
+                        &cell.sprite,
+                    );
+                    let texture_key = Arc::as_ptr(&region.texture) as usize as u64;
+                    let filtering_key = sprite_sampler_index(filtering) as u64;
+                    logical.push(SpriteInstance2d {
+                        entity_key,
+                        sprite: cell.sprite.clone(),
+                        sorting_layer: chunk.sorting_layer.clone(),
+                        layer_rank,
+                        order_in_layer: chunk.order_in_layer,
+                        texture_key,
+                        material_key: native_2d_default_material_key(SpriteBlendMode::Alpha),
+                        sampler_key: filtering_key,
+                        position: translation.truncate(),
+                        size: glam::Vec2::new(
+                            base_size.x * scale.x.abs(),
+                            base_size.y * scale.y.abs(),
+                        ),
+                        pivot: glam::Vec2::from_array(region.pivot),
+                        rotation_radians,
+                        uv_rect,
+                        tint: [1.0; 4],
+                        flip_x: false,
+                        flip_y: false,
+                        visible: true,
+                    });
+                    prepared.insert(
+                        entity_key,
+                        PreparedSpriteGpu {
+                            instance: SpriteGpuInstance {
+                                model: model.to_cols_array_2d(),
+                                size_pivot: [
+                                    base_size.x,
+                                    base_size.y,
+                                    region.pivot[0],
+                                    region.pivot[1],
+                                ],
+                                uv_rect,
+                                tint: [1.0; 4],
+                            },
+                            texture: Arc::clone(&region.texture),
+                            blend: SpriteBlendMode::Alpha,
+                            filtering,
+                        },
+                    );
+                }
+            }
+        }
+
+        let logical_batches = sort_and_batch_sprites(&mut logical);
+        let gpu_instances = logical
+            .iter()
+            .filter_map(|sprite| prepared.get(&sprite.entity_key).map(|item| item.instance))
+            .collect::<Vec<_>>();
+        let instance_buffer = (!gpu_instances.is_empty()).then(|| {
+            self.render
+                .make_instance_buffer(device, bytemuck::cast_slice(&gpu_instances))
+        });
+        let mut batches = Vec::with_capacity(logical_batches.len());
+        for batch in logical_batches {
+            let Some(sprite) = logical.get(batch.first) else {
+                continue;
+            };
+            let Some(item) = prepared.get(&sprite.entity_key) else {
+                continue;
+            };
+            let gpu_texture = self.resolve_texture_slot(
+                device,
+                queue,
+                None,
+                Some(&item.texture),
+                Arc::clone(&self.render.white_texture),
+                GpuTextureEncoding::SrgbColor,
+            );
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Native 2D sprite texture BG"),
+                layout: &self.sprite.texture_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&gpu_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(
+                            &self.sprite.samplers[sprite_sampler_index(item.filtering)],
+                        ),
+                    },
+                ],
+            });
+            batches.push(SpriteGpuBatch {
+                pipeline_index: sprite_pipeline_index(item.blend),
+                bind_group,
+                first: batch.first as u32,
+                count: batch.count as u32,
+                _texture: gpu_texture,
+            });
+        }
+        if let Some(metrics) = world.get_resource_mut::<Native2dRenderMetrics>() {
+            metrics.sprite_count = standalone_sprite_count;
+            metrics.sprite_batches = batches.len();
+            metrics.visible_tile_chunks = visible_tile_chunks;
+            metrics.rebuilt_tile_chunks = 0;
+        } else {
+            world.insert_resource(Native2dRenderMetrics {
+                sprite_count: standalone_sprite_count,
+                sprite_batches: batches.len(),
+                visible_tile_chunks,
+                rebuilt_tile_chunks: 0,
+            });
+        }
+        SpriteGpuFrame {
+            instance_buffer,
+            batches,
+        }
     }
 
     fn collect_point_lights(world: &mut engine_ecs::World) -> Vec<PointLightUniform> {
@@ -1175,25 +1923,12 @@ impl WorldRenderer {
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        let camera = Self::get_camera(world);
-        match camera {
-            Some((camera, transform)) => self.render_to_view_with_camera(
-                world,
-                &camera,
-                &transform,
-                device,
-                queue,
-                color_view,
-                depth_view,
-            ),
-            None => self.render_to_view_without_camera(
-                world, device, queue, color_view, depth_view,
-            ),
-        }
+        let camera = crate::game_camera::active_camera(world).map_err(RenderFrameError::Camera2d)?;
+        self.render_to_view_with_prepared_camera(
+            world, camera, device, queue, color_view, depth_view,
+        )
     }
 
-    // This mirrors the existing render entry point plus the explicit camera
-    // pair; grouping the caller-owned wgpu views would obscure that contract.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_to_view_with_camera(
         &mut self,
@@ -1205,9 +1940,9 @@ impl WorldRenderer {
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        self.render_to_view_with_optional_camera(
+        self.render_to_view_with_prepared_camera(
             world,
-            Some((camera, camera_transform)),
+            Some(PreparedCamera::three_d(camera.clone(), camera_transform.clone())),
             device,
             queue,
             color_view,
@@ -1215,47 +1950,57 @@ impl WorldRenderer {
         )
     }
 
-    fn render_to_view_without_camera(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_to_view_with_camera_2d(
         &mut self,
         world: &mut engine_ecs::World,
+        camera: &Camera2d,
+        camera_transform: &crate::transform::Transform,
+        viewport: [u32; 2],
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        self.render_to_view_with_optional_camera(
-            world, None, device, queue, color_view, depth_view,
+        let camera = PreparedCamera::two_d(*camera, camera_transform.clone(), viewport)
+            .map_err(RenderFrameError::Camera2d)?;
+        self.render_to_view_with_prepared_camera(
+            world, Some(camera), device, queue, color_view, depth_view,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_to_view_with_optional_camera(
+    fn render_to_view_with_prepared_camera(
         &mut self,
         world: &mut engine_ecs::World,
-        shadow_camera: Option<(&Camera3D, &crate::transform::Transform)>,
+        camera: Option<PreparedCamera>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        upload_pending_meshes(world, device).map_err(RenderFrameError::Preparation)?;
+        self.upload_frame.reset(self.upload_budget);
+        upload_pending_meshes(world, device, &mut self.upload_frame)
+            .map_err(RenderFrameError::Preparation)?;
         upload_morphed_vertices(world, queue);
 
-        let (vp, view, camera_position, viewport_aspect) = shadow_camera
-            .map(|(camera, transform)| {
-                (
-                    camera.view_projection_matrix(transform),
-                    Camera3D::view_matrix(transform),
-                    transform.translation,
-                    valid_viewport_aspect(camera.aspect),
-                )
-            })
+        let (vp, view, camera_position, viewport_aspect) = camera
+            .as_ref()
+            .map(|camera| (
+                camera.view_projection,
+                camera.view,
+                camera.position,
+                camera.viewport_aspect,
+            ))
             .unwrap_or((
                 glam::Mat4::IDENTITY,
                 glam::Mat4::IDENTITY,
                 glam::Vec3::ZERO,
                 1.0,
             ));
+        let shadow_camera = camera
+            .as_ref()
+            .and_then(|camera| camera.shadow_camera.as_ref());
         self.render
             .update_camera(queue, vp, view, camera_position, viewport_aspect);
 
@@ -1438,6 +2183,7 @@ impl WorldRenderer {
             )
             .collect::<Vec<_>>();
         sort_blend_draws_back_to_front(&mut blend_draws);
+        let sprite_frame = self.prepare_sprite_frame(world, device, queue, camera.as_ref());
 
         self.ensure_main_pass_target(device, color_view, depth_view)
             .map_err(RenderFrameError::Target)?;
@@ -1817,6 +2563,8 @@ impl WorldRenderer {
                 }
             }
 
+            self.sprite
+                .draw(&mut pass, &self.render.camera_bind_group, &sprite_frame);
         }
 
         // Outline classification stays single-sampled because its integer
@@ -1865,18 +2613,6 @@ impl WorldRenderer {
         let assets = world.get_resource::<crate::asset::Assets<Arc<Texture>>>()?;
         let handle = assets.handle(runtime_id)?;
         assets.get(&handle).cloned()
-    }
-
-    /// Returns a clone of the selected Game View camera and its transform.
-    fn get_camera(
-        world: &mut engine_ecs::World,
-    ) -> Option<(Camera3D, crate::transform::Transform)> {
-        use crate::transform::Transform;
-        use engine_ecs::Query;
-
-        let query = Query::<(&Camera3D, &Transform)>::new(world);
-        select_active_game_camera(query.iter())
-            .map(|(_, (camera, transform))| (camera.clone(), transform.clone()))
     }
 
     /// Returns the stable-per-frame outline group for one render entity.
@@ -2021,10 +2757,7 @@ impl WorldRenderer {
         use engine_ecs::{Query, Without};
         use hashbrown::HashMap;
 
-        self.decoded_srgb_cache
-            .retain(|_, cached| cached.source.strong_count() > 0);
-        self.decoded_linear_cache
-            .retain(|_, cached| cached.source.strong_count() > 0);
+        self.shared_texture_cache.prune();
         self.material_bind_group_cache.retain(|_, cached| {
             cached.base.strong_count() > 0
                 && cached.normal.strong_count() > 0
@@ -2327,7 +3060,7 @@ impl WorldRenderer {
             material.texture.as_ref(),
             material.pending_texture.as_ref(),
             base_fallback,
-            TextureSampleEncoding::SrgbColor,
+            GpuTextureEncoding::SrgbColor,
         );
         let normal = self.resolve_texture_slot(
             device,
@@ -2335,7 +3068,7 @@ impl WorldRenderer {
             material.normal_texture.as_ref(),
             material.pending_normal_texture.as_ref(),
             normal_fallback,
-            TextureSampleEncoding::LinearData,
+            GpuTextureEncoding::LinearData,
         );
         let metallic_roughness = self.resolve_texture_slot(
             device,
@@ -2343,7 +3076,7 @@ impl WorldRenderer {
             material.metallic_roughness_texture.as_ref(),
             material.pending_metallic_roughness_texture.as_ref(),
             Arc::clone(&self.render.white_texture),
-            TextureSampleEncoding::LinearData,
+            GpuTextureEncoding::LinearData,
         );
         let occlusion = self.resolve_texture_slot(
             device,
@@ -2351,7 +3084,7 @@ impl WorldRenderer {
             material.occlusion_texture.as_ref(),
             material.pending_occlusion_texture.as_ref(),
             Arc::clone(&self.render.white_texture),
-            TextureSampleEncoding::LinearData,
+            GpuTextureEncoding::LinearData,
         );
         let emissive = self.resolve_texture_slot(
             device,
@@ -2359,7 +3092,7 @@ impl WorldRenderer {
             material.emissive_texture.as_ref(),
             material.pending_emissive_texture.as_ref(),
             emissive_fallback,
-            TextureSampleEncoding::SrgbColor,
+            GpuTextureEncoding::SrgbColor,
         );
         let ramp = self.resolve_texture_slot(
             device,
@@ -2367,7 +3100,7 @@ impl WorldRenderer {
             material.toon.ramp_texture.as_ref(),
             material.toon.pending_ramp_texture.as_ref(),
             Arc::clone(&self.render.white_texture),
-            TextureSampleEncoding::SrgbColor,
+            GpuTextureEncoding::SrgbColor,
         );
         let sphere = self.resolve_texture_slot(
             device,
@@ -2375,7 +3108,7 @@ impl WorldRenderer {
             material.toon.sphere_texture.as_ref(),
             material.toon.pending_sphere_texture.as_ref(),
             Arc::clone(&self.render.white_texture),
-            TextureSampleEncoding::SrgbColor,
+            GpuTextureEncoding::SrgbColor,
         );
         let uniform = MaterialUniformData::from_material(material);
         let key = MaterialBindGroupKey {
@@ -2432,7 +3165,7 @@ impl WorldRenderer {
         texture: Option<&Arc<Texture>>,
         pending: Option<&Arc<DecodedTexture>>,
         fallback: Arc<Texture>,
-        encoding: TextureSampleEncoding,
+        encoding: GpuTextureEncoding,
     ) -> Arc<Texture> {
         if let Some(texture) = texture {
             return Arc::clone(texture);
@@ -2440,27 +3173,30 @@ impl WorldRenderer {
         let Some(pending) = pending else {
             return fallback;
         };
-        let cache = match encoding {
-            TextureSampleEncoding::SrgbColor => &mut self.decoded_srgb_cache,
-            TextureSampleEncoding::LinearData => &mut self.decoded_linear_cache,
-        };
-        let key = Arc::as_ptr(pending) as usize;
-        if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key) {
-            let uploaded = match encoding {
-                TextureSampleEncoding::SrgbColor => Texture::from_decoded(device, queue, pending),
-                TextureSampleEncoding::LinearData => {
-                    Texture::from_decoded_linear(device, queue, pending)
-                }
-            };
-            let Ok(texture) = uploaded else {
-                return fallback;
-            };
-            entry.insert(CachedDecodedTexture {
-                source: Arc::downgrade(pending),
-                texture: Arc::new(texture),
-            });
+        if let Some(texture) = self.shared_texture_cache.get(device, pending, encoding) {
+            self.upload_frame.note_cache_hit();
+            return texture;
         }
-        Arc::clone(&cache[&key].texture)
+        let identity = Arc::as_ptr(pending) as usize;
+        let linear = encoding == GpuTextureEncoding::LinearData;
+        if !self.upload_frame.request_texture(
+            identity,
+            linear,
+            pending.estimated_gpu_upload_bytes(),
+        ) {
+            return fallback;
+        }
+        let uploaded = match encoding {
+            GpuTextureEncoding::SrgbColor => Texture::from_decoded(device, queue, pending),
+            GpuTextureEncoding::LinearData => Texture::from_decoded_linear(device, queue, pending),
+        };
+        let Ok(texture) = uploaded else {
+            return fallback;
+        };
+        let texture = Arc::new(texture);
+        self.shared_texture_cache
+            .insert(device, pending, encoding, Arc::clone(&texture));
+        texture
     }
 
     /// Collects one draw per skinned entity (identified by [`JointPalette`]).
@@ -3755,18 +4491,38 @@ pub(crate) fn upload_morphed_vertices(world: &mut engine_ecs::World, queue: &wgp
 pub(crate) fn upload_pending_meshes(
     world: &mut engine_ecs::World,
     device: &wgpu::Device,
+    upload_frame: &mut GpuUploadFrame,
 ) -> Result<(), RenderPreparationError> {
     use crate::asset::{Assets, Handle, RuntimeAssetId};
     use engine_ecs::Query;
     use hashbrown::HashMap;
 
-    // Direct Mesh components → GpuMesh per entity (used by Without<Handle<Mesh>> batch path).
+    let estimated_mesh_bytes = |mesh: &Mesh| {
+        let vertices = mesh.vertices.len() as u64 * std::mem::size_of::<Vertex>() as u64;
+        let indices = mesh.indices.as_ref().map_or(0, |indices| {
+            indices.len() as u64 * std::mem::size_of::<u32>() as u64
+        });
+        let skinning = mesh.skinning.as_ref().map_or(0, |skinning| {
+            skinning.len() as u64 * std::mem::size_of::<crate::mesh::SkinningVertexData>() as u64
+        });
+        let tangents = mesh.vertices.len() as u64 * std::mem::size_of::<TangentVertexData>() as u64;
+        vertices
+            .saturating_add(indices)
+            .saturating_add(skinning)
+            .saturating_add(tangents)
+    };
+
     {
         let mut to_upload = HashMap::<engine_ecs::Entity, GpuMesh>::new();
         {
             let query = Query::<(&Mesh, Option<&GpuMesh>)>::new(world);
             for (entity, (mesh, gpu_mesh)) in &query {
-                if gpu_mesh.is_none() {
+                if gpu_mesh.is_none()
+                    && upload_frame.request_mesh(
+                        mesh as *const Mesh as usize,
+                        estimated_mesh_bytes(mesh),
+                    )
+                {
                     let gm = GpuMesh::upload(device, mesh)
                         .map_err(|source| RenderPreparationError::Mesh { entity, source })?;
                     to_upload.insert(entity, gm);
@@ -3778,9 +4534,7 @@ pub(crate) fn upload_pending_meshes(
         }
     }
 
-    // Handle<Mesh> → GpuMeshCache (shared across all entities referencing the same asset).
     {
-        // Collect (representative_entity, handle_id) pairs not yet in cache.
         let pending: Vec<(engine_ecs::Entity, RuntimeAssetId)> = {
             let cached_ids: Vec<RuntimeAssetId> = world
                 .get_resource::<GpuMeshCache>()
@@ -3798,8 +4552,6 @@ pub(crate) fn upload_pending_meshes(
                 }
             }
             {
-                // Particle emitters reference their mesh as a field, not a
-                // component (ADR 0044), so they need their own sweep.
                 let query = Query::<&crate::particles::ParticleEmitter>::new(world);
                 for (entity, emitter) in query.iter() {
                     let id = emitter.mesh.id();
@@ -3811,10 +4563,8 @@ pub(crate) fn upload_pending_meshes(
             pending
         };
 
-        // Upload while holding Assets borrow, collect results, then insert into cache.
         let mut uploaded: Vec<(RuntimeAssetId, GpuMesh)> = Vec::new();
         let mut upload_error: Option<RenderPreparationError> = None;
-
         let shared = world
             .get_resource::<GpuMeshCache>()
             .map(GpuMeshCache::shared)
@@ -3822,25 +4572,33 @@ pub(crate) fn upload_pending_meshes(
         if let Some(assets) = world.get_resource::<Assets<Mesh>>() {
             for (entity, id) in &pending {
                 if let Some(handle) = assets.handle(*id)
-                    && let Some(mesh) = assets.get(&handle) {
-                        if let Some(gpu_mesh) = shared.get(mesh) {
-                            uploaded.push((*id, gpu_mesh));
-                            continue;
+                    && let Some(mesh) = assets.get(&handle)
+                {
+                    if let Some(gpu_mesh) = shared.get(device, mesh) {
+                        upload_frame.note_cache_hit();
+                        uploaded.push((*id, gpu_mesh));
+                        continue;
+                    }
+                    if !upload_frame.request_mesh(
+                        mesh as *const Mesh as usize,
+                        estimated_mesh_bytes(mesh),
+                    ) {
+                        continue;
+                    }
+                    match GpuMesh::upload(device, mesh) {
+                        Ok(gm) => {
+                            shared.insert(device, mesh, gm.clone());
+                            uploaded.push((*id, gm));
                         }
-                        match GpuMesh::upload(device, mesh) {
-                            Ok(gm) => {
-                                shared.insert(mesh, gm.clone());
-                                uploaded.push((*id, gm));
-                            }
-                            Err(source) => {
-                                upload_error = Some(RenderPreparationError::Mesh {
-                                    entity: *entity,
-                                    source,
-                                });
-                                break;
-                            }
+                        Err(source) => {
+                            upload_error = Some(RenderPreparationError::Mesh {
+                                entity: *entity,
+                                source,
+                            });
+                            break;
                         }
                     }
+                }
             }
         }
 
@@ -4162,8 +4920,8 @@ mod tests {
     #[test]
     fn material_texture_slots_distinguish_color_from_numeric_data() {
         assert_ne!(
-            TextureSampleEncoding::SrgbColor,
-            TextureSampleEncoding::LinearData
+            GpuTextureEncoding::SrgbColor,
+            GpuTextureEncoding::LinearData
         );
     }
 
@@ -4372,12 +5130,14 @@ mod tests {
             Err(error) => panic!("GPU device creation failed: {error}"),
         };
 
+        let shared_texture_cache = SharedGpuTextureCache::default();
         let mut renderer = pollster::block_on(WorldRenderer::new(
             context.device(),
             context.queue(),
             wgpu::TextureFormat::Rgba8UnormSrgb,
         ))
         .expect("every static/skinned alpha and culling pipeline must validate");
+        renderer.set_shared_texture_cache(shared_texture_cache.clone());
         let pixels = || {
             Arc::new(DecodedTexture {
                 label: "material_slot_test".into(),
@@ -4395,9 +5155,21 @@ mod tests {
 
         let _bind_group =
             renderer.resolve_material_bind_group(context.device(), context.queue(), &material);
-        assert_eq!(renderer.decoded_srgb_cache.len(), 2);
-        assert_eq!(renderer.decoded_linear_cache.len(), 1);
+        assert_eq!(shared_texture_cache.len(), 3);
         assert_eq!(renderer.material_bind_group_cache.len(), 1);
+
+        let mut second = pollster::block_on(WorldRenderer::new(
+            context.device(),
+            context.queue(),
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ))
+        .expect("second preview renderer must validate");
+        second.set_shared_texture_cache(shared_texture_cache.clone());
+        let _bind_group =
+            second.resolve_material_bind_group(context.device(), context.queue(), &material);
+        assert_eq!(shared_texture_cache.len(), 3);
+        assert_eq!(second.upload_report().uploaded_bytes, 0);
+        assert!(second.upload_report().cache_hits >= 3);
     }
 
     fn reference_quad() -> Mesh {

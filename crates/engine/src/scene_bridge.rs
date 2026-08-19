@@ -20,6 +20,12 @@ use crate::authoring_overlay::AuthoringDocumentOverlay;
 use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController};
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+use crate::native_2d::{
+    compile_tile_map, compile_tile_set, Camera2d, ResolvedSpriteRegion2d, ResolvedTileCell2d,
+    ResolvedTileChunkRender2d, ResolvedTileMap2d, SpriteAnimationClipRegistry2d,
+    SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, TileMap2d,
+    TileMapPhysicsSource2d, ViewportFit2d,
+};
 use crate::character_controller::KinematicCharacterController;
 use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
 use crate::combat::DamageReceiver;
@@ -58,7 +64,9 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
 use engine_authoring::value::Value;
 use engine_authoring::{
     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
-    Graph, VfxAuthoringService, VfxModuleOperation,
+    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId, TileMapDocument,
+    TileSetDocument, VfxAuthoringService,
+    VfxModuleOperation,
 };
 use engine_ecs::{Entity, World};
 use glam::{EulerRot, Mat4, Quat, Vec3};
@@ -105,6 +113,15 @@ pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
 /// The `"engine.camera"` component type string recognised by the bridge.
 pub const CAMERA_COMPONENT: &str = "engine.camera";
 
+/// Native orthographic XY camera component (ADR 0127).
+pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
+/// Native SpriteRenderer2D component using stable SpriteRef identity.
+pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
+/// Native deterministic SpriteAnimator2D component.
+pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
+/// Native sparse Tile Map scene component.
+pub const TILE_MAP_2D_COMPONENT: &str = "engine.tile_map_2d";
+
 /// The `"engine.directional_light"` component type string recognised by the bridge.
 pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
 
@@ -148,6 +165,15 @@ pub const UI_DOCUMENT_COMPONENT: &str = "engine.ui_document";
 /// The `"engine.collider"` component type string recognised by the bridge
 /// (Phase 57).
 pub const COLLIDER_COMPONENT: &str = "engine.collider";
+
+/// Native 2D collider component stored in authored scenes (ADR 0127).
+pub const COLLIDER_2D_COMPONENT: &str = "engine.collider_2d";
+
+/// Native 2D rigid-body component stored in authored scenes (ADR 0127).
+pub const RIGID_BODY_2D_COMPONENT: &str = "engine.rigid_body_2d";
+
+/// Native 2D platformer controller component stored in authored scenes (ADR 0127).
+pub const CHARACTER_CONTROLLER_2D_COMPONENT: &str = "engine.character_controller_2d";
 
 /// The `"engine.physics_body"` component type string recognised by the
 /// bridge (Phase 57).
@@ -412,6 +438,16 @@ pub(crate) struct BridgeAssetState {
     pub(crate) mesh_handles: HashMap<AssetId, Handle<Mesh>>,
     pub(crate) material_handles: HashMap<AssetId, Handle<Material>>,
     pub(crate) animation_clip_handles: HashMap<AssetId, BTreeMap<String, Handle<AnimationClip>>>,
+    /// Parsed immutable Sprite Animation documents shared by every entity referencing the asset.
+    pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
+    /// Parsed immutable Sprite Atlas documents shared by every SpriteRef in this conversion.
+    pub(crate) sprite_atlas_documents: HashMap<AssetId, Arc<SpriteAtlasDocument>>,
+    /// Parsed immutable Tile Set documents shared by Tile Map entities.
+    pub(crate) tile_set_documents: HashMap<AssetId, Arc<TileSetDocument>>,
+    /// Parsed immutable Tile Map documents shared by scene instances.
+    pub(crate) tile_map_documents: HashMap<AssetId, Arc<TileMapDocument>>,
+    /// CPU-decoded Native 2D source textures shared by resolved sprite regions.
+    pub(crate) native_2d_textures: HashMap<AssetId, Arc<DecodedTexture>>,
     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
     /// source contributed, recorded when its clips were first loaded.
     ///
@@ -514,6 +550,10 @@ pub fn spawn_from_authoring_scene(
 /// Diagnostic code reported for every component skipped by
 /// [`spawn_from_authoring_scene_best_effort`].
 pub const COMPONENT_SKIPPED_DIAGNOSTIC: &str = "scene_bridge.component_skipped";
+
+/// Diagnostic code reported when a target-aware Animation Set motion binding
+/// has no Native, Retarget, or Humanoid route for the entity's target rig.
+pub const ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC: &str = "anim.motion_binding_failed";
 
 /// Diagnostic code reported when a component converts to nothing because a
 /// schema-required asset reference has not been assigned yet (ADR 0069).
@@ -1459,6 +1499,10 @@ fn component_skipped_diagnostic(
             entity.as_str()
         ),
     )
+    .with_target(DiagnosticTarget::Component {
+        entity: entity.clone(),
+        component_type: component_type.clone(),
+    })
 }
 
 fn rollback_bridge_changes(

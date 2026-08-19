@@ -235,6 +235,49 @@ const CAMERA_FIELDS: &[FieldDef] = &[
     .with_control(InspectorFieldControl::Number(POSITIVE)),
 ];
 
+const CAMERA_2D_FIELDS: &[FieldDef] = &[
+    boolean("enabled", "Enabled", "Whether this camera participates in shared Game View arbitration.", true),
+    integer("priority", "Priority", "Shared 2D/3D camera selection priority; higher values win.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
+    number("orthographic_height", "Orthographic Height", "Vertical world-space span before zoom.", 10.0, POSITIVE),
+    number("zoom", "Zoom", "Positive orthographic zoom multiplier.", 1.0, POSITIVE),
+    float("near", "Near", "Near clipping plane in Camera2D space.", -1000.0),
+    float("far", "Far", "Far clipping plane in Camera2D space; must exceed Near.", 1000.0),
+    boolean("pixel_perfect", "Pixel Perfect", "Use deterministic reference-pixel projection without rewriting authored transforms.", false),
+    number("reference_pixels_per_unit", "Reference Pixels Per Unit", "Reference source pixels represented by one world unit.", 100.0, POSITIVE),
+    integer("reference_width", "Reference Width", "Pixel-perfect reference resolution width.", 320, U32_RANGE),
+    integer("reference_height", "Reference Height", "Pixel-perfect reference resolution height.", 180, U32_RANGE),
+    enumeration("fit", "Viewport Fit", "How the reference frame fits the actual viewport.", "fit", &["fit", "fill", "stretch"]),
+];
+
+const SPRITE_RENDERER_2D_FIELDS: &[FieldDef] = &[
+    asset_ref("atlas", "Sprite Atlas", "Sprite Atlas document containing the stable SpriteId region.", AssetKind::SpriteAtlas, FieldDefaultSpec::Unassigned),
+    text("sprite_id", "Sprite ID", "Stable SpriteId inside the selected atlas.", ""),
+    number("tint_r", "Tint R", "Linear red tint multiplier.", 1.0, NON_NEGATIVE),
+    number("tint_g", "Tint G", "Linear green tint multiplier.", 1.0, NON_NEGATIVE),
+    number("tint_b", "Tint B", "Linear blue tint multiplier.", 1.0, NON_NEGATIVE),
+    number("tint_a", "Tint A", "Linear alpha tint multiplier.", 1.0, UNIT_INTERVAL),
+    boolean("flip_x", "Flip X", "Mirror texture coordinates horizontally.", false),
+    boolean("flip_y", "Flip Y", "Mirror texture coordinates vertically.", false),
+    text("sorting_layer", "Sorting Layer ID", "Stable SortingLayerId from Project Settings.", "sorting_layer_00000000000000000000000000"),
+    integer("order_in_layer", "Order In Layer", "Signed authored order inside the logical sorting layer.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
+    boolean("visible", "Visible", "Whether this sprite contributes a runtime draw.", true),
+    enumeration("blend", "Blend", "Supported unlit SpriteRenderer2D blend mode.", "alpha", &["alpha", "premultiplied_alpha", "additive"]),
+    asset_ref("material_override", "Material Override", "Optional material compatibility override used for deterministic batching.", AssetKind::Material, FieldDefaultSpec::Unassigned).optional(),
+];
+
+const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
+    asset_ref("clip", "Sprite Animation", "Sprite Animation document evaluated independently for this entity.", AssetKind::SpriteAnimation, FieldDefaultSpec::Unassigned),
+    boolean("autoplay", "Autoplay", "Start clip playback when the runtime entity becomes active.", true),
+    number("speed", "Speed", "Non-negative deterministic playback speed multiplier.", 1.0, NON_NEGATIVE),
+    FieldDef::new("looping_override", "Looping Override", "Optional per-entity looping override; unassigned uses the clip default.", FieldKind::Bool, FieldDefaultSpec::Unassigned).optional(),
+    integer("initial_frame", "Initial Frame", "Zero-based initial frame selected when playback becomes active.", 0, U32_RANGE),
+];
+
+const TILE_MAP_2D_FIELDS: &[FieldDef] = &[
+    asset_ref("tile_map", "Tile Map", "Sparse chunked Tile Map document rendered by this scene entity.", AssetKind::TileMap, FieldDefaultSpec::Unassigned),
+    boolean("visible", "Visible", "Whether enabled Tile Map layers contribute runtime render output.", true),
+];
+
 const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
     FieldDef::new(
         "direction_x",
@@ -937,6 +980,193 @@ const COLLIDER_FIELDS: &[FieldDef] = &[
         "mask",
         "Mask",
         "Collision layer bitmask this collider tests against.",
+        FieldKind::I64,
+        FieldDefaultSpec::I64(u32::MAX as i64),
+    )
+    .with_control(InspectorFieldControl::LayerMask),
+];
+
+const COLLIDER_2D_SHAPE_BOX: InspectorFieldCondition = InspectorFieldCondition::String {
+    field: "shape",
+    equals: "box",
+};
+
+const COLLIDER_2D_SHAPE_CAPSULE: InspectorFieldCondition = InspectorFieldCondition::String {
+    field: "shape",
+    equals: "capsule",
+};
+
+const COLLIDER_2D_SHAPE_ROUND: InspectorFieldCondition = InspectorFieldCondition::StringAny {
+    field: "shape",
+    values: &["circle", "capsule"],
+};
+
+const COLLIDER_2D_SHAPE_POLYGON: InspectorFieldCondition = InspectorFieldCondition::String {
+    field: "shape",
+    equals: "polygon",
+};
+
+const COLLIDER_2D_FIELDS: &[FieldDef] = &[
+    enumeration(
+        "shape",
+        "Shape",
+        "Native 2D collider geometry.",
+        "box",
+        &["box", "circle", "capsule", "polygon"],
+    ),
+    number(
+        "half_extent_x",
+        "Half Extent X",
+        "Positive local half-width for a box.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_BOX),
+    number(
+        "half_extent_y",
+        "Half Extent Y",
+        "Positive local half-height for a box.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_BOX),
+    number(
+        "radius",
+        "Radius",
+        "Positive radius for a circle or capsule.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_ROUND),
+    number(
+        "half_height",
+        "Half Height",
+        "Half length of the capsule center segment.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_CAPSULE),
+    list(
+        "points",
+        "Polygon Points",
+        "Ordered polygon points as objects with finite x/y fields.",
+        &OBJECT_KIND,
+    )
+    .when(COLLIDER_2D_SHAPE_POLYGON),
+    boolean(
+        "sensor",
+        "Sensor",
+        "Report overlap transitions without solid response.",
+        false,
+    ),
+    number(
+        "friction",
+        "Friction",
+        "Non-negative tangential friction coefficient.",
+        0.5,
+        NON_NEGATIVE,
+    ),
+    number(
+        "restitution",
+        "Restitution",
+        "Normal bounce coefficient.",
+        0.0,
+        UNIT_INTERVAL,
+    ),
+    FieldDef::new(
+        "membership",
+        "Membership",
+        "2D collision layer membership bitmask.",
+        FieldKind::I64,
+        FieldDefaultSpec::I64(1),
+    )
+    .with_control(InspectorFieldControl::LayerMask),
+    FieldDef::new(
+        "mask",
+        "Mask",
+        "2D collision layer interaction bitmask.",
+        FieldKind::I64,
+        FieldDefaultSpec::I64(u32::MAX as i64),
+    )
+    .with_control(InspectorFieldControl::LayerMask),
+    boolean(
+        "one_way",
+        "One Way",
+        "Use the shared one-way platform policy.",
+        false,
+    ),
+];
+
+const RIGID_BODY_2D_FIELDS: &[FieldDef] = &[
+    enumeration(
+        "mode",
+        "Mode",
+        "Native 2D body ownership mode.",
+        "fixed",
+        &["fixed", "dynamic", "kinematic"],
+    ),
+    float("velocity_x", "Velocity X", "Initial X velocity.", 0.0),
+    float("velocity_y", "Velocity Y", "Initial Y velocity.", 0.0),
+    float(
+        "angular_velocity",
+        "Angular Velocity",
+        "Initial Z angular velocity in radians per second.",
+        0.0,
+    ),
+    float(
+        "gravity_scale",
+        "Gravity Scale",
+        "Multiplier applied to project Native 2D gravity.",
+        1.0,
+    ),
+    boolean(
+        "continuous",
+        "Continuous Collision",
+        "Enable bounded continuous-collision substepping for this body.",
+        false,
+    ),
+];
+
+const CHARACTER_CONTROLLER_2D_FIELDS: &[FieldDef] = &[
+    number(
+        "half_extent_x",
+        "Half Extent X",
+        "Controller half-width.",
+        0.45,
+        POSITIVE,
+    ),
+    number(
+        "half_extent_y",
+        "Half Extent Y",
+        "Controller half-height.",
+        0.9,
+        POSITIVE,
+    ),
+    number(
+        "skin",
+        "Skin",
+        "Collision margin removed from overlap tests.",
+        0.02,
+        NON_NEGATIVE,
+    ),
+    number(
+        "slope_limit_degrees",
+        "Slope Limit",
+        "Maximum walkable surface angle in degrees.",
+        45.0,
+        NumericRange::inclusive(0.0, 89.0),
+    ),
+    number(
+        "ground_snap",
+        "Ground Snap",
+        "Maximum downward ground retention distance.",
+        0.1,
+        NON_NEGATIVE,
+    ),
+    FieldDef::new(
+        "collision_mask",
+        "Collision Mask",
+        "2D collision memberships considered by controller movement.",
         FieldKind::I64,
         FieldDefaultSpec::I64(u32::MAX as i64),
     )
@@ -1813,6 +2043,60 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             spawn_collider_component,
         ),
         BuiltinComponent::new(
+            CAMERA_2D_COMPONENT,
+            "Camera 2D",
+            "Orthographic XY camera participating in the shared Game View camera contract.",
+            "Rendering",
+            1,
+            CAMERA_2D_FIELDS,
+            spawn_camera_2d_component,
+        ),
+        BuiltinComponent::new(
+            SPRITE_RENDERER_2D_COMPONENT,
+            "Sprite Renderer 2D",
+            "Renders one stable SpriteRef using logical sorting rather than Transform Z.",
+            "Rendering",
+            1,
+            SPRITE_RENDERER_2D_FIELDS,
+            spawn_sprite_renderer_2d_component,
+        ),
+        BuiltinComponent::new(
+            SPRITE_ANIMATOR_2D_COMPONENT,
+            "Sprite Animator 2D",
+            "Evaluates a Sprite Animation clip in fixed time and drives SpriteRenderer2D.",
+            "Animation",
+            1,
+            SPRITE_ANIMATOR_2D_FIELDS,
+            spawn_sprite_animator_2d_component,
+        ),
+        BuiltinComponent::new(
+            COLLIDER_2D_COMPONENT,
+            "Collider 2D",
+            "Native XY-plane collider for the dedicated 2D physics world.",
+            "Physics",
+            1,
+            COLLIDER_2D_FIELDS,
+            spawn_collider_2d_component,
+        ),
+        BuiltinComponent::new(
+            RIGID_BODY_2D_COMPONENT,
+            "Rigid Body 2D",
+            "Native fixed, dynamic, or kinematic body in the dedicated 2D physics world.",
+            "Physics",
+            1,
+            RIGID_BODY_2D_FIELDS,
+            spawn_rigid_body_2d_component,
+        ),
+        BuiltinComponent::new(
+            CHARACTER_CONTROLLER_2D_COMPONENT,
+            "Character Controller 2D",
+            "Platformer-oriented kinematic controller using the shared Native 2D query policy.",
+            "Physics",
+            1,
+            CHARACTER_CONTROLLER_2D_FIELDS,
+            spawn_character_controller_2d_component,
+        ),
+        BuiltinComponent::new(
             PHYSICS_BODY_COMPONENT,
             "Physics Body",
             "Push-out participation kind for collision resolution (Phase 57).",
@@ -1995,5 +2279,14 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             spawn_vfx_player_component,
         )
         .collapsed_by_default(),
+        BuiltinComponent::new(
+            TILE_MAP_2D_COMPONENT,
+            "Tile Map 2D",
+            "Renders one sparse chunked Tile Map using stable TileIds, SpriteRefs, and logical sorting layers.",
+            "Rendering",
+            1,
+            TILE_MAP_2D_FIELDS,
+            spawn_tile_map_2d_component,
+        ),
     ]
 }

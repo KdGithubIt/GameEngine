@@ -562,7 +562,7 @@ workflow once the transport defect is corrected.
 Status: Resolved
 Layer: Validation
 First confirmed: 2026-08-17
-Last confirmed: 2026-08-17
+Last confirmed: 2026-08-18
 
 ### Symptom
 
@@ -590,6 +590,16 @@ user-profile placeholder in ADR 0134 as a high-confidence private user path.
 - Recovery validation run `31985901970` also passed the planner self-test and
   completed successfully on product head
   `bc2c697ae49232c0d75deed782ce94286d8ecc8f`, which became merged PR #145.
+- Automation-throughput Draft PR #627 reproduced the same scanner class on
+  2026-08-18: regression runs `32108227563` and `32109506884` reported
+  `[private-user-path]` for synthetic Remote AI Studio test fixtures that used a
+  concrete-looking Windows user-profile segment. The automation protocol tests
+  themselves passed in those runs.
+- Separate hygiene Draft PR #630 preserved the private-path redaction coverage
+  but changed only the synthetic user-profile segment to the documented `...`
+  placeholder. With that exact fix present in the stacked validation tree,
+  automation regression run `32109663223` passed both request-protocol and
+  planner/public-snapshot regression jobs.
 
 ### Root cause
 
@@ -606,17 +616,22 @@ Keep detection of concrete private Windows user-profile paths, but distinguish
 the documented placeholder form. Infrastructure PR #137 added that distinction
 and a regression test covering both cases. Subsequent ADR 0121 validation
 confirmed that the planner self-test passed, and run `31985901970` completed the
-selected affected validation successfully.
+selected affected validation successfully. The 2026-08-18 recurrence required no
+scanner change: PR #630 changed the synthetic Remote AI Studio fixture to the
+already-supported explicit `...` placeholder, and run `32109663223` confirmed
+the planner/public-snapshot regression recovered while keeping the concrete-path
+case protected.
 
 ### Prevention / ChatGPT next action
 
 When the public snapshot security self-test fails, inspect the scanner finding
-before changing product code or blindly retrying validation. A false positive
-in placeholder classification belongs to validation infrastructure and must be
-fixed on a separate automation branch without weakening the real private-path
-regression case. After the infrastructure fix reaches `main`, rerun the
-original product validation and confirm both the planner self-test and the final
-validation summary.
+before changing product code or blindly retrying validation. If a documented
+placeholder is misclassified, fix validation infrastructure on a separate
+automation branch without weakening the real private-path regression case. If a
+test fixture itself uses a concrete-looking synthetic username, keep the scanner
+strict and change that fixture to an explicit placeholder such as `...` or
+`<USER>`. Then rerun the original validation and confirm both the planner
+self-test and the final validation summary.
 
 ### References
 
@@ -628,6 +643,10 @@ validation summary.
 - Successful recovery validation run: `31985901970`
 - Recovery product PR: `#145`
 - Recovery product head: `bc2c697ae49232c0d75deed782ce94286d8ecc8f`
+- Repeated blocked automation PR: `#627`
+- Repeated failed regression runs: `32108227563`, `32109506884`
+- Repeated recovery hygiene PR: `#630`
+- Repeated recovery regression run: `32109663223`
 
 ## Entry template
 

@@ -1,6 +1,6 @@
 # ADR 0149: Engine-Native Live Observation and Media Transport
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0035, ADR 0131, ADR 0133
 Relates to: ADR 0003, ADR 0135
@@ -46,6 +46,23 @@ Media endpoints are private/authenticated by default and must not expose desktop
 ## Dependencies and parallel work
 
 This ADR can be implemented in parallel with other Wave A ADRs. It does not depend on ADR 0148 remote lifecycle. Integration with a native mobile app remains optional under ADR 0133 and is not required for this ADR.
+
+## First implementation
+
+The first accepted implementation is deliberately narrower than a general video stack:
+
+- `Game View` is the only live source and is reported explicitly as `game_view`.
+- The existing renderer-owned `FrameCapture` readback remains the capture boundary.
+- A private encoder abstraction currently emits PNG samples, with no new codec or media dependency.
+- Samples are bounded to at most 1280x720 and 8 fps. The media manager keeps only the latest encoded sample per session.
+- Starting live observation is scoped to the current non-terminal `AgentRun`. A replacement start for the same run rotates the media-session identity and credential instead of accumulating stale sessions.
+- Remote control still requires the ADR 0133 bearer credential. Media status/frame/stop requests additionally require a per-media-session token that is never an MCP or provider credential.
+- Live sampling is transient. It never calls `AgentHost::store_captured_frame_artifact`, never creates `CapturedFrame` completion evidence, and therefore cannot satisfy or corrupt the ADR 0131 audit gate.
+- Every delivered sample records measured renderer readback time, encode time, end-to-end capture time, sample byte size, dimensions, sequence, and aggregate averages/maxima exposed through the authenticated media-session status endpoint.
+- A disconnected client does not cancel the `AgentRun`. Reload/reconnect creates a fresh authenticated media session for the same still-active run and invalidates the previous same-run session.
+- Desktop-wide capture, arbitrary Editor viewport capture, WebRTC, H.264/HEVC, public NAT traversal, and media-driven authoring/input remain outside this implementation.
+
+This shape preserves a replaceable encoder/transport boundary: a future low-latency codec can replace the PNG encoder without moving GPU ownership, Agent Host lifecycle, or authoring authority into the media layer.
 
 ## Verification
 

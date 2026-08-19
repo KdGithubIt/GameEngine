@@ -106,6 +106,9 @@ pub struct ProjectSettings {
     /// Project-wide preferred ECS system order and enabled state.
     #[serde(default, skip_serializing_if = "SystemSettings::is_default")]
     pub system_settings: SystemSettings,
+    /// Native 2D defaults and stable sorting-layer identities (ADR 0127).
+    #[serde(default)]
+    pub native_2d: crate::native_2d::Project2dSettings,
 }
 
 impl Default for ProjectSettings {
@@ -120,6 +123,7 @@ impl Default for ProjectSettings {
             input_actions: default_input_actions(),
             start_scene: None,
             system_settings: SystemSettings::default(),
+            native_2d: crate::native_2d::Project2dSettings::default(),
         }
     }
 }
@@ -303,6 +307,11 @@ pub enum ProjectSettingsError {
         /// The out-of-range index value.
         index: u32,
     },
+    /// The Native 2D project settings violate a persisted invariant.
+    InvalidNative2dSettings {
+        /// First actionable validation message.
+        message: String,
+    },
     /// An I/O error occurred.
     Io(std::io::Error),
 }
@@ -324,6 +333,9 @@ impl fmt::Display for ProjectSettingsError {
             Self::InvalidLayerIndex { index } => {
                 write!(f, "layer index {index} exceeds the maximum of 31")
             }
+            Self::InvalidNative2dSettings { message } => {
+                write!(f, "invalid Native 2D project settings: {message}")
+            }
             Self::Io(e) => write!(f, "project settings I/O error: {e}"),
         }
     }
@@ -336,7 +348,8 @@ impl std::error::Error for ProjectSettingsError {
             Self::Io(e) => Some(e),
             Self::UnsupportedVersion { .. }
             | Self::UnsupportedSystemSettingsVersion { .. }
-            | Self::InvalidLayerIndex { .. } => None,
+            | Self::InvalidLayerIndex { .. }
+            | Self::InvalidNative2dSettings { .. } => None,
         }
     }
 }
@@ -381,6 +394,9 @@ impl ProjectSettings {
             return Err(ProjectSettingsError::UnsupportedSystemSettingsVersion {
                 found: settings.system_settings.schema_version,
             });
+        }
+        if let Some(message) = settings.native_2d.validate().into_iter().next() {
+            return Err(ProjectSettingsError::InvalidNative2dSettings { message });
         }
         Ok(settings)
     }
@@ -480,6 +496,7 @@ mod tests {
             }],
             start_scene: Some("scenes/main.scene.json".into()),
             system_settings: SystemSettings::default(),
+            native_2d: crate::native_2d::Project2dSettings::default(),
         };
 
         let json = serde_json::to_string_pretty(&settings).expect("must serialize");

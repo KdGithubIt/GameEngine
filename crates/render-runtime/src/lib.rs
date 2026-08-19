@@ -10,6 +10,9 @@
 /// Camera projection, viewport, and active-camera selection contracts.
 #[cfg(feature = "gpu")]
 pub mod camera;
+/// Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
+#[cfg(feature = "gpu")]
+pub mod native_2d;
 /// Immediate-mode runtime debug line presentation.
 #[cfg(feature = "gpu")]
 pub mod debug_draw;
@@ -17,6 +20,10 @@ pub mod debug_draw;
 mod bloom;
 #[cfg(feature = "gpu")]
 mod environment;
+#[cfg(feature = "gpu")]
+mod gpu_streaming;
+#[cfg(feature = "gpu")]
+mod game_camera;
 /// Runtime light resources and authored light mirroring.
 #[cfg(feature = "gpu")]
 pub mod light;

@@ -7,8 +7,24 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
+// ADR 0146 defines the provider-neutral managed asset boundary before concrete
+// provider integrations are enabled by AI Studio.
+#[allow(dead_code)]
+mod agent_asset_acquisition;
+mod agent_benchmark;
+mod benchmark_comparison;
+mod benchmark_experiment;
+mod benchmark_process;
+pub mod benchmark_runner;
 mod agent_host;
+mod external_agent_provider;
+mod hosted_model_backend;
+mod live_observation;
+mod managed_local_runtime;
+mod model_router;
 mod native_agent;
+mod native_agent_runtime;
+mod native_2d_editor;
 mod remote_ai_studio;
 mod resource_arbitration;
 pub mod ai_studio;
@@ -37,9 +53,11 @@ pub mod material_editor;
 pub mod navmesh_bake;
 pub mod prefab_workflow;
 pub mod preferences;
+mod preview_residency;
 pub mod problems;
 pub mod project_settings_panel;
 pub mod runtime;
+pub mod runtime_debug;
 pub mod scene_view;
 pub mod session;
 pub mod skinned_model_bake;

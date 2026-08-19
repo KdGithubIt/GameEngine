@@ -1,6 +1,9 @@
 //! Offscreen Scene View panel with editor camera, grid, and entity picking.
 
 use crate::gizmo::{apply_rotate_delta, apply_scale_delta, transform_component_type, GizmoAxis};
+use crate::preview_residency::{
+    PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,
+};
 use crate::view_aspect::ViewAspect;
 use crate::view_resolution::render_target_size_in_pixels;
 use eframe::{egui, egui_wgpu, wgpu};
@@ -14,8 +17,13 @@ use engine_authoring::{
     Transaction, UiDocument, Value,
 };
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
+
+pub(crate) mod native_2d_mode;
+
+const PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME: u64 = 8 * 1024 * 1024;
+const PREVIEW_GPU_UPLOADS_PER_FRAME: u32 = 4;
 
 // ---------------------------------------------------------------------------
 // EditorViewCamera
@@ -734,9 +742,18 @@ pub struct AnimationPreviewStatus {
 
 /// Offscreen Scene View panel: renders the authoring scene in Edit Mode.
 pub struct SceneView {
-    /// Editor-only orbit camera (not serialized to the scene).
+    /// Editor-only orbit/orthographic camera state (not serialized to the scene).
     pub camera: EditorViewCamera,
+    /// Transient 2D/3D presentation mode; never serialized to scene data.
+    pub(crate) mode: native_2d_mode::SceneViewMode,
     renderer: Option<engine::PreviewRenderer>,
+    /// Device identity bound to the current renderer and project GPU residency.
+    renderer_device: Option<usize>,
+    /// Device whose asynchronous renderer warm-up most recently failed.
+    renderer_failure_device: Option<usize>,
+    /// Native background renderer initialization result polled from the UI thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    renderer_warmup: Option<mpsc::Receiver<Result<engine::PreviewRenderer, String>>>,
     texture: Option<SceneTexture>,
     ui_texture_renderer: Option<SceneUiTextureRenderer>,
     entity_pick_info: Vec<EntityPickInfo>,
@@ -787,12 +804,10 @@ pub struct SceneView {
     /// Start of a continuous preview failure. One-frame rebuild failures are
     /// intentionally not painted so scene/document switches cannot flash red.
     preview_failure_since: Option<Instant>,
-    /// Cross-frame glTF parse/decode cache (ADR 0071). Consulted whenever the
-    /// preview world is rebuilt so a referenced glTF/GLB source is parsed and
-    /// its images decoded at most once per edit rather than once per frame.
-    gltf_cache: engine::scene_bridge::SharedGltfImportCache,
-    /// Device-local mesh uploads retained across preview-world rebuilds.
-    gpu_mesh_cache: engine::SharedGpuMeshCache,
+    /// Project-scoped CPU/GPU residency shared with Animation Preview and other views.
+    residency: ProjectAssetResidency,
+    /// Whether this surface is retaining its last complete preview while CPU work finishes.
+    waiting_for_residency: bool,
     /// Manifest hash recomputed only when the manifest's revision changes.
     manifest_hash_cache: Option<(u64, u64)>,
     /// Persistent preview world reused across frames (ADR 0072). Rebuilt only
@@ -845,10 +860,11 @@ struct PreviewWorld {
 /// cheap content hash (asset registration or reimport changes it). Transient
 /// gesture previews are handled outside this key: transform drags use the
 /// fast path, and non-transform component previews force a per-frame rebuild.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PreviewKey {
     scene_revision: u64,
     manifest_hash: u64,
+    residency_revision: u64,
     game_module: Option<usize>,
     project_root: Option<std::path::PathBuf>,
     sky_enabled: bool,
@@ -877,14 +893,7 @@ impl PreviewNotice {
     ///
     /// The first skipped component target is preserved when available so a
     /// Problems-panel click can navigate to the affected authoring component.
-    fn skipped_components(
-        message: String,
-        target: Option<engine_authoring::DiagnosticTarget>,
-    ) -> Self {
-        let mut diagnostic = Diagnostic::warning("editor.scene_view.components_skipped", message);
-        if let Some(target) = target {
-            diagnostic = diagnostic.with_target(target);
-        }
+    fn skipped_components(diagnostic: Diagnostic) -> Self {
         Self::SkippedComponents(diagnostic)
     }
 
@@ -905,9 +914,19 @@ impl Default for SceneView {
 impl SceneView {
     /// Creates a new scene view with default camera settings.
     pub fn new() -> Self {
+        Self::with_residency(ProjectAssetResidency::default())
+    }
+
+    /// Creates a scene view attached to one project-scoped residency service.
+    pub(crate) fn with_residency(residency: ProjectAssetResidency) -> Self {
         Self {
             camera: EditorViewCamera::default(),
+            mode: native_2d_mode::SceneViewMode::default(),
             renderer: None,
+            renderer_device: None,
+            renderer_failure_device: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            renderer_warmup: None,
             texture: None,
             ui_texture_renderer: None,
             entity_pick_info: Vec::new(),
@@ -933,8 +952,8 @@ impl SceneView {
             last_particle_frame: Instant::now(),
             preview_notice: None,
             preview_failure_since: None,
-            gltf_cache: engine::scene_bridge::SharedGltfImportCache::default(),
-            gpu_mesh_cache: engine::SharedGpuMeshCache::default(),
+            residency,
+            waiting_for_residency: false,
             manifest_hash_cache: None,
             preview: None,
             authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),
@@ -1084,6 +1103,116 @@ impl SceneView {
         self.last_particle_frame = Instant::now();
     }
 
+    fn ensure_renderer_ready(
+        &mut self,
+        render_state: &egui_wgpu::RenderState,
+        context: &egui::Context,
+    ) -> bool {
+        let device_identity = (&render_state.device as *const wgpu::Device) as usize;
+        if self.renderer_device != Some(device_identity) {
+            self.renderer_device = Some(device_identity);
+            self.renderer_failure_device = None;
+            self.renderer = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.renderer_warmup = None;
+            }
+            self.texture = None;
+            self.ui_texture_renderer = None;
+            self.preview = None;
+            self.last_view = None;
+            self.waiting_for_residency = false;
+        }
+        self.residency.bind_gpu_device(device_identity);
+        if self.renderer.is_some() {
+            return true;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let completed = self.renderer_warmup.as_ref().and_then(|receiver| {
+                match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                        "preview renderer warm-up worker disconnected".to_owned(),
+                    )),
+                }
+            });
+            if let Some(result) = completed {
+                self.renderer_warmup = None;
+                match result {
+                    Ok(renderer) => {
+                        self.renderer = Some(renderer);
+                        self.renderer_failure_device = None;
+                        context.request_repaint();
+                        return true;
+                    }
+                    Err(message) => {
+                        self.renderer_failure_device = Some(device_identity);
+                        self.preview_notice = Some(PreviewNotice::failure(
+                            "editor.scene_view.renderer_failed",
+                            format!("Scene View renderer warm-up failed: {message}"),
+                        ));
+                        return false;
+                    }
+                }
+            }
+
+            if self.renderer_failure_device != Some(device_identity)
+                && self.renderer_warmup.is_none()
+            {
+                let (sender, receiver) = mpsc::channel();
+                let device = render_state.device.clone();
+                let queue = render_state.queue.clone();
+                let texture_cache = self.residency.gpu_texture_cache();
+                match std::thread::Builder::new()
+                    .name("preview-renderer-warmup".to_owned())
+                    .spawn(move || {
+                        let result = pollster::block_on(engine::PreviewRenderer::new(
+                            &device,
+                            &queue,
+                            PREVIEW_RENDER_FORMAT,
+                        ))
+                        .map(|mut renderer| {
+                            renderer.configure_streaming(
+                                texture_cache,
+                                PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME,
+                                PREVIEW_GPU_UPLOADS_PER_FRAME,
+                            );
+                            renderer
+                        })
+                        .map_err(|error| error.to_string());
+                        let _ = sender.send(result);
+                    })
+                {
+                    Ok(_worker) => self.renderer_warmup = Some(receiver),
+                    Err(error) => {
+                        self.renderer_failure_device = Some(device_identity);
+                        self.preview_notice = Some(PreviewNotice::failure(
+                            "editor.scene_view.renderer_failed",
+                            format!("could not start preview renderer warm-up: {error}"),
+                        ));
+                    }
+                }
+            }
+            if self.renderer_failure_device != Some(device_identity) {
+                context.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+            false
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.renderer_failure_device = Some(device_identity);
+            self.preview_notice = Some(PreviewNotice::failure(
+                "editor.scene_view.renderer_failed",
+                "asynchronous preview renderer warm-up is unavailable on wasm32".to_owned(),
+            ));
+            false
+        }
+    }
+
     /// Releases the GPU texture registered with egui.
     pub fn release(&mut self, render_state: &egui_wgpu::RenderState) {
         if let Some(texture) = self.texture.take() {
@@ -1104,28 +1233,46 @@ impl SceneView {
         self.last_view = None;
     }
 
-    /// Releases additional recreatable preview residency after transient reclaim.
+    /// Releases additional recreatable preview residency after aggressive reclaim.
     ///
-    /// This never touches canonical authoring state or low-level GPU ownership.
-    /// The shared import cache remains CPU-side and reusable; GPU mesh residency
-    /// and the preview world are reconstructed lazily on the next rendered frame.
+    /// Project CPU residency and immutable renderer pipelines remain available;
+    /// the project resource broker separately evicts shared mesh/texture uploads.
     pub(crate) fn release_recreatable_resources(
         &mut self,
         render_state: &egui_wgpu::RenderState,
     ) {
         self.release_transient_resources(render_state);
         self.preview = None;
-        self.renderer = None;
-        self.gpu_mesh_cache.clear();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.release_recreatable_resources();
+        }
         self.manifest_hash_cache = None;
+        self.waiting_for_residency = false;
     }
 
-    /// Releases preview worlds and resident imports owned by the old project.
+    /// Releases preview-world state owned by the old project.
     pub fn clear_project_caches(&mut self) {
         self.preview = None;
-        self.gltf_cache = engine::scene_bridge::SharedGltfImportCache::default();
-        self.gpu_mesh_cache.clear();
         self.manifest_hash_cache = None;
+        self.waiting_for_residency = false;
+    }
+
+    pub(crate) fn current_motion_binding_diagnostics(&self) -> Vec<Diagnostic> {
+        self.preview
+            .as_ref()
+            .and_then(|preview| preview.bridge.as_ref())
+            .map(|bridge| {
+                bridge
+                    .asset_diagnostics
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.code
+                            == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Rebuilds the persistent preview world after an asset value or override
@@ -1207,7 +1354,12 @@ impl SceneView {
         let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
         self.last_view = Some((rect, size));
 
-        self.camera.handle_input(&response);
+        let planar_2d = self.mode == native_2d_mode::SceneViewMode::TwoD;
+        if planar_2d {
+            native_2d_mode::handle_input(&mut self.camera, &response);
+        } else {
+            self.camera.handle_input(&response);
+        }
         let now = Instant::now();
         let particle_delta = now
             .saturating_duration_since(self.last_particle_frame)
@@ -1237,7 +1389,11 @@ impl SceneView {
         self.entity_pick_info = collect_entity_positions(interaction_scene);
 
         let aspect = size[0] as f32 / size[1] as f32;
-        let vp = self.camera.view_projection(aspect);
+        let vp = if planar_2d {
+            native_2d_mode::view_projection(&self.camera, rect)
+        } else {
+            self.camera.view_projection(aspect)
+        };
         let mut placement_position = response
             .clicked_by(egui::PointerButton::Primary)
             .then(|| response.interact_pointer_pos())
@@ -1306,6 +1462,9 @@ impl SceneView {
                         let len = gizmo_axis_length(center, vp, rect);
                         self.gizmo_drag =
                             hit_test_gizmo_axis(pos, center, vp, rect, gizmo_mode, len, &axis_dirs)
+                                .filter(|axis| {
+                                    !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
+                                })
                                 .map(|axis| GizmoDragState {
                                     axis,
                                     axis_dir: axis_direction_of(&axis_dirs, axis),
@@ -1484,21 +1643,7 @@ impl SceneView {
             self.texture = SceneTexture::new(render_state, size);
         }
 
-        if self.renderer.is_none() {
-            match pollster::block_on(engine::PreviewRenderer::new(
-                &render_state.device,
-                &render_state.queue,
-                PREVIEW_RENDER_FORMAT,
-            )) {
-                Ok(renderer) => self.renderer = Some(renderer),
-                Err(error) => {
-                    self.preview_notice = Some(PreviewNotice::failure(
-                        "editor.scene_view.renderer_failed",
-                        format!("Scene View renderer failed: {error}"),
-                    ));
-                }
-            }
-        }
+        let renderer_ready = self.ensure_renderer_ready(render_state, &response.ctx);
 
         let mut picked_entity = None;
         let mut picked_ui_node = None;
@@ -1516,53 +1661,143 @@ impl SceneView {
                 hash
             }
         };
-        if let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer) {
-            let key = PreviewKey {
-                scene_revision,
-                manifest_hash,
-                game_module: game_module.map(|module| Arc::as_ptr(module) as usize),
-                project_root: project_root.map(|root| root.assets_root()),
-                sky_enabled: self.show_sky,
-                animation_preview_enabled: self.animation_preview_enabled,
-                animation_secondary_physics_enabled: self
-                    .animation_secondary_physics_enabled,
-                particle_preview_enabled: self.particle_preview_enabled,
+        let key = PreviewKey {
+            scene_revision,
+            manifest_hash,
+            residency_revision: self.residency.revision(),
+            game_module: game_module.map(|module| Arc::as_ptr(module) as usize),
+            project_root: project_root.map(|root| root.assets_root()),
+            sky_enabled: self.show_sky,
+            animation_preview_enabled: self.animation_preview_enabled,
+            animation_secondary_physics_enabled: self.animation_secondary_physics_enabled,
+            particle_preview_enabled: self.particle_preview_enabled,
+        };
+
+        // A non-transform Inspector preview (for example a material color drag)
+        // mutates state the transform fast path cannot express.
+        let non_transform_preview = component_preview
+            .is_some_and(|preview| preview.component_type != transform_component_type());
+        let reuse = !non_transform_preview
+            && !self.waiting_for_residency
+            && self.preview.as_ref().is_some_and(|preview| preview.key == key);
+
+        if !reuse {
+            let assets_root = project_root.map(ProjectRoot::assets_root);
+            let priority = if response.has_focus() || response.hovered() {
+                PreviewAssetPriority::FocusedVisible
+            } else {
+                PreviewAssetPriority::Visible
             };
-
-            // A non-transform Inspector preview (for example a material color
-            // drag) mutates state the transform fast path cannot express, so
-            // it forces a full rebuild for the duration of the gesture.
-            let non_transform_preview = component_preview
-                .is_some_and(|preview| preview.component_type != transform_component_type());
-            let reuse =
-                !non_transform_preview && self.preview.as_ref().is_some_and(|p| p.key == key);
-
-            if !reuse {
-                let (app, spawn_notice, bridge) = build_preview_app_with_sky(
-                    render_scene,
-                    project_root,
-                    manifest,
-                    game_module,
-                    &self.gltf_cache,
-                    &self.gpu_mesh_cache,
-                    &self.authoring_overlay,
-                    size,
-                    self.show_sky,
-                );
-                self.preview_notice = spawn_notice;
-                self.preview = Some(PreviewWorld {
-                    app,
-                    key,
-                    bridge,
-                    transform_overrides: Vec::new(),
-                    animation_system_installed: false,
-                    animation_graph_system_installed: false,
-                    animation_sampled_elapsed: -1.0,
-                    animation_fixed_step_remainder: 0.0,
-                    animation_transition_started: false,
-                });
+            match self.residency.prepare_scene(
+                render_scene,
+                manifest,
+                assets_root.as_deref(),
+                priority,
+            ) {
+                PreviewResidencyState::Ready => {
+                    self.waiting_for_residency = false;
+                    let model_cache = self.residency.model_cache();
+                    let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                    let (app, spawn_notice, bridge) = build_preview_app_with_sky(
+                        render_scene,
+                        project_root,
+                        manifest,
+                        game_module,
+                        &model_cache,
+                        &gpu_mesh_cache,
+                        &self.authoring_overlay,
+                        size,
+                        self.show_sky,
+                    );
+                    if self.renderer_failure_device != self.renderer_device {
+                        self.preview_notice = spawn_notice;
+                    }
+                    self.preview = Some(PreviewWorld {
+                        app,
+                        key: key.clone(),
+                        bridge,
+                        transform_overrides: Vec::new(),
+                        animation_system_installed: false,
+                        animation_graph_system_installed: false,
+                        animation_sampled_elapsed: -1.0,
+                        animation_fixed_step_remainder: 0.0,
+                        animation_transition_started: false,
+                    });
+                }
+                PreviewResidencyState::Pending => {
+                    self.waiting_for_residency = true;
+                    response
+                        .ctx
+                        .request_repaint_after(std::time::Duration::from_millis(33));
+                    if self.preview.is_none() {
+                        let model_cache = self.residency.model_cache();
+                        let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                        let empty_scene = AuthoringScene::new();
+                        let (app, _, bridge) = build_preview_app_with_sky(
+                            &empty_scene,
+                            project_root,
+                            manifest,
+                            game_module,
+                            &model_cache,
+                            &gpu_mesh_cache,
+                            &self.authoring_overlay,
+                            size,
+                            self.show_sky,
+                        );
+                        self.preview = Some(PreviewWorld {
+                            app,
+                            key: key.clone(),
+                            bridge,
+                            transform_overrides: Vec::new(),
+                            animation_system_installed: false,
+                            animation_graph_system_installed: false,
+                            animation_sampled_elapsed: -1.0,
+                            animation_fixed_step_remainder: 0.0,
+                            animation_transition_started: false,
+                        });
+                    }
+                }
+                PreviewResidencyState::Failed(message) => {
+                    self.waiting_for_residency = false;
+                    self.preview_notice = Some(PreviewNotice::failure(
+                        "editor.scene_view.asset_materialization_failed",
+                        format!("Scene View asset preparation failed: {message}"),
+                    ));
+                    if self.preview.is_none() {
+                        let model_cache = self.residency.model_cache();
+                        let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                        let empty_scene = AuthoringScene::new();
+                        let (app, _, bridge) = build_preview_app_with_sky(
+                            &empty_scene,
+                            project_root,
+                            manifest,
+                            game_module,
+                            &model_cache,
+                            &gpu_mesh_cache,
+                            &self.authoring_overlay,
+                            size,
+                            self.show_sky,
+                        );
+                        self.preview = Some(PreviewWorld {
+                            app,
+                            key: key.clone(),
+                            bridge,
+                            transform_overrides: Vec::new(),
+                            animation_system_installed: false,
+                            animation_graph_system_installed: false,
+                            animation_sampled_elapsed: -1.0,
+                            animation_fixed_step_remainder: 0.0,
+                            animation_transition_started: false,
+                        });
+                    }
+                }
             }
+        }
 
+        let mut gpu_upload_pending = false;
+        if renderer_ready
+            && let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer)
+        {
             let animation_preview_request = self.animation_preview_request.clone();
             let preview = self
                 .preview
@@ -1579,7 +1814,12 @@ impl SceneView {
             // one at the orbit position.
             despawn_camera_entities(app.world_mut());
             let cam_transform = self.camera.to_transform();
-            update_editor_camera(app.world_mut(), cam_transform, aspect);
+            let camera_2d = planar_2d.then(|| native_2d_mode::camera(&self.camera));
+            let camera_2d_transform =
+                planar_2d.then(|| native_2d_mode::transform(&self.camera));
+            if !planar_2d {
+                update_editor_camera(app.world_mut(), cam_transform, aspect);
+            }
 
             // On a reused world, move any entity being dragged now (and restore
             // any moved last frame) directly, so a gizmo or Inspector transform
@@ -1673,7 +1913,11 @@ impl SceneView {
                 // The world persists across frames, so last frame's overlay
                 // segments must be discarded before redrawing.
                 dl.lines.clear();
-                draw_grid(dl);
+                if planar_2d {
+                    native_2d_mode::draw_grid(dl, &self.camera);
+                } else {
+                    draw_grid(dl);
+                }
                 for info in &self.entity_pick_info {
                     if let Some(icon) = info.icon {
                         draw_entity_icon(dl, info, icon);
@@ -1702,6 +1946,9 @@ impl SceneView {
                                         len,
                                         &axis_dirs,
                                     )
+                                    .filter(|axis| {
+                                        !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
+                                    })
                                 })
                             });
                         draw_gizmo(dl, info.center, gizmo_mode, len, hovered, &axis_dirs);
@@ -1769,17 +2016,40 @@ impl SceneView {
                 ));
             }
 
-            if let Err(error) = renderer.render_to_view(
-                app.world_mut(),
-                &render_state.device,
-                &render_state.queue,
-                &texture.render_view,
-                &texture.depth_view,
-            ) {
+            let render_result = if let (Some(camera), Some(transform)) =
+                (camera_2d.as_ref(), camera_2d_transform.as_ref())
+            {
+                renderer.render_to_view_with_camera_2d(
+                    app.world_mut(),
+                    camera,
+                    transform,
+                    size,
+                    &render_state.device,
+                    &render_state.queue,
+                    &texture.render_view,
+                    &texture.depth_view,
+                )
+            } else {
+                renderer.render_to_view(
+                    app.world_mut(),
+                    &render_state.device,
+                    &render_state.queue,
+                    &texture.render_view,
+                    &texture.depth_view,
+                )
+            };
+            if let Err(error) = render_result {
                 self.preview_notice = Some(PreviewNotice::failure(
                     "editor.scene_view.render_failed",
                     format!("Scene View render failed: {error}"),
                 ));
+            }
+            let upload_report = renderer.upload_report();
+            gpu_upload_pending = upload_report.has_deferred_work();
+            if gpu_upload_pending {
+                response
+                    .ctx
+                    .request_repaint_after(std::time::Duration::from_millis(16));
             }
 
             // Game UI is rendered into the same offscreen color target as the
@@ -1945,6 +2215,46 @@ impl SceneView {
             let _ = aspect;
         }
 
+        if !renderer_ready {
+            ui.painter()
+                .rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 22, 26));
+            if self.renderer_failure_device != self.renderer_device {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Preparing preview renderer…",
+                    egui::TextStyle::Body.resolve(ui.style()),
+                    egui::Color32::LIGHT_GRAY,
+                );
+            }
+        } else if self.waiting_for_residency {
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                egui::Color32::from_black_alpha(72),
+            );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Preparing preview assets…",
+                egui::TextStyle::Body.resolve(ui.style()),
+                egui::Color32::WHITE,
+            );
+        } else if gpu_upload_pending {
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                egui::Color32::from_black_alpha(48),
+            );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Uploading preview assets…",
+                egui::TextStyle::Body.resolve(ui.style()),
+                egui::Color32::WHITE,
+            );
+        }
+
         let preview_notice_is_failure = matches!(
             self.preview_notice.as_ref(),
             Some(PreviewNotice::Failure(_))
@@ -1961,42 +2271,46 @@ impl SceneView {
                 .preview_notice
                 .as_ref()
                 .expect("a preview notice exists when it is ready to draw");
-            let diagnostic = notice.diagnostic();
-            let (background, foreground) = match notice {
-                PreviewNotice::Failure(_) => (
-                    egui::Color32::from_rgba_unmultiplied(80, 12, 12, 220),
-                    egui::Color32::LIGHT_RED,
-                ),
-                PreviewNotice::SkippedComponents(_) => (
-                    egui::Color32::from_rgba_unmultiplied(84, 62, 8, 220),
-                    egui::Color32::LIGHT_YELLOW,
-                ),
-            };
-            let text_padding = 12.0;
-            let notice_width = (rect.width() - 16.0).max(1.0);
-            let text_width = (notice_width - text_padding * 2.0).max(1.0);
-            let galley = ui.painter().layout(
-                diagnostic.message.clone(),
-                egui::FontId::proportional(18.0),
-                foreground,
-                text_width,
-            );
-            let maximum_height = (rect.height() - 16.0).max(1.0);
-            let notice_height = (galley.size().y + text_padding * 2.0)
-                .max(56.0)
-                .min(maximum_height);
-            let notice_rect = egui::Rect::from_min_size(
-                rect.left_top() + egui::vec2(8.0, 8.0),
-                egui::vec2(notice_width, notice_height),
-            );
-            ui.painter().rect_filled(notice_rect, 4.0, background);
-            ui.painter()
-                .with_clip_rect(notice_rect.shrink(text_padding))
-                .galley(
-                    notice_rect.min + egui::vec2(text_padding, text_padding),
-                    galley,
-                    foreground,
-                );
+            match notice {
+                PreviewNotice::Failure(diagnostic) => {
+                    let background = egui::Color32::from_rgba_unmultiplied(80, 12, 12, 220);
+                    let foreground = egui::Color32::LIGHT_RED;
+                    let text_padding = 12.0;
+                    let notice_width = (rect.width() - 16.0).max(1.0);
+                    let text_width = (notice_width - text_padding * 2.0).max(1.0);
+                    let galley = ui.painter().layout(
+                        diagnostic.message.clone(),
+                        egui::FontId::proportional(18.0),
+                        foreground,
+                        text_width,
+                    );
+                    let maximum_height = (rect.height() - 16.0).max(1.0);
+                    let notice_height = (galley.size().y + text_padding * 2.0)
+                        .max(56.0)
+                        .min(maximum_height);
+                    let notice_rect = egui::Rect::from_min_size(
+                        rect.left_top() + egui::vec2(8.0, 8.0),
+                        egui::vec2(notice_width, notice_height),
+                    );
+                    ui.painter().rect_filled(notice_rect, 4.0, background);
+                    ui.painter()
+                        .with_clip_rect(notice_rect.shrink(text_padding))
+                        .galley(
+                            notice_rect.min + egui::vec2(text_padding, text_padding),
+                            galley,
+                            foreground,
+                        );
+                }
+                PreviewNotice::SkippedComponents(_) => {
+                    ui.painter().text(
+                        rect.right_top() + egui::vec2(-8.0, 8.0),
+                        egui::Align2::RIGHT_TOP,
+                        "Preview incomplete · see Problems",
+                        egui::TextStyle::Small.resolve(ui.style()),
+                        egui::Color32::LIGHT_YELLOW,
+                    );
+                }
+            }
         }
 
         SceneViewOutput {
@@ -2393,6 +2707,18 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
         .filter(|diagnostic| diagnostic.code == engine::scene_bridge::COMPONENT_SKIPPED_DIAGNOSTIC)
         .collect();
     let first = skipped.first()?;
+
+    // Prefer a domain-owned semantic cause emitted by the component converter.
+    // The mechanism-oriented skip remains in bridge diagnostics for Console and
+    // engineering evidence, but Problems receives the repairable fact.
+    if let Some(semantic) = diagnostics.iter().find(|diagnostic| {
+        diagnostic.code != engine::scene_bridge::COMPONENT_SKIPPED_DIAGNOSTIC
+            && diagnostic.target == first.target
+            && diagnostic.severity != engine_authoring::Severity::Info
+    }) {
+        return Some(PreviewNotice::skipped_components(semantic.clone()));
+    }
+
     let message = if skipped.len() == 1 {
         first.message.clone()
     } else {
@@ -2402,10 +2728,13 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
             first.message
         )
     };
-    Some(PreviewNotice::skipped_components(
-        message,
-        first.target.clone(),
-    ))
+    let mut fallback = Diagnostic::warning("editor.scene_view.components_skipped", message)
+        .with_related_targets(first.related_targets.clone())
+        .with_context_value("preview_incomplete", "true");
+    if let Some(target) = first.target.clone() {
+        fallback = fallback.with_target(target);
+    }
+    Some(PreviewNotice::skipped_components(fallback))
 }
 
 fn simulate_particle_preview(world: &mut engine::ecs::World, elapsed_seconds: f32) {
@@ -2993,10 +3322,16 @@ fn selected_particle_debug(
 }
 
 fn despawn_camera_entities(world: &mut engine::ecs::World) {
-    let camera_entities: Vec<engine::ecs::Entity> = {
+    let mut camera_entities: Vec<engine::ecs::Entity> = {
         let q = engine::Query::<&Camera3D>::new(world);
         q.iter().map(|(e, _)| e).collect()
     };
+    {
+        let q = engine::Query::<&engine::native_2d::Camera2d>::new(world);
+        camera_entities.extend(q.iter().map(|(e, _)| e));
+    }
+    camera_entities.sort_unstable_by_key(|entity| (entity.id(), entity.generation()));
+    camera_entities.dedup();
     for e in camera_entities {
         let _ = world.despawn(e);
     }
@@ -4296,6 +4631,7 @@ mod tests {
         let base = PreviewKey {
             scene_revision: 1,
             manifest_hash: manifest_content_hash(&manifest_with("a.glb")),
+            residency_revision: 1,
             game_module: None,
             project_root: None,
             sky_enabled: true,
@@ -4315,6 +4651,13 @@ mod tests {
             base,
             PreviewKey {
                 manifest_hash: manifest_content_hash(&manifest_with("b.glb")),
+                ..base_clone(&base)
+            }
+        );
+        assert_ne!(
+            base,
+            PreviewKey {
+                residency_revision: 2,
                 ..base_clone(&base)
             }
         );
@@ -4388,6 +4731,7 @@ mod tests {
         PreviewKey {
             scene_revision: key.scene_revision,
             manifest_hash: key.manifest_hash,
+            residency_revision: key.residency_revision,
             game_module: key.game_module,
             project_root: key.project_root.clone(),
             sky_enabled: key.sky_enabled,

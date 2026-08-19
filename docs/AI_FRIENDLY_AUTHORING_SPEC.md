@@ -562,6 +562,38 @@ selector index 0. The former `rigid_body_rig` kind and `rigidbodyrig` derivation
 namespace are not compatibility aliases and MUST NOT be silently interpreted as
 the current kind (ADR 0112, ADR 0115).
 
+### 8.4 Animation Motion Candidate and Humanoid Provenance Contract
+
+ADR 0154 makes Animation Set motion bindings candidate-oriented and target-aware.
+The current `*.animset.json` schema is version 3. Each primary binding and
+overlay persists only the stable imported candidate `AssetId`; it MUST NOT
+persist an Auto/Native/Humanoid route policy. `ImportedSubAssetKind::Animation`
+identifies a model-bound candidate, while `HumanoidMotion` identifies the
+explicit portable candidate. Schema-2 route-policy documents are obsolete
+current-format input and MUST be rejected rather than silently reinterpreted.
+
+For a concrete target skeleton, tools MUST use the shared GUI-free motion
+planner. Model-bound candidates resolve in the fixed order Native -> explicit
+Retarget Map -> logical Humanoid fallback -> Failed. An explicitly selected
+HumanoidMotion resolves only Humanoid or Failed. Target Preview state and the
+computed Native/Retarget/Humanoid/Failed result are transient derived state and
+MUST NOT be serialized into the Animation Set. A Failed route is an authoring
+error for each affected scene/controller target, is surfaced through Problems
+before Play, and blocks Play/package preflight without blocking Animation Set
+save.
+
+Motion-only import settings keep concrete Native output targets in
+`motion_model_sources`. The optional `motion_humanoid_source_model` is a
+different stable provenance field: it names one associated model with a usable
+Humanoid profile that import/reimport uses to generate the logical,
+target-independent HumanoidMotion sibling. Humanoid is never inserted as a fake
+`motion_model_sources` target. Reordering or adding concrete output targets MUST
+NOT silently change persisted Humanoid provenance, and changing provenance MUST
+regenerate portable motion content and invalidate dependent derived bakes while
+keeping the logical Humanoid candidate identity target-independent. Runtime,
+Editor preview/Problems, and packaging MUST consume imported portable motion;
+they MUST NOT create it lazily as a side effect of resolving a binding.
+
 ## 9. Domain-Neutral Graph Model
 
 Shader Graph, Behavior Tree, Animation Graph, and future graph types MUST share
@@ -1041,6 +1073,7 @@ implementation. Runtime interaction remains under ADR 0035, while agent, code,
 shell, network, and provider lifecycle remain under ADR 0131.
 
 ADR 0131 adds AI Studio above MCP as a project-scoped conversational frontend.
+ADR 0152 permits several non-terminal `AgentRun` values to coordinate writes only through explicit non-overlapping Agent Host work claims while preserving one authoritative project writer host. Claims are run-control metadata rather than canonical project data, MUST NOT bypass authoring revision/generation checks, and MUST NOT lock out human editing. Conflicting scope expansion MUST wait, re-plan, or be explicitly reconciled; managed source writes MUST acquire path ownership before modifying the isolated workspace and managed source apply MUST retain its common-baseline stale-file guard in addition to claim ownership. Native AgentRuntime live MCP mutations MUST acquire conservative canonical-authoring ownership before dispatch, while read-only MCP calls remain claim-free; governed external/generated asset acquisition MUST acquire hierarchical destination ownership before provider execution and project import, with the synthetic `project_assets` claim root covering imports into the assets root. The authoritative authoring and asset-management services still perform the final revision/generation/path and import checks. Claim acquisition/release, conflicts, waits, cross-run dependencies, and reconciliation MUST remain auditable per run, and every run retains independent proposal, permission, validation, and completion evidence.
 AI Studio MUST be a client of a GUI-free agent host rather than a second
 authoring implementation. A session owns conversation history and a versioned
 structured proposal. Starting a run snapshots the exact proposal version; the
@@ -1064,9 +1097,29 @@ subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
 serialized into session records or canonical project data. External runtimes
 receive only the ephemeral MCP connection needed for the active run.
 
+Per ADR 0144, hosted and enterprise `ModelBackend` adapters remain inference-only
+inside the native AgentRuntime. Hosted processing requires `NetworkAccess`,
+exposes a sanitized remote-processing posture without credentials or secret paths,
+and stores GameEngine-owned API credentials only in an OS-protected machine-local
+secret store. Provider failures, rate limits, safety refusals, authentication
+failures, transport interruption, context rejection, and unsupported capabilities
+remain explicit backend evidence and cannot satisfy Agent Host completion gates.
+The same backend seam is used for read-only questions and ADR 0141 write-capable
+native runs; project mutation continues through the existing governed services.
+
 The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
 interaction path. It MUST NOT be treated as a substitute for semantic authoring
 parity when a capability changes persisted project data.
+
+ADR 0151 adds a GUI-free MCP host without adding a second authoring model. A
+write-capable headless host MUST acquire the same per-location OS-backed project
+writer authority used by the Editor before it loads authoritative saved project
+state. Editor and headless writer ownership are mutually exclusive. A read-only
+headless host MAY coexist with an Editor only as an explicitly reported saved-file
+snapshot; it cannot observe or claim parity with the Editor's dirty in-memory
+working copy. Both modes expose the canonical `engine-mcp` inventory and route
+semantic operations directly to shared authoring services rather than through CLI
+argv/stdout or host-specific mutation logic.
 
 Example CLI:
 

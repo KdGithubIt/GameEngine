@@ -7,6 +7,7 @@
 
 use crate::id::{AssetId, ComponentTypeId, EdgeId, EntityId, GraphId, GroupId, NodeId, PortId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The importance of a [`Diagnostic`] message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -121,6 +122,20 @@ pub struct Diagnostic {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<DiagnosticTarget>,
 
+    /// Additional stable authoring objects that participate in the same semantic issue.
+    ///
+    /// Presentation layers may project these into repair actions. They are semantic
+    /// identities only: no window, tab, or widget routing is stored here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_targets: Vec<DiagnosticTarget>,
+
+    /// Domain-owned structured evidence that has no existing [`DiagnosticTarget`] variant.
+    ///
+    /// Keys are stable machine-readable names; values are stable IDs or explanatory
+    /// labels. Display labels must never be used as identity.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub context: BTreeMap<String, String>,
+
     /// Wall-clock time in milliseconds since the UNIX epoch when this diagnostic was created.
     ///
     /// `None` for diagnostics loaded from JSON that pre-dates this field.
@@ -136,6 +151,8 @@ impl Diagnostic {
             code: code.into(),
             message: message.into(),
             target: None,
+            related_targets: Vec::new(),
+            context: BTreeMap::new(),
             timestamp_ms: None,
         }
     }
@@ -147,6 +164,8 @@ impl Diagnostic {
             code: code.into(),
             message: message.into(),
             target: None,
+            related_targets: Vec::new(),
+            context: BTreeMap::new(),
             timestamp_ms: None,
         }
     }
@@ -158,6 +177,8 @@ impl Diagnostic {
             code: code.into(),
             message: message.into(),
             target: None,
+            related_targets: Vec::new(),
+            context: BTreeMap::new(),
             timestamp_ms: None,
         }
     }
@@ -165,6 +186,25 @@ impl Diagnostic {
     /// Attaches a [`DiagnosticTarget`] to this diagnostic.
     pub fn with_target(mut self, target: DiagnosticTarget) -> Self {
         self.target = Some(target);
+        self
+    }
+
+    /// Attaches additional semantic navigation targets to this diagnostic.
+    pub fn with_related_targets(
+        mut self,
+        targets: impl IntoIterator<Item = DiagnosticTarget>,
+    ) -> Self {
+        self.related_targets.extend(targets);
+        self
+    }
+
+    /// Attaches one domain-owned structured evidence value.
+    pub fn with_context_value(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.context.insert(key.into(), value.into());
         self
     }
 
@@ -267,6 +307,26 @@ mod tests {
         let json = serde_json::to_string(&diagnostic).unwrap();
         let loaded: Diagnostic = serde_json::from_str(&json).unwrap();
         assert_eq!(diagnostic, loaded);
+    }
+
+    #[test]
+    fn diagnostic_related_targets_and_context_survive_roundtrip() {
+        let graph = GraphId::generate();
+        let node = NodeId::generate();
+        let diagnostic = Diagnostic::error("anim.binding", "missing binding")
+            .with_related_targets([DiagnosticTarget::Node {
+                graph: graph.clone(),
+                node: node.clone(),
+            }])
+            .with_context_value("motion_slot_id", "motion_01ARZ3NDEKTSV4RRFFQ69G5FAV");
+
+        let json = serde_json::to_string(&diagnostic).unwrap();
+        let loaded: Diagnostic = serde_json::from_str(&json).unwrap();
+        assert_eq!(diagnostic, loaded);
+        assert_eq!(
+            loaded.related_targets,
+            vec![DiagnosticTarget::Node { graph, node }]
+        );
     }
 
     #[test]

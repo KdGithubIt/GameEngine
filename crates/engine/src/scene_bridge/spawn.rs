@@ -982,6 +982,80 @@ pub(crate) fn spawn_animation_controller_component(
         if unresolved_motion_slots.contains(motion_key) {
             return Ok(());
         }
+
+        let slot_display_name = engine_authoring::animation_graph_motion_slots(&source_graph)
+            .ok()
+            .and_then(|slots| {
+                slots
+                    .into_iter()
+                    .find(|slot| slot.id.as_str() == motion_key)
+                    .map(|slot| slot.display_name)
+            })
+            .unwrap_or_else(|| motion_key.to_owned());
+        let requiring_states = compiled_graph
+            .states
+            .iter()
+            .filter(|state| state.motion_key() == Some(motion_key))
+            .collect::<Vec<_>>();
+        let state_summary = requiring_states
+            .iter()
+            .map(|state| {
+                source_graph
+                    .nodes
+                    .get(&state.node_id)
+                    .and_then(|node| node.name.as_deref())
+                    .filter(|name| !name.trim().is_empty())
+                    .map_or_else(
+                        || state.node_id.as_str().to_owned(),
+                        |name| format!("{name} ({})", state.node_id.as_str()),
+                    )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let graph_label = if source_graph.display_name.trim().is_empty() {
+            source_graph.name.as_str()
+        } else {
+            source_graph.display_name.as_str()
+        };
+        let set_label = context
+            .manifest
+            .get(&animation_set_asset)
+            .and_then(|entry| entry.name.as_deref())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| animation_set_asset.as_str());
+        let mut related_targets = vec![
+            DiagnosticTarget::Asset {
+                id: graph_asset.clone(),
+            },
+            DiagnosticTarget::Asset {
+                id: animation_set_asset.clone(),
+            },
+            DiagnosticTarget::Graph {
+                id: source_graph.id.clone(),
+            },
+        ];
+        related_targets.extend(requiring_states.iter().map(|state| DiagnosticTarget::Node {
+            graph: source_graph.id.clone(),
+            node: state.node_id.clone(),
+        }));
+        context.asset_diagnostics.push(
+            Diagnostic::error(
+                "anim.animation_set_missing_motion_slot_binding",
+                format!(
+                    "Animation Set \"{set_label}\" is missing Motion Slot \"{slot_display_name}\" ({motion_key}) required by State(s) {state_summary} in Graph \"{graph_label}\"."
+                ),
+            )
+            .with_target(DiagnosticTarget::Component {
+                entity: context.authoring_entity.id.clone(),
+                component_type: component_type.clone(),
+            })
+            .with_related_targets(related_targets)
+            .with_context_value("graph_asset_id", graph_asset.as_str())
+            .with_context_value("graph_id", source_graph.id.as_str())
+            .with_context_value("animation_set_asset_id", animation_set_asset.as_str())
+            .with_context_value("motion_slot_id", motion_key)
+            .with_context_value("motion_slot_display_name", slot_display_name),
+        );
         return Err(fields
             .invalid("an Animation Set binding for every graph motion slot")
             .into());
@@ -1471,7 +1545,7 @@ struct ResolvedAnimationSet {
 
 struct ResolvedAnimationBindingClip {
     handle: Handle<AnimationClip>,
-    resolved_variant: engine_authoring::MotionSourceVariant,
+    resolved_route: crate::motion_binding::AnimationMotionRoute,
 }
 
 fn resolve_animation_set(
@@ -1570,6 +1644,7 @@ fn resolve_animation_set(
     for (motion_slot, binding) in animation_set.bindings {
         let Some(primary) = resolve_animation_binding_clip(
             animation_set_asset,
+            &motion_slot,
             &binding.clip,
             &target_skeleton,
             context,
@@ -1584,6 +1659,7 @@ fn resolve_animation_set(
         for overlay in &binding.overlays {
             if let Some(overlay_clip) = resolve_animation_binding_clip(
                 animation_set_asset,
+                &motion_slot,
                 overlay,
                 &target_skeleton,
                 context,
@@ -1678,7 +1754,7 @@ fn resolve_animation_set(
                 motion_slot: motion_slot.clone(),
                 display_name: binding.name.clone(),
                 source: binding.clip.clone(),
-                resolved_variant: primary.resolved_variant,
+                resolved_route: primary.resolved_route,
                 resolved_clip_runtime_id: handle.id().value(),
             },
         );
@@ -1713,20 +1789,92 @@ fn resolve_animation_set(
 
 fn resolve_animation_binding_clip(
     animation_set_asset: &AssetId,
+    motion_slot: &engine_authoring::MotionSlotId,
     source: &engine_authoring::MotionSourceRef,
     target_skeleton: &SkeletonAsset,
     context: &mut SpawnContext<'_>,
 ) -> Result<Option<ResolvedAnimationBindingClip>, SceneBridgeError> {
-    if source.variant == engine_authoring::MotionSourceVariant::Humanoid {
-        return resolve_humanoid_animation_binding_clip(
+    let (owner_source, candidate_kind, source_index, has_humanoid_fallback) = {
+        let Some((owner_source, entry, sub_asset)) =
+            context.manifest.imported_sub_asset(&source.asset)
+        else {
+            return Err(animation_binding_error(
+                animation_set_asset,
+                &source.asset,
+                context,
+                "Animation Set motion candidate is not a registered imported sub-asset",
+            ));
+        };
+        let candidate_kind = match sub_asset.kind {
+            ImportedSubAssetKind::Animation => {
+                crate::motion_binding::AnimationMotionCandidateKind::ModelBound
+            }
+            ImportedSubAssetKind::HumanoidMotion => {
+                crate::motion_binding::AnimationMotionCandidateKind::Humanoid
+            }
+            _ => {
+                return Err(animation_binding_error(
+                    animation_set_asset,
+                    &source.asset,
+                    context,
+                    "Animation Set motion candidates must be Animation or HumanoidMotion sub-assets",
+                ));
+            }
+        };
+        let has_humanoid_fallback = sub_asset.kind == ImportedSubAssetKind::Animation
+            && entry.import_settings.sub_assets.iter().any(|candidate| {
+                candidate.kind == ImportedSubAssetKind::HumanoidMotion
+                    && candidate.index == sub_asset.index
+                    && candidate.target_model_source.is_none()
+            });
+        (
+            owner_source.clone(),
+            candidate_kind,
+            sub_asset.index as usize,
+            has_humanoid_fallback,
+        )
+    };
+
+    let target_humanoid_usable = context
+        .manifest
+        .iter()
+        .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
+        .any(|profile| {
+            crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok()
+        });
+
+    if candidate_kind == crate::motion_binding::AnimationMotionCandidateKind::Humanoid {
+        let route = crate::motion_binding::plan_animation_motion(
+            &crate::motion_binding::AnimationMotionPlanInput {
+                candidate: source.asset.clone(),
+                candidate_kind,
+                source_skeleton: None,
+                target_skeleton: target_skeleton.id.clone(),
+                retarget_map: None,
+                humanoid_fallback: None,
+                target_humanoid_usable,
+            },
+        );
+        let crate::motion_binding::AnimationMotionRoute::Humanoid { motion } = &route else {
+            push_animation_motion_binding_failure(
+                animation_set_asset,
+                motion_slot,
+                &source.asset,
+                target_skeleton,
+                &route,
+                context,
+            );
+            return Ok(None);
+        };
+        let handle = resolve_humanoid_animation_binding_clip(
             animation_set_asset,
-            &source.asset,
+            motion,
             target_skeleton,
             context,
-        )
-        .map(|handle| Some(ResolvedAnimationBindingClip {
+        )?;
+        return Ok(Some(ResolvedAnimationBindingClip {
             handle,
-            resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
+            resolved_route: route.clone(),
         }));
     }
 
@@ -1736,7 +1884,7 @@ fn resolve_animation_binding_clip(
             animation_set_asset,
             &source.asset,
             context,
-            "Animation Set Native and Auto sources must reference imported Animation sub-assets",
+            "model-bound Animation Set candidates must reference imported Animation sub-assets",
         )
     })?;
     let native_handle = resolved
@@ -1759,57 +1907,127 @@ fn resolve_animation_binding_clip(
             animation_set_asset,
             &source.asset,
             context,
-            "Animation Set Native and Auto sources must be bound to an imported skeleton",
+            "model-bound Animation Set candidates must be bound to an imported skeleton",
         )
     })?;
 
-    if source_skeleton_id == target_skeleton.id {
-        return Ok(Some(ResolvedAnimationBindingClip {
-            handle: native_handle,
-            resolved_variant: engine_authoring::MotionSourceVariant::Native,
-        }));
-    }
-
-    if source.variant == engine_authoring::MotionSourceVariant::Auto {
-        let assets_root = context.asset_root.unwrap_or_else(|| Path::new("."));
-        let maps = crate::retarget::load_registered_retarget_maps(assets_root, context.manifest);
-        if crate::retarget::find_retarget_map_for_pair(
-            &maps,
-            &source_skeleton_id,
-            &target_skeleton.id,
+    let assets_root = context.asset_root.unwrap_or_else(|| Path::new("."));
+    let maps = crate::retarget::load_registered_retarget_maps(assets_root, context.manifest);
+    let retarget_map = maps
+        .iter()
+        .find(|(_, map)| {
+            map.source_skeleton == source_skeleton_id
+                && map.target_skeleton == target_skeleton.id
+        })
+        .map(|(id, _)| id.clone());
+    let humanoid_fallback = has_humanoid_fallback.then(|| {
+        crate::asset::imported_logical_humanoid_motion_sub_asset_id(
+            &owner_source,
+            source_index,
         )
-        .is_none()
-        {
-            let humanoid_asset =
-                crate::asset::imported_humanoid_motion_sub_asset_id(&source.asset);
-            return resolve_humanoid_animation_binding_clip(
+    });
+    let route = crate::motion_binding::plan_animation_motion(
+        &crate::motion_binding::AnimationMotionPlanInput {
+            candidate: source.asset.clone(),
+            candidate_kind,
+            source_skeleton: Some(source_skeleton_id.clone()),
+            target_skeleton: target_skeleton.id.clone(),
+            retarget_map,
+            humanoid_fallback,
+            target_humanoid_usable,
+        },
+    );
+
+    match &route {
+        crate::motion_binding::AnimationMotionRoute::Native => {
+            Ok(Some(ResolvedAnimationBindingClip {
+                handle: native_handle,
+                resolved_route: route.clone(),
+            }))
+        }
+        crate::motion_binding::AnimationMotionRoute::Retarget { .. } => {
+            resolve_retargeted_animation_binding_clip(
                 animation_set_asset,
-                &humanoid_asset,
+                &source.asset,
+                native_handle,
+                &native_clip,
+                &source_skeleton_id,
                 target_skeleton,
                 context,
             )
-            .map(|handle| Some(ResolvedAnimationBindingClip {
+            .map(|resolved| {
+                resolved.map(|handle| ResolvedAnimationBindingClip {
+                    handle,
+                    resolved_route: route.clone(),
+                })
+            })
+        }
+        crate::motion_binding::AnimationMotionRoute::Humanoid { motion } => {
+            let handle = resolve_humanoid_animation_binding_clip(
+                animation_set_asset,
+                motion,
+                target_skeleton,
+                context,
+            )?;
+            Ok(Some(ResolvedAnimationBindingClip {
                 handle,
-                resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
-            }));
+                resolved_route: route.clone(),
+            }))
+        }
+        crate::motion_binding::AnimationMotionRoute::Failed { .. } => {
+            push_animation_motion_binding_failure(
+                animation_set_asset,
+                motion_slot,
+                &source.asset,
+                target_skeleton,
+                &route,
+                context,
+            );
+            Ok(None)
         }
     }
+}
 
-    resolve_retargeted_animation_binding_clip(
-        animation_set_asset,
-        &source.asset,
-        native_handle,
-        &native_clip,
-        &source_skeleton_id,
-        target_skeleton,
-        context,
-    )
-    .map(|resolved| {
-        resolved.map(|handle| ResolvedAnimationBindingClip {
-            handle,
-            resolved_variant: engine_authoring::MotionSourceVariant::Native,
+fn push_animation_motion_binding_failure(
+    animation_set_asset: &AssetId,
+    motion_slot: &engine_authoring::MotionSlotId,
+    candidate: &AssetId,
+    target_skeleton: &SkeletonAsset,
+    route: &crate::motion_binding::AnimationMotionRoute,
+    context: &mut SpawnContext<'_>,
+) {
+    let crate::motion_binding::AnimationMotionRoute::Failed { reason } = route else {
+        return;
+    };
+    context.asset_diagnostics.push(
+        Diagnostic::error(
+            ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC,
+            format!(
+                "Animation Set `{}` slot `{}` candidate `{}` cannot resolve for target skeleton `{}`. Attempted routing: {}. Failure: {reason}",
+                animation_set_asset.as_str(),
+                motion_slot.as_str(),
+                candidate.as_str(),
+                target_skeleton.id.as_str(),
+                route.attempted_routing(),
+            ),
+        )
+        .with_target(DiagnosticTarget::Asset {
+            id: animation_set_asset.clone(),
         })
-    })
+        .with_related_targets(vec![
+            DiagnosticTarget::Asset {
+                id: candidate.clone(),
+            },
+            DiagnosticTarget::Asset {
+                id: target_skeleton.id.clone(),
+            },
+        ])
+        .with_context_value("animation_set_asset_id", animation_set_asset.as_str())
+        .with_context_value("motion_slot_id", motion_slot.as_str())
+        .with_context_value("motion_candidate_asset_id", candidate.as_str())
+        .with_context_value("target_skeleton_asset_id", target_skeleton.id.as_str())
+        .with_context_value("attempted_routing", route.attempted_routing()),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1861,7 +2079,7 @@ fn resolve_humanoid_animation_binding_clip(
     target_skeleton: &SkeletonAsset,
     context: &mut SpawnContext<'_>,
 ) -> Result<Handle<AnimationClip>, SceneBridgeError> {
-    let (source_id, existing_profiles) = {
+    let (source_id, source_fingerprint, provenance_model) = {
         let Some((source_id, entry, sub_asset)) = context.manifest.imported_sub_asset(motion_asset)
         else {
             return Err(animation_binding_error(
@@ -1879,10 +2097,33 @@ fn resolve_humanoid_animation_binding_clip(
                 "Humanoid source must reference an imported HumanoidMotion sub-asset",
             ));
         }
-        (
-            source_id.clone(),
-            entry.import_settings.humanoid_profiles.clone(),
-        )
+        let source_fingerprint = entry
+            .import_settings
+            .source_fingerprint
+            .clone()
+            .ok_or_else(|| {
+                animation_binding_error(
+                    animation_set_asset,
+                    motion_asset,
+                    context,
+                    "Humanoid source has no import fingerprint; reimport it before resolving this Animation Set",
+                )
+            })?;
+        let provenance_model = entry
+            .import_settings
+            .motion_humanoid_source_model
+            .as_deref()
+            .map(|id| AssetId::from_stable_id(StableId::new(id)))
+            .transpose()
+            .map_err(|error| {
+                animation_binding_error(
+                    animation_set_asset,
+                    motion_asset,
+                    context,
+                    format!("Humanoid source provenance contains an invalid model AssetId: {error}"),
+                )
+            })?;
+        (source_id.clone(), source_fingerprint, provenance_model)
     };
 
     if let Some(packaged_root) = context
@@ -1925,45 +2166,42 @@ fn resolve_humanoid_animation_binding_clip(
         ));
     }
 
-    let imported = import_source_cached(&source_id, context).map_err(|error| {
-        animation_binding_error(
-            animation_set_asset,
-            motion_asset,
-            context,
-            format!(
-                "could not import the model source owning Humanoid motion `{}`: {error}",
-                motion_asset.as_str()
-            ),
-        )
-    })?;
-    let catalog =
-        crate::humanoid_import::build_humanoid_import_catalog(&imported, &existing_profiles);
-    context.asset_diagnostics.extend(
-        catalog
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(|diagnostic| diagnostic.with_target(DiagnosticTarget::Asset {
-                id: source_id.clone(),
-            })),
-    );
-    let portable = catalog
-        .motions
-        .iter()
-        .find(|motion| &motion.id == motion_asset)
+    let fallback_cache = context
+        .asset_root
+        .and_then(Path::parent)
+        .map(crate::DerivedCache::new);
+    let cache = context
+        .asset_state
+        .derived_cache
+        .as_ref()
+        .or(fallback_cache.as_ref())
         .ok_or_else(|| {
             animation_binding_error(
                 animation_set_asset,
                 motion_asset,
                 context,
-                "the source no longer exposes this Humanoid motion; reimport it",
+                "project-derived cache is unavailable for imported Humanoid motion; reimport in a project context",
             )
         })?;
+    let portable = crate::humanoid_motion::load_imported_humanoid_motion(
+        cache,
+        motion_asset,
+        &source_fingerprint,
+        provenance_model.as_ref(),
+    )
+    .ok_or_else(|| {
+        animation_binding_error(
+            animation_set_asset,
+            motion_asset,
+            context,
+            "imported Humanoid motion cache entry is missing or stale; reimport the owning source",
+        )
+    })?;
     let target_profile = context
         .manifest
         .iter()
         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
-        .find(|profile| profile.skeleton == target_skeleton.id.as_str())
+        .find(|profile| crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok())
         .cloned()
         .ok_or_else(|| {
             animation_binding_error(
@@ -1980,13 +2218,13 @@ fn resolve_humanoid_animation_binding_clip(
     let mut baked = if let Some(cache) = context.asset_state.derived_cache.as_ref() {
         crate::humanoid_motion::resolve_or_bake_humanoid_motion(
             cache,
-            &portable.motion,
+            &portable,
             target_skeleton,
             &target_profile,
         )
     } else {
         crate::humanoid_motion::bake_humanoid_motion(
-            &portable.motion,
+            &portable,
             target_skeleton,
             &target_profile,
         )
@@ -2546,6 +2784,551 @@ pub(crate) fn spawn_camera_component(
     camera.enabled = enabled;
     camera.priority = priority;
     context.world.add_component(entity, camera)?;
+    Ok(())
+}
+
+pub(crate) fn spawn_camera_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(CAMERA_2D_COMPONENT);
+    const EXPECTED: &str = "a Camera2D object with valid orthographic projection and reference-resolution fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let priority = i32::try_from(fields.i64("priority")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let width = u32::try_from(fields.i64("reference_width")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let height = u32::try_from(fields.i64("reference_height")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let fit = match fields.string("fit")? {
+        "fit" => ViewportFit2d::Fit,
+        "fill" => ViewportFit2d::Fill,
+        "stretch" => ViewportFit2d::Stretch,
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let camera = Camera2d {
+        enabled: fields.bool("enabled")?,
+        priority,
+        orthographic_height: fields.f32("orthographic_height")?,
+        zoom: fields.f32("zoom")?,
+        near: fields.f32("near")?,
+        far: fields.f32("far")?,
+        pixel_perfect: fields.bool("pixel_perfect")?,
+        reference_pixels_per_unit: fields.f32("reference_pixels_per_unit")?,
+        reference_resolution: [width, height],
+        fit,
+    };
+    if width == 0 || height == 0 || camera.projection([width, height]).is_err() {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(entity, camera)?;
+    Ok(())
+}
+
+fn native_2d_asset_error(
+    asset: &AssetId,
+    path: &Path,
+    message: impl Into<String>,
+) -> SceneBridgeError {
+    SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::InvalidAsset {
+            path: path.to_path_buf(),
+            message: message.into(),
+        },
+    }
+}
+
+fn load_sprite_atlas_document(
+    atlas_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<engine_authoring::SpriteAtlasDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.sprite_atlas_documents.get(atlas_id) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(atlas_id, context)?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| native_2d_asset_error(atlas_id, &path, message))?
+    } else {
+        std::fs::read_to_string(&path)
+            .map_err(|error| native_2d_asset_error(atlas_id, &path, error.to_string()))?
+    };
+    let document = engine_authoring::SpriteAtlasDocument::from_json(&json)
+        .map_err(|error| native_2d_asset_error(atlas_id, &path, error.to_string()))?;
+    let errors = document.validate();
+    if !errors.is_empty() {
+        return Err(native_2d_asset_error(atlas_id, &path, errors.join("; ")));
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .sprite_atlas_documents
+        .insert(atlas_id.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+fn resolve_native_2d_texture(
+    owner_id: &AssetId,
+    texture_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<DecodedTexture>, SceneBridgeError> {
+    let mut visited = BTreeSet::new();
+    resolve_native_2d_texture_inner(owner_id, texture_id, context, &mut visited)
+}
+
+fn resolve_native_2d_texture_inner(
+    owner_id: &AssetId,
+    texture_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+    visited: &mut BTreeSet<AssetId>,
+) -> Result<Arc<DecodedTexture>, SceneBridgeError> {
+    if let Some(texture) = context.asset_state.native_2d_textures.get(texture_id) {
+        return Ok(Arc::clone(texture));
+    }
+    if !visited.insert(texture_id.clone()) {
+        return Err(native_2d_asset_error(
+            owner_id,
+            Path::new(texture_id.as_str()),
+            format!("Native 2D source texture remap cycle at `{}`", texture_id.as_str()),
+        ));
+    }
+
+    let decoded = if let Some((source_id, source_entry, sub_asset)) =
+        context.manifest.imported_sub_asset(texture_id)
+    {
+        if sub_asset.kind != ImportedSubAssetKind::Texture {
+            return Err(native_2d_asset_error(
+                owner_id,
+                Path::new(&source_entry.path),
+                format!(
+                    "Native 2D source `{}` resolves to imported kind {:?}, not Texture",
+                    texture_id.as_str(),
+                    sub_asset.kind
+                ),
+            ));
+        }
+        if let Some(remapped) = source_entry.import_settings.texture_remaps.get(&sub_asset.id) {
+            let remapped_id = AssetId::from_stable_id(StableId::new(remapped)).map_err(|error| {
+                native_2d_asset_error(
+                    owner_id,
+                    Path::new(&source_entry.path),
+                    format!("invalid Native 2D texture remap `{remapped}`: {error}"),
+                )
+            })?;
+            return resolve_native_2d_texture_inner(owner_id, &remapped_id, context, visited);
+        }
+        let source_path = context
+            .asset_root
+            .unwrap_or_else(|| Path::new("."))
+            .join(&source_entry.path);
+        let imported = import_gltf_cached(
+            source_id,
+            &source_path,
+            &source_entry.import_settings.skeleton_records,
+            &source_entry.import_settings.contact_bones,
+            context.asset_state,
+        )
+        .map_err(|error| native_2d_asset_error(owner_id, &source_path, error.to_string()))?;
+        decoded_imported_texture(
+            &Some(texture_id.clone()),
+            &imported,
+            &source_path,
+            context.asset_state,
+        )
+        .ok_or_else(|| {
+            native_2d_asset_error(
+                owner_id,
+                &source_path,
+                format!("imported Native 2D texture `{}` is missing", texture_id.as_str()),
+            )
+        })?
+    } else {
+        let Some(entry) = context.manifest.get(texture_id) else {
+            return Err(SceneBridgeError::UnknownAsset {
+                asset: texture_id.clone(),
+            });
+        };
+        let path = context
+            .asset_root
+            .unwrap_or_else(|| Path::new("."))
+            .join(&entry.path);
+        let bytes = std::fs::read(&path)
+            .map_err(|error| native_2d_asset_error(owner_id, &path, error.to_string()))?;
+        Arc::new(
+            DecodedTexture::from_bytes(&bytes, path.display().to_string())
+                .map_err(|error| native_2d_asset_error(owner_id, &path, error.to_string()))?,
+        )
+    };
+    context
+        .asset_state
+        .native_2d_textures
+        .insert(texture_id.clone(), Arc::clone(&decoded));
+    Ok(decoded)
+}
+
+fn resolve_sprite_region_2d(
+    sprite: &SpriteRef,
+    context: &mut SpawnContext<'_>,
+) -> Result<ResolvedSpriteRegion2d, SceneBridgeError> {
+    let atlas = load_sprite_atlas_document(&sprite.atlas, context)?;
+    let path = manifest_asset_path(&sprite.atlas, context)?;
+    let region = atlas.region(&sprite.sprite).cloned().ok_or_else(|| {
+        native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!(
+                "Sprite Atlas does not contain SpriteId `{}`",
+                sprite.sprite.as_str()
+            ),
+        )
+    })?;
+    let texture = resolve_native_2d_texture(&sprite.atlas, &region.source_texture, context)?;
+    let Some(right) = region.rect.x.checked_add(region.rect.width) else {
+        return Err(native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!("SpriteId `{}` pixel rect overflows u32", sprite.sprite.as_str()),
+        ));
+    };
+    let Some(bottom) = region.rect.y.checked_add(region.rect.height) else {
+        return Err(native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!("SpriteId `{}` pixel rect overflows u32", sprite.sprite.as_str()),
+        ));
+    };
+    if right > texture.width || bottom > texture.height {
+        return Err(native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!(
+                "SpriteId `{}` pixel rect exceeds source texture {}x{}",
+                sprite.sprite.as_str(),
+                texture.width,
+                texture.height
+            ),
+        ));
+    }
+    Ok(ResolvedSpriteRegion2d {
+        source_texture: region.source_texture,
+        texture,
+        rect: [region.rect.x, region.rect.y, region.rect.width, region.rect.height],
+        pivot: region.pivot,
+        pixels_per_unit: region.pixels_per_unit,
+        filtering: region.filtering,
+        extrusion_pixels: region.extrusion_pixels,
+    })
+}
+
+fn load_tile_set_document(
+    tile_set_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<TileSetDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.tile_set_documents.get(tile_set_id) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(tile_set_id, context)?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| native_2d_asset_error(tile_set_id, &path, message))?
+    } else {
+        std::fs::read_to_string(&path)
+            .map_err(|error| native_2d_asset_error(tile_set_id, &path, error.to_string()))?
+    };
+    let document = TileSetDocument::from_json(&json)
+        .map_err(|error| native_2d_asset_error(tile_set_id, &path, error.to_string()))?;
+    let errors = document.validate();
+    if !errors.is_empty() {
+        return Err(native_2d_asset_error(tile_set_id, &path, errors.join("; ")));
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .tile_set_documents
+        .insert(tile_set_id.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+fn load_tile_map_document(
+    tile_map_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<TileMapDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.tile_map_documents.get(tile_map_id) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(tile_map_id, context)?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| native_2d_asset_error(tile_map_id, &path, message))?
+    } else {
+        std::fs::read_to_string(&path)
+            .map_err(|error| native_2d_asset_error(tile_map_id, &path, error.to_string()))?
+    };
+    let document = TileMapDocument::from_json(&json)
+        .map_err(|error| native_2d_asset_error(tile_map_id, &path, error.to_string()))?;
+    let errors = document.validate();
+    if !errors.is_empty() {
+        return Err(native_2d_asset_error(tile_map_id, &path, errors.join("; ")));
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .tile_map_documents
+        .insert(tile_map_id.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+pub(crate) fn spawn_tile_map_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(TILE_MAP_2D_COMPONENT);
+    const EXPECTED: &str = "a TileMap2D object with tile_map and visible fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(tile_map_id) = fields.assignable_asset_ref("tile_map")?.cloned() else {
+        context
+            .asset_diagnostics
+            .push(component_inactive_diagnostic(
+                context.authoring_entity,
+                &component_type,
+                "tile_map",
+            ));
+        return Ok(());
+    };
+    let document = load_tile_map_document(&tile_map_id, context)?;
+    let tile_set = load_tile_set_document(&document.tile_set, context)?;
+
+    let mut used_tiles = BTreeSet::new();
+    for layer in &document.layers {
+        for chunk in &layer.chunks {
+            for cell in &chunk.cells {
+                used_tiles.insert(cell.tile.clone());
+            }
+        }
+    }
+    let mut sprites = BTreeMap::new();
+    for tile_id in used_tiles {
+        let tile = tile_set.tile(&tile_id).ok_or_else(|| {
+            let path = manifest_asset_path(&tile_map_id, context)
+                .unwrap_or_else(|_| Path::new(tile_map_id.as_str()).to_path_buf());
+            native_2d_asset_error(
+                &tile_map_id,
+                &path,
+                format!("Tile Map references unknown TileId `{}`", tile_id.as_str()),
+            )
+        })?;
+        sprites.insert(tile_id, resolve_sprite_region_2d(&tile.sprite, context)?);
+    }
+
+    let mut chunks = Vec::new();
+    for layer in &document.layers {
+        for chunk in &layer.chunks {
+            let mut cells = Vec::with_capacity(chunk.cells.len());
+            for entry in &chunk.cells {
+                let tile = tile_set.tile(&entry.tile).expect("used TileId was validated above");
+                let region = sprites
+                    .get(&entry.tile)
+                    .expect("used TileId has a resolved sprite region")
+                    .clone();
+                cells.push(ResolvedTileCell2d {
+                    cell: entry.cell,
+                    sprite: tile.sprite.clone(),
+                    region,
+                });
+            }
+            chunks.push(ResolvedTileChunkRender2d {
+                layer: layer.id.clone(),
+                sorting_layer: layer.sorting_layer.clone(),
+                order_in_layer: layer.order_in_layer,
+                coord: chunk.coord,
+                cells,
+            });
+        }
+    }
+
+    context.world.add_component(
+        entity,
+        TileMap2d {
+            tile_map: tile_map_id,
+            visible: fields.bool("visible")?,
+        },
+    )?;
+    let compiled_tile_set = match compile_tile_set(&tile_set) {
+        Ok(compiled) => Arc::new(compiled),
+        Err(_) => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let compiled_tile_map = match compile_tile_map(&document, compiled_tile_set.as_ref()) {
+        Ok(compiled) => Arc::new(compiled),
+        Err(_) => return Err(fields.invalid(EXPECTED).into()),
+    };
+    context.world.add_component(
+        entity,
+        TileMapPhysicsSource2d {
+            map: compiled_tile_map,
+            tile_set: compiled_tile_set,
+        },
+    )?;
+    context.world.add_component(
+        entity,
+        ResolvedTileMap2d {
+            document,
+            tile_set,
+            sprites,
+            chunks,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn spawn_sprite_renderer_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT);
+    const EXPECTED: &str = "a SpriteRenderer2D object with stable atlas/SpriteId, tint, sorting, blend, and visibility fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(atlas) = fields.assignable_asset_ref("atlas")?.cloned() else {
+        context.asset_diagnostics.push(component_inactive_diagnostic(
+            context.authoring_entity,
+            &component_type,
+            "atlas",
+        ));
+        return Ok(());
+    };
+    let sprite = SpriteId::parse(fields.string("sprite_id")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
+    let sorting_layer = SortingLayerId::parse(fields.string("sorting_layer")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
+    let order_in_layer = i32::try_from(fields.i64("order_in_layer")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let tint = [
+        fields.f32("tint_r")?,
+        fields.f32("tint_g")?,
+        fields.f32("tint_b")?,
+        fields.f32("tint_a")?,
+    ];
+    if tint.iter().any(|value| !value.is_finite())
+        || tint[..3].iter().any(|value| *value < 0.0)
+        || !(0.0..=1.0).contains(&tint[3])
+    {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    let blend = match fields.string("blend")? {
+        "alpha" => SpriteBlendMode::Alpha,
+        "premultiplied_alpha" => SpriteBlendMode::PremultipliedAlpha,
+        "additive" => SpriteBlendMode::Additive,
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let material_override = fields.assignable_asset_ref("material_override")?.cloned();
+    let sprite = SpriteRef { atlas, sprite };
+    let resolved_region = resolve_sprite_region_2d(&sprite, context)?;
+    context.world.add_component(
+        entity,
+        SpriteRenderer2d {
+            sprite,
+            tint,
+            flip_x: fields.bool("flip_x")?,
+            flip_y: fields.bool("flip_y")?,
+            sorting_layer,
+            order_in_layer,
+            visible: fields.bool("visible")?,
+            blend,
+            material_override,
+        },
+    )?;
+    context.world.add_component(entity, resolved_region)?;
+    Ok(())
+}
+
+fn resolve_sprite_animation_document(
+    asset: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<SpriteAnimationDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.sprite_animation_documents.get(asset) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(asset, context)?;
+    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAnimation, &path) {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path,
+                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset".to_owned(),
+            },
+        });
+    }
+    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::Io { path: path.clone(), source },
+    })?;
+    let document = SpriteAnimationDocument::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::InvalidAsset { path: path.clone(), message: source.to_string() },
+    })?;
+    let validation = document.validate();
+    if !validation.is_empty() {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset { path, message: validation.join("; ") },
+        });
+    }
+    let document = Arc::new(document);
+    context.asset_state.sprite_animation_documents.insert(asset.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+pub(crate) fn spawn_sprite_animator_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT);
+    const EXPECTED: &str = "a SpriteAnimator2D object with clip, autoplay, speed, looping override, and initial frame";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(clip_asset) = fields.assignable_asset_ref("clip")?.cloned() else {
+        context.asset_diagnostics.push(component_inactive_diagnostic(
+            context.authoring_entity,
+            &component_type,
+            "clip",
+        ));
+        return Ok(());
+    };
+    let speed = fields.f32("speed")?;
+    let looping_override = match fields.get("looping_override") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let clip = resolve_sprite_animation_document(&clip_asset, context)?;
+    if context
+        .world
+        .get_resource::<SpriteAnimationClipRegistry2d>()
+        .is_none()
+    {
+        context
+            .world
+            .insert_resource(SpriteAnimationClipRegistry2d::default());
+    }
+    context
+        .world
+        .get_resource_mut::<SpriteAnimationClipRegistry2d>()
+        .expect("Sprite Animation registry was just installed")
+        .insert(clip_asset.clone(), Arc::clone(&clip));
+    let animator = SpriteAnimatorRuntime2d::new(
+        clip_asset,
+        clip,
+        fields.bool("autoplay")?,
+        speed,
+        looping_override,
+        initial_frame,
+    )
+    .map_err(|_| fields.invalid(EXPECTED))?;
+    context.world.add_component(entity, animator)?;
     Ok(())
 }
 
@@ -3337,6 +4120,143 @@ pub(crate) fn spawn_collider_component(
     if is_trigger {
         context.world.add_component(entity, TriggerVolume)?;
     }
+    Ok(())
+}
+
+const COLLIDER_2D_EXPECTED: &str =
+    "a Native 2D collider object with valid shape, material, filtering, and one-way fields";
+
+fn native_2d_numeric(value: &Value) -> Option<f32> {
+    let number = match value {
+        Value::F64(value) => *value as f32,
+        Value::I64(value) => *value as f32,
+        Value::U64(value) => *value as f32,
+        _ => return None,
+    };
+    number.is_finite().then_some(number)
+}
+
+pub(crate) fn spawn_collider_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(COLLIDER_2D_COMPONENT);
+    let fields = ComponentFields::new(
+        context.authoring_entity,
+        &component_type,
+        value,
+        COLLIDER_2D_EXPECTED,
+    )?;
+    let shape = match fields.string("shape")? {
+        "box" => crate::native_2d::ColliderShape2d::Box {
+            half_extents: [fields.f32("half_extent_x")?, fields.f32("half_extent_y")?],
+        },
+        "circle" => crate::native_2d::ColliderShape2d::Circle {
+            radius: fields.f32("radius")?,
+        },
+        "capsule" => crate::native_2d::ColliderShape2d::Capsule {
+            half_height: fields.f32("half_height")?,
+            radius: fields.f32("radius")?,
+        },
+        "polygon" => {
+            let Some(Value::Array(authored_points)) = fields.get("points") else {
+                return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+            };
+            if authored_points.len() < 3 {
+                return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+            }
+            let mut points = Vec::with_capacity(authored_points.len());
+            for point in authored_points {
+                let Value::Object(point) = point else {
+                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+                };
+                let Some(x) = point.get("x").and_then(native_2d_numeric) else {
+                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+                };
+                let Some(y) = point.get("y").and_then(native_2d_numeric) else {
+                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+                };
+                points.push([x, y]);
+            }
+            crate::native_2d::ColliderShape2d::Polygon { points }
+        }
+        _ => return Err(fields.invalid(COLLIDER_2D_EXPECTED).into()),
+    };
+    let memberships = u32::try_from(fields.i64("membership")?)
+        .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
+    let mask = u32::try_from(fields.i64("mask")?)
+        .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
+    context.world.add_component(
+        entity,
+        crate::native_2d::Collider2d {
+            shape,
+            sensor: fields.bool("sensor")?,
+            friction: fields.f32("friction")?,
+            restitution: fields.f32("restitution")?,
+            filter: crate::native_2d::CollisionFilter2d { memberships, mask },
+            one_way: fields.bool("one_way")?,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn spawn_rigid_body_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(RIGID_BODY_2D_COMPONENT);
+    const EXPECTED: &str = "a Native 2D rigid body with fixed, dynamic, or kinematic mode and finite motion fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let mode = match fields.string("mode")? {
+        "fixed" => crate::native_2d::RigidBodyMode2d::Fixed,
+        "dynamic" => crate::native_2d::RigidBodyMode2d::Dynamic,
+        "kinematic" => crate::native_2d::RigidBodyMode2d::Kinematic,
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    context.world.add_component(
+        entity,
+        crate::native_2d::RigidBody2d {
+            mode,
+            velocity: [fields.f32("velocity_x")?, fields.f32("velocity_y")?],
+            angular_velocity: fields.f32("angular_velocity")?,
+            gravity_scale: fields.f32("gravity_scale")?,
+            continuous: fields.bool("continuous")?,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn spawn_character_controller_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(CHARACTER_CONTROLLER_2D_COMPONENT);
+    const EXPECTED: &str = "a Native 2D character controller with positive extents and valid movement settings";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let collision_mask = u32::try_from(fields.i64("collision_mask")?)
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let half_extents = glam::Vec2::new(
+        fields.f32("half_extent_x")?,
+        fields.f32("half_extent_y")?,
+    );
+    let skin = fields.f32("skin")?;
+    if skin >= half_extents.min_element() {
+        return Err(fields.invalid("a Native 2D character controller whose skin is smaller than both half extents").into());
+    }
+    context.world.add_component(
+        entity,
+        crate::native_2d::CharacterController2d {
+            half_extents,
+            skin,
+            slope_limit_radians: fields.f32("slope_limit_degrees")?.to_radians(),
+            ground_snap: fields.f32("ground_snap")?,
+            collision_mask,
+            ..crate::native_2d::CharacterController2d::default()
+        },
+    )?;
     Ok(())
 }
 

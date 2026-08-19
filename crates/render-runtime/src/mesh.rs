@@ -1085,14 +1085,14 @@ struct MeshContentKey {
 /// GPU uploads shared by preview worlds that use the same wgpu device.
 #[derive(Clone, Default)]
 pub struct SharedGpuMeshCache {
-    entries: Arc<Mutex<HashMap<MeshContentKey, GpuMesh>>>,
+    entries: Arc<Mutex<HashMap<(usize, MeshContentKey), GpuMesh>>>,
 }
 
 impl SharedGpuMeshCache {
-    /// Returns an upload already shared for identical mesh contents.
+    /// Returns an upload already shared for identical mesh contents on `device`.
     #[doc(hidden)]
-    pub fn get(&self, mesh: &Mesh) -> Option<GpuMesh> {
-        let key = mesh_content_key(mesh);
+    pub fn get(&self, device: &wgpu::Device, mesh: &Mesh) -> Option<GpuMesh> {
+        let key = (device as *const wgpu::Device as usize, mesh_content_key(mesh));
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1100,10 +1100,10 @@ impl SharedGpuMeshCache {
             .cloned()
     }
 
-    /// Shares a GPU upload under the mesh's stable content key.
+    /// Shares a GPU upload under the device and mesh's stable content key.
     #[doc(hidden)]
-    pub fn insert(&self, mesh: &Mesh, gpu_mesh: GpuMesh) {
-        let key = mesh_content_key(mesh);
+    pub fn insert(&self, device: &wgpu::Device, mesh: &Mesh, gpu_mesh: GpuMesh) {
+        let key = (device as *const wgpu::Device as usize, mesh_content_key(mesh));
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1117,7 +1117,6 @@ impl SharedGpuMeshCache {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
-
 }
 
 /// Per-world aliases into an optional shared GPU mesh upload cache.

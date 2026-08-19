@@ -56,6 +56,7 @@ mod desktop {
             .map_err(|error| format!("cannot load start scene `{start_scene}`: {error}"))?;
 
         let mut app = engine::App::new().with_title(title);
+        engine::native_2d::apply_project_2d_settings(&mut app, &settings.native_2d);
         let (input_actions, input_diagnostics) =
             engine::InputActionMap::from_project_settings(&settings);
         app.insert_resource(input_actions);

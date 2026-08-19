@@ -4,6 +4,7 @@ use std::fmt;
 
 use crate::bloom::BloomPass;
 use crate::camera::{select_active_game_camera, Camera3D};
+use crate::native_2d::Camera2d;
 use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
 use crate::transform::Transform;
 
@@ -161,6 +162,65 @@ impl WorldRenderer {
             .copy_current_to(device, queue, color_view);
         self.temporal.commit();
         Ok(())
+    }
+
+    /// Renders through an explicit Native 2D camera without mutating camera entities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_to_view_with_camera_2d(
+        &mut self,
+        world: &mut engine_ecs::World,
+        camera: &Camera2d,
+        camera_transform: &Transform,
+        viewport: [u32; 2],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+    ) -> Result<(), RenderFrameError> {
+        if color_view.texture().sample_count() != 1 {
+            return self
+                .inner
+                .render_to_view_with_camera_2d(
+                    world, camera, camera_transform, viewport, device, queue, color_view, depth_view,
+                )
+                .map_err(RenderFrameError);
+        }
+        let camera_sample = camera
+            .view_projection_matrix(camera_transform, viewport)
+            .ok()
+            .map(|view_projection| {
+                TemporalCameraSample::new(TemporalCameraSource::Explicit, view_projection)
+            });
+        let temporal_view = self.temporal.prepare(device, queue, color_view, camera_sample);
+        self.inner
+            .render_to_view_with_camera_2d(
+                world, camera, camera_transform, viewport, device, queue, temporal_view, depth_view,
+            )
+            .map_err(RenderFrameError)?;
+        self.temporal.copy_current_to(device, queue, color_view);
+        self.temporal.commit();
+        Ok(())
+    }
+
+    pub(crate) fn set_shared_texture_cache(
+        &mut self,
+        cache: crate::material::SharedGpuTextureCache,
+    ) {
+        self.inner.set_shared_texture_cache(cache);
+    }
+
+    pub(crate) fn set_upload_budget(&mut self, max_bytes: u64, max_uploads: u32) {
+        self.inner
+            .set_upload_budget(crate::gpu_streaming::GpuUploadBudget::new(max_bytes, max_uploads));
+    }
+
+    pub(crate) const fn upload_report(&self) -> crate::gpu_streaming::GpuUploadReport {
+        self.inner.upload_report()
+    }
+
+    pub(crate) fn release_recreatable_resources(&mut self) {
+        self.inner.release_recreatable_resources();
+        self.temporal.reset();
     }
 
     /// Invalidates renderer-owned temporal history after a discontinuous camera change.

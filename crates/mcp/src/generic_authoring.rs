@@ -160,6 +160,7 @@ impl GenericAuthoringMcpTools {
                 AuthoringDomain::Material,
                 AuthoringDomain::ProjectSettings,
                 AuthoringDomain::AnimationSet,
+                AuthoringDomain::Native2d,
             ],
         )
     }
@@ -345,7 +346,11 @@ mod tests {
         assert!(names.contains(&"material.inspect".to_owned()));
         assert!(names.contains(&"project_settings.apply".to_owned()));
         assert!(names.contains(&"animation_set.validate".to_owned()));
-        assert_eq!(names.len(), 24);
+        assert!(names.contains(&"sprite_atlas.apply".to_owned()));
+        assert!(names.contains(&"sprite_animation.validate".to_owned()));
+        assert!(names.contains(&"tile_set.preview".to_owned()));
+        assert!(names.contains(&"tile_map.inspect".to_owned()));
+        assert_eq!(names.len(), 40);
     }
 
     #[test]

@@ -783,6 +783,7 @@ impl EditorApp {
                             .release_for_inference(render_state, false);
                     }
                     AiStudioReclaimLevel::Aggressive => {
+                        self.preview_residency.release_gpu();
                         self.scene_view.release_recreatable_resources(render_state);
                         self.animation_preview
                             .release_for_inference(render_state, true);
@@ -810,6 +811,9 @@ impl EditorApp {
                 self.inference_restore_completed = false;
                 if !self.is_playing() { self.start_play(); }
                 if self.is_playing() {
+                    if let Some(runtime) = self.runtime_state.as_mut() {
+                        runtime.set_paused(true);
+                    }
                     AiStudioRuntimeResult::PlayStarted
                 } else if self.play_after_game_build {
                     AiStudioRuntimeResult::PlayStartPending
@@ -825,6 +829,149 @@ impl EditorApp {
                 };
                 runtime.queue_input(InputSource::AiAgent, command);
                 AiStudioRuntimeResult::RuntimeInputQueued(command)
+            }
+            AiStudioRuntimeAction::PausePlaytest => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let Some(runtime) = self.runtime_state.as_mut() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "Pause requires an active Editor Play session.".to_owned(),
+                    );
+                };
+                runtime.set_paused(true);
+                AiStudioRuntimeResult::RuntimePaused(
+                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
+                )
+            }
+            AiStudioRuntimeAction::ResumePlaytest => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let Some(runtime) = self.runtime_state.as_mut() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "Resume requires an active Editor Play session.".to_owned(),
+                    );
+                };
+                runtime.set_paused(false);
+                AiStudioRuntimeResult::RuntimeResumed(
+                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
+                )
+            }
+            AiStudioRuntimeAction::StepPlaytest { steps } => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let Some(runtime) = self.runtime_state.as_mut() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "Step requires an active Editor Play session.".to_owned(),
+                    );
+                };
+                match crate::runtime_debug::step_paused(runtime, steps, &host_diagnostics) {
+                    Ok(observation) => AiStudioRuntimeResult::RuntimeStepped(observation),
+                    Err(error) => AiStudioRuntimeResult::Failed(error.to_string()),
+                }
+            }
+            AiStudioRuntimeAction::RunDebugPlan(plan) => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let result = match self.runtime_state.as_mut() {
+                    Some(runtime) => {
+                        crate::runtime_debug::execute_plan(runtime, &plan, &host_diagnostics)
+                    }
+                    None => {
+                        return AiStudioRuntimeResult::Failed(
+                            "Deterministic runtime input requires an active Editor Play session."
+                                .to_owned(),
+                        );
+                    }
+                };
+                match result {
+                    Ok(outcome) => {
+                        self.last_replay = outcome.replay;
+                        AiStudioRuntimeResult::RuntimeDebugPlanCompleted(outcome.report)
+                    }
+                    Err(error) => {
+                        self.stop_play(render_state);
+                        AiStudioRuntimeResult::RuntimeDebugPlanFailed(format!(
+                            "Deterministic runtime plan aborted and Play was stopped: {error}"
+                        ))
+                    }
+                }
+            }
+            AiStudioRuntimeAction::ObserveRuntime => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let Some(runtime) = self.runtime_state.as_ref() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "Runtime observation requires an active Editor Play session.".to_owned(),
+                    );
+                };
+                AiStudioRuntimeResult::RuntimeObserved(
+                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
+                )
+            }
+            AiStudioRuntimeAction::WaitRuntime {
+                predicate,
+                max_ticks,
+            } => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let Some(runtime) = self.runtime_state.as_mut() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "Runtime wait requires an active Editor Play session.".to_owned(),
+                    );
+                };
+                match crate::runtime_debug::wait_until(
+                    runtime,
+                    &predicate,
+                    max_ticks,
+                    &host_diagnostics,
+                ) {
+                    Ok(wait) => AiStudioRuntimeResult::RuntimeWaited(wait),
+                    Err(error) => AiStudioRuntimeResult::Failed(error.to_string()),
+                }
+            }
+            AiStudioRuntimeAction::AssertRuntime { predicate } => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let Some(runtime) = self.runtime_state.as_ref() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "Runtime assertion requires an active Editor Play session.".to_owned(),
+                    );
+                };
+                AiStudioRuntimeResult::RuntimeAsserted(crate::runtime_debug::assert_predicate(
+                    runtime,
+                    &predicate,
+                    &host_diagnostics,
+                ))
+            }
+            AiStudioRuntimeAction::ReplayLast => {
+                let Some(replay) = self.last_replay.clone() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "No ADR 0064 replay artifact is available for reproduction.".to_owned(),
+                    );
+                };
+                self.stop_play(render_state);
+                self.start_play();
+                if !self.is_playing() {
+                    return AiStudioRuntimeResult::Failed(
+                        "Replay reproduction could not start a fresh Editor Play world."
+                            .to_owned(),
+                    );
+                }
+                let host_diagnostics = self.session.diagnostics().to_vec();
+                let result = match self.runtime_state.as_mut() {
+                    Some(runtime) => crate::runtime_debug::replay_to_completion(
+                        runtime,
+                        replay,
+                        &host_diagnostics,
+                    ),
+                    None => {
+                        return AiStudioRuntimeResult::Failed(
+                            "Replay reproduction lost the fresh Editor Play world.".to_owned(),
+                        );
+                    }
+                };
+                match result {
+                    Ok(report) => AiStudioRuntimeResult::RuntimeReplayCompleted(report),
+                    Err(error) => {
+                        self.stop_play(render_state);
+                        AiStudioRuntimeResult::Failed(format!(
+                            "Replay reproduction aborted and Play was stopped: {error}"
+                        ))
+                    }
+                }
             }
             AiStudioRuntimeAction::CaptureFrame => {
                 // Live frame capture always outranks inference presentation.
@@ -847,6 +994,28 @@ impl EditorApp {
                 AiStudioRuntimeResult::PlayStopped
             }
         }
+    }
+
+    /// Captures the last rendered Game View for a bounded Remote AI Studio live-media session.
+    ///
+    /// This reuses the normal renderer-owned readback boundary and deliberately does not
+    /// persist Agent Host evidence. Runtime rendering receives priority over inference
+    /// presentation while the readback is active.
+    pub fn capture_ai_studio_live_observation(
+        &mut self,
+        render_state: Option<&egui_wgpu::RenderState>,
+    ) -> Result<crate::FrameCapture, String> {
+        self.inference_focused = false;
+        self.inference_restore_pending = false;
+        self.inference_restore_completed = false;
+        let render_state = render_state
+            .ok_or_else(|| "WGPU render state is unavailable for live Game View observation.".to_owned())?;
+        let runtime = self.runtime_state.as_ref().ok_or_else(|| {
+            "Live Game View observation requires an active Editor Play session.".to_owned()
+        })?;
+        runtime
+            .capture_game_view(render_state)
+            .map_err(|error| format!("Live Game View capture failed: {error}"))
     }
 
     /// Returns whether the normal Editor Play runtime is currently active for AI Studio.

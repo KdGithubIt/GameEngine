@@ -8,6 +8,7 @@ use crate::agent_host::{
     AgentCapability, AgentEvent, AgentEventEvidence, AgentEventKind, AgentHost, AgentRun,
     AgentRunState, AgentSession,
 };
+use crate::live_observation::DEFAULT_LIVE_OBSERVATION_FPS;
 use eframe::egui;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -74,6 +75,25 @@ pub(crate) enum RemoteOperation {
         run_id: String,
         artifact_id: String,
     },
+    StartLiveObservation {
+        run_id: String,
+        request_id: String,
+        max_fps: u8,
+    },
+    LiveObservationStatus {
+        media_session_id: String,
+        media_token: String,
+    },
+    LiveObservationFrame {
+        media_session_id: String,
+        media_token: String,
+        sequence: u64,
+    },
+    StopLiveObservation {
+        media_session_id: String,
+        media_token: String,
+        request_id: String,
+    },
 }
 
 impl RemoteOperation {
@@ -112,9 +132,25 @@ impl RemoteOperation {
                 request_id,
                 format!("permission:{run_id}:{capability:?}:{scope:?}"),
             )),
-            Self::Sessions | Self::Snapshot { .. } | Self::Events { .. } | Self::Frame { .. } => {
-                None
-            }
+            Self::StartLiveObservation {
+                run_id,
+                request_id,
+                max_fps,
+            } => Some((request_id, format!("live_start:{run_id}:{max_fps}"))),
+            Self::StopLiveObservation {
+                media_session_id,
+                media_token,
+                request_id,
+            } => Some((
+                request_id,
+                format!("live_stop:{media_session_id}:{media_token}"),
+            )),
+            Self::Sessions
+            | Self::Snapshot { .. }
+            | Self::Events { .. }
+            | Self::Frame { .. }
+            | Self::LiveObservationStatus { .. }
+            | Self::LiveObservationFrame { .. } => None
         }
     }
 }
@@ -500,6 +536,17 @@ struct PermissionBody {
     scope: RemotePermissionScope,
 }
 
+#[derive(Deserialize)]
+struct StartLiveObservationBody {
+    request_id: String,
+    #[serde(default = "default_live_observation_fps")]
+    max_fps: u8,
+}
+
+fn default_live_observation_fps() -> u8 {
+    DEFAULT_LIVE_OBSERVATION_FPS
+}
+
 fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudioResponse> {
     let path = request.path.split('?').next().unwrap_or(request.path.as_str());
     let parts = path
@@ -581,6 +628,57 @@ fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudi
             Ok(RemoteOperation::Frame {
                 run_id: (*run_id).to_owned(),
                 artifact_id: (*artifact_id).to_owned(),
+            })
+        }
+        ("POST", ["api", "runs", run_id, "live"]) => {
+            let body: StartLiveObservationBody = parse_json_body(request)?;
+            validate_request_id(&body.request_id)?;
+            Ok(RemoteOperation::StartLiveObservation {
+                run_id: (*run_id).to_owned(),
+                request_id: body.request_id,
+                max_fps: body.max_fps,
+            })
+        }
+        ("GET", ["api", "live", media_session_id]) => {
+            Ok(RemoteOperation::LiveObservationStatus {
+                media_session_id: (*media_session_id).to_owned(),
+                media_token: request
+                    .headers
+                    .get("x-gameengine-media-token")
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+        }
+        ("GET", ["api", "live", media_session_id, "frames", sequence]) => {
+            let sequence = sequence.parse::<u64>().map_err(|_| {
+                RemoteAiStudioResponse::error(
+                    400,
+                    "invalid_sequence",
+                    "Live observation frame sequence must be an unsigned integer.",
+                    false,
+                )
+            })?;
+            Ok(RemoteOperation::LiveObservationFrame {
+                media_session_id: (*media_session_id).to_owned(),
+                media_token: request
+                    .headers
+                    .get("x-gameengine-media-token")
+                    .cloned()
+                    .unwrap_or_default(),
+                sequence,
+            })
+        }
+        ("POST", ["api", "live", media_session_id, "stop"]) => {
+            let body: RequestIdBody = parse_json_body(request)?;
+            validate_request_id(&body.request_id)?;
+            Ok(RemoteOperation::StopLiveObservation {
+                media_session_id: (*media_session_id).to_owned(),
+                media_token: request
+                    .headers
+                    .get("x-gameengine-media-token")
+                    .cloned()
+                    .unwrap_or_default(),
+                request_id: body.request_id,
             })
         }
         _ => Err(RemoteAiStudioResponse::error(
@@ -852,10 +950,80 @@ fn run_json(run: &AgentRun) -> Value {
         "finished_unix_ms": run.finished_unix_ms,
         "completion": run.completion.clone(),
         "validation_attempts": run.validation_attempts.clone(),
-        "audit": run.audit.clone(),
+        "audit": safe_audit(run),
         "frames": frames,
         "last_event_sequence": run.events.last().map_or(0, |event| event.sequence),
     })
+}
+
+fn safe_audit(run: &AgentRun) -> Value {
+    json!({
+        "authoring_operations": run.audit.authoring_operations,
+        "code_changes": run.audit.code_changes,
+        "asset_acquisitions": run
+            .audit
+            .asset_acquisitions
+            .iter()
+            .map(|record| {
+                json!({
+                    "request_id": sanitize_text(&record.request_id),
+                    "operation": sanitize_text(&record.operation),
+                    "provider": sanitize_text(&record.provider),
+                    "provider_asset_id": record
+                        .provider_asset_id
+                        .as_deref()
+                        .map(sanitize_text),
+                    "generation_request_id": record
+                        .generation_request_id
+                        .as_deref()
+                        .map(sanitize_text),
+                    "source": sanitize_source_reference(&record.source),
+                    "source_version": record.source_version.as_deref().map(sanitize_text),
+                    "license": record.license.as_deref().map(sanitize_text),
+                    "imported_asset_ids": sanitize_strings(&record.imported_asset_ids),
+                    "imported_paths": record
+                        .imported_paths
+                        .iter()
+                        .filter_map(|path| safe_relative_path(path))
+                        .collect::<Vec<_>>(),
+                    "created_unix_ms": record.created_unix_ms,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "managed_runtime_inputs": run.audit.managed_runtime_inputs,
+        "raw_workspace_operations": run.audit.raw_workspace_operations,
+        "custom_commands": run.audit.custom_commands,
+        "permission_escalations": run.audit.permission_escalations,
+    })
+}
+
+fn sanitize_source_reference(source: &str) -> String {
+    let without_query = source.split_once('?').map_or(source, |(prefix, _)| prefix);
+    let without_fragment = without_query
+        .split_once('#')
+        .map_or(without_query, |(prefix, _)| prefix);
+    sanitize_text(without_fragment)
+}
+
+fn safe_relative_path(path: &std::path::Path) -> Option<String> {
+    let raw = path.to_string_lossy();
+    let windows_absolute = raw.starts_with("\\")
+        || raw.as_bytes().get(1) == Some(&b':')
+            && raw
+                .as_bytes()
+                .get(2)
+                .is_some_and(|byte| matches!(byte, b'\\' | b'/'));
+    if windows_absolute {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let std::path::Component::Normal(part) = component else {
+            return None;
+        };
+        parts.push(part.to_str()?);
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 fn event_json(event: &AgentEvent) -> Value {
@@ -959,7 +1127,7 @@ const COMPANION_HTML: &str = r#"<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Remote AI Studio</title>
 <style>
-:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#11151c;color:#eef2f7}*{box-sizing:border-box}body{margin:0}.shell{max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;gap:14px}.card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px}button{cursor:pointer}button.primary{background:#285ea8}button.danger{background:#853c42}textarea{width:100%;min-height:76px;resize:vertical}.muted{color:#aab5c5;font-size:.9rem}.messages,.events{display:grid;gap:8px;max-height:300px;overflow:auto}.msg,.event{padding:9px;border-radius:9px;background:#11151c;overflow-wrap:anywhere}.proposal-grid,.completion{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#303948;font-size:.8rem}.frame{max-width:100%;height:auto;border-radius:10px;border:1px solid #455166}.error{color:#ffb3b3;overflow-wrap:anywhere}h1,h2,h3,p{margin-top:0}@media(max-width:640px){.shell{padding:10px}.proposal-grid,.completion{grid-template-columns:1fr}.row>button{flex:1}.card{padding:12px}.messages,.events{max-height:240px}h1{font-size:1.45rem}}
+:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#11151c;color:#eef2f7}*{box-sizing:border-box}body{margin:0}.shell{width:100%;max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;grid-template-columns:minmax(0,1fr);gap:14px}.card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0;overflow-wrap:anywhere}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px;max-width:100%;min-width:0}button{cursor:pointer}button.primary{background:#285ea8}button.danger{background:#853c42}textarea{width:100%;min-height:76px;resize:vertical}.muted{color:#aab5c5;font-size:.9rem}.messages,.events{display:grid;gap:8px;max-height:300px;overflow:auto}.msg,.event{padding:9px;border-radius:9px;background:#11151c;overflow-wrap:anywhere}.proposal-grid,.completion{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#303948;font-size:.8rem}.frame{max-width:100%;height:auto;border-radius:10px;border:1px solid #455166}.error{color:#ffb3b3;overflow-wrap:anywhere}h1,h2,h3,p{margin-top:0}@media(max-width:640px){.shell{padding:10px}.proposal-grid,.completion{grid-template-columns:1fr}.row>button{flex:1 1 8rem}#sessions{width:100%;flex:1 1 100%}.card{padding:12px}.messages,.events{max-height:240px}h1{font-size:1.45rem}}
 </style>
 </head>
 <body><main class="shell">
@@ -968,10 +1136,11 @@ const COMPANION_HTML: &str = r#"<!doctype html>
 <section class="card"><div class="row"><h2 class="grow">Proposal</h2><span id="proposalVersion" class="pill"></span></div><div id="proposal" class="proposal-grid"></div><div class="row"><button id="go" class="primary">Go</button><button id="stop" class="danger">Stop</button></div></section>
 <section id="decisionCard" class="card" hidden><h2>Decision required</h2><div id="decision"></div></section>
 <section class="card"><div class="row"><h2 class="grow">Run progress</h2><span id="runState" class="pill">idle</span></div><div id="events" class="events"></div><h3>Completion</h3><div id="completion" class="completion"></div></section>
+<section class="card"><div class="row"><h2 class="grow">Live Game View</h2><span id="liveState" class="pill">stopped</span></div><div class="row"><label for="liveFps">Max FPS</label><select id="liveFps"><option>2</option><option selected>4</option><option>8</option></select><button id="liveStart" class="primary">Start live view</button><button id="liveStop" disabled>Stop live view</button></div><div id="liveMeta" class="muted">Game View only · authenticated transient PNG samples · latest frame retained only.</div><img id="liveFrame" class="frame" hidden alt="Live Game View observation"></section>
 <section class="card"><h2>Captured frame</h2><div id="frameMeta" class="muted">No captured frame.</div><img id="frame" class="frame" hidden alt="Captured managed Play frame"></section>
 </main>
 <script>
-const token=new URLSearchParams(location.hash.slice(1)).get('access_token')||''; history.replaceState(null,'',location.pathname); const h={'Authorization':'Bearer '+token}; let sessionId=null,snapshot=null,cursor=0,frameUrl=null;
+const token=new URLSearchParams(location.hash.slice(1)).get('access_token')||''; history.replaceState(null,'',location.pathname); const h={'Authorization':'Bearer '+token}; let sessionId=null,snapshot=null,cursor=0,frameUrl=null,live=null,liveUrl=null,liveTimer=null;
 const $=id=>document.getElementById(id); const rid=()=>crypto.randomUUID();
 async function api(path,opt={}){const r=await fetch(path,{...opt,headers:{...h,...(opt.headers||{})}}); if(!r.ok){let e;try{e=await r.json()}catch{e={error:{message:'Request failed'}}}throw new Error(e.error?.message||'Request failed')}return r}
 function text(v){return String(v??'')}
@@ -981,14 +1150,18 @@ async function loadSessions(){const data=await (await api('/api/sessions')).json
 function renderSnapshot(s){snapshot=s; const m=$('messages');m.innerHTML=(s.session.messages||[]).map(x=>`<div class="msg"><b>${escapeHtml(x.role)}</b><div>${escapeHtml(x.text)}</div></div>`).join('')||'<div class="muted">No messages yet.</div>'; $('proposalVersion').textContent='v'+s.session.proposal.version; const p=s.session.proposal; $('proposal').innerHTML=`<div><b>Goal</b><div>${escapeHtml(p.goal)}</div></div><div><b>Acceptance criteria</b>${list(p.acceptance_criteria)}</div><div><b>Requirements</b>${list(p.requirements)}</div><div><b>Validation</b>${list(p.validation_plan)}</div><div><b>Playtest</b>${list(p.playtest_plan)}</div>`; const run=s.active_run; $('runState').textContent=run?.state||'idle'; $('stop').disabled=!run; const c=$('completion'); c.innerHTML=run?Object.entries(run.completion||{}).map(([k,v])=>`<div><b>${escapeHtml(k.replaceAll('_',' '))}</b><div>${escapeHtml(v)}</div></div>`).join(''):'<div class="muted">No active run.</div>'; renderDecision(s,run); renderFrame(run)}
 function renderDecision(s,run){const card=$('decisionCard'),d=$('decision'); if(s.pending_permission){const p=s.pending_permission;card.hidden=false;d.innerHTML=`<p>${escapeHtml(p.label)}</p><div class="row">${['once','run','project','deny'].map(scope=>`<button data-scope="${scope}">${scope}</button>`).join('')}</div>`;d.querySelectorAll('button').forEach(b=>b.onclick=()=>permission(p.run_id,p.capability,b.dataset.scope));return} if(s.awaiting_user&&run){card.hidden=false;d.innerHTML='<textarea id="awaitText" placeholder="Response to the agent"></textarea><div class="row"><button id="awaitSend">Respond</button></div>';$('awaitSend').onclick=()=>awaiting(run.id,$('awaitText').value);return} card.hidden=true;d.innerHTML=''}
 async function renderFrame(run){if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=null} const img=$('frame'),meta=$('frameMeta'); const f=run?.frames?.at(-1); if(!f){img.hidden=true;meta.textContent='No captured frame.';return} meta.textContent=`${f.artifact_id} · ${f.width}×${f.height} · run ${run.id}`; try{const r=await api(`/api/runs/${encodeURIComponent(run.id)}/frames/${encodeURIComponent(f.artifact_id)}`);frameUrl=URL.createObjectURL(await r.blob());img.src=frameUrl;img.hidden=false}catch(e){img.hidden=true;showError(e)}}
-async function refresh(){if(!sessionId)return; try{const s=await (await api('/api/sessions/'+encodeURIComponent(sessionId))).json();renderSnapshot(s);const run=s.active_run;if(run){const raw=await (await api(`/api/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`)).text();const line=raw.split('\n').find(x=>x.startsWith('data: '));if(line){const batch=JSON.parse(line.slice(6));if(batch.stale_cursor){cursor=0}else{for(const e of batch.events)cursor=Math.max(cursor,e.sequence);$('events').innerHTML=batch.events.map(e=>`<div class="event"><span class="pill">#${e.sequence} ${escapeHtml(e.kind)}</span><div>${escapeHtml(e.message)}</div></div>`).join('')||$('events').innerHTML}}}}catch(e){showError(e)}}
+async function refresh(){if(!sessionId)return; try{const s=await (await api('/api/sessions/'+encodeURIComponent(sessionId))).json();renderSnapshot(s);const run=s.active_run;if(live&&live.run_id!==run?.id)resetLiveView();if(run){const raw=await (await api(`/api/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`)).text();const line=raw.split('\n').find(x=>x.startsWith('data: '));if(line){const batch=JSON.parse(line.slice(6));if(batch.stale_cursor){cursor=0}else{for(const e of batch.events)cursor=Math.max(cursor,e.sequence);$('events').innerHTML=batch.events.map(e=>`<div class="event"><span class="pill">#${e.sequence} ${escapeHtml(e.kind)}</span><div>${escapeHtml(e.message)}</div></div>`).join('')||$('events').innerHTML}}}}catch(e){showError(e)}}
 async function send(){const v=$('message').value.trim();if(!v)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/messages`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});$('message').value='';await refresh()}
 async function go(){if(!snapshot)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/go`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),proposal_version:snapshot.session.proposal.version})});cursor=0;await refresh()}
 async function stop(){const run=snapshot?.active_run;if(!run)return;await api(`/api/runs/${encodeURIComponent(run.id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid()})});await refresh()}
 async function permission(run,capability,scope){await api(`/api/runs/${encodeURIComponent(run)}/permissions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),capability,scope})});await refresh()}
 async function awaiting(run,textValue){const v=textValue.trim();if(!v)return;await api(`/api/runs/${encodeURIComponent(run)}/awaiting-user`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});await refresh()}
+function resetLiveView(){if(liveTimer){clearTimeout(liveTimer);liveTimer=null}if(liveUrl){URL.revokeObjectURL(liveUrl);liveUrl=null}live=null;$('liveState').textContent='stopped';$('liveStart').disabled=false;$('liveStop').disabled=true;$('liveFrame').hidden=true;$('liveMeta').textContent='Game View only · authenticated transient PNG samples · latest frame retained only.'}
+async function startLive(){const run=snapshot?.active_run;if(!run)throw new Error('Start an AgentRun before live observation.');if(live)await stopLive();const max_fps=Number($('liveFps').value);const data=await (await api(`/api/runs/${encodeURIComponent(run.id)}/live`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),max_fps})})).json();live={...data,sequence:0};$('liveState').textContent='live';$('liveStart').disabled=true;$('liveStop').disabled=false;pollLive()}
+async function pollLive(){if(!live)return;const current=live;const mediaHeaders={'X-GameEngine-Media-Token':current.media_token};try{const status=await (await api(`/api/live/${encodeURIComponent(current.media_session_id)}`,{headers:mediaHeaders})).json();if(live!==current)return;$('liveState').textContent=status.last_error?'retrying':'live';$('liveMeta').textContent=`${status.source} · ${status.latest_width??'waiting'}×${status.latest_height??'waiting'} · ${status.max_fps} fps cap · samples ${status.capture_count} · readback ${status.latest_readback_micros??'—'} µs · encode ${status.latest_encode_micros??'—'} µs · E2E ${status.latest_end_to_end_micros??'—'} µs`;if(status.latest_sequence!=null&&status.latest_sequence!==current.sequence){const response=await api(`/api/live/${encodeURIComponent(current.media_session_id)}/frames/${status.latest_sequence}`,{headers:mediaHeaders});if(live!==current)return;if(liveUrl)URL.revokeObjectURL(liveUrl);liveUrl=URL.createObjectURL(await response.blob());$('liveFrame').src=liveUrl;$('liveFrame').hidden=false;current.sequence=status.latest_sequence}}catch(e){if(live===current){$('liveState').textContent='retrying';$('liveMeta').textContent=e.message||text(e)}}finally{if(live===current)liveTimer=setTimeout(pollLive,Math.max(125,Math.floor(1000/current.max_fps)))}}
+async function stopLive(){if(!live){resetLiveView();return}const current=live;if(liveTimer){clearTimeout(liveTimer);liveTimer=null}try{await api(`/api/live/${encodeURIComponent(current.media_session_id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json','X-GameEngine-Media-Token':current.media_token},body:JSON.stringify({request_id:rid()})})}finally{resetLiveView()}}
 function showError(e){$('error').textContent=e.message||text(e)}
-$('send').onclick=()=>send().catch(showError);$('go').onclick=()=>go().catch(showError);$('stop').onclick=()=>stop().catch(showError);(async()=>{try{await loadSessions();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
+$('send').onclick=()=>send().catch(showError);$('go').onclick=()=>go().catch(showError);$('stop').onclick=()=>stop().catch(showError);$('liveStart').onclick=()=>startLive().catch(showError);$('liveStop').onclick=()=>stopLive().catch(showError);(async()=>{try{await loadSessions();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
 </script></body></html>"#;
 
 #[cfg(test)]
@@ -1173,7 +1346,7 @@ mod tests {
         host.record_event(
             &run,
             AgentEventKind::ProviderOutput,
-            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\private\\file",
+            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\...\\private\\file",
         )
         .expect("provider output");
         let events = events_json(&host, &run, 0).expect("events").to_string();
@@ -1188,8 +1361,59 @@ mod tests {
     }
 
     #[test]
+    fn asset_acquisition_audit_exposes_only_sanitized_remote_provenance() {
+        let (mut host, project, storage) = test_host("asset-audit-sanitize");
+        let session = host.create_session("Remote").expect("session");
+        let version = host.session(&session).expect("session").proposal.version;
+        let run = host
+            .start_run_authorized(&session, version, "test")
+            .expect("run");
+        host.record_asset_acquisition(
+            &run,
+            crate::agent_host::AssetAcquisitionRecord {
+                request_id: "request-1".into(),
+                request_fingerprint: "internal-fingerprint".into(),
+                operation: "acquire".into(),
+                provider: "catalog".into(),
+                provider_asset_id: Some("asset-42".into()),
+                generation_request_id: None,
+                source: "https://catalog.test/assets/42?access_token=secret-value".into(),
+                source_version: Some("v1".into()),
+                license: Some("CC0".into()),
+                imported_asset_ids: vec!["asset_01TEST".into()],
+                imported_paths: vec![
+                    std::path::PathBuf::from("textures/generated.png"),
+                    std::path::PathBuf::from(r"C:\Users\...\private\leak.png"),
+                ],
+                created_unix_ms: 1,
+            },
+        )
+        .expect("asset audit");
+        let snapshot = snapshot_json(&host, "project-a", &session, None)
+            .expect("snapshot")
+            .to_string();
+        assert!(snapshot.contains("https://catalog.test/assets/42"));
+        assert!(snapshot.contains("textures/generated.png"));
+        assert!(snapshot.contains("asset_01TEST"));
+        assert!(!snapshot.contains("secret-value"));
+        assert!(!snapshot.contains("access_token"));
+        assert!(!snapshot.contains("internal-fingerprint"));
+        assert!(!snapshot.contains(r"C:\Users\...\private"));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
     fn unsafe_generic_remote_endpoints_do_not_exist() {
-        for path in ["/api/shell", "/api/filesystem", "/api/git", "/api/mcp", "/api/process"] {
+        for path in [
+            "/api/shell",
+            "/api/filesystem",
+            "/api/git",
+            "/api/mcp",
+            "/api/process",
+            "/api/desktop",
+            "/api/desktop-capture",
+        ] {
             let request = HttpRequest {
                 method: "POST".into(),
                 path: path.into(),
@@ -1218,6 +1442,57 @@ mod tests {
         assert!(frame_bytes(&host, "run_wrong", &artifact).is_err());
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn live_media_routes_keep_source_and_media_auth_explicit() {
+        let start = HttpRequest {
+            method: "POST".into(),
+            path: "/api/runs/run_1/live".into(),
+            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+            body: br#"{"request_id":"live-1","max_fps":8}"#.to_vec(),
+        };
+        assert!(matches!(
+            route_request(&start).expect("start route"),
+            RemoteOperation::StartLiveObservation { run_id, max_fps: 8, .. } if run_id == "run_1"
+        ));
+
+        let frame = HttpRequest {
+            method: "GET".into(),
+            path: "/api/live/media_1/frames/7".into(),
+            headers: BTreeMap::from([(
+                "x-gameengine-media-token".into(),
+                "media-secret".into(),
+            )]),
+            body: Vec::new(),
+        };
+        assert!(matches!(
+            route_request(&frame).expect("frame route"),
+            RemoteOperation::LiveObservationFrame {
+                media_session_id,
+                media_token,
+                sequence: 7,
+            } if media_session_id == "media_1" && media_token == "media-secret"
+        ));
+        assert!(COMPANION_HTML.contains("Live Game View"));
+        assert!(!COMPANION_HTML.contains("desktop capture"));
+    }
+
+    #[test]
+    fn companion_mobile_layout_constrains_content_without_hiding_overflow() {
+        assert!(COMPANION_HTML.contains(
+            ".shell{width:100%;max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;grid-template-columns:minmax(0,1fr);gap:14px}"
+        ));
+        assert!(COMPANION_HTML.contains(
+            "min-width:0;overflow-wrap:anywhere"
+        ));
+        assert!(COMPANION_HTML.contains(
+            "padding:9px;max-width:100%;min-width:0"
+        ));
+        assert!(COMPANION_HTML.contains(
+            "#sessions{width:100%;flex:1 1 100%}"
+        ));
+        assert!(!COMPANION_HTML.contains("overflow-x:hidden"));
     }
 
     #[test]

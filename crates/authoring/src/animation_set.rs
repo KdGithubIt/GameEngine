@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Current persisted animation-set schema version.
-pub const ANIMATION_SET_SCHEMA_VERSION: u32 = 2;
+pub const ANIMATION_SET_SCHEMA_VERSION: u32 = 3;
 
 /// File-name suffix used by persisted animation-set documents.
 pub const ANIMATION_SET_FILE_SUFFIX: &str = ".animset.json";
@@ -22,8 +22,8 @@ pub const ANIMATION_SET_FILE_SUFFIX: &str = ".animset.json";
 /// human-readable binding name can change without breaking graph references.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnimationSet {
-    /// Persisted format version. Version 1 is currently the only accepted
-    /// value.
+    /// Persisted format version. Schema v3 is the only accepted current
+    /// value; older route-policy formats are rejected rather than migrated.
     pub schema_version: u32,
     /// Animation graph whose motion-slot contract this set implements.
     ///
@@ -161,55 +161,43 @@ impl AnimationSet {
     }
 }
 
-/// Selection policy for one stable animation motion source (ADR 0110).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MotionSourceVariant {
-    /// Prefer Native on the same skeleton, then an explicit Retarget Map,
-    /// then Humanoid adaptation.
-    Auto,
-    /// Use the imported Native animation path and never silently fall back to Humanoid.
-    Native,
-    /// Use the skeleton-independent Humanoid motion path explicitly.
-    Humanoid,
-}
-
-/// Stable, explicitly tagged motion-source reference stored by an Animation Set.
+/// Stable imported motion candidate stored by an Animation Set (ADR 0154).
 ///
-/// `Auto` and `Native` reference an imported Native `Animation` sub-asset.
-/// `Humanoid` references the corresponding imported `HumanoidMotion` sub-asset.
-/// Variant selection is persisted and is never inferred from display names.
+/// Schema v3 persists only the selected imported sub-asset identity. Whether
+/// that candidate is model-bound Native content or portable Humanoid content
+/// comes from the import catalog; route policy is never authored into the set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MotionSourceRef {
-    /// Adaptation policy chosen by the author.
-    pub variant: MotionSourceVariant,
-    /// Stable imported sub-asset ID carrying this motion source.
+    /// Stable imported sub-asset ID carrying this motion candidate.
     pub asset: AssetId,
 }
 
 impl MotionSourceRef {
-    /// Creates a logical Auto reference rooted at a Native imported clip.
+    /// Creates a motion candidate reference.
+    pub fn new(asset: AssetId) -> Self {
+        Self { asset }
+    }
+
+    /// Compatibility constructor for call sites that previously requested Auto.
+    ///
+    /// Schema v3 stores no Auto policy; routing is derived from catalog kind and target.
     pub fn auto(asset: AssetId) -> Self {
-        Self {
-            variant: MotionSourceVariant::Auto,
-            asset,
-        }
+        Self::new(asset)
     }
 
-    /// Creates an explicit Native motion reference.
+    /// Compatibility constructor for call sites that previously requested Native.
+    ///
+    /// Schema v3 stores no Native policy; routing is derived from catalog kind and target.
     pub fn native(asset: AssetId) -> Self {
-        Self {
-            variant: MotionSourceVariant::Native,
-            asset,
-        }
+        Self::new(asset)
     }
 
-    /// Creates an explicit Humanoid motion reference.
+    /// Compatibility constructor for call sites that previously requested Humanoid.
+    ///
+    /// The referenced sub-asset itself must be cataloged as `HumanoidMotion`.
     pub fn humanoid(asset: AssetId) -> Self {
-        Self {
-            variant: MotionSourceVariant::Humanoid,
-            asset,
-        }
+        Self::new(asset)
     }
 
     /// Returns the stable imported sub-asset ID carried by this reference.
@@ -220,7 +208,7 @@ impl MotionSourceRef {
 
 impl From<AssetId> for MotionSourceRef {
     fn from(asset: AssetId) -> Self {
-        Self::native(asset)
+        Self::new(asset)
     }
 }
 
@@ -403,7 +391,7 @@ mod tests {
     #[test]
     fn animation_set_missing_graph_field_is_rejected() {
         assert!(matches!(
-            AnimationSet::from_json(r#"{"schema_version":2,"bindings":{}}"#),
+            AnimationSet::from_json(r#"{"schema_version":3,"bindings":{}}"#),
             Err(AnimationSetError::Json(_))
         ));
     }
@@ -414,6 +402,34 @@ mod tests {
             AnimationSet::from_json(r#"{"schema_version":1,"graph":null,"bindings":{}}"#),
             Err(AnimationSetError::UnsupportedVersion { found: 1 })
         ));
+    }
+
+    #[test]
+    fn animation_set_v2_is_rejected_instead_of_implicitly_migrated() {
+        assert!(matches!(
+            AnimationSet::from_json(r#"{"schema_version":2,"graph":null,"bindings":{}}"#),
+            Err(AnimationSetError::UnsupportedVersion { found: 2 })
+        ));
+    }
+
+    #[test]
+    fn schema_v3_motion_source_serializes_only_candidate_asset() {
+        let candidate = AssetId::generate();
+        let mut set = AnimationSet::new(AssetId::generate());
+        set.bindings.insert(
+            MotionSlotId::generate(),
+            AnimationBinding {
+                name: "idle".to_owned(),
+                clip: MotionSourceRef::new(candidate.clone()),
+                overlays: Vec::new(),
+                events: Vec::new(),
+            },
+        );
+        let json = set.to_canonical_json().expect("schema v3 set must serialize");
+        assert!(json.contains(candidate.as_str()));
+        assert!(!json.contains("variant"));
+        assert!(!json.contains("auto"));
+        assert!(!json.contains("native"));
     }
 
     #[test]
@@ -465,7 +481,7 @@ mod tests {
         let slot = MotionSlotId::generate();
         let clip = AssetId::generate();
         let json = format!(
-            "{{\"schema_version\":2,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":{{\"variant\":\"native\",\"asset\":\"{}\"}},\"events\":[]}}}}}}",
+            "{{\"schema_version\":3,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":{{\"asset\":\"{}\"}},\"events\":[]}}}}}}",
             graph.as_str(),
             slot.as_str(),
             clip.as_str()

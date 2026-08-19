@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 /// Reports texture data that cannot be decoded or uploaded safely.
 #[derive(Debug)]
@@ -95,6 +95,127 @@ impl DecodedTexture {
             height,
             rgba8: rgba.into_raw(),
         })
+    }
+
+    /// Returns the number of RGBA8 bytes uploaded by the complete mip chain.
+    #[doc(hidden)]
+    pub fn estimated_gpu_upload_bytes(&self) -> u64 {
+        let mut width = self.width.max(1);
+        let mut height = self.height.max(1);
+        let mut bytes = 0_u64;
+        loop {
+            bytes = bytes.saturating_add(u64::from(width) * u64::from(height) * 4);
+            if width == 1 && height == 1 {
+                return bytes;
+            }
+            width = (width / 2).max(1);
+            height = (height / 2).max(1);
+        }
+    }
+}
+
+/// Color-space identity used by the shared decoded-texture GPU residency.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GpuTextureEncoding {
+    /// Color data sampled through the sRGB transfer function.
+    SrgbColor,
+    /// Numeric/vector data sampled without sRGB conversion.
+    LinearData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SharedGpuTextureKey {
+    device: usize,
+    source: usize,
+    encoding: GpuTextureEncoding,
+}
+
+struct SharedGpuTextureEntry {
+    source: Weak<DecodedTexture>,
+    texture: Arc<Texture>,
+}
+
+/// Project/device-scoped GPU uploads for immutable decoded preview textures.
+///
+/// The cache keeps only a weak CPU identity guard, so an address cannot be
+/// reused for different decoded pixels while a stale entry is still accepted.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct SharedGpuTextureCache {
+    entries: Arc<Mutex<std::collections::HashMap<SharedGpuTextureKey, SharedGpuTextureEntry>>>,
+}
+
+impl SharedGpuTextureCache {
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        std::collections::HashMap<SharedGpuTextureKey, SharedGpuTextureEntry>,
+    > {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn get(
+        &self,
+        device: &wgpu::Device,
+        source: &Arc<DecodedTexture>,
+        encoding: GpuTextureEncoding,
+    ) -> Option<Arc<Texture>> {
+        let key = SharedGpuTextureKey {
+            device: device as *const wgpu::Device as usize,
+            source: Arc::as_ptr(source) as usize,
+            encoding,
+        };
+        let mut entries = self.lock();
+        if let Some(cached) = entries.get(&key) {
+            let valid = cached
+                .source
+                .upgrade()
+                .is_some_and(|resident| Arc::ptr_eq(&resident, source));
+            if valid {
+                return Some(Arc::clone(&cached.texture));
+            }
+        }
+        entries.remove(&key);
+        None
+    }
+
+    pub(crate) fn insert(
+        &self,
+        device: &wgpu::Device,
+        source: &Arc<DecodedTexture>,
+        encoding: GpuTextureEncoding,
+        texture: Arc<Texture>,
+    ) {
+        self.lock().insert(
+            SharedGpuTextureKey {
+                device: device as *const wgpu::Device as usize,
+                source: Arc::as_ptr(source) as usize,
+                encoding,
+            },
+            SharedGpuTextureEntry {
+                source: Arc::downgrade(source),
+                texture,
+            },
+        );
+    }
+
+    pub(crate) fn prune(&self) {
+        self.lock()
+            .retain(|_, cached| cached.source.strong_count() > 0);
+    }
+
+    /// Releases every recreatable uploaded preview texture.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.lock().len()
     }
 }
 

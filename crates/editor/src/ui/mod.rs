@@ -18,6 +18,7 @@ use crate::game_build::{
 };
 use crate::material_editor::{show_material_editor_panel, MaterialEditorPanel};
 use crate::preferences::{EditorPreferences, PlayModeView};
+use crate::preview_residency::ProjectAssetResidency;
 use crate::problems::ProblemsPanel;
 use crate::project_settings_panel::{show_project_settings_panel, ProjectSettingsPanel};
 use crate::runtime::{
@@ -247,6 +248,8 @@ pub struct EditorApp {
     inference_restore_pending: bool,
     /// One-shot completion signal emitted only after the restored Editor drew a frame.
     inference_restore_completed: bool,
+    /// Project-scoped CPU/GPU residency shared by every Editor preview surface.
+    preview_residency: ProjectAssetResidency,
     /// Scene view offscreen renderer and editor orbit camera.
     scene_view: SceneView,
     /// Current Scene View conversion or rendering problem.
@@ -254,6 +257,7 @@ pub struct EditorApp {
     /// This is retained separately from Console history because Problems
     /// represents current state and removes the entry when the preview heals.
     scene_view_problem: Option<engine_authoring::Diagnostic>,
+    scene_view_motion_binding_diagnostics: Vec<engine_authoring::Diagnostic>,
     /// Dedicated clip, transition, and graph inspection surface.
     animation_preview: AnimationPreviewWindow,
     /// Active transform gizmo mode (Translate / Rotate / Scale).
@@ -397,6 +401,7 @@ pub struct EditorApp {
 impl EditorApp {
     /// Creates an editor app around an existing session.
     pub fn new(session: EditorSession) -> Self {
+        let preview_residency = ProjectAssetResidency::default();
         Self {
             session: DocumentWorkspace::new(session),
             canvas: GraphCanvasState::default(),
@@ -466,9 +471,11 @@ impl EditorApp {
             inference_focused: false,
             inference_restore_pending: false,
             inference_restore_completed: false,
-            scene_view: SceneView::new(),
+            preview_residency: preview_residency.clone(),
+            scene_view: SceneView::with_residency(preview_residency.clone()),
             scene_view_problem: None,
-            animation_preview: AnimationPreviewWindow::default(),
+            scene_view_motion_binding_diagnostics: Vec::new(),
+            animation_preview: AnimationPreviewWindow::with_residency(preview_residency),
             gizmo_mode: GizmoMode::Translate,
             gizmo_space: GizmoSpace::Global,
             entity_clipboard: None,
@@ -537,6 +544,7 @@ impl EditorApp {
     /// process from one project to another after workspace construction.
     fn initialize_project_root(&mut self, root: ProjectRoot) {
         self.audio_audition.reset_project();
+        self.preview_residency.clear_project();
         self.scene_view.clear_project_caches();
         self.material_scene_preview_deadline = None;
         self.material_texture_choices_cache = None;
@@ -545,6 +553,7 @@ impl EditorApp {
         self.asset_import_problems.clear();
         self.game_build_problems.clear();
         self.scene_view_problem = None;
+        self.scene_view_motion_binding_diagnostics.clear();
         if let Err(error) = self.asset_inspector.open_project(&root) {
             self.session
                 .push_diagnostic(engine_authoring::Diagnostic::warning(
@@ -1001,6 +1010,7 @@ impl EditorApp {
         problems.extend(self.game_build_problems.iter().cloned());
         problems.extend(self.component_source_index.diagnostics().iter().cloned());
         problems.extend(self.scene_view_problem.iter().cloned());
+        problems.extend(self.scene_view_motion_binding_diagnostics.iter().cloned());
         self.mirror_new_problems_to_console(&problems);
         self.problems_panel.set_problems(problems);
     }

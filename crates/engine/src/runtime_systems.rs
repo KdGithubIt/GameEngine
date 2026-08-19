@@ -22,6 +22,10 @@ use crate::lock_on::lock_on_system;
 use crate::secondary_motion::{
     secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
 };
+use crate::native_2d::{
+    physics_2d_fixed_system, sprite_animation_2d_fixed_system, Gravity2d, Physics2dDiagnostics,
+    PhysicsRuntime2d, SpriteAnimationClipRegistry2d, SpriteAnimationEvents2d,
+};
 use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
 use crate::physics::velocity_system;
 use crate::player::{player_character_motor_system, player_controller_system};
@@ -78,6 +82,21 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     }
     if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
         app.insert_resource(SpatialAudioRuntime::default());
+    }
+    if app.world().get_resource::<Gravity2d>().is_none() {
+        app.insert_resource(Gravity2d::default());
+    }
+    if app.world().get_resource::<PhysicsRuntime2d>().is_none() {
+        app.insert_resource(PhysicsRuntime2d::default());
+    }
+    if app.world().get_resource::<Physics2dDiagnostics>().is_none() {
+        app.insert_resource(Physics2dDiagnostics::default());
+    }
+    if app.world().get_resource::<SpriteAnimationEvents2d>().is_none() {
+        app.insert_resource(SpriteAnimationEvents2d::default());
+    }
+    if app.world().get_resource::<SpriteAnimationClipRegistry2d>().is_none() {
+        app.insert_resource(SpriteAnimationClipRegistry2d::default());
     }
     app.try_add_system_with_descriptor(
         engine_system(
@@ -219,6 +238,16 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
+            "engine.sprite_animation_2d",
+            "Sprite Animation 2D",
+            "Advances deterministic per-entity Sprite Animation state and publishes the current SpriteRef.",
+        )
+        .try_after("engine.animation_graph")
+        .expect("built-in system IDs are valid"),
+        sprite_animation_2d_fixed_system,
+    )?;
+    app.try_add_fixed_system_with_descriptor(
+        engine_system(
             "engine.root_motion_motor",
             "Root Motion Motor",
             "Converts extracted local animation motion into a collision-resolved motor request.",
@@ -244,6 +273,16 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
             "Advances Rapier gameplay physics, including gravity and contact response, and publishes dynamic transforms and velocities.",
         ),
         velocity_system,
+    )?;
+    app.try_add_fixed_system_with_descriptor(
+        engine_system(
+            "engine.physics_2d",
+            "Physics 2D",
+            "Advances the dedicated Native 2D world and writes root dynamic poses through Transform.",
+        )
+        .try_after("engine.velocity_integration")
+        .expect("built-in system IDs are valid"),
+        physics_2d_fixed_system,
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
@@ -282,6 +321,8 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
         .try_after("engine.animation")
         .expect("built-in system IDs are valid")
         .try_after("engine.velocity_integration")
+        .expect("built-in system IDs are valid")
+        .try_after("engine.physics_2d")
         .expect("built-in system IDs are valid")
         .try_after("engine.navigation_agent")
         .expect("built-in system IDs are valid")

@@ -235,6 +235,29 @@ impl EditorApp {
         }
 
         ui.label(format!("ID: {}", selected.as_str()));
+        if let Some(severity) = self.problems_panel.entity_severity(&selected) {
+            let (color, summary) = match severity {
+                engine_authoring::Severity::Error => (
+                    egui::Color32::from_rgb(220, 60, 60),
+                    "This entity has errors in Problems.",
+                ),
+                engine_authoring::Severity::Warning => (
+                    egui::Color32::from_rgb(220, 180, 60),
+                    "This entity has warnings in Problems.",
+                ),
+                engine_authoring::Severity::Info => (
+                    egui::Color32::LIGHT_GRAY,
+                    "This entity has information in Problems.",
+                ),
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(color, summary);
+                if ui.small_button("Open Problems").clicked() {
+                    self.bottom_panel_tab = BottomPanelTab::Problems;
+                    self.bottom_panel_open = true;
+                }
+            });
+        }
         if let Some(snapshot) = self
             .runtime_state
             .as_mut()

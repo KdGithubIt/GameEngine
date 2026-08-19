@@ -28,7 +28,12 @@ static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) enum AgentHostError {
     SessionNotFound(String),
     RunNotFound(String),
-    ActiveWriterRun(String),
+    InvalidWorkClaim(String),
+    WorkClaimConflict {
+        requested: AgentWorkClaim,
+        owner_run_id: String,
+        owner_claim: AgentWorkClaim,
+    },
     StaleProposalVersion {
         expected: u64,
         current: u64,
@@ -42,7 +47,6 @@ pub(crate) enum AgentHostError {
     UnsupportedCodeDeletion(PathBuf),
     StaleCodeFile(PathBuf),
     NonUtf8CodeFile(PathBuf),
-    MultipleActiveWriterRuns(Vec<String>),
     Serialization(serde_json::Error),
     Io(io::Error),
 }
@@ -52,9 +56,10 @@ impl fmt::Display for AgentHostError {
         match self {
             Self::SessionNotFound(id) => write!(formatter, "agent session `{id}` was not found"),
             Self::RunNotFound(id) => write!(formatter, "agent run `{id}` was not found"),
-            Self::ActiveWriterRun(id) => write!(
+            Self::InvalidWorkClaim(message) => write!(formatter, "invalid agent work claim: {message}"),
+            Self::WorkClaimConflict { requested, owner_run_id, owner_claim } => write!(
                 formatter,
-                "agent run `{id}` already owns the project writer slot"
+                "work claim `{requested}` conflicts with `{owner_claim}` owned by agent run `{owner_run_id}`"
             ),
             Self::StaleProposalVersion { expected, current } => write!(
                 formatter,
@@ -83,11 +88,6 @@ impl fmt::Display for AgentHostError {
             Self::NonUtf8CodeFile(path) => {
                 write!(formatter, "managed code file `{}` is not UTF-8 text", path.display())
             }
-            Self::MultipleActiveWriterRuns(run_ids) => write!(
-                formatter,
-                "agent state contains multiple non-terminal writer runs: {}",
-                run_ids.join(", ")
-            ),
             Self::Serialization(error) => write!(formatter, "agent state JSON error: {error}"),
             Self::Io(error) => write!(formatter, "agent state I/O error: {error}"),
         }
@@ -144,6 +144,187 @@ impl AgentCapability {
             Self::ArbitraryCommandExecution => "Arbitrary command execution",
             Self::CodeWorkspaceApply => "Apply managed code changes",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementRequirement {
+    #[default]
+    AllowApplicationPolicyOnly,
+    RequireProviderOrOsConfinement,
+}
+
+impl AgentConfinementRequirement {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::AllowApplicationPolicyOnly => "Allow application policy only",
+            Self::RequireProviderOrOsConfinement => "Require provider/OS confinement",
+        }
+    }
+
+    pub(crate) fn requires_enforced_confinement(self) -> bool {
+        self == Self::RequireProviderOrOsConfinement
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementLayer {
+    ApplicationPolicyOnly,
+    ProviderSandbox,
+    OperatingSystem,
+    ContainerOrVm,
+    Unavailable,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementGuarantee {
+    #[default]
+    Unavailable,
+    Enforced,
+}
+
+impl AgentConfinementGuarantee {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Enforced => "enforced",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementNetworkPolicy {
+    LoopbackOnly,
+    ManagedNetworkAccess,
+}
+
+impl AgentConfinementNetworkPolicy {
+    fn label(self) -> &'static str {
+        match self {
+            Self::LoopbackOnly => "loopback only",
+            Self::ManagedNetworkAccess => "managed network access",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AgentConfinementProfile {
+    pub(crate) layer: AgentConfinementLayer,
+    pub(crate) mechanism: String,
+    pub(crate) filesystem_guarantee: AgentConfinementGuarantee,
+    pub(crate) network_guarantee: AgentConfinementGuarantee,
+    pub(crate) process_tree_guarantee: AgentConfinementGuarantee,
+    #[serde(default)]
+    pub(crate) credential_secrecy_guarantee: AgentConfinementGuarantee,
+    pub(crate) requested_network_policy: AgentConfinementNetworkPolicy,
+}
+
+impl AgentConfinementProfile {
+    fn application_policy_only(network_policy: AgentConfinementNetworkPolicy) -> Self {
+        Self {
+            layer: AgentConfinementLayer::ApplicationPolicyOnly,
+            mechanism: "generic_process_runtime".to_owned(),
+            filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
+            network_guarantee: AgentConfinementGuarantee::Unavailable,
+            process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
+            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
+            requested_network_policy: network_policy,
+        }
+    }
+
+    fn unavailable(network_policy: AgentConfinementNetworkPolicy) -> Self {
+        Self {
+            layer: AgentConfinementLayer::Unavailable,
+            mechanism: "generic_process_runtime".to_owned(),
+            filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
+            network_guarantee: AgentConfinementGuarantee::Unavailable,
+            process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
+            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
+            requested_network_policy: network_policy,
+        }
+    }
+
+    fn satisfies(&self, requirement: AgentConfinementRequirement) -> bool {
+        if !requirement.requires_enforced_confinement() {
+            return true;
+        }
+        matches!(
+            self.layer,
+            AgentConfinementLayer::ProviderSandbox
+                | AgentConfinementLayer::OperatingSystem
+                | AgentConfinementLayer::ContainerOrVm
+        ) && self.filesystem_guarantee == AgentConfinementGuarantee::Enforced
+            && self.network_guarantee == AgentConfinementGuarantee::Enforced
+            && self.process_tree_guarantee == AgentConfinementGuarantee::Enforced
+            && self.credential_secrecy_guarantee == AgentConfinementGuarantee::Enforced
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        let layer = match self.layer {
+            AgentConfinementLayer::ApplicationPolicyOnly => "Application policy only",
+            AgentConfinementLayer::ProviderSandbox => "Provider-enforced sandbox",
+            AgentConfinementLayer::OperatingSystem => "OS confinement",
+            AgentConfinementLayer::ContainerOrVm => "Container/VM confinement",
+            AgentConfinementLayer::Unavailable => "Confinement unavailable",
+        };
+        format!(
+            "{layer} ({mechanism}); filesystem: {filesystem}, network: {network}, process tree: {process_tree}, credential secrecy: {credentials}, requested network: {requested_network}",
+            mechanism = self.mechanism,
+            filesystem = self.filesystem_guarantee.label(),
+            network = self.network_guarantee.label(),
+            process_tree = self.process_tree_guarantee.label(),
+            credentials = self.credential_secrecy_guarantee.label(),
+            requested_network = self.requested_network_policy.label(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentConfinementRequest {
+    pub(crate) requirement: AgentConfinementRequirement,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) mcp_endpoint: String,
+    pub(crate) network_policy: AgentConfinementNetworkPolicy,
+}
+
+impl AgentConfinementRequest {
+    pub(crate) fn new(
+        requirement: AgentConfinementRequirement,
+        workspace_root: PathBuf,
+        mcp_endpoint: String,
+        network_policy: AgentConfinementNetworkPolicy,
+    ) -> Self {
+        Self {
+            requirement,
+            workspace_root,
+            mcp_endpoint,
+            network_policy,
+        }
+    }
+
+    fn validate_for_spec(
+        &self,
+        spec: &AgentProcessLaunchSpec,
+    ) -> Result<(), AgentProcessLaunchError> {
+        if spec.working_directory != self.workspace_root {
+            return Err(AgentProcessLaunchError::InvalidConfinementRequest(
+                "external agent working directory must be the approved session code workspace"
+                    .to_owned(),
+            ));
+        }
+        if !mcp_endpoint_is_loopback(&self.mcp_endpoint) {
+            return Err(AgentProcessLaunchError::InvalidConfinementRequest(
+                "external agent confinement requires the ephemeral MCP endpoint to remain loopback-only"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -278,6 +459,95 @@ pub(crate) struct ConversationMessage {
     pub(crate) created_unix_ms: u64,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentWorkClaimKind {
+    AuthoringDocument,
+    CodePath,
+    AssetTarget,
+    SharedResource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct AgentWorkClaim {
+    pub(crate) kind: AgentWorkClaimKind,
+    pub(crate) key: String,
+}
+
+impl AgentWorkClaim {
+    #[allow(dead_code)]
+    pub(crate) fn authoring_document(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::AuthoringDocument, key: key.into() }
+    }
+
+    pub(crate) fn code_path(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::CodePath, key: key.into() }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn asset_target(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::AssetTarget, key: key.into() }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn shared_resource(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::SharedResource, key: key.into() }
+    }
+
+    fn normalized(&self) -> Result<Self, AgentHostError> {
+        let key = self.key.trim();
+        if key.is_empty() || key.contains('\0') {
+            return Err(AgentHostError::InvalidWorkClaim("claim key must be non-empty text".to_owned()));
+        }
+        let key = if matches!(self.kind, AgentWorkClaimKind::CodePath | AgentWorkClaimKind::AssetTarget) {
+            if key.starts_with('/') || key.contains('\\') || key.contains(':') {
+                return Err(AgentHostError::InvalidWorkClaim(format!("path claim `{key}` must be project-relative and use `/` separators")));
+            }
+            let segments = key.split('/').collect::<Vec<_>>();
+            if segments.iter().any(|segment| segment.is_empty() || matches!(*segment, "." | "..")) {
+                return Err(AgentHostError::InvalidWorkClaim(format!("path claim `{key}` contains an invalid segment")));
+            }
+            segments.join("/")
+        } else {
+            key.to_owned()
+        };
+        Ok(Self { kind: self.kind, key })
+    }
+
+    fn conflicts_with(&self, other: &Self) -> bool {
+        if self.kind != other.kind {
+            return false;
+        }
+        match self.kind {
+            AgentWorkClaimKind::CodePath | AgentWorkClaimKind::AssetTarget => {
+                hierarchical_claim_keys_overlap(&self.key, &other.key)
+            }
+            AgentWorkClaimKind::AuthoringDocument | AgentWorkClaimKind::SharedResource => {
+                self.key == other.key
+            }
+        }
+    }
+}
+
+impl fmt::Display for AgentWorkClaim {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self.kind {
+            AgentWorkClaimKind::AuthoringDocument => "authoring_document",
+            AgentWorkClaimKind::CodePath => "code_path",
+            AgentWorkClaimKind::AssetTarget => "asset_target",
+            AgentWorkClaimKind::SharedResource => "shared_resource",
+        };
+        write!(formatter, "{kind}:{}", self.key)
+    }
+}
+
+fn hierarchical_claim_keys_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left.strip_prefix(right).is_some_and(|suffix| suffix.starts_with('/'))
+        || right.strip_prefix(left).is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AgentProposal {
     pub(crate) version: u64,
@@ -288,6 +558,8 @@ pub(crate) struct AgentProposal {
     pub(crate) planned_project_changes: Vec<String>,
     pub(crate) planned_code_changes: Vec<String>,
     pub(crate) planned_assets: Vec<String>,
+    #[serde(default)]
+    pub(crate) work_claims: BTreeSet<AgentWorkClaim>,
     pub(crate) validation_plan: Vec<String>,
     pub(crate) playtest_plan: Vec<String>,
     pub(crate) requested_capabilities: BTreeSet<AgentCapability>,
@@ -304,6 +576,7 @@ impl Default for AgentProposal {
             planned_project_changes: Vec::new(),
             planned_code_changes: Vec::new(),
             planned_assets: Vec::new(),
+            work_claims: BTreeSet::new(),
             validation_plan: Vec::new(),
             playtest_plan: Vec::new(),
             requested_capabilities: BTreeSet::new(),
@@ -431,6 +704,12 @@ pub(crate) enum AgentEventKind {
     UserMessage,
     AssistantMessage,
     Proposal,
+    WorkClaimAcquired,
+    WorkClaimReleased,
+    WorkConflict,
+    WorkWait,
+    CrossRunDependency,
+    Reconciliation,
     SemanticProgress,
     ToolAction,
     PermissionRequested,
@@ -658,9 +937,23 @@ pub(crate) struct CodeCheckpoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AssetAcquisitionRecord {
+    #[serde(default)]
+    pub(crate) request_id: String,
+    #[serde(default)]
+    pub(crate) request_fingerprint: String,
+    #[serde(default)]
+    pub(crate) operation: String,
     pub(crate) provider: String,
+    #[serde(default)]
+    pub(crate) provider_asset_id: Option<String>,
+    #[serde(default)]
+    pub(crate) generation_request_id: Option<String>,
     pub(crate) source: String,
+    #[serde(default)]
+    pub(crate) source_version: Option<String>,
     pub(crate) license: Option<String>,
+    #[serde(default)]
+    pub(crate) imported_asset_ids: Vec<String>,
     pub(crate) imported_paths: Vec<PathBuf>,
     pub(crate) created_unix_ms: u64,
 }
@@ -682,8 +975,12 @@ pub(crate) struct AgentRun {
     pub(crate) proposal_snapshot: AgentProposal,
     pub(crate) provider_label: String,
     pub(crate) state: AgentRunState,
+    #[serde(default)]
+    pub(crate) work_claims: BTreeSet<AgentWorkClaim>,
     pub(crate) events: Vec<AgentEvent>,
     pub(crate) completion: CompletionReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) confinement_profile: Option<AgentConfinementProfile>,
     /// Provider-independent semantic working set retained independently of model residency.
     #[serde(default)]
     pub(crate) working_state: AgentWorkingState,
@@ -730,7 +1027,7 @@ pub(crate) struct AgentHost {
     project_root: PathBuf,
     storage_root: PathBuf,
     sessions: BTreeMap<String, AgentSession>,
-    active_writer_run: Option<String>,
+    active_writer_runs: BTreeSet<String>,
     permissions: PermissionBroker,
     active_validation: Option<ManagedValidationProcess>,
 }
@@ -759,12 +1056,12 @@ impl AgentHost {
                 sessions.insert(session.id.clone(), session);
             }
         }
-        let (active_writer_run, recovered_sessions) = recover_persisted_runs(&mut sessions)?;
+        let (active_writer_runs, recovered_sessions) = recover_persisted_runs(&mut sessions)?;
         let host = Self {
             project_root,
             storage_root,
             sessions,
-            active_writer_run,
+            active_writer_runs,
             permissions,
             active_validation: None,
         };
@@ -779,13 +1076,45 @@ impl AgentHost {
     }
 
     pub(crate) fn active_writer_run_id(&self) -> Option<&str> {
-        self.active_writer_run.as_deref()
+        self.active_writer_runs.iter().next().map(String::as_str)
+    }
+
+    #[cfg(test)]
+    fn active_writer_run_ids(&self) -> Vec<String> {
+        self.active_writer_runs.iter().cloned().collect()
     }
 
     pub(crate) fn session(&self, id: &str) -> Result<&AgentSession, AgentHostError> {
         self.sessions
             .get(id)
             .ok_or_else(|| AgentHostError::SessionNotFound(id.to_owned()))
+    }
+
+    pub(crate) fn check_session_permission(
+        &mut self,
+        session_id: &str,
+        capability: AgentCapability,
+    ) -> Result<PermissionCheck, AgentHostError> {
+        self.session(session_id)?;
+        Ok(self
+            .permissions
+            .check(&format!("question:{session_id}"), capability))
+    }
+
+    pub(crate) fn resolve_session_permission(
+        &mut self,
+        session_id: &str,
+        capability: AgentCapability,
+        scope: ApprovalScope,
+    ) -> Result<(), AgentHostError> {
+        self.session(session_id)?;
+        let subject = format!("question:{session_id}");
+        self.permissions.resolve(&subject, capability, scope);
+        if scope == ApprovalScope::Project {
+            self.permissions
+                .save(&self.storage_root.join("permissions.json"))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn create_session(&mut self, title: impl Into<String>) -> Result<String, AgentHostError> {
@@ -849,26 +1178,36 @@ impl AgentHost {
         authorized_proposal_version: u64,
         provider_label: impl Into<String>,
     ) -> Result<String, AgentHostError> {
-        if let Some(active) = &self.active_writer_run {
-            return Err(AgentHostError::ActiveWriterRun(active.clone()));
-        }
-        let run_id = next_id("run");
-        let provider_label = provider_label.into();
-        let session = self.session_mut(session_id)?;
-        if session.proposal.version != authorized_proposal_version {
+        let proposal = self.session(session_id)?.proposal.clone();
+        if proposal.version != authorized_proposal_version {
             return Err(AgentHostError::StaleProposalVersion {
                 expected: authorized_proposal_version,
-                current: session.proposal.version,
+                current: proposal.version,
             });
         }
+        let work_claims = self.normalize_work_claims(proposal.work_claims.iter().cloned())?;
+        if let Some((requested, owner_run_id, owner_claim)) =
+            self.find_work_claim_conflict(None, &work_claims)
+        {
+            return Err(AgentHostError::WorkClaimConflict {
+                requested,
+                owner_run_id,
+                owner_claim,
+            });
+        }
+
+        let run_id = next_id("run");
+        let provider_label = provider_label.into();
         let mut run = AgentRun {
             id: run_id.clone(),
-            proposal_snapshot: session.proposal.clone(),
+            proposal_snapshot: proposal.clone(),
             provider_label,
             state: AgentRunState::Inspecting,
+            work_claims: work_claims.clone(),
             events: Vec::new(),
             completion: CompletionReport::default(),
-            working_state: AgentWorkingState::from_proposal(&session.proposal),
+            confinement_profile: None,
+            working_state: AgentWorkingState::from_proposal(&proposal),
             validation_attempts: Vec::new(),
             code_checkpoints: Vec::new(),
             audit: AgentRunAudit::default(),
@@ -881,10 +1220,155 @@ impl AgentHost {
             AgentEventKind::RunStarted,
             format!("Run started from immutable proposal version {snapshot_version}."),
         );
-        session.runs.push(run);
-        self.active_writer_run = Some(run_id.clone());
+        for claim in &work_claims {
+            push_event(
+                &mut run,
+                AgentEventKind::WorkClaimAcquired,
+                format!("Acquired work claim `{claim}` from the authorized proposal snapshot."),
+            );
+        }
+        self.session_mut(session_id)?.runs.push(run);
+        self.active_writer_runs.insert(run_id.clone());
         self.persist_session(session_id)?;
         Ok(run_id)
+    }
+
+    pub(crate) fn acquire_work_claims<I>(
+        &mut self,
+        run_id: &str,
+        claims: I,
+    ) -> Result<(), AgentHostError>
+    where
+        I: IntoIterator<Item = AgentWorkClaim>,
+    {
+        let (session_id, state) = self.run_location(run_id)?;
+        if state.is_terminal() {
+            return Err(AgentHostError::InvalidWorkClaim(format!(
+                "terminal agent run `{run_id}` cannot acquire work claims"
+            )));
+        }
+        let claims = self.normalize_work_claims(claims)?;
+        if let Some((requested, owner_run_id, owner_claim)) =
+            self.find_work_claim_conflict(Some(run_id), &claims)
+        {
+            {
+                let run = self.run_mut_in_session(&session_id, run_id)?;
+                push_event(
+                    run,
+                    AgentEventKind::WorkConflict,
+                    format!(
+                        "Requested `{requested}` conflicts with `{owner_claim}` owned by run `{owner_run_id}`."
+                    ),
+                );
+                push_event(
+                    run,
+                    AgentEventKind::WorkWait,
+                    format!(
+                        "Run must wait, re-plan, or explicitly reconcile ownership with `{owner_run_id}` before expanding scope."
+                    ),
+                );
+            }
+            self.persist_session(&session_id)?;
+            return Err(AgentHostError::WorkClaimConflict {
+                requested,
+                owner_run_id,
+                owner_claim,
+            });
+        }
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            for claim in claims {
+                if run.work_claims.insert(claim.clone()) {
+                    push_event(
+                        run,
+                        AgentEventKind::WorkClaimAcquired,
+                        format!("Acquired work claim `{claim}`."),
+                    );
+                }
+            }
+        }
+        self.persist_session(&session_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn release_work_claims<I>(
+        &mut self,
+        run_id: &str,
+        claims: I,
+    ) -> Result<(), AgentHostError>
+    where
+        I: IntoIterator<Item = AgentWorkClaim>,
+    {
+        let (session_id, _) = self.run_location(run_id)?;
+        let claims = self.normalize_work_claims(claims)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            for claim in claims {
+                if run.work_claims.remove(&claim) {
+                    push_event(
+                        run,
+                        AgentEventKind::WorkClaimReleased,
+                        format!("Released work claim `{claim}`."),
+                    );
+                }
+            }
+        }
+        self.persist_session(&session_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_cross_run_dependency(
+        &mut self,
+        run_id: &str,
+        dependency_run_id: &str,
+        detail: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        self.run(dependency_run_id)?;
+        self.record_event(
+            run_id,
+            AgentEventKind::CrossRunDependency,
+            format!("Depends on run `{dependency_run_id}`: {}", detail.into()),
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_reconciliation(
+        &mut self,
+        run_id: &str,
+        detail: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        self.record_event(run_id, AgentEventKind::Reconciliation, detail)
+    }
+
+    fn normalize_work_claims<I>(&self, claims: I) -> Result<BTreeSet<AgentWorkClaim>, AgentHostError>
+    where
+        I: IntoIterator<Item = AgentWorkClaim>,
+    {
+        claims.into_iter().map(|claim| claim.normalized()).collect()
+    }
+
+    fn find_work_claim_conflict(
+        &self,
+        requesting_run_id: Option<&str>,
+        requested_claims: &BTreeSet<AgentWorkClaim>,
+    ) -> Option<(AgentWorkClaim, String, AgentWorkClaim)> {
+        for session in self.sessions.values() {
+            for run in &session.runs {
+                if run.state.is_terminal() || requesting_run_id == Some(run.id.as_str()) {
+                    continue;
+                }
+                for requested in requested_claims {
+                    if let Some(owner_claim) = run
+                        .work_claims
+                        .iter()
+                        .find(|owner_claim| requested.conflicts_with(owner_claim))
+                    {
+                        return Some((requested.clone(), run.id.clone(), owner_claim.clone()));
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub(crate) fn run(&self, run_id: &str) -> Result<&AgentRun, AgentHostError> {
@@ -922,7 +1406,7 @@ impl AgentHost {
             }
         }
         if state.is_terminal() {
-            self.release_writer(run_id);
+            self.release_run_resources(run_id)?;
         }
         self.persist_session(&session_id)
     }
@@ -1074,6 +1558,23 @@ impl AgentHost {
         self.persist_session(&session_id)
     }
 
+    pub(crate) fn record_confinement_profile(
+        &mut self,
+        run_id: &str,
+        profile: AgentConfinementProfile,
+    ) -> Result<(), AgentHostError> {
+        let summary = profile.summary();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.confinement_profile = Some(profile);
+        push_event(
+            run,
+            AgentEventKind::ResourcePolicy,
+            format!("External agent confinement: {summary}."),
+        );
+        self.persist_session(&session_id)
+    }
+
     pub(crate) fn record_code_checkpoint(
         &mut self,
         run_id: &str,
@@ -1163,6 +1664,42 @@ impl AgentHost {
             format!("{tool}: {action}"),
             None,
             Some(AgentEventEvidence::ToolAction { tool, action, success }),
+        );
+        self.persist_session(&session_id)
+    }
+
+    pub(crate) fn asset_acquisition_staging_root(
+        &self,
+        run_id: &str,
+    ) -> Result<PathBuf, AgentHostError> {
+        self.run(run_id)?;
+        Ok(self.storage_root.join("asset-acquisition").join(run_id))
+    }
+
+    pub(crate) fn record_asset_acquisition(
+        &mut self,
+        run_id: &str,
+        record: AssetAcquisitionRecord,
+    ) -> Result<(), AgentHostError> {
+        let request_id = record.request_id.clone();
+        let imported_count = record.imported_paths.len();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.audit.asset_acquisitions.push(record);
+        let tool = "asset.acquire".to_owned();
+        let action = format!(
+            "Managed acquisition request `{request_id}` imported {imported_count} asset(s)."
+        );
+        push_event_with_evidence(
+            run,
+            AgentEventKind::ToolAction,
+            format!("{tool}: {action}"),
+            None,
+            Some(AgentEventEvidence::ToolAction {
+                tool,
+                action,
+                success: Some(true),
+            }),
         );
         self.persist_session(&session_id)
     }
@@ -1968,11 +2505,22 @@ impl AgentHost {
         Err(AgentHostError::RunNotFound(run_id.to_owned()))
     }
 
-    fn release_writer(&mut self, run_id: &str) {
-        if self.active_writer_run.as_deref() == Some(run_id) {
-            self.active_writer_run = None;
+    fn release_run_resources(&mut self, run_id: &str) -> Result<(), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            let released = std::mem::take(&mut run.work_claims);
+            for claim in released {
+                push_event(
+                    run,
+                    AgentEventKind::WorkClaimReleased,
+                    format!("Released work claim `{claim}` because the run became terminal."),
+                );
+            }
         }
+        self.active_writer_runs.remove(run_id);
         self.permissions.clear_run(run_id);
+        Ok(())
     }
 
     fn persist_session(&self, id: &str) -> Result<(), AgentHostError> {
@@ -2151,16 +2699,27 @@ fn managed_validation_plan(
 
 fn recover_persisted_runs(
     sessions: &mut BTreeMap<String, AgentSession>,
-) -> Result<(Option<String>, BTreeSet<String>), AgentHostError> {
-    let mut active_runs = Vec::new();
+) -> Result<(BTreeSet<String>, BTreeSet<String>), AgentHostError> {
+    let mut active_runs = BTreeSet::new();
     let mut recovered_sessions = BTreeSet::new();
     for session in sessions.values_mut() {
         let session_id = session.id.clone();
         for run in &mut session.runs {
             if run.state.is_terminal() {
+                if !run.work_claims.is_empty() {
+                    let released = std::mem::take(&mut run.work_claims);
+                    for claim in released {
+                        push_event(
+                            run,
+                            AgentEventKind::WorkClaimReleased,
+                            format!("Recovered stale terminal work claim `{claim}` after Editor restart."),
+                        );
+                    }
+                    recovered_sessions.insert(session_id.clone());
+                }
                 continue;
             }
-            active_runs.push(run.id.clone());
+            active_runs.insert(run.id.clone());
             let Some(attempt) = run
                 .validation_attempts
                 .last_mut()
@@ -2203,14 +2762,7 @@ fn recover_persisted_runs(
             }
         }
     }
-    active_runs.sort();
-    active_runs.dedup();
-    let active_writer_run = match active_runs.as_slice() {
-        [] => None,
-        [run_id] => Some(run_id.clone()),
-        _ => return Err(AgentHostError::MultipleActiveWriterRuns(active_runs)),
-    };
-    Ok((active_writer_run, recovered_sessions))
+    Ok((active_runs, recovered_sessions))
 }
 
 struct ManagedValidationProcess {
@@ -2415,6 +2967,18 @@ impl CodeWorkspace {
 
     pub(crate) fn root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    /// Writes one UTF-8 file inside the isolated managed code workspace.
+    ///
+    /// This never writes the live project. The normal collect/review/apply path
+    /// remains responsible for stale checks before canonical source mutation.
+    pub(crate) fn write_text(&self, relative: &Path, text: &str) -> Result<(), AgentHostError> {
+        validate_code_relative_path(relative)?;
+        if !is_managed_code_file(relative) {
+            return Err(AgentHostError::InvalidRelativePath(relative.to_path_buf()));
+        }
+        write_text_atomic(&self.workspace_root.join(relative), text)
     }
 
     pub(crate) fn collect_changes(&self) -> Result<Vec<CodeChange>, AgentHostError> {
@@ -2628,10 +3192,144 @@ pub(crate) struct ProcessLine {
     pub(crate) text: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AgentProcessLaunchSpec {
+    pub(crate) program: OsString,
+    pub(crate) args: Vec<OsString>,
+    pub(crate) working_directory: PathBuf,
+    pub(crate) environment: Vec<(OsString, OsString)>,
+}
+
+impl AgentProcessLaunchSpec {
+    pub(crate) fn new<I, S>(
+        program: &OsStr,
+        args: I,
+        working_directory: &Path,
+        environment: &[(OsString, OsString)],
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        Self {
+            program: program.to_os_string(),
+            args: args
+                .into_iter()
+                .map(|argument| argument.as_ref().to_os_string())
+                .collect(),
+            working_directory: working_directory.to_path_buf(),
+            environment: environment.to_vec(),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command
+            .args(&self.args)
+            .current_dir(&self.working_directory)
+            .envs(self.environment.iter().cloned())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AgentProcessLaunchOutcome {
+    pub(crate) child: Child,
+    pub(crate) profile: AgentConfinementProfile,
+}
+
+/// Provider/platform-owned process creation boundary for real confinement.
+///
+/// A provider that reports `credential_secrecy_guarantee: Enforced` must keep
+/// provider credentials and MCP authorization material out of the sandboxed
+/// child process, including inherited parent environment. It may use a
+/// provider-native broker, helper, or equivalent out-of-process credential
+/// channel. The generic application-policy-only launcher intentionally does
+/// not claim that guarantee.
+pub(crate) trait AgentProcessConfinementProvider {
+    fn spawn(
+        &self,
+        spec: &AgentProcessLaunchSpec,
+        request: &AgentConfinementRequest,
+    ) -> Result<AgentProcessLaunchOutcome, AgentProcessLaunchError>;
+}
+
+#[derive(Debug)]
+pub(crate) enum AgentProcessLaunchError {
+    InvalidConfinementRequest(String),
+    RequiredConfinementUnavailable {
+        profile: AgentConfinementProfile,
+    },
+    Io(io::Error),
+}
+
+impl AgentProcessLaunchError {
+    pub(crate) fn confinement_profile(&self) -> Option<&AgentConfinementProfile> {
+        match self {
+            Self::RequiredConfinementUnavailable { profile } => Some(profile),
+            Self::InvalidConfinementRequest(_) | Self::Io(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for AgentProcessLaunchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfinementRequest(message) => write!(formatter, "{message}"),
+            Self::RequiredConfinementUnavailable { profile } => write!(
+                formatter,
+                "required provider/OS confinement is unavailable: {}",
+                profile.summary()
+            ),
+            Self::Io(error) => write!(formatter, "could not launch external agent process: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AgentProcessLaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::InvalidConfinementRequest(_)
+            | Self::RequiredConfinementUnavailable { .. } => None,
+        }
+    }
+}
+
+impl From<io::Error> for AgentProcessLaunchError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+struct ApplicationPolicyProcessConfinementProvider;
+
+impl AgentProcessConfinementProvider for ApplicationPolicyProcessConfinementProvider {
+    fn spawn(
+        &self,
+        spec: &AgentProcessLaunchSpec,
+        request: &AgentConfinementRequest,
+    ) -> Result<AgentProcessLaunchOutcome, AgentProcessLaunchError> {
+        if request.requirement.requires_enforced_confinement() {
+            return Err(AgentProcessLaunchError::RequiredConfinementUnavailable {
+                profile: AgentConfinementProfile::unavailable(request.network_policy),
+            });
+        }
+        Ok(AgentProcessLaunchOutcome {
+            child: spec.command().spawn()?,
+            profile: AgentConfinementProfile::application_policy_only(request.network_policy),
+        })
+    }
+}
+
 pub(crate) struct ExternalAgentProcess {
     child: Child,
     output: Receiver<ProcessLine>,
     exit_status: Option<ExitStatus>,
+    confinement_profile: AgentConfinementProfile,
 }
 
 impl ExternalAgentProcess {
@@ -2640,25 +3338,40 @@ impl ExternalAgentProcess {
         args: I,
         working_directory: &Path,
         environment: &[(OsString, OsString)],
-    ) -> io::Result<Self>
+        confinement: &AgentConfinementRequest,
+    ) -> Result<Self, AgentProcessLaunchError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut child = Command::new(program)
-            .args(args)
-            .current_dir(working_directory)
-            .envs(environment.iter().cloned())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let spec = AgentProcessLaunchSpec::new(program, args, working_directory, environment);
+        Self::spawn_with_confinement_provider(
+            spec,
+            confinement,
+            &ApplicationPolicyProcessConfinementProvider,
+        )
+    }
+
+    pub(crate) fn spawn_with_confinement_provider(
+        spec: AgentProcessLaunchSpec,
+        confinement: &AgentConfinementRequest,
+        provider: &dyn AgentProcessConfinementProvider,
+    ) -> Result<Self, AgentProcessLaunchError> {
+        confinement.validate_for_spec(&spec)?;
+        let mut outcome = provider.spawn(&spec, confinement)?;
+        if !outcome.profile.satisfies(confinement.requirement) {
+            let profile = outcome.profile.clone();
+            terminate_child(&mut outcome.child);
+            return Err(AgentProcessLaunchError::RequiredConfinementUnavailable { profile });
+        }
+
+        let mut child = outcome.child;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let (sender, output) = mpsc::channel();
         if let Some(stdout) = stdout {
             let sender = sender.clone();
-            std::thread::Builder::new()
+            if let Err(error) = std::thread::Builder::new()
                 .name("ai-agent-stdout".to_owned())
                 .spawn(move || {
                     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -2667,10 +3380,14 @@ impl ExternalAgentProcess {
                             text: truncate_provider_output(line),
                         });
                     }
-                })?;
+                })
+            {
+                terminate_child(&mut child);
+                return Err(error.into());
+            }
         }
-        if let Some(stderr) = stderr {
-            std::thread::Builder::new()
+        if let Some(stderr) = stderr
+            && let Err(error) = std::thread::Builder::new()
                 .name("ai-agent-stderr".to_owned())
                 .spawn(move || {
                     for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -2679,13 +3396,21 @@ impl ExternalAgentProcess {
                             text: truncate_provider_output(line),
                         });
                     }
-                })?;
+                })
+        {
+            terminate_child(&mut child);
+            return Err(error.into());
         }
         Ok(Self {
             child,
             output,
             exit_status: None,
+            confinement_profile: outcome.profile,
         })
+    }
+
+    pub(crate) fn confinement_profile(&self) -> &AgentConfinementProfile {
+        &self.confinement_profile
     }
 
     pub(crate) fn drain_output(&self) -> Vec<ProcessLine> {
@@ -2719,10 +3444,29 @@ impl ExternalAgentProcess {
 impl Drop for ExternalAgentProcess {
     fn drop(&mut self) {
         if self.exit_status.is_none() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            terminate_child(&mut self.child);
         }
     }
+}
+
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn mcp_endpoint_is_loopback(endpoint: &str) -> bool {
+    let authority = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, remainder)| remainder)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    authority == "127.0.0.1"
+        || authority.starts_with("127.0.0.1:")
+        || authority == "localhost"
+        || authority.starts_with("localhost:")
+        || authority == "[::1]"
+        || authority.starts_with("[::1]:")
 }
 
 fn truncate_provider_output(mut line: String) -> String {
@@ -2740,6 +3484,147 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gameengine-agent-{name}-{}", next_id("test")))
+    }
+
+    #[test]
+    fn generic_confinement_profile_never_claims_a_sandbox() {
+        let profile = AgentConfinementProfile::application_policy_only(
+            AgentConfinementNetworkPolicy::LoopbackOnly,
+        );
+        assert_eq!(
+            profile.layer,
+            AgentConfinementLayer::ApplicationPolicyOnly
+        );
+        assert_eq!(
+            profile.filesystem_guarantee,
+            AgentConfinementGuarantee::Unavailable
+        );
+        assert_eq!(
+            profile.credential_secrecy_guarantee,
+            AgentConfinementGuarantee::Unavailable
+        );
+        assert!(!profile.satisfies(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement
+        ));
+        assert!(profile.summary().starts_with("Application policy only"));
+    }
+
+    #[test]
+    fn strong_confinement_requires_credential_secrecy() {
+        let mut profile = AgentConfinementProfile {
+            layer: AgentConfinementLayer::ProviderSandbox,
+            mechanism: "test_provider_sandbox".to_owned(),
+            filesystem_guarantee: AgentConfinementGuarantee::Enforced,
+            network_guarantee: AgentConfinementGuarantee::Enforced,
+            process_tree_guarantee: AgentConfinementGuarantee::Enforced,
+            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
+            requested_network_policy: AgentConfinementNetworkPolicy::LoopbackOnly,
+        };
+        assert!(!profile.satisfies(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement
+        ));
+        profile.credential_secrecy_guarantee = AgentConfinementGuarantee::Enforced;
+        assert!(profile.satisfies(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement
+        ));
+    }
+
+    #[test]
+    fn required_confinement_fails_closed_before_process_spawn() {
+        let workspace = temp_path("required-confinement");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let request = AgentConfinementRequest::new(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement,
+            workspace.clone(),
+            "http://127.0.0.1:1/mcp".to_owned(),
+            AgentConfinementNetworkPolicy::LoopbackOnly,
+        );
+        let error = ExternalAgentProcess::spawn(
+            OsStr::new("gameengine-adr0153-missing-test-binary"),
+            std::iter::empty::<OsString>(),
+            &workspace,
+            &[],
+            &request,
+        )
+        .err()
+        .expect("required confinement must reject the generic launcher");
+        assert!(matches!(
+            error,
+            AgentProcessLaunchError::RequiredConfinementUnavailable { .. }
+        ));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn confinement_audit_omits_ephemeral_request_material() {
+        let project = temp_path("confinement-audit-project");
+        let storage = temp_path("confinement-audit-storage");
+        let workspace = temp_path("secret-workspace-material");
+        fs::create_dir_all(&project).expect("project");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Confinement audit").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        let request = AgentConfinementRequest::new(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement,
+            workspace.clone(),
+            "http://127.0.0.1:1/mcp/SECRET_ENDPOINT_MATERIAL".to_owned(),
+            AgentConfinementNetworkPolicy::LoopbackOnly,
+        );
+        let error = ExternalAgentProcess::spawn(
+            OsStr::new("gameengine-adr0153-missing-test-binary"),
+            std::iter::empty::<OsString>(),
+            &workspace,
+            &[],
+            &request,
+        )
+        .err()
+        .expect("generic launcher must reject required confinement");
+        let profile = error
+            .confinement_profile()
+            .expect("unavailable profile")
+            .clone();
+        host.record_confinement_profile(&run, profile)
+            .expect("record profile");
+        let persisted = fs::read_to_string(
+            storage
+                .join("sessions")
+                .join(format!("{session}.json")),
+        )
+        .expect("persisted session");
+        assert!(persisted.contains("confinement_profile"));
+        assert!(persisted.contains("unavailable"));
+        assert!(!persisted.contains("SECRET_ENDPOINT_MATERIAL"));
+        assert!(!persisted.contains(&workspace.display().to_string()));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn confinement_request_rejects_non_loopback_mcp_before_spawn() {
+        let workspace = temp_path("non-loopback-mcp");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let request = AgentConfinementRequest::new(
+            AgentConfinementRequirement::AllowApplicationPolicyOnly,
+            workspace.clone(),
+            "http://192.0.2.10:8080/mcp".to_owned(),
+            AgentConfinementNetworkPolicy::ManagedNetworkAccess,
+        );
+        let error = ExternalAgentProcess::spawn(
+            OsStr::new("gameengine-adr0153-missing-test-binary"),
+            std::iter::empty::<OsString>(),
+            &workspace,
+            &[],
+            &request,
+        )
+        .err()
+        .expect("non-loopback MCP must be rejected before process lookup");
+        assert!(matches!(
+            error,
+            AgentProcessLaunchError::InvalidConfinementRequest(_)
+        ));
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
@@ -2764,20 +3649,237 @@ mod tests {
     }
 
     #[test]
-    fn only_one_writer_run_is_active() {
+    fn disjoint_work_claims_allow_concurrent_writer_runs() {
         let project = temp_path("writer-project");
         let storage = temp_path("writer-storage");
         fs::create_dir_all(&project).expect("test project directory");
         let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
         let first = host.create_session("First").expect("first session");
         let second = host.create_session("Second").expect("second session");
-        let run = host.start_run(&first, "test").expect("first run");
+
+        let mut first_proposal = host.session(&first).expect("first").proposal.clone();
+        first_proposal
+            .work_claims
+            .insert(AgentWorkClaim::authoring_document("scene:main"));
+        host.update_proposal(&first, first_proposal).expect("first proposal");
+        let mut second_proposal = host.session(&second).expect("second").proposal.clone();
+        second_proposal
+            .work_claims
+            .insert(AgentWorkClaim::authoring_document("scene:menu"));
+        host.update_proposal(&second, second_proposal).expect("second proposal");
+
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+        let active = host.active_writer_run_ids();
+        assert_eq!(active.len(), 2);
+        assert!(active.contains(&first_run));
+        assert!(active.contains(&second_run));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn overlapping_authoring_claim_waits_until_owner_cancels() {
+        let project = temp_path("authoring-claim-conflict-project");
+        let storage = temp_path("authoring-claim-conflict-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let first = host.create_session("First").expect("first session");
+        let second = host.create_session("Second").expect("second session");
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+
+        host.acquire_work_claims(
+            &first_run,
+            [AgentWorkClaim::authoring_document("scene:main")],
+        )
+        .expect("first claim");
+        let conflict = host.acquire_work_claims(
+            &second_run,
+            [AgentWorkClaim::authoring_document("scene:main")],
+        );
         assert!(matches!(
-            host.start_run(&second, "test"),
-            Err(AgentHostError::ActiveWriterRun(_))
+            conflict,
+            Err(AgentHostError::WorkClaimConflict { owner_run_id, .. })
+                if owner_run_id == first_run
         ));
-        host.cancel_run(&run).expect("cancel run");
-        host.start_run(&second, "test").expect("second run");
+        host.cancel_run(&first_run).expect("cancel first");
+        host.acquire_work_claims(
+            &second_run,
+            [AgentWorkClaim::authoring_document("scene:main")],
+        )
+        .expect("claim after cancellation");
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn human_edit_reinspection_is_independent_for_concurrent_runs() {
+        let project = temp_path("human-edit-concurrent-project");
+        let storage = temp_path("human-edit-concurrent-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let first = host.create_session("First").expect("first session");
+        let second = host.create_session("Second").expect("second session");
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+        host.acquire_work_claims(
+            &first_run,
+            [AgentWorkClaim::authoring_document("scene:main")],
+        )
+        .expect("first claim");
+        host.acquire_work_claims(
+            &second_run,
+            [AgentWorkClaim::authoring_document("scene:menu")],
+        )
+        .expect("second claim");
+
+        let before = AuthoritativeStateSnapshot {
+            document_revision: 10,
+            game_code_generation: 3,
+            document_path: Some(PathBuf::from("assets/scenes/main.scene.json")),
+            document_dirty: false,
+        };
+        host.interrupt_for_editing(&first_run, before.clone())
+            .expect("interrupt first");
+        host.interrupt_for_editing(&second_run, before.clone())
+            .expect("interrupt second");
+        let after = AuthoritativeStateSnapshot {
+            document_revision: 11,
+            document_dirty: true,
+            ..before
+        };
+        assert_eq!(
+            host.resume_after_editing(&first_run, after.clone())
+                .expect("resume first"),
+            ResumeDisposition::ReinspectRequired
+        );
+        assert_eq!(
+            host.resume_after_editing(&second_run, after)
+                .expect("resume second"),
+            ResumeDisposition::ReinspectRequired
+        );
+        assert!(host
+            .run(&first_run)
+            .expect("first run")
+            .work_claims
+            .contains(&AgentWorkClaim::authoring_document("scene:main")));
+        assert!(host
+            .run(&second_run)
+            .expect("second run")
+            .work_claims
+            .contains(&AgentWorkClaim::authoring_document("scene:menu")));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn conflicting_source_claim_waits_until_owner_cancels() {
+        let project = temp_path("claim-conflict-project");
+        let storage = temp_path("claim-conflict-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let first = host.create_session("First").expect("first session");
+        let second = host.create_session("Second").expect("second session");
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+
+        host.acquire_work_claims(
+            &first_run,
+            [AgentWorkClaim::code_path("game/src")],
+        )
+        .expect("first claim");
+        let conflict = host.acquire_work_claims(
+            &second_run,
+            [AgentWorkClaim::code_path("game/src/lib.rs")],
+        );
+        assert!(matches!(
+            conflict,
+            Err(AgentHostError::WorkClaimConflict { owner_run_id, .. })
+                if owner_run_id == first_run
+        ));
+        let waiting = host.run(&second_run).expect("second run");
+        assert!(waiting.events.iter().any(|event| event.kind == AgentEventKind::WorkConflict));
+        assert!(waiting.events.iter().any(|event| event.kind == AgentEventKind::WorkWait));
+
+        host.cancel_run(&first_run).expect("cancel first");
+        host.acquire_work_claims(
+            &second_run,
+            [AgentWorkClaim::code_path("game/src/lib.rs")],
+        )
+        .expect("claim after cancellation");
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn restart_restores_active_claims_and_cleans_terminal_claims() {
+        let project = temp_path("claim-restart-project");
+        let storage = temp_path("claim-restart-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let first_run;
+        let second_run;
+        {
+            let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+            let first = host.create_session("First").expect("first session");
+            let second = host.create_session("Second").expect("second session");
+            first_run = host.start_run(&first, "test").expect("first run");
+            second_run = host.start_run(&second, "test").expect("second run");
+            host.acquire_work_claims(
+                &first_run,
+                [AgentWorkClaim::authoring_document("scene:main")],
+            )
+            .expect("first claim");
+            host.acquire_work_claims(
+                &second_run,
+                [AgentWorkClaim::authoring_document("scene:menu")],
+            )
+            .expect("second claim");
+            host.cancel_run(&first_run).expect("cancel first");
+
+            let (session_id, _) = host.run_location(&first_run).expect("first location");
+            host.run_mut_in_session(&session_id, &first_run)
+                .expect("first run")
+                .work_claims
+                .insert(AgentWorkClaim::authoring_document("scene:stale"));
+            host.persist_session(&session_id).expect("persist stale fixture");
+        }
+
+        let host = AgentHost::open(project.clone(), storage.clone()).expect("reopened host");
+        assert_eq!(host.active_writer_run_ids(), vec![second_run.clone()]);
+        assert!(host.run(&first_run).expect("first run").work_claims.is_empty());
+        assert!(host
+            .run(&second_run)
+            .expect("second run")
+            .work_claims
+            .contains(&AgentWorkClaim::authoring_document("scene:menu")));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn concurrent_run_completion_evidence_is_independent() {
+        let project = temp_path("claim-completion-project");
+        let storage = temp_path("claim-completion-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let first = host.create_session("First").expect("first session");
+        let second = host.create_session("Second").expect("second session");
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+        let (first_session, _) = host.run_location(&first_run).expect("first location");
+        host.run_mut_in_session(&first_session, &first_run)
+            .expect("first run")
+            .completion
+            .acceptance_criteria = CompletionStatus::Passed;
+        assert_eq!(
+            host.run(&first_run).expect("first run").completion.acceptance_criteria,
+            CompletionStatus::Passed
+        );
+        assert_eq!(
+            host.run(&second_run).expect("second run").completion.acceptance_criteria,
+            CompletionStatus::Pending
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }

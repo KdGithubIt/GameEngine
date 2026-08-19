@@ -400,8 +400,12 @@ fn show_animation_graph_debug_details(
                 ui.label(name);
             }
             ui.label(format!(
-                "{:?} -> {}",
-                snapshot.resolved_motion_variant.unwrap_or(source.variant),
+                "{} -> {}",
+                snapshot
+                    .resolved_motion_route
+                    .as_ref()
+                    .map(engine::motion_binding::AnimationMotionRoute::badge)
+                    .unwrap_or("Unresolved"),
                 source.asset.as_str()
             ));
             ui.small(format!("Concrete runtime clip {}", snapshot.clip_runtime_id));

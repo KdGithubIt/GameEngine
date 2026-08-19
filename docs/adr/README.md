@@ -117,8 +117,13 @@ the beginning:
   [0035](0035-ai-agent-bridge-ipc.md),
   [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md),
   [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md),
-  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md), and
-  [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md).
+  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md),
+  [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md),
+  [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md),
+  [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md),
+  [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md),
+  [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md),
+  and [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md).
 
 ## Proposed Decisions
 
@@ -285,15 +290,19 @@ implementation contract.
 | [0139](0139-editor-authoritative-working-copy-and-saved-copy-coherency.md) | Editor Authoritative Working Copy and Saved-Copy Coherency |
 | [0140](0140-ai-capability-roadmap-and-parallel-delivery-order.md) | **Proposed** — AI Capability Roadmap and Parallel Delivery Order |
 | [0141](0141-native-write-capable-agent-runtime-and-governed-tool-loop.md) | **Proposed** — Native Write-Capable Agent Runtime and Governed Tool Loop |
-| [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | **Proposed** — GameEngine Agent Benchmark and Curated Model Catalog |
-| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | **Proposed** — Native ModelBackend Resource Controls and Hardware Telemetry |
+| [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | GameEngine Agent Benchmark and Curated Model Catalog |
+| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | Native ModelBackend Resource Controls and Hardware Telemetry |
 | [0144](0144-hosted-and-enterprise-model-backends-and-credential-ownership.md) | **Proposed** — Hosted and Enterprise ModelBackends and Credential Ownership |
 | [0145](0145-first-class-external-agent-runtime-provider-adapters.md) | **Proposed** — First-Class External Agent Runtime Provider Adapters |
 | [0146](0146-governed-ai-asset-acquisition-and-generative-content-providers.md) | **Proposed** — Governed AI Asset Acquisition and Generative Content Providers |
-| [0147](0147-detached-local-ai-studio-frontend-and-versioned-host-protocol.md) | **Proposed** — Detached Local AI Studio Frontend and Versioned Host Protocol |
+| [0147](0147-detached-local-ai-studio-frontend-and-versioned-host-protocol.md) | Detached Local AI Studio Frontend and Versioned Host Protocol |
 | [0148](0148-remote-host-lifecycle-project-activation-and-narrow-startup-operations.md) | **Proposed** — Remote Host Lifecycle, Project Activation, and Narrow Startup Operations |
 | [0149](0149-engine-native-live-observation-and-media-transport.md) | **Proposed** — Engine-Native Live Observation and Media Transport |
 | [0150](0150-multi-model-routing-and-workload-specialization.md) | **Proposed** — Multi-Model Routing and Workload Specialization |
-| [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | **Proposed** — Headless Write-Capable MCP Host and Project-Writer Ownership |
-| [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | **Proposed** — Multi-Agent Writer Coordination and Conflict Ownership |
+| [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | Headless Write-Capable MCP Host and Project-Writer Ownership |
+| [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | Multi-Agent Writer Coordination and Conflict Ownership |
 | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
+| [0154](0154-target-aware-animation-motion-binding-resolution.md) | Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
+| [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md) | GameEngine-Managed Local Inference Runtime and Platform Selection |
+| [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md) | Automated Multi-Model Benchmark Campaigns and Reproducible Runtime Characterization |
+| [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md) | AI Runtime Debugging, Deterministic Playtest Control, and Host-Owned Observation |

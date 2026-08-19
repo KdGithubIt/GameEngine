@@ -6,7 +6,9 @@
 
 use engine::{
     asset::HumanoidProfile,
-    humanoid_import::{build_humanoid_import_catalog, humanoid_imported_sub_assets},
+    humanoid_import::{
+        build_humanoid_import_catalog, build_humanoid_motion_variant, humanoid_imported_sub_assets,
+    },
     ImportedSubAsset, SkeletonRecord,
 };
 use engine_authoring::prefab::PrefabAsset;
@@ -56,7 +58,6 @@ pub struct ClipContactSummary {
 }
 
 /// Completed background model source (glTF/GLB or FBX) catalog operation.
-#[derive(Debug)]
 pub struct AssetImportResult {
     /// Project root captured when the job started.
     pub project_path: PathBuf,
@@ -70,6 +71,16 @@ pub struct AssetImportResult {
     pub source_stamp: Option<engine::SourceStamp>,
     /// Absolute external buffer/image dependency paths.
     pub source_dependencies: Vec<PathBuf>,
+    /// Immutable conversion-ready model retained from this exact successful generation.
+    pub(crate) conversion_ready_model: Option<Arc<engine::GltfImportResult>>,
+    /// CPU-decoded texture payloads retained from the same successful generation.
+    pub(crate) conversion_ready_textures: Vec<(AssetId, Arc<engine::DecodedTexture>)>,
+    /// Import-setting input captured by this model worker for stale-completion rejection.
+    pub(crate) conversion_ready_contact_bones: Vec<String>,
+    /// Project skeleton ledger captured when this model worker started.
+    pub(crate) conversion_ready_existing_skeletons: Vec<SkeletonRecord>,
+    /// Model-owned Humanoid profiles captured when this model worker started.
+    pub(crate) conversion_ready_humanoid_profiles: Vec<HumanoidProfile>,
     /// Stable catalog produced by the latest successful parse.
     pub sub_assets: Vec<ImportedSubAsset>,
     /// Bone-catalog ledger for every skeleton this import bound to (ADR 0077),
@@ -131,6 +142,9 @@ pub struct MotionImportJob {
     /// Optional PMX whose MMD constraint rig is evaluated before the baked FK
     /// result is retargeted to [`Self::targets`]. `None` selects direct bake.
     pub original_model: Option<MotionImportTarget>,
+    /// Optional stable associated model whose baked motion and usable
+    /// HumanoidProfile define the one portable Humanoid candidate (ADR 0154).
+    pub humanoid_source: Option<MotionHumanoidSource>,
     /// Registered explicit retarget maps available when `original_model` is
     /// different from an output target.
     pub retarget_maps: Vec<(AssetId, engine::RetargetMap)>,
@@ -153,6 +167,15 @@ pub struct MotionImportTarget {
     /// Contact-bone override owned by this output model. Retargeting detects
     /// contacts on the target rig, so this is distinct from the VMD override.
     pub contact_bones: Vec<String>,
+}
+
+/// Import-time provenance for one VMD portable Humanoid candidate (ADR 0154).
+#[derive(Debug, Clone)]
+pub struct MotionHumanoidSource {
+    /// Associated model whose rig receives the source bake.
+    pub model: MotionImportTarget,
+    /// Structurally usable profile owned by that model's skeleton.
+    pub profile: HumanoidProfile,
 }
 
 /// Reports why a background import could not start.
@@ -277,7 +300,7 @@ impl AssetImportManager {
                 &existing_skeletons,
                 &contact_bones,
             ) {
-                Ok(imported) => imported,
+                Ok(imported) => Arc::new(imported),
                 Err(error) => {
                     send_failed(
                         &sender,
@@ -347,10 +370,51 @@ impl AssetImportManager {
             progress(0.95, "Publishing import result");
             let mut humanoid_catalog =
                 build_humanoid_import_catalog(&imported, &existing_humanoid_profiles);
+            let portable_cache = engine::DerivedCache::new(&project_path);
+            let mut portable_cache_diagnostics = Vec::new();
+            humanoid_catalog.motions.retain(|motion| {
+                match engine::humanoid_motion::store_imported_humanoid_motion(
+                    &portable_cache,
+                    &motion.id,
+                    &fingerprint,
+                    None,
+                    &motion.motion,
+                ) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        portable_cache_diagnostics.push(Diagnostic::warning(
+                            "anim.humanoid_import_cache_failed",
+                            format!(
+                                "Humanoid candidate `{}` was not published because its import cache could not be written: {error}",
+                                motion.id.as_str()
+                            ),
+                        ));
+                        false
+                    }
+                }
+            });
+            humanoid_catalog
+                .diagnostics
+                .append(&mut portable_cache_diagnostics);
             let mut sub_assets = imported.imported_sub_assets();
             sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
             let skeleton_records = imported.skeleton_records.clone();
             let animation_contacts = resolve_animation_contacts(&imported);
+            let conversion_ready_textures = imported
+                .textures
+                .iter()
+                .map(|texture| {
+                    (
+                        texture.id.clone(),
+                        Arc::new(engine::DecodedTexture {
+                            label: format!("{} / {}", source_path.display(), texture.name),
+                            width: texture.width,
+                            height: texture.height,
+                            rgba8: texture.rgba8.clone(),
+                        }),
+                    )
+                })
+                .collect();
             let _ = sender.send(WorkerMessage::Complete(Box::new(AssetImportResult {
                 project_path,
                 source_id,
@@ -358,13 +422,18 @@ impl AssetImportManager {
                 source_fingerprint: Some(fingerprint),
                 source_stamp: Some(source_stamp),
                 source_dependencies: dependencies,
+                conversion_ready_model: Some(Arc::clone(&imported)),
+                conversion_ready_textures,
+                conversion_ready_contact_bones: contact_bones.clone(),
+                conversion_ready_existing_skeletons: existing_skeletons.clone(),
+                conversion_ready_humanoid_profiles: existing_humanoid_profiles.clone(),
                 sub_assets,
                 skeleton_records,
                 humanoid_profiles: humanoid_catalog.profiles,
                 animation_contacts,
                 prefab,
                 diagnostics: {
-                    let mut diagnostics = imported.diagnostics;
+                    let mut diagnostics = imported.diagnostics.clone();
                     diagnostics.append(&mut humanoid_catalog.diagnostics);
                     diagnostics
                 },
@@ -401,6 +470,7 @@ impl AssetImportManager {
             source_path,
             targets,
             original_model,
+            humanoid_source,
             retarget_maps,
             existing_skeletons,
             contact_bones,
@@ -448,10 +518,14 @@ impl AssetImportManager {
             if let Some(original) = &original_model {
                 model_paths.push(original.model_path.clone());
             }
+            if let Some(humanoid_source) = &humanoid_source {
+                model_paths.push(humanoid_source.model.model_path.clone());
+            }
             let mut sub_assets = Vec::new();
             let mut skeleton_records = Vec::new();
             let mut animation_contacts = Vec::new();
             let mut diagnostics = Vec::new();
+            let mut portable_humanoid_motions = Vec::new();
             if let Some(original) = &original_model {
                 progress(0.05, "Reading original PMX model");
                 let original_rig = match engine::VmdBakeRig::from_model_path(
@@ -653,6 +727,69 @@ impl AssetImportManager {
                     );
                 }
             }
+
+            if let Some(humanoid_source) = &humanoid_source {
+                progress(0.80, "Building portable Humanoid motion");
+                match engine::VmdBakeRig::from_model_path(
+                    &humanoid_source.model.model_source_id,
+                    &humanoid_source.model.model_path,
+                    &existing_skeletons,
+                ) {
+                    Ok(humanoid_rig) => match engine::resolve_or_bake_vmd_path(
+                        &derived_cache,
+                        &source_id,
+                        &source_path,
+                        &humanoid_rig,
+                        &options,
+                    ) {
+                        Ok(mut humanoid_bake) => {
+                            diagnostics.append(&mut humanoid_bake.diagnostics);
+                            for baked in &humanoid_bake.clips {
+                                let logical_id =
+                                    engine::asset::imported_logical_humanoid_motion_sub_asset_id(
+                                        &source_id,
+                                        baked.source_index,
+                                    );
+                                match build_humanoid_motion_variant(
+                                    logical_id,
+                                    baked.source_index,
+                                    &baked.name,
+                                    0,
+                                    &baked.clip,
+                                    humanoid_rig.skeleton(),
+                                    &humanoid_source.profile,
+                                ) {
+                                    Ok((motion, mut motion_diagnostics)) => {
+                                        diagnostics.append(&mut motion_diagnostics);
+                                        portable_humanoid_motions.push(motion);
+                                    }
+                                    Err(error) => diagnostics.push(Diagnostic::warning(
+                                        "anim.humanoid_conversion_unavailable",
+                                        format!(
+                                            "motion `{}` keeps its Native candidates but has no Humanoid candidate: {error}",
+                                            baked.name
+                                        ),
+                                    )),
+                                }
+                            }
+                        }
+                        Err(error) => diagnostics.push(Diagnostic::warning(
+                            "anim.humanoid_source_bake_failed",
+                            format!(
+                                "portable Humanoid candidate was not published from source model `{}`: {error}",
+                                humanoid_source.model.model_source_id.as_str()
+                            ),
+                        )),
+                    },
+                    Err(error) => diagnostics.push(Diagnostic::warning(
+                        "anim.humanoid_source_unavailable",
+                        format!(
+                            "portable Humanoid candidate was not published because source model `{}` could not be imported: {error}",
+                            humanoid_source.model.model_source_id.as_str()
+                        ),
+                    )),
+                }
+            }
             skeleton_records.sort_by(|left, right| left.id.cmp(&right.id));
             skeleton_records.dedup_by(|left, right| left.id == right.id);
             progress(0.85, "Cataloging target clips");
@@ -669,6 +806,34 @@ impl AssetImportManager {
                     return;
                 }
             };
+            let portable_cache = engine::DerivedCache::new(&project_path);
+            let provenance_model = humanoid_source
+                .as_ref()
+                .map(|source| &source.model.model_source_id);
+            for motion in portable_humanoid_motions {
+                match engine::humanoid_motion::store_imported_humanoid_motion(
+                    &portable_cache,
+                    &motion.id,
+                    &fingerprint,
+                    provenance_model,
+                    &motion.motion,
+                ) {
+                    Ok(()) => sub_assets.push(ImportedSubAsset {
+                        id: motion.id.as_str().to_owned(),
+                        kind: engine::ImportedSubAssetKind::HumanoidMotion,
+                        name: motion.name,
+                        index: u32::try_from(motion.source_index).unwrap_or(u32::MAX),
+                        target_model_source: None,
+                    }),
+                    Err(error) => diagnostics.push(Diagnostic::warning(
+                        "anim.humanoid_import_cache_failed",
+                        format!(
+                            "Humanoid candidate `{}` was not published because its import cache could not be written: {error}",
+                            motion.id.as_str()
+                        ),
+                    )),
+                }
+            }
             let source_dependencies = engine::motion_source_dependencies_for_models(&model_paths);
             let source_stamp = match engine::SourceStamp::capture(
                 &source_path,
@@ -694,6 +859,11 @@ impl AssetImportManager {
                 source_fingerprint: Some(fingerprint),
                 source_stamp: Some(source_stamp),
                 source_dependencies,
+                conversion_ready_model: None,
+                conversion_ready_textures: Vec::new(),
+                conversion_ready_contact_bones: Vec::new(),
+                conversion_ready_existing_skeletons: Vec::new(),
+                conversion_ready_humanoid_profiles: Vec::new(),
                 sub_assets,
                 skeleton_records,
                 humanoid_profiles: Vec::new(),
@@ -729,6 +899,11 @@ impl AssetImportManager {
                             source_fingerprint: None,
                             source_stamp: None,
                             source_dependencies: Vec::new(),
+                            conversion_ready_model: None,
+                            conversion_ready_textures: Vec::new(),
+                            conversion_ready_contact_bones: Vec::new(),
+                            conversion_ready_existing_skeletons: Vec::new(),
+                            conversion_ready_humanoid_profiles: Vec::new(),
                             sub_assets: Vec::new(),
                             skeleton_records: Vec::new(),
                             humanoid_profiles: Vec::new(),
@@ -884,6 +1059,11 @@ fn send_cancelled(
         source_fingerprint: None,
         source_stamp: None,
         source_dependencies: Vec::new(),
+        conversion_ready_model: None,
+        conversion_ready_textures: Vec::new(),
+        conversion_ready_contact_bones: Vec::new(),
+        conversion_ready_existing_skeletons: Vec::new(),
+        conversion_ready_humanoid_profiles: Vec::new(),
         sub_assets: Vec::new(),
         skeleton_records: Vec::new(),
         humanoid_profiles: Vec::new(),
@@ -909,6 +1089,11 @@ fn send_failed(
         source_fingerprint: None,
         source_stamp: None,
         source_dependencies: Vec::new(),
+        conversion_ready_model: None,
+        conversion_ready_textures: Vec::new(),
+        conversion_ready_contact_bones: Vec::new(),
+        conversion_ready_existing_skeletons: Vec::new(),
+        conversion_ready_humanoid_profiles: Vec::new(),
         sub_assets: Vec::new(),
         skeleton_records: Vec::new(),
         humanoid_profiles: Vec::new(),
