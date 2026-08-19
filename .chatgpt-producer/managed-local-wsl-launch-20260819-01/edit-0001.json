@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        let server = shell_quote(&installation.server_path);\n        let model = shell_quote(&config.model_path.to_string_lossy());\n        let log = format!(\n            \"/var/lib/gameengine/local-ai/logs/llama-server-{}.log\",\n            config.environment.storage_key()\n        );\n        let command = format!(\n            \"mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {} 2>&1 < /dev/null & echo $!\",\n            shell_quote(&log)\n        );\n        let output = wsl_shell(\n            &command,\n            ManagedDiagnosticLayer::ManagedProcessStartup,\n        )?;\n",
+  "new": "        let command = wsl_server_launch_command(\n            &installation.server_path,\n            &config.model_path,\n            port,\n            config.environment,\n        );\n        let output = wsl_shell(\n            &command,\n            ManagedDiagnosticLayer::ManagedProcessStartup,\n        )?;\n"
+}
