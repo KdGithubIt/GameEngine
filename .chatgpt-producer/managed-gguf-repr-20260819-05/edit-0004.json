@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "impl AiStudioPanel {\n    /// Draws the campaign launcher, download review, and progress matrix.\n    pub(super) fn show_benchmark_campaign(&mut self, ui: &mut egui::Ui) {",
+  "new": "impl AiStudioPanel {\n    #[cfg(feature = \"visual-validation\")]\n    pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {\n        self.benchmark_campaign.execution_environment =\n            CampaignExecutionEnvironment::WindowsNative;\n        self.benchmark_campaign.selected_models.clear();\n        self.benchmark_campaign\n            .selected_models\n            .insert(model_id.to_owned());\n    }\n\n    /// Draws the campaign launcher, download review, and progress matrix.\n    pub(super) fn show_benchmark_campaign(&mut self, ui: &mut egui::Ui) {"
+}
