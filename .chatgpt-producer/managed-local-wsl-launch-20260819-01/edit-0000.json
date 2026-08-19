@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);\nconst HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);\n/// Leave one GiB of device memory for KV cache, compute buffers, and the rest of the GPU workload.\n",
+  "new": "const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);\nconst HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);\nconst WSL_SERVER_LOG_ROOT: &str = \"/var/lib/gameengine/local-ai/logs\";\n// Keep the WSL launch shell alive briefly so WSL does not reap the detached\n// llama-server before its dynamic loader and redirected log are established.\nconst WSL_SERVER_LAUNCH_GRACE_SECONDS: u64 = 1;\n/// Leave one GiB of device memory for KV cache, compute buffers, and the rest of the GPU workload.\n"
+}
