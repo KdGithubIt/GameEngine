@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn selected_local_resource_config(&self) -> Option<LocalModelResourceConfig> {\n        match self.model_backend {",
+  "new": "    fn selected_local_resource_config(&mut self) -> Option<LocalModelResourceConfig> {\n        match self.model_backend {"
+}
