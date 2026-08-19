@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        match self.active_installation(environment) {\n            Ok(Some(_)) => ManagedSetupStatus::Ready,\n            Ok(None) | Err(_) => ManagedSetupStatus::RuntimeNotInstalled,\n        }",
+  "new": "        match self.active_installation(environment) {\n            Ok(Some(installation))\n                if installation.schema_version == STATE_SCHEMA_VERSION\n                    && installation.runtime_tag == PINNED_LLAMA_CPP_TAG\n                    && installation.runtime_revision == PINNED_LLAMA_CPP_REVISION\n                    && installation.artifact_name\n                        == match environment {\n                            ManagedExecutionEnvironment::WindowsNative => WINDOWS_CUDA_MANIFEST,\n                            ManagedExecutionEnvironment::Wsl2Linux => WSL_CUDA_MANIFEST,\n                        } =>\n            {\n                ManagedSetupStatus::Ready\n            }\n            Ok(Some(_)) | Ok(None) | Err(_) => ManagedSetupStatus::RuntimeNotInstalled,\n        }"
+}
