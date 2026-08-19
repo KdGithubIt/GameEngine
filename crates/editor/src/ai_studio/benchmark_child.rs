@@ -186,6 +186,23 @@ impl AiStudioPanel {
             child.started_unix_ms = unix_ms();
         }
         self.status = Some(format!("Benchmark child starting {task_id} on exact model {model_id}."));
+        // A campaign supplies the candidate-visible contract. Only that side of
+        // the fixture exists in this process, so no prompt path can reach the
+        // host-owned evaluation material even by mistake.
+        let campaign_prompt = self
+            .benchmark_child
+            .as_ref()
+            .and_then(|child| child.spec.candidate_contract.as_ref())
+            .map(|contract| contract.prompt.clone());
+        if let Some(prompt) = campaign_prompt
+            && task_id == "read_question_v1"
+        {
+            self.host
+                .append_message(&self.selected_session, ConversationRole::User, prompt)
+                .map_err(|error| error.to_string())?;
+            self.start_native_question();
+            return Ok(());
+        }
         if task_id == "read_question_v1" {
             self.host
                 .append_message(
@@ -202,7 +219,13 @@ impl AiStudioPanel {
         Ok(())
     }
 
-    fn write_benchmark_child_record(&mut self, record: BenchmarkRecord, routed: bool) {
+    fn write_benchmark_child_record(&mut self, mut record: BenchmarkRecord, routed: bool) {
+        // Stamped here, at measurement time, from the frozen spec the parent
+        // handed this child. A campaign that stamped its own identity onto a
+        // returned record afterwards could never detect a mismatch.
+        if let Some(child) = self.benchmark_child.as_ref() {
+            record.identity.execution = child.spec.execution_identity.clone();
+        }
         let outcome = if record.metrics.completion_success == TelemetryValue::Measured(true) {
             BenchmarkRunOutcome::Passed
         } else {

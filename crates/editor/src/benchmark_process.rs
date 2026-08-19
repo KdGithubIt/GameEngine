@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+use crate::agent_benchmark::BenchmarkExecutionIdentity;
+use crate::agent_benchmark_campaign::CandidateTaskContract;
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkExperimentSpec, BenchmarkExperimentStore,
     BenchmarkFixtureSandbox, BenchmarkPlannedRun, BenchmarkRoutingMode, BenchmarkRunFailureKind,
@@ -35,6 +37,12 @@ pub(crate) struct BenchmarkChildRunSpec {
     pub(crate) quality: QualityPreference,
     pub(crate) routing_mode: BenchmarkRoutingMode,
     pub(crate) result_path: PathBuf,
+    /// ADR 0156 execution identity this child stamps onto its record.
+    #[serde(default)]
+    pub(crate) execution_identity: Option<BenchmarkExecutionIdentity>,
+    /// ADR 0156 candidate-visible contract for this task, when a campaign owns it.
+    #[serde(default)]
+    pub(crate) candidate_contract: Option<CandidateTaskContract>,
 }
 
 impl BenchmarkChildRunSpec {
@@ -374,6 +382,16 @@ impl BenchmarkExperimentCoordinator {
             quality: self.spec.quality,
             routing_mode: self.spec.routing_mode,
             result_path: result_path.clone(),
+            execution_identity: self
+                .spec
+                .execution_identity_by_task
+                .get(&run.task_id)
+                .cloned(),
+            candidate_contract: self
+                .spec
+                .candidate_contract_by_task
+                .get(&run.task_id)
+                .cloned(),
         };
         child_spec.write(&child_spec_path)?;
         let process = self
@@ -449,6 +467,8 @@ mod tests {
             quality: QualityPreference::Balanced,
             routing_mode: BenchmarkRoutingMode::SingleModel,
             result_path: root.path().join("result.json"),
+            execution_identity: None,
+            candidate_contract: None,
         };
         spec.write(&path).expect("write");
         let loaded = BenchmarkChildRunSpec::read(&path).expect("read");
