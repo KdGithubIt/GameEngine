@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"        assert_eq!(MANAGED_WSL_DISTRIBUTION, \"GameEngine-LocalAI\");\n","new":"        assert_eq!(MANAGED_WSL_DISTRIBUTION, \"GameEngine-LocalAI\");\n        assert_eq!(MANAGED_WSL_BASE_DISTRIBUTION, \"Ubuntu-22.04\");\n        assert_eq!(MANAGED_WSL_EXPECTED_VERSION_ID, \"22.04\");\n"}
