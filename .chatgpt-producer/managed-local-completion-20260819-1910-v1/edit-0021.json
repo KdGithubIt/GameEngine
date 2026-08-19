@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "        let backend_id = self\n            .candidates\n            .first()\n            .map(|candidate| candidate.representation.backend_id.clone())\n            .ok_or_else(|| \"campaign requires at least one candidate\".to_owned())?;\n        let spec = BenchmarkExperimentSpec {",
+  "new": "        let backend_id = self\n            .candidates\n            .first()\n            .map(|candidate| candidate.representation.backend_id.clone())\n            .ok_or_else(|| \"campaign requires at least one candidate\".to_owned())?;\n        let managed_execution_environment = if backend_id == MANAGED_BACKEND_ID {\n            Some(self.execution_environment.managed_environment().ok_or_else(|| {\n                \"GameEngine-managed campaigns require Windows native or WSL2 Linux execution\"\n                    .to_owned()\n            })?)\n        } else {\n            if self.execution_environment != CampaignExecutionEnvironment::CompatibleBackend {\n                return Err(\n                    \"Windows native / WSL2 campaign identity requires the GameEngine-managed backend\"\n                        .to_owned(),\n                );\n            }\n            None\n        };\n        let spec = BenchmarkExperimentSpec {"
+}
