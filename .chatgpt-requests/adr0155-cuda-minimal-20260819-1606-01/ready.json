@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-cuda-minimal-20260819-1606-01",
+  "target_branch": "chatgpt/gameengine-adr0155-cuda-minimal-v1",
+  "expected_head_sha": "473ba833a51c59336f4e8fbd83037ddecbbc6020",
+  "baseline_main_sha": "473ba833a51c59336f4e8fbd83037ddecbbc6020",
+  "patch_sha256": "6ee70b338e174417b33803f638729514ee77ab8787f95f29e49a0ddb146cd79f",
+  "patch_bytes": 10821,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Avoid Nsight dependency in WSL CUDA setup",
+  "pr_title": "GameEngine: avoid Nsight dependency in WSL CUDA setup",
+  "pr_body": "## Summary\n\nFixes the ADR0155 WSL2 CUDA bootstrap on Ubuntu 24.04. The previous `cuda-toolkit-12-4` meta-package pulled Nsight Systems 2023.4.4, whose `libtinfo5` dependency is unavailable on Noble.\n\nThe managed setup now installs only the CUDA 12.4 compiler and development-library meta-packages needed to build llama.cpp (`cuda-compiler-12-4` and `cuda-libraries-dev-12-4`). Provenance records both exact package versions and unit coverage rejects regression to the full toolkit meta-package.\n\nThe WSL driver boundary remains unchanged: no Linux NVIDIA driver is installed, and GameEngine still verifies `/dev/dxg`, pinned llama.cpp revision, CUDA device visibility, and built binary SHA-256 values.\n\n## Validation\n\nRun affected Windows Validation for `engine-editor`. Hardware WSL2 validation should then be repeated on the representative machine that reproduced the `nsight-systems-2023.4.4 -> libtinfo5` failure.\n\nVisual Validation is not required because no Editor layout or rendering changes are involved.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
