@@ -1,0 +1,478 @@
++                managed_distribution: true,
++            }
++        );
++        assert_eq!(
++            classify_wsl_status(true, "", true, "GameEngine-LocalAI-copy\n"),
++            WslStatus::Available {
++                managed_distribution: false,
++            }
++        );
++    }
++
++    #[test]
++    fn startup_contract_never_treats_a_crashed_process_as_healthy() {
++        assert!(!managed_process_exited_before_health(true, false));
++        assert!(!managed_process_exited_before_health(false, true));
++        assert!(managed_process_exited_before_health(false, false));
++    }
++
+     #[test]
+     fn benchmark_runtime_identity_includes_revision_environment_and_artifact_digest() {
+         let config = ManagedLocalModelConfig {
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index ab13b74dc95bff7cc77157a9123188105c5ce9da..5310bb42f5687f3581e4b78e3b1bc64ba37124e9 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -7,6 +7,9 @@
+ //! [`crate::agent_host::AgentRun`] state machine.
+ 
+ use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};
++use crate::managed_local_runtime::{
++    ManagedLocalModelConfig, ManagedLocalRuntime, MANAGED_BACKEND_ID,
++};
+ use crate::resource_arbitration::{
+     CapabilityAvailability, ModelResourceCapabilities, ModelResourceOperation,
+     ModelResourceTelemetry, ModelResourceTransition, TelemetryValue,
+@@ -164,6 +167,7 @@ impl LocalModelConfig {
+ #[derive(Debug, Clone)]
+ pub(crate) enum NativeModelConfig {
+     Local(LocalModelConfig),
++    Managed(ManagedLocalModelConfig),
+     Hosted(HostedModelConfig),
+ }
+ 
+@@ -171,6 +175,28 @@ impl NativeModelConfig {
+     pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
+         match self {
+             Self::Local(config) => config.capability_profile(),
++            Self::Managed(config) => ModelCapabilityProfile {
++                backend_id: MANAGED_BACKEND_ID,
++                model_id: config.model_id.clone(),
++                structured_output: Some(false),
++                tool_use: Some(false),
++                image_input: Some(false),
++                reasoning: None,
++                context_limit: None,
++                streaming: Some(false),
++                usage: Some(true),
++                resource_capabilities: ModelResourceCapabilities {
++                    representation_size: CapabilityAvailability::Available,
++                    gpu_residency: CapabilityAvailability::Unavailable,
++                    cpu_gpu_offload: CapabilityAvailability::Unavailable,
++                    selectable_device: CapabilityAvailability::Unavailable,
++                    kv_context_placement: CapabilityAvailability::Unavailable,
++                    inference_cache_release: CapabilityAvailability::Unavailable,
++                    unload_reload: CapabilityAvailability::Available,
++                    backend_memory_telemetry: CapabilityAvailability::Unavailable,
++                },
++                benchmark_verified: false,
++            },
+             Self::Hosted(config) => ModelCapabilityProfile {
+                 backend_id: config.auth_mode.backend_id(),
+                 model_id: config.model.trim().to_owned(),
+@@ -194,6 +220,7 @@ impl NativeModelConfig {
+     pub(crate) fn backend_id(&self) -> &'static str {
+         match self {
+             Self::Local(_) => BACKEND_ID,
++            Self::Managed(_) => MANAGED_BACKEND_ID,
+             Self::Hosted(config) => config.auth_mode.backend_id(),
+         }
+     }
+@@ -201,6 +228,7 @@ impl NativeModelConfig {
+     pub(crate) fn model_id(&self) -> String {
+         match self {
+             Self::Local(config) => config.model.trim().to_owned(),
++            Self::Managed(config) => config.model_id.clone(),
+             Self::Hosted(config) => config.model.trim().to_owned(),
+         }
+     }
+@@ -393,19 +421,43 @@ impl ModelResourceBackend for OllamaResourceBackend {
+     }
+ }
+ 
++#[derive(Debug, Clone)]
++pub(crate) enum LocalModelResourceConfig {
++    Ollama(LocalModelConfig),
++    Managed(ManagedLocalModelConfig),
++}
++
++impl LocalModelResourceConfig {
++    pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
++        match self {
++            Self::Ollama(config) => config.capability_profile(),
++            Self::Managed(config) => NativeModelConfig::Managed(config.clone()).capability_profile(),
++        }
++    }
++}
++
+ pub(crate) struct ModelResourceTask {
+     result: Receiver<Result<ModelResourceTransition, NativeAgentError>>,
+ }
+ 
+ impl ModelResourceTask {
+     pub(crate) fn spawn(
+-        config: LocalModelConfig,
++        config: LocalModelResourceConfig,
+         operation: ModelResourceOperation,
+     ) -> Result<Self, NativeAgentError> {
+-        if config.model.trim().is_empty() {
+-            return Err(NativeAgentError::EmptyModel);
++        match &config {
++            LocalModelResourceConfig::Ollama(config) => {
++                if config.model.trim().is_empty() {
++                    return Err(NativeAgentError::EmptyModel);
++                }
++                LocalHttpEndpoint::parse(&config.endpoint)?;
++            }
++            LocalModelResourceConfig::Managed(config) => {
++                if config.model_id.trim().is_empty() {
++                    return Err(NativeAgentError::EmptyModel);
++                }
++            }
+         }
+-        LocalHttpEndpoint::parse(&config.endpoint)?;
+         let (sender, result) = mpsc::channel();
+         std::thread::Builder::new()
+             .name("ai-model-resource".to_owned())
+@@ -430,11 +482,61 @@ impl ModelResourceTask {
+ }
+ 
+ fn execute_model_resource_operation(
+-    config: &LocalModelConfig,
++    config: &LocalModelResourceConfig,
++    operation: ModelResourceOperation,
++) -> Result<ModelResourceTransition, NativeAgentError> {
++    match config {
++        LocalModelResourceConfig::Ollama(config) => {
++            let mut backend = OllamaResourceBackend::new(config)?;
++            execute_model_resource_operation_with_backend(
++                config.model.trim(),
++                operation,
++                &mut backend,
++            )
++        }
++        LocalModelResourceConfig::Managed(config) => {
++            execute_managed_resource_operation(config, operation)
++        }
++    }
++}
++
++fn execute_managed_resource_operation(
++    config: &ManagedLocalModelConfig,
+     operation: ModelResourceOperation,
+ ) -> Result<ModelResourceTransition, NativeAgentError> {
+-    let mut backend = OllamaResourceBackend::new(config)?;
+-    execute_model_resource_operation_with_backend(config.model.trim(), operation, &mut backend)
++    let before = observe_managed_model(config);
++    let started = Instant::now();
++    match operation {
++        ModelResourceOperation::Observe => {}
++        ModelResourceOperation::Release => ManagedLocalRuntime::stop_for_config(config)
++            .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?,
++        ModelResourceOperation::Reload => {
++            ManagedLocalRuntime::ensure_endpoint(config)
++                .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
++        }
++        ModelResourceOperation::ReduceGpuResidency => {
++            return Err(NativeAgentError::UnsupportedCapability(
++                "partial GPU residency reduction for managed llama.cpp".to_owned(),
++            ));
++        }
++    }
++    let after = if operation == ModelResourceOperation::Observe {
++        before.clone()
++    } else {
++        observe_managed_model(config)
++    };
++    if !resource_transition_confirmed(operation, &before, &after) {
++        return Err(NativeAgentError::ResourceTransitionUnconfirmed(format!(
++            "{operation:?} did not produce managed runtime state that proves the requested residency state"
++        )));
++    }
++    Ok(ModelResourceTransition {
++        operation,
++        before,
++        after,
++        operation_latency_ms: TelemetryValue::Measured(duration_ms(started.elapsed())),
++        backend_load_latency_ms: TelemetryValue::Unavailable,
++    })
+ }
+ 
+ fn execute_model_resource_operation_with_backend(
+@@ -508,6 +610,27 @@ fn resource_transition_confirmed(
+     }
+ }
+ 
++fn validate_native_model_config(config: &NativeModelConfig) -> Result<(), NativeAgentError> {
++    match config {
++        NativeModelConfig::Local(config) => {
++            if config.model.trim().is_empty() {
++                return Err(NativeAgentError::EmptyModel);
++            }
++            LocalHttpEndpoint::parse(&config.endpoint)?;
++        }
++        NativeModelConfig::Managed(config) => {
++            if config.model_id.trim().is_empty() || config.model_path.as_os_str().is_empty() {
++                return Err(NativeAgentError::EmptyModel);
++            }
++        }
++        NativeModelConfig::Hosted(config) if config.model.trim().is_empty() => {
++            return Err(NativeAgentError::EmptyModel);
++        }
++        NativeModelConfig::Hosted(_) => {}
++    }
++    Ok(())
++}
++
+ pub(crate) struct NativeQuestionTask {
+     result: Receiver<Result<NativeAnswer, NativeAgentError>>,
+     interrupted: Arc<AtomicBool>,
+@@ -520,20 +643,7 @@ impl NativeQuestionTask {
+         project_root: PathBuf,
+         conversation: Vec<QuestionMessage>,
+     ) -> Result<Self, NativeAgentError> {
+-        match &config {
+-            NativeModelConfig::Local(config) => {
+-                if config.model.trim().is_empty() {
+-                    return Err(NativeAgentError::EmptyModel);
+-                }
+-                // Validate before spawning so malformed loopback endpoints fail at
+-                // the UI boundary instead of looking like a model timeout.
+-                LocalHttpEndpoint::parse(&config.endpoint)?;
+-            }
+-            NativeModelConfig::Hosted(config) if config.model.trim().is_empty() => {
+-                return Err(NativeAgentError::EmptyModel);
+-            }
+-            NativeModelConfig::Hosted(_) => {}
+-        }
++        validate_native_model_config(&config)?;
+         let (sender, result) = mpsc::channel();
+         let interrupted = Arc::new(AtomicBool::new(false));
+         let active_stream = Arc::new(Mutex::new(None));
+@@ -595,18 +705,7 @@ impl NativeModelTask {
+         prompt: String,
+         images: Vec<Vec<u8>>,
+     ) -> Result<Self, NativeAgentError> {
+-        match &config {
+-            NativeModelConfig::Local(config) => {
+-                if config.model.trim().is_empty() {
+-                    return Err(NativeAgentError::EmptyModel);
+-                }
+-                LocalHttpEndpoint::parse(&config.endpoint)?;
+-            }
+-            NativeModelConfig::Hosted(config) if config.model.trim().is_empty() => {
+-                return Err(NativeAgentError::EmptyModel);
+-            }
+-            NativeModelConfig::Hosted(_) => {}
+-        }
++        validate_native_model_config(&config)?;
+         let (sender, result) = mpsc::channel();
+         let interrupted = Arc::new(AtomicBool::new(false));
+         let active_stream = Arc::new(Mutex::new(None));
+@@ -631,6 +730,24 @@ impl NativeModelTask {
+                             Ok(text)
+                         }
+                     }),
++                    NativeModelConfig::Managed(_) if !images.is_empty() => {
++                        Err(NativeAgentError::UnsupportedCapability(
++                            "image input for the managed llama.cpp adapter".to_owned(),
++                        ))
++                    }
++                    NativeModelConfig::Managed(config) => generate_managed(
++                        config,
++                        &prompt,
++                        &worker_interrupted,
++                        &worker_stream,
++                    )
++                    .and_then(|response| {
++                        if response.text.is_empty() {
++                            Err(NativeAgentError::EmptyResponse)
++                        } else {
++                            Ok(response.text)
++                        }
++                    }),
+                     NativeModelConfig::Hosted(_) if !images.is_empty() => {
+                         Err(NativeAgentError::UnsupportedCapability(
+                             "image input for the configured hosted adapter".to_owned(),
+@@ -908,6 +1025,9 @@ fn answer_question(
+                 ),
+             }
+         }
++        NativeModelConfig::Managed(config) => {
++            generate_managed(config, &prompt, interrupted, active_stream)?
++        }
+         NativeModelConfig::Hosted(config) => {
+             let response = generate_hosted(config, &prompt, interrupted)?;
+             BackendGeneration {
+@@ -930,6 +1050,7 @@ fn answer_question(
+         NativeModelConfig::Local(config) => LocalHttpEndpoint::parse(&config.endpoint)
+             .and_then(|endpoint| observe_ollama_model(&endpoint, config.model.trim()))
+             .unwrap_or_default(),
++        NativeModelConfig::Managed(config) => observe_managed_model(config),
+         NativeModelConfig::Hosted(_) => ModelResourceTelemetry::default(),
+     };
+     Ok(NativeAnswer {
+@@ -1117,6 +1238,163 @@ fn request_local_json<R: DeserializeOwned>(
+     serde_json::from_slice(&parsed.body).map_err(Into::into)
+ }
+ 
++#[derive(Debug, Serialize)]
++struct ManagedChatRequest<'a> {
++    model: &'a str,
++    messages: [ManagedChatMessage<'a>; 1],
++    stream: bool,
++}
++
++#[derive(Debug, Serialize)]
++struct ManagedChatMessage<'a> {
++    role: &'static str,
++    content: &'a str,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatResponse {
++    #[serde(default)]
++    choices: Vec<ManagedChatChoice>,
++    #[serde(default)]
++    usage: Option<ManagedChatUsage>,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatChoice {
++    message: ManagedChatResponseMessage,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatResponseMessage {
++    content: String,
++}
++
++#[derive(Debug, Deserialize)]
++struct ManagedChatUsage {
++    #[serde(default)]
++    prompt_tokens: Option<u64>,
++    #[serde(default)]
++    completion_tokens: Option<u64>,
++}
++
++fn generate_managed(
++    config: &ManagedLocalModelConfig,
++    prompt: &str,
++    interrupted: &AtomicBool,
++    active_stream: &Mutex<Option<TcpStream>>,
++) -> Result<BackendGeneration, NativeAgentError> {
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    let startup_started = Instant::now();
++    let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)
++        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
++    let load_latency_ms = (!managed_endpoint.reused_process)
++        .then(|| duration_ms(startup_started.elapsed()));
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    let endpoint = LocalHttpEndpoint::parse(&managed_endpoint.url)?;
++    let request = ManagedChatRequest {
++        model: &config.model_id,
++        messages: [ManagedChatMessage {
++            role: "user",
++            content: prompt,
++        }],
++        stream: false,
++    };
++    let body = serde_json::to_vec(&request)?;
++    let response: ManagedChatResponse = request_local_json_interruptible(
++        &endpoint,
++        "POST",
++        "/v1/chat/completions",
++        &body,
++        interrupted,
++        active_stream,
++    )?;
++    let text = response
++        .choices
++        .into_iter()
++        .next()
++        .map(|choice| choice.message.content.trim().to_owned())
++        .unwrap_or_default();
++    let (prompt_tokens, response_tokens) = response
++        .usage
++        .map(|usage| (usage.prompt_tokens, usage.completion_tokens))
++        .unwrap_or((None, None));
++    Ok(BackendGeneration {
++        text,
++        prompt_tokens,
++        response_tokens,
++        backend_duration_ms: None,
++        load_latency_ms,
++        prompt_eval_duration_ms: None,
++        generation_duration_ms: None,
++        generation_tokens_per_second_milli: None,
++    })
++}
++
++fn request_local_json_interruptible<R: DeserializeOwned>(
++    endpoint: &LocalHttpEndpoint,
++    method: &str,
++    path: &str,
++    body: &[u8],
++    interrupted: &AtomicBool,
++    active_stream: &Mutex<Option<TcpStream>>,
++) -> Result<R, NativeAgentError> {
++    let mut stream = endpoint.connect()?;
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    if let Ok(mut guard) = active_stream.lock() {
++        *guard = stream.try_clone().ok();
++    }
++    let result = (|| {
++        write!(
++            stream,
++            "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++            endpoint.host_header(),
++            body.len()
++        )?;
++        stream.write_all(body)?;
++        stream.flush()?;
++        let mut response = Vec::new();
++        stream
++            .take(MAX_HTTP_RESPONSE_BYTES + 1)
++            .read_to_end(&mut response)?;
++        if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
++            return Err(NativeAgentError::ResponseTooLarge);
++        }
++        let parsed = parse_http_response(&response)?;
++        if parsed.status != 200 {
++            let message = String::from_utf8_lossy(&parsed.body);
++            return Err(NativeAgentError::HttpStatus(
++                parsed.status,
++                truncate_text(message.trim(), 500),
++            ));
++        }
++        serde_json::from_slice(&parsed.body).map_err(Into::into)
++    })();
++    if let Ok(mut guard) = active_stream.lock() {
++        *guard = None;
++    }
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    result
++}
++
++fn observe_managed_model(config: &ManagedLocalModelConfig) -> ModelResourceTelemetry {
++    let resident = ManagedLocalRuntime::is_resident(config)
++        .map(TelemetryValue::Measured)
++        .unwrap_or(TelemetryValue::Unavailable);
++    ModelResourceTelemetry {
++        resident,
++        representation_size_bytes: TelemetryValue::Measured(config.model_size_bytes),
++        ..ModelResourceTelemetry::default()
++    }
++}
++
+ #[derive(Debug, Serialize)]
+ struct GenerateRequest<'a> {
+     model: &'a str,
