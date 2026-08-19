@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/animation/src/animation.rs","old":"/// walk cycle) does not freeze its feet mid-fade.\nstruct CrossfadeState {","new":"/// walk cycle) does not freeze its feet mid-fade.\n#[derive(Clone)]\nstruct CrossfadeState {"}
