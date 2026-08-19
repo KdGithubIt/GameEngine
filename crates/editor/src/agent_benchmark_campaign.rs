@@ -819,8 +819,44 @@ impl BenchmarkCampaign {
         };
         self.runs[index].status = CampaignRunStatus::Preparing;
         let schedule = self.runs[index].schedule.clone();
-        let model = self.plan.candidates[schedule.candidate_index].model.clone();
-        let fixture = self.plan.tasks[schedule.task_index].fixture.clone();
+        let request = self.run_request(schedule)?;
+        self.touch();
+        Ok(Some(request))
+    }
+
+    pub(crate) fn preparing_run_request(&self) -> Result<Option<CampaignRunRequest>, String> {
+        let preparing = self
+            .runs
+            .iter()
+            .filter(|run| run.status == CampaignRunStatus::Preparing)
+            .collect::<Vec<_>>();
+        if preparing.len() > 1 {
+            return Err("campaign persistence contains multiple preparing runs".to_owned());
+        }
+        preparing
+            .first()
+            .map(|run| self.run_request(run.schedule.clone()))
+            .transpose()
+    }
+
+    fn run_request(
+        &self,
+        schedule: CampaignScheduleEntry,
+    ) -> Result<CampaignRunRequest, String> {
+        let model = self
+            .plan
+            .candidates
+            .get(schedule.candidate_index)
+            .ok_or_else(|| "campaign candidate index is invalid".to_owned())?
+            .model
+            .clone();
+        let fixture = self
+            .plan
+            .tasks
+            .get(schedule.task_index)
+            .ok_or_else(|| "campaign task index is invalid".to_owned())?
+            .fixture
+            .clone();
         let candidate_contract = fixture.candidate_contract(&schedule.task_id)?;
         let harness = campaign_task_harness(&schedule.task_id)?;
         let reset_hash = stable_hash(
@@ -834,8 +870,7 @@ impl BenchmarkCampaign {
             )
             .as_bytes(),
         );
-        self.touch();
-        Ok(Some(CampaignRunRequest {
+        Ok(CampaignRunRequest {
             campaign_fingerprint: self.plan_fingerprint.clone(),
             schedule,
             model,
@@ -843,7 +878,7 @@ impl BenchmarkCampaign {
             candidate_contract,
             harness,
             reset_instance_id: format!("run-{reset_hash:016x}"),
-        }))
+        })
     }
 
     pub(crate) fn mark_measurement_started(

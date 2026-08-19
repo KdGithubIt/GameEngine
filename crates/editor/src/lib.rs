@@ -16,6 +16,8 @@ mod agent_benchmark;
 // UI and execution adapters are added incrementally on the same task branch.
 #[allow(dead_code)]
 mod agent_benchmark_campaign;
+#[allow(dead_code)]
+mod agent_benchmark_fixture;
 mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;

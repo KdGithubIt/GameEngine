@@ -1,0 +1,257 @@
+//! Controlled ADR 0156 benchmark fixtures.
+//!
+//! Fixture bytes are generated into machine-local application data. Candidate-visible task
+//! material lives inside the fixture project; host-only evaluation reads runtime state from the
+//! owning Editor process and never writes its oracle into the candidate project.
+
+use crate::agent_benchmark::BenchmarkTaskKind;
+use crate::agent_benchmark_campaign::{CampaignFailureKind, CampaignRunRequest};
+use crate::agent_host::{AgentRun, AgentRunState, CompletionStatus};
+use engine_authoring::{
+    initialize_game_project, refresh_game_module_indexes, ProjectConfig,
+    ProjectRoot, ProjectSettings, PROJECT_SCHEMA_VERSION,
+};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const FIXTURE_SCENE_PATH: &str = "scenes/benchmark.scene.json";
+const FIXTURE_SOURCE_PATH: &str = "assets/scripts/rust/shared/benchmark_fixture.rs";
+const VISIBLE_TASK_FILE: &str = "benchmark-visible-task.json";
+
+const FIXTURE_SCENE: &str = r#"{
+  "schema_version": 1,
+  "entities": [
+    {
+      "id": "entity_01M03SZ5TSEAW1RNDYCM05DH70",
+      "name": "sun",
+      "display_name": "Directional Light",
+      "description": "Provides a clear key light for the benchmark Scene.",
+      "components": {
+        "engine.directional_light": {
+          "color_b": 0.85,
+          "color_g": 0.95,
+          "color_r": 1.0,
+          "direction_x": -0.3,
+          "direction_y": -1.0,
+          "direction_z": -0.5,
+          "intensity": 1.0
+        }
+      }
+    },
+    {
+      "id": "entity_01M03SZ5TSP0RZRAJH69Q9DY46",
+      "name": "square",
+      "display_name": "Benchmark Square",
+      "description": "Visible geometry used by runtime and visual benchmark tasks.",
+      "components": {
+        "engine.static_mesh_renderer": {
+          "material": { "$type": "asset_ref", "id": "asset_01JP0000000000000000000201" },
+          "material_slots": [],
+          "mesh": { "$type": "asset_ref", "id": "asset_01JP0000000000000000000102" }
+        },
+        "engine.transform": { "x": 0.0, "y": 0.0, "z": 0.0 }
+      }
+    },
+    {
+      "id": "entity_01M03SZ5TSRAYPYGD6YDGTSC0G",
+      "name": "main_camera",
+      "display_name": "Main Camera",
+      "description": "Looks toward the benchmark square.",
+      "components": {
+        "engine.camera": {
+          "enabled": true,
+          "far": 1000.0,
+          "fov_y_degrees": 60.000003814697266,
+          "near": 0.10000000149011612,
+          "priority": 0
+        },
+        "engine.transform": { "x": 0.0, "y": 0.0, "z": 4.0 }
+      }
+    },
+    {
+      "id": "entity_01M03SZ5TTVQFHSTE1KEGGHPZZ",
+      "name": "benchmark_target",
+      "display_name": "Benchmark Target",
+      "description": "Candidate-visible typed-authoring target.",
+      "components": {
+        "engine.transform": { "x": 1.0, "y": 0.0, "z": 0.0 }
+      }
+    }
+  ]
+}"#;
+
+#[derive(serde::Serialize)]
+struct VisibleTask<'a> {
+    task_id: &'a str,
+    prompt: &'a str,
+    completion_criteria: &'a [String],
+    visible_acceptance: &'static str,
+}
+
+/// Restores one fresh controlled fixture for a scheduled run.
+///
+/// The run directory is removed and recreated before every attempt, so no authoring/source/session
+/// mutation from one candidate can become another candidate's input.
+pub(crate) fn materialize_fixture(
+    fixtures_root: &Path,
+    request: &CampaignRunRequest,
+) -> Result<ProjectRoot, String> {
+    let root = fixtures_root
+        .join(&request.campaign_fingerprint)
+        .join(&request.reset_instance_id);
+    if root.exists() {
+        fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
+    }
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+
+    let project = ProjectRoot::create(
+        &root,
+        ProjectConfig {
+            name: "GameEngine ADR0156 Fixture".to_owned(),
+            schema_version: PROJECT_SCHEMA_VERSION,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    initialize_game_project(&project).map_err(|error| error.to_string())?;
+
+    fs::write(project.scenes_dir().join("benchmark.scene.json"), FIXTURE_SCENE)
+        .map_err(|error| error.to_string())?;
+    let mut settings = ProjectSettings::default();
+    settings.start_scene = Some(FIXTURE_SCENE_PATH.to_owned());
+    settings.save(project.path()).map_err(|error| error.to_string())?;
+
+    let task = crate::agent_benchmark::benchmark_task(&request.schedule.task_id)
+        .ok_or_else(|| format!("unknown benchmark task `{}`", request.schedule.task_id))?;
+    let visible = VisibleTask {
+        task_id: &request.candidate_contract.task_id,
+        prompt: &request.candidate_contract.prompt,
+        completion_criteria: &request.candidate_contract.completion_criteria,
+        visible_acceptance: visible_acceptance(task.kind),
+    };
+    let visible_json = serde_json::to_vec_pretty(&visible).map_err(|error| error.to_string())?;
+    fs::write(project.path().join(VISIBLE_TASK_FILE), visible_json)
+        .map_err(|error| error.to_string())?;
+
+    if matches!(
+        task.kind,
+        BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair
+    ) {
+        let source = if task.kind == BenchmarkTaskKind::ValidationRepair {
+            "pub fn benchmark_sum(left: i32, right: i32) -> i32 { left + }\n"
+        } else {
+            "pub fn benchmark_sum(left: i32, right: i32) -> i32 { left - right }\n"
+        };
+        let source_path = project.path().join(FIXTURE_SOURCE_PATH);
+        if let Some(parent) = source_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fs::write(source_path, source).map_err(|error| error.to_string())?;
+        refresh_game_module_indexes(&project).map_err(|error| error.to_string())?;
+    }
+
+    Ok(project)
+}
+
+fn visible_acceptance(kind: BenchmarkTaskKind) -> &'static str {
+    match kind {
+        BenchmarkTaskKind::ReadQuestion => {
+            "Report the fixture project name, start Scene, and benchmark_target transform with normal source provenance."
+        }
+        BenchmarkTaskKind::ProjectInspection => {
+            "Inspect benchmark_target through governed read-only project/authoring tools; do not mutate the fixture."
+        }
+        BenchmarkTaskKind::CodeImplementation => {
+            "Change benchmark_sum so it returns the mathematical sum of left and right, then pass managed source validation."
+        }
+        BenchmarkTaskKind::TypedAuthoringMutation => {
+            "Rename benchmark_target display_name to `Benchmarked Target` through the typed Editor MCP authoring surface."
+        }
+        BenchmarkTaskKind::ValidationRepair => {
+            "Repair the syntax-invalid benchmark_sum source and pass managed source validation without bypassing the governed workspace."
+        }
+        BenchmarkTaskKind::RuntimeInteraction => {
+            "Launch managed Play and submit at least one deterministic fixed-tick input through the production ADR 0157 runtime-debug surface."
+        }
+        BenchmarkTaskKind::VisualEvaluation => {
+            "Launch managed Play, capture the host-owned Game View frame, and evaluate it only through the production ADR 0157 observation path."
+        }
+    }
+}
+
+/// Applies the host-only completion oracle after the production Agent run reaches a terminal state.
+///
+/// The oracle reads only host-owned run audit/completion data and the post-run fixture state. It is
+/// never written into the fixture project, MCP results, retrieval roots, or model prompt.
+pub(crate) fn evaluate_agent_run(
+    task: BenchmarkTaskKind,
+    fixture_root: &Path,
+    run: &AgentRun,
+) -> Result<(), CampaignFailureKind> {
+    if !matches!(
+        run.state,
+        AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+    ) {
+        return Err(CampaignFailureKind::Other);
+    }
+
+    match task {
+        BenchmarkTaskKind::ReadQuestion => Err(CampaignFailureKind::Other),
+        BenchmarkTaskKind::ProjectInspection => {
+            let passed = run.audit.authoring_operations == 0
+                && run.audit.code_changes == 0
+                && run.completion.acceptance_criteria == CompletionStatus::Passed;
+            passed.then_some(()).ok_or(CampaignFailureKind::InvalidToolBehavior)
+        }
+        BenchmarkTaskKind::CodeImplementation => {
+            let source = fs::read_to_string(fixture_root.join(FIXTURE_SOURCE_PATH))
+                .map_err(|_| CampaignFailureKind::ValidationFailure)?;
+            let semantic_fix =
+                source.contains("left + right") || source.contains("right + left");
+            (semantic_fix && run.completion.source_validation == CompletionStatus::Passed)
+                .then_some(())
+                .ok_or(CampaignFailureKind::ValidationFailure)
+        }
+        BenchmarkTaskKind::TypedAuthoringMutation => {
+            let scene = fs::read_to_string(
+                fixture_root.join("assets").join(FIXTURE_SCENE_PATH),
+            )
+            .map_err(|_| CampaignFailureKind::ValidationFailure)?;
+            let renamed = scene.contains("\"display_name\": \"Benchmarked Target\"");
+            (renamed
+                && run.audit.authoring_operations > 0
+                && run.completion.authoring_validation == CompletionStatus::Passed)
+                .then_some(())
+                .ok_or(CampaignFailureKind::ValidationFailure)
+        }
+        BenchmarkTaskKind::ValidationRepair => {
+            let source = fs::read_to_string(fixture_root.join(FIXTURE_SOURCE_PATH))
+                .map_err(|_| CampaignFailureKind::ValidationFailure)?;
+            let repaired = !source.contains("left + }");
+            (repaired
+                && run.completion.source_validation == CompletionStatus::Passed
+                && !run.validation_attempts.is_empty())
+                .then_some(())
+                .ok_or(CampaignFailureKind::ValidationFailure)
+        }
+        BenchmarkTaskKind::RuntimeInteraction => {
+            let passed = run.audit.managed_runtime_inputs > 0
+                && run.completion.play_launch == CompletionStatus::Passed
+                && run.completion.interaction_scenarios == CompletionStatus::Passed;
+            passed.then_some(()).ok_or(CampaignFailureKind::RuntimeFailure)
+        }
+        BenchmarkTaskKind::VisualEvaluation => {
+            let visual_completed = matches!(
+                run.completion.visual_evaluation,
+                CompletionStatus::Passed | CompletionStatus::NotApplicable
+            );
+            let passed = run.completion.play_launch == CompletionStatus::Passed
+                && run.completion.frame_capture == CompletionStatus::Passed
+                && visual_completed;
+            passed.then_some(()).ok_or(CampaignFailureKind::VisualFailure)
+        }
+    }
+}
+
+pub(crate) fn fixture_root(project: &ProjectRoot) -> PathBuf {
+    project.path().to_path_buf()
+}
