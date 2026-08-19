@@ -38,6 +38,10 @@ const LLAMA_CPP_REPOSITORY_URL: &str = "https://github.com/ggml-org/llama.cpp.gi
 const STATE_SCHEMA_VERSION: u32 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const WSL_SERVER_LOG_ROOT: &str = "/var/lib/gameengine/local-ai/logs";
+// Keep the WSL launch shell alive briefly so WSL does not reap the detached
+// llama-server before its dynamic loader and redirected log are established.
+const WSL_SERVER_LAUNCH_GRACE_SECONDS: u64 = 1;
 /// Leave one GiB of device memory for KV cache, compute buffers, and the rest of the GPU workload.
 ///
 /// The pinned llama.cpp revision supports automatic layer selection plus `--fit`; keeping
@@ -1290,15 +1294,11 @@ impl ManagedLocalRuntime {
                 ));
             }
         }
-        let server = shell_quote(&installation.server_path);
-        let model = shell_quote(&config.model_path.to_string_lossy());
-        let log = format!(
-            "/var/lib/gameengine/local-ai/logs/llama-server-{}.log",
-            config.environment.storage_key()
-        );
-        let command = format!(
-            "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {} 2>&1 < /dev/null & echo $!",
-            shell_quote(&log)
+        let command = wsl_server_launch_command(
+            &installation.server_path,
+            &config.model_path,
+            port,
+            config.environment,
         );
         let output = wsl_shell(
             &command,
@@ -1488,9 +1488,15 @@ impl ManagedLocalRuntime {
     }
 
     fn log_path(&self, environment: ManagedExecutionEnvironment) -> PathBuf {
-        self.root
-            .join("logs")
-            .join(format!("llama-server-{}.log", environment.storage_key()))
+        match environment {
+            ManagedExecutionEnvironment::WindowsNative => self
+                .root
+                .join("logs")
+                .join(format!("llama-server-{}.log", environment.storage_key())),
+            ManagedExecutionEnvironment::Wsl2Linux => {
+                PathBuf::from(wsl_server_log_path(environment))
+            }
+        }
     }
 
     fn read_process_state(&self) -> Result<Option<ManagedProcessState>, ManagedLocalRuntimeError> {
@@ -2250,6 +2256,29 @@ fn endpoint_is_healthy(endpoint: &str) -> bool {
     text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200")
 }
 
+fn wsl_server_log_path(environment: ManagedExecutionEnvironment) -> String {
+    format!(
+        "{WSL_SERVER_LOG_ROOT}/llama-server-{}.log",
+        environment.storage_key()
+    )
+}
+
+fn wsl_server_launch_command(
+    server_path: &str,
+    model_path: &Path,
+    port: u16,
+    environment: ManagedExecutionEnvironment,
+) -> String {
+    let server = shell_quote(server_path);
+    let model = shell_quote(&model_path.to_string_lossy());
+    let log = wsl_server_log_path(environment);
+    let quoted_log = shell_quote(&log);
+    format!(
+        "mkdir -p {}; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {quoted_log} 2>&1 < /dev/null & pid=$!; sleep {WSL_SERVER_LAUNCH_GRACE_SECONDS}; if ! kill -0 \"$pid\" 2>/dev/null; then printf 'managed llama-server exited during WSL startup; log: %s\\n' {quoted_log} >&2; tail -n 40 {quoted_log} >&2 2>/dev/null || true; exit 1; fi; echo \"$pid\"",
+        shell_quote(WSL_SERVER_LOG_ROOT)
+    )
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -2637,6 +2666,48 @@ mod tests {
                 managed_distribution: false,
             }
         );
+    }
+
+    #[test]
+    fn managed_log_path_matches_execution_environment() {
+        let manager = ManagedLocalRuntime {
+            root: PathBuf::from("state-root"),
+        };
+        assert_eq!(
+            manager.log_path(ManagedExecutionEnvironment::WindowsNative),
+            PathBuf::from("state-root")
+                .join("logs")
+                .join("llama-server-windows_native.log")
+        );
+        assert_eq!(
+            manager.log_path(ManagedExecutionEnvironment::Wsl2Linux),
+            PathBuf::from(
+                "/var/lib/gameengine/local-ai/logs/llama-server-wsl2_linux.log"
+            )
+        );
+    }
+
+    #[test]
+    fn wsl_launch_contract_holds_session_until_process_survives_grace() {
+        let command = wsl_server_launch_command(
+            "/var/lib/gameengine/local-ai/runtime/b10336/llama-server",
+            Path::new("/var/lib/gameengine/local-ai/models/model.gguf"),
+            18443,
+            ManagedExecutionEnvironment::Wsl2Linux,
+        );
+        let pid_capture = command.find("pid=$!").expect("PID capture");
+        let grace = command.find("sleep 1").expect("WSL launch grace");
+        let alive_check = command
+            .find("kill -0 \"$pid\"")
+            .expect("post-grace liveness check");
+        let pid_report = command.rfind("echo \"$pid\"").expect("PID report");
+        assert!(pid_capture < grace);
+        assert!(grace < alive_check);
+        assert!(alive_check < pid_report);
+        assert!(command.contains("nohup"));
+        assert!(command.contains(
+            "tail -n 40 '/var/lib/gameengine/local-ai/logs/llama-server-wsl2_linux.log'"
+        ));
     }
 
     #[test]
