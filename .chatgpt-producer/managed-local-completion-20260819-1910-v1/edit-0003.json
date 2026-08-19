@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            ModelBackendPreference::ManagedLocal => {\n                self.managed_model_config().map(NativeModelConfig::Managed)\n            }",
+  "new": "            ModelBackendPreference::ManagedLocal => self\n                .described_managed_model_config()\n                .map(NativeModelConfig::Managed),"
+}
