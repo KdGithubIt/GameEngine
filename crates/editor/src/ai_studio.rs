@@ -3433,7 +3433,24 @@ impl AiStudioPanel {
             );
             return;
         }
-        let Some(config) = self.selected_local_resource_config() else {
+        let config = self.selected_local_resource_config();
+        self.begin_model_residency_request_with_config(config, request, continuation);
+    }
+
+    fn begin_model_residency_request_with_config(
+        &mut self,
+        config: Option<LocalModelResourceConfig>,
+        request: ModelResidencyRequest,
+        continuation: ModelResourceContinuation,
+    ) {
+        if self.model_resource_task.is_some() {
+            self.status = Some(
+                "A model resource transition is already active; the new transition was not started."
+                    .to_owned(),
+            );
+            return;
+        }
+        let Some(config) = config else {
             self.finish_model_resource_continuation(continuation);
             return;
         };
@@ -5552,14 +5569,17 @@ impl AiStudioPanel {
         self.managed_evaluation_requested = false;
         self.managed_runtime_observation = None;
         self.managed_playtest_requested = true;
-        let capabilities = self
-            .selected_local_resource_config()
+        let config = self.selected_local_resource_config();
+        let capabilities = config
+            .as_ref()
             .map(|config| config.capability_profile().resource_capabilities)
             .unwrap_or_default();
         self.resolved_workload = InferenceWorkload::RuntimeObservation;
         self.resource_plan = managed_play_resource_plan(self.quality_preference, capabilities);
-        self.begin_model_residency_request(
-            self.resource_plan.model_residency,
+        let residency_request = self.resource_plan.model_residency;
+        self.begin_model_residency_request_with_config(
+            config,
+            residency_request,
             ModelResourceContinuation::LaunchManagedPlay { run_id },
         );
     }
