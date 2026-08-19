@@ -2592,6 +2592,7 @@ impl AiStudioPanel {
                                 model_path: PathBuf::new(),
                                 model_size_bytes: 0,
                                 quantization: None,
+                                model_representation: None,
                                 runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
                                 runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
                                 runtime_artifact_sha256: String::new(),

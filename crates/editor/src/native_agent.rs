@@ -2220,6 +2220,10 @@ mod tests {
                     model_path: state_root.join("missing-model.gguf"),
                     model_size_bytes: 1,
                     quantization: Some("Q4_K_M".to_owned()),
+                    model_representation: Some(
+                        "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:1"
+                            .to_owned(),
+                    ),
                     runtime_tag: "test-runtime".to_owned(),
                     runtime_revision: "test-revision".to_owned(),
                     runtime_artifact_sha256: "b".repeat(64),
