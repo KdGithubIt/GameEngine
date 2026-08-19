@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-wsl-ubuntu22-20260819-1632-01",
+  "target_branch": "chatgpt/gameengine-adr0155-wsl-hardening-v1",
+  "expected_head_sha": "9c1ac9776942343378f4b0b68f39d0a20b804fa3",
+  "baseline_main_sha": "4344dffd0f22a54609b8d5bc266456921f97c261",
+  "patch_sha256": "ea667d86d6976e65ebfec1bfd94746c28084cb31e9ecc7c58b83c728d01ec19c",
+  "patch_bytes": 3690,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Use a supported WSL base for ADR0155",
+  "pr_title": "GameEngine: harden ADR0155 WSL CUDA setup",
+  "pr_body": "## Summary\n\nHardens the ADR0155 WSL2 managed llama.cpp path after representative-machine setup exposed POSIX shell, package, platform-qualification, and CUDA-runtime relocation risks.\n\n- provisions the dedicated GameEngine-LocalAI distro from Ubuntu 22.04, the Ubuntu LTS qualified by CUDA 12.4, and rejects a mismatched managed userland during CUDA bootstrap\n- replaces fragile numeric package-count shell logic with exact per-package dpkg status checks\n- installs only cuda-compiler-12-4 and cuda-libraries-dev-12-4 rather than the full toolkit/Nsight dependency surface\n- adds CUDA 12.4 install RPATH plus $ORIGIN and verifies staged binaries after source deletion\n- removes the `{ ... } || ...` pattern that can suppress POSIX `set -e` failures and tails the build log through an EXIT trap instead\n- stages GGUF transfers under a temporary WSL path, verifies SHA-256, then atomically renames into the final model location\n- adds focused regression coverage for the WSL shell/build/userland contract\n\nWindows-native setup is unchanged. Visual Validation is not required because no UI layout/rendering behavior changes."
+}
