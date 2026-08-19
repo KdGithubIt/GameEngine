@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0133-current-main-e5a0b0-responsive-r14",
+  "target_branch": "chatgpt/gameengine-adr0133-first-release-current-main-v14",
+  "expected_head_sha": "e5a0b0ebf1a988cdfaaa64b1915b7ffcd16680ae",
+  "baseline_main_sha": "e5a0b0ebf1a988cdfaaa64b1915b7ffcd16680ae",
+  "patch_sha256": "2de8560a29e505c547872d041df9f81a817b745ebbc28cde3bde7527f5f80fee",
+  "patch_bytes": 37934,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0133 responsive browser validation",
+  "pr_title": "ADR0133: complete Remote AI Studio first-release validation on current main",
+  "pr_body": "## Summary\n\nCompletes ADR0133 Remote AI Studio first-release validation from current main while preserving ADR0155 managed-local AI changes. Adds deterministic host-owned Remote state, actual Microsoft Edge capture of the production loopback companion at desktop, narrow, and mobile widths, and fixes mobile intrinsic-width overflow by making long metadata and form controls shrink/wrap within the viewport.\n\n## Validation\n\nRequires full Windows Validation because `scripts/ci/**` changes, Automation Regression, and ChatGPT visual review of the production Remote AI Studio screenshots.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-remote-ai-studio: browser -->"
+}
