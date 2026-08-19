@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.managed_local_runtime =\n            ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;\n        self.model_backend = ModelBackendPreference::ManagedLocal;\n        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;\n        self.managed_model_id.clear();\n        self.managed_setup_task = None;",
+  "new": "        let model_path = fixture_root.join(\"qwen3.8-27b-abliterated-3.69bpw.gguf\");\n        self.managed_local_runtime =\n            ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;\n        self.model_backend = ModelBackendPreference::ManagedLocal;\n        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;\n        let model_id = self\n            .managed_local_runtime\n            .register_visual_validation_model(&model_path)\n            .map_err(|error| error.to_string())?\n            .model_id;\n        self.prepare_managed_campaign_visual_validation(&model_id);\n        self.managed_model_id = model_id;\n        self.managed_setup_task = None;"
+}
