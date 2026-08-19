@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-v4-default-regression-20260819-r5",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai-v4",
+  "expected_head_sha": "b474e8b67e4ba8d47f11cade45b42bbfe18cc35c",
+  "baseline_main_sha": "ad370648d044b63c562622dd1e3b1c5981af8454",
+  "patch_sha256": "be8550c740c8571cb0bd123a6264419113f9797e0c65ed244db886ade613d445",
+  "patch_bytes": 732,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0155 legacy-local default regression test",
+  "pr_title": "GameEngine: ADR0155 managed Local AI implementation v4",
+  "pr_body": "## Summary\n\nCompletes ADR0155 managed llama.cpp integration on latest main. This follow-up aligns the legacy external-local regression test with the measured-default policy: existing external Local remains the ordinary default until representative WindowsNative versus Wsl2Linux characterization selects a Managed Local product default. The test also verifies the legacy endpoint is preserved.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
