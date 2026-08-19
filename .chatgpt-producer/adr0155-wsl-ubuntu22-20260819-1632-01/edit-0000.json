@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"pub(crate) const MANAGED_WSL_DISTRIBUTION: &str = \"GameEngine-LocalAI\";\n","new":"pub(crate) const MANAGED_WSL_DISTRIBUTION: &str = \"GameEngine-LocalAI\";\nconst MANAGED_WSL_BASE_DISTRIBUTION: &str = \"Ubuntu-22.04\";\nconst MANAGED_WSL_EXPECTED_VERSION_ID: &str = \"22.04\";\n"}
