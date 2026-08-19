@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "managed-gguf-repr-20260819-03",
+  "target_branch": "chatgpt/gameengine-managed-gguf-representation",
+  "expected_head_sha": "ecfe1599ef506b040ce0a48fb47f813b7a1c4169",
+  "baseline_main_sha": "a481fcc3ee05e0520a47ffbdb55309aac3a0284d",
+  "patch_sha256": "deab40b575a33da1efc5c50b2eda31aef497e22ee62f7e65278b59af662e9fbe",
+  "patch_bytes": 1276,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Own managed campaign representation before model moves",
+  "pr_title": "GameEngine: derive managed GGUF representation from file contents",
+  "pr_body": "## Summary\n\n- parse GGUF metadata and every tensor descriptor during managed registration without reading tensor payload bytes\n- persist a path-independent exact representation descriptor while retaining canonical file-type quantization only when GGUF metadata supports it\n- make managed Benchmark Campaign eligibility and evidence identity use the GGUF-derived representation instead of filename markers\n- keep legacy registry JSON readable and add synthetic GGUF coverage for filename independence, mixed types, malformed/unsupported files, and candidate eligibility\n- resolve the campaign freeze borrow by owning the measured representation before moving model identity fields\n\n## Scope\n\nManaged Local AI GGUF registration and ADR 0156 Benchmark Campaign representation identity only."
+}
