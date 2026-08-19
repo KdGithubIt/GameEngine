@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "    pub(crate) backend_id: String,\n    pub(crate) endpoint: String,",
+  "new": "    pub(crate) backend_id: String,\n    #[serde(default)]\n    pub(crate) managed_execution_environment: Option<ManagedExecutionEnvironment>,\n    pub(crate) endpoint: String,"
+}
