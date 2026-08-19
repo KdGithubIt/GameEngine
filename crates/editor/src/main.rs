@@ -91,9 +91,16 @@ impl EditorShell {
                     // ADR scenarios arrive through GAMEENGINE_VISUAL_SCENARIO, a
                     // separate namespace from the authoring-tool scenarios matched
                     // above, so they are prepared here rather than as another arm.
-                    if let Some(scenario) = requested_adr_visual_scenario() {
+                    if let Some(scenario) = requested_adr_visual_scenario()
+                        .filter(|scenario| adr_scenario_targets_ai_studio(scenario))
+                    {
                         ai_studio.prepare_adr_visual_validation(&scenario);
                         true
+                    } else if requested_adr_visual_scenario().is_some() {
+                        // An authoring-surface ADR scenario prepares itself when the
+                        // documents area is built; AI Studio must stay out of its
+                        // capture.
+                        false
                     } else {
                         let touches_ai_studio = visual_validation_touches_ai_studio();
                         if touches_ai_studio {
@@ -125,6 +132,10 @@ impl EditorShell {
                     | "ADR 0145 External Agent"
             ) {
                 // AI Studio scenarios are prepared above and use its detached native viewport.
+            } else if requested == "ADR First Release" {
+                // A scenario sweep, not an authoring tool: the surface to capture
+                // comes from GAMEENGINE_VISUAL_SCENARIO, and each scenario prepares
+                // itself. Opening an authoring window here would cover it.
             } else if requested == "ADR 0154 Animation Set" {
                 app.prepare_animation_set_visual_validation();
             } else if requested == "Navigation" {
@@ -418,7 +429,8 @@ impl eframe::App for EditorShell {
                 Some("ADR 0133 Remote AI Studio")
                     | Some("ADR 0143 Model Resources")
                     | Some("ADR 0145 External Agent")
-            );
+            ) || requested_adr_visual_scenario()
+                .is_some_and(|scenario| adr_scenario_targets_ai_studio(&scenario));
             // An ADR scenario that does not detach AI Studio is capturing an
             // authoring surface, so drawing AI Studio over it would replace the
             // evidence the scenario exists to produce.
@@ -436,6 +448,17 @@ impl eframe::App for EditorShell {
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
         eframe::egui::Color32::from_rgb(20, 22, 26).to_normalized_gamma_f32()
     }
+}
+
+/// Returns whether an ADR visual scenario is captured from AI Studio.
+///
+/// The remaining ADR scenarios are captured from authoring surfaces, which
+/// prepare themselves when the documents area is built.
+#[cfg(feature = "visual-validation")]
+fn adr_scenario_targets_ai_studio(scenario: &str) -> bool {
+    scenario.starts_with("adr0144-")
+        || scenario.starts_with("adr0149-")
+        || scenario.starts_with("adr0153-")
 }
 
 /// Returns the requested ADR visual scenario, if one was named.
