@@ -197,11 +197,253 @@ function Invoke-DesktopScreenshot {
     }
 }
 
+function Test-RemoteAiStudioBrowserVisualRequested {
+    if ($env:GAMEENGINE_VISUAL_REMOTE_AI_STUDIO -eq "1") {
+        return $true
+    }
+
+    $eventPath = $env:GITHUB_EVENT_PATH
+    if (-not $eventPath -or -not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
+        return $false
+    }
+
+    $eventPayload = Get-Content -Raw -LiteralPath $eventPath -Encoding utf8 | ConvertFrom-Json
+    $body = [string]$eventPayload.pull_request.body
+    if (-not $body) {
+        return $false
+    }
+
+    $pattern = '<!--\s*gameengine-visual-remote-ai-studio:\s*browser\s*-->'
+    $markerMatches = [regex]::Matches(
+        $body,
+        $pattern,
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    if ($markerMatches.Count -gt 1) {
+        throw "PR body may contain at most one Remote AI Studio browser visual-validation marker."
+    }
+    return $markerMatches.Count -eq 1
+}
+
+function Resolve-EdgeExecutable {
+    $candidates = @()
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
+    }
+    if ($env:ProgramFiles) {
+        $candidates += Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
+    }
+    $command = Get-Command "msedge.exe" -ErrorAction SilentlyContinue
+    if ($command) {
+        $candidates += $command.Source
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+    throw "Remote AI Studio browser visual validation requires Microsoft Edge on the Windows runner."
+}
+
+function Invoke-RemoteBrowserScreenshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$EdgeExecutable,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][int]$Height
+    )
+
+    $outputPath = Join-Path $OutputDirectory "$Name.png"
+    Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+    $profileRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        "gameengine-edge-visual-" + [Guid]::NewGuid().ToString("N")
+    )
+    New-Item -ItemType Directory -Force -Path $profileRoot | Out-Null
+    $arguments = @(
+        "--headless=new",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--no-first-run",
+        "--disable-default-apps",
+        "--user-data-dir=$profileRoot",
+        "--window-size=$Width,$Height",
+        "--virtual-time-budget=4500",
+        "--screenshot=$outputPath",
+        $Url
+    )
+    Write-Host "==> Edge Remote AI Studio capture $Name (${Width}x${Height})"
+    & $EdgeExecutable @arguments | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Microsoft Edge screenshot '$Name' failed with exit code $LASTEXITCODE."
+    }
+
+    # Edge child processes can retain their profile briefly after the headless
+    # parent exits. Each capture uses a unique runner-temp profile, so cleanup is
+    # intentionally delegated to the ephemeral CI runner instead of racing it.
+    if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+        throw "Remote AI Studio browser screenshot was not produced: $outputPath"
+    }
+    $file = Get-Item -LiteralPath $outputPath
+    if ($file.Length -le 0) {
+        throw "Remote AI Studio browser screenshot is empty: $outputPath"
+    }
+
+    return [ordered]@{
+        name = $Name
+        package = "engine-editor"
+        surface = "remote-ai-studio-browser"
+        viewport_width = $Width
+        viewport_height = $Height
+        path = $file.Name
+        bytes = $file.Length
+        sha256 = (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+function Invoke-RemoteAiStudioBrowserScreenshots {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    $urlPath = Join-Path $OutputDirectory "remote-ai-studio-url.txt"
+    $editorStdoutPath = Join-Path $OutputDirectory "remote-ai-studio-editor.stdout.log"
+    $editorStderrPath = Join-Path $OutputDirectory "remote-ai-studio-editor.stderr.log"
+    Remove-Item -LiteralPath $urlPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $editorStdoutPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $editorStderrPath -Force -ErrorAction SilentlyContinue
+
+    $previousUrlPath = [Environment]::GetEnvironmentVariable(
+        "GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO",
+        [EnvironmentVariableTarget]::Process
+    )
+    $isolatedEnvironment = [ordered]@{
+        GAMEENGINE_VISUAL_AUTHORING_TOOL = [Environment]::GetEnvironmentVariable(
+            "GAMEENGINE_VISUAL_AUTHORING_TOOL",
+            [EnvironmentVariableTarget]::Process
+        )
+        GAMEENGINE_SCREENSHOT_TO = [Environment]::GetEnvironmentVariable(
+            "GAMEENGINE_SCREENSHOT_TO",
+            [EnvironmentVariableTarget]::Process
+        )
+        GAMEENGINE_LAUNCHER_SCREENSHOT_TO = [Environment]::GetEnvironmentVariable(
+            "GAMEENGINE_LAUNCHER_SCREENSHOT_TO",
+            [EnvironmentVariableTarget]::Process
+        )
+    }
+    $editorProcess = $null
+    try {
+        Invoke-CargoChecked -Arguments @(
+            "build",
+            "--locked",
+            "-p",
+            "engine-editor",
+            "--features",
+            "visual-validation"
+        )
+
+        $targetRoot = if ($env:CARGO_TARGET_DIR) {
+            [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+        } else {
+            Join-Path $workspace "target"
+        }
+        $editorExecutable = Join-Path $targetRoot "debug\engine-editor.exe"
+        if (-not (Test-Path -LiteralPath $editorExecutable -PathType Leaf)) {
+            throw "Visual-validation Editor executable was not produced: $editorExecutable"
+        }
+
+        [Environment]::SetEnvironmentVariable(
+            "GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO",
+            $urlPath,
+            [EnvironmentVariableTarget]::Process
+        )
+        foreach ($name in $isolatedEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                $null,
+                [EnvironmentVariableTarget]::Process
+            )
+        }
+        [Environment]::SetEnvironmentVariable(
+            "GAMEENGINE_VISUAL_AUTHORING_TOOL",
+            "ADR 0133 Remote AI Studio",
+            [EnvironmentVariableTarget]::Process
+        )
+
+        $editorProcess = Start-Process `
+            -FilePath $editorExecutable `
+            -ArgumentList @("--project", "`"$ProjectRoot`"") `
+            -RedirectStandardOutput $editorStdoutPath `
+            -RedirectStandardError $editorStderrPath `
+            -PassThru
+
+        $companionUrl = ""
+        for ($attempt = 0; $attempt -lt 300; $attempt++) {
+            if (Test-Path -LiteralPath $urlPath -PathType Leaf) {
+                $companionUrl = (Get-Content -Raw -LiteralPath $urlPath -Encoding utf8).Trim()
+                if ($companionUrl) {
+                    break
+                }
+            }
+            if ($editorProcess.HasExited) {
+                $stderr = if (Test-Path -LiteralPath $editorStderrPath -PathType Leaf) {
+                    (Get-Content -Raw -LiteralPath $editorStderrPath -Encoding utf8).Trim()
+                } else {
+                    ""
+                }
+                $detail = if ($stderr) { " stderr: $stderr" } else { "" }
+                throw "Editor exited before publishing the Remote AI Studio visual-validation URL (exit $($editorProcess.ExitCode)).$detail"
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not $companionUrl) {
+            throw "Editor did not publish the Remote AI Studio visual-validation URL within 30 seconds."
+        }
+        if ($companionUrl.StartsWith("ERROR:", [System.StringComparison]::Ordinal)) {
+            throw $companionUrl.Substring(6).Trim()
+        }
+        $companionUri = $null
+        if (-not [Uri]::TryCreate($companionUrl, [UriKind]::Absolute, [ref]$companionUri) -or
+            ($companionUri.Scheme -ne "http" -and $companionUri.Scheme -ne "https")) {
+            throw "Editor published an invalid Remote AI Studio visual-validation URL."
+        }
+
+        $edge = Resolve-EdgeExecutable
+        $captures = @()
+        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-desktop" -EdgeExecutable $edge -Url $companionUrl -Width 1440 -Height 1000
+        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-desktop-full" -EdgeExecutable $edge -Url $companionUrl -Width 1440 -Height 1900
+        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-narrow" -EdgeExecutable $edge -Url $companionUrl -Width 720 -Height 1000
+        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-narrow-full" -EdgeExecutable $edge -Url $companionUrl -Width 720 -Height 2300
+        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-mobile" -EdgeExecutable $edge -Url $companionUrl -Width 390 -Height 844
+        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-mobile-full" -EdgeExecutable $edge -Url $companionUrl -Width 390 -Height 3200
+        return $captures
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            "GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO",
+            $previousUrlPath,
+            [EnvironmentVariableTarget]::Process
+        )
+        foreach ($name in $isolatedEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                $isolatedEnvironment[$name],
+                [EnvironmentVariableTarget]::Process
+            )
+        }
+        if ($editorProcess -and -not $editorProcess.HasExited) {
+            & taskkill.exe /PID $editorProcess.Id /T /F | Out-Null
+        }
+    }
+}
+
 Push-Location $workspace
 try {
     $projectRoot = $null
     $projectSource = $null
     $captures = @()
+    $remoteAiStudioBrowserRequested = Test-RemoteAiStudioBrowserVisualRequested
+    if ($remoteAiStudioBrowserRequested -and $Target -eq "launcher") {
+        throw "Remote AI Studio browser visual validation requires an Editor capture target."
+    }
 
     if ($Target -eq "editor" -or $Target -eq "both") {
         if ($ProjectPath) {
@@ -216,6 +458,9 @@ try {
             -Package "engine-editor" `
             -ProgramArguments @("--project", $projectRoot) `
             -RequestedAuthoringTool $AuthoringTool
+        if ($remoteAiStudioBrowserRequested) {
+            $captures += Invoke-RemoteAiStudioBrowserScreenshots -ProjectRoot $projectRoot
+        }
     }
 
     if ($Target -eq "launcher" -or $Target -eq "both") {
@@ -230,6 +475,7 @@ try {
         target = $Target
         project_source = $projectSource
         authoring_tool = if ($AuthoringTool) { $AuthoringTool } else { $null }
+        remote_ai_studio_browser = $remoteAiStudioBrowserRequested
         generated_utc = [DateTime]::UtcNow.ToString("o")
         screenshots = @($captures)
     }
