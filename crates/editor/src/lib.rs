@@ -12,6 +12,10 @@
 #[allow(dead_code)]
 mod agent_asset_acquisition;
 mod agent_benchmark;
+mod benchmark_comparison;
+mod benchmark_experiment;
+mod benchmark_process;
+pub mod benchmark_runner;
 mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;
