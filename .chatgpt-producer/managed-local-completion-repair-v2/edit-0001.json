@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            if models.is_empty() {\n                ui.small(\"No managed GGUF models are registered. Register exact GGUF files in Local AI first.\");\n                return;\n            }",
+  "new": "            if models.is_empty() {\n                ui.small(\n                    \"No managed GGUF models are registered. Register exact GGUF files in Local AI first.\",\n                );\n                return;\n            }"
+}
