@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/adr_visual_scenarios.rs","old":"                        ui.set_width(360.0);","new":"                        ui.set_width(320.0);"}
