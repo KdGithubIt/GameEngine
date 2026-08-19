@@ -576,12 +576,15 @@ impl AiStudioPanel {
                 {
                     continue;
                 }
-                let representation = model.exact_representation().ok_or_else(|| {
-                    format!(
-                        "model `{}` has no GGUF-derived exact representation",
-                        model.display_name
-                    )
-                })?;
+                let representation = model
+                    .exact_representation()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        format!(
+                            "model `{}` has no GGUF-derived exact representation",
+                            model.display_name
+                        )
+                    })?;
                 if model.size_bytes == 0 {
                     return Err(format!("model `{}` has no measured size", model.display_name));
                 }
