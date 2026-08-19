@@ -1,0 +1,186 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index fc5d5334a6878894beed87b8164ba8dae3441a06..f73568cf0ee30744b893e12c60ca62b9de0c5398 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -1145,11 +1145,18 @@ impl AiStudioPanel {
+             "gameengine-managed-local-visual-{}-{unique}",
+             std::process::id()
+         ));
++        let model_path = fixture_root.join("qwen3.8-27b-abliterated-3.69bpw.gguf");
+         self.managed_local_runtime =
+             ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
+         self.model_backend = ModelBackendPreference::ManagedLocal;
+         self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
+-        self.managed_model_id.clear();
++        let model_id = self
++            .managed_local_runtime
++            .register_visual_validation_model(&model_path)
++            .map_err(|error| error.to_string())?
++            .model_id;
++        self.prepare_managed_campaign_visual_validation(&model_id);
++        self.managed_model_id = model_id;
+         self.managed_setup_task = None;
+         self.managed_probe_task = None;
+         self.managed_probe_requested = false;
+@@ -1162,7 +1169,7 @@ impl AiStudioPanel {
+         self.external_provider_kind = ExternalAgentProviderKind::Generic;
+         self.external_provider_status =
+             ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
+-        self.visual_scroll_offset = 0.0;
++        self.visual_scroll_offset = 2_400.0;
+         self.visual_external_provider_evidence = false;
+         Ok(())
+     }
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index 9b5248dcc6ed2f0c91ae2ec01399e10578faec28..6a62d45b044899a7c9f4982636c756b3fd1d1c0f 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -82,6 +82,16 @@ impl Default for BenchmarkCampaignPanel {
+ }
+ 
+ impl AiStudioPanel {
++    #[cfg(feature = "visual-validation")]
++    pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {
++        self.benchmark_campaign.execution_environment =
++            CampaignExecutionEnvironment::WindowsNative;
++        self.benchmark_campaign.selected_models.clear();
++        self.benchmark_campaign
++            .selected_models
++            .insert(model_id.to_owned());
++    }
++
+     /// Draws the campaign launcher, download review, and progress matrix.
+     pub(super) fn show_benchmark_campaign(&mut self, ui: &mut egui::Ui) {
+         egui::CollapsingHeader::new("Benchmark campaign")
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 4bb06fe1fa27ff06b1579d638f6dc4bbf4183696..6902d3eb5bd2cf15d7cff7d57bf857a361cdd52f 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -881,6 +881,15 @@ impl ManagedLocalRuntime {
+         Ok(registration)
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    pub(crate) fn register_visual_validation_model(
++        &self,
++        path: &Path,
++    ) -> Result<ManagedModelRegistration, ManagedLocalRuntimeError> {
++        gguf::write_visual_validation_gguf(path).map_err(model_io)?;
++        self.register_existing_gguf(path, None)
++    }
++
+     pub(crate) fn additional_storage_for_environment(
+         &self,
+         model_id: &str,
+diff --git a/crates/editor/src/managed_local_runtime/gguf.rs b/crates/editor/src/managed_local_runtime/gguf.rs
+index 1350265177dc1c46cdf807a01040147ad57a0078..d0db9b13e2c7a7263e1fa748bb1c6f98f85e885d 100644
+--- a/crates/editor/src/managed_local_runtime/gguf.rs
++++ b/crates/editor/src/managed_local_runtime/gguf.rs
+@@ -55,7 +55,7 @@ fn inspect_reader<R: Read + Seek>(
+ ) -> io::Result<GgufRepresentation> {
+     let mut magic = [0_u8; 4];
+     reader.read_exact(&mut magic)?;
+-    if &magic != GGUF_MAGIC {
++    if magic != *GGUF_MAGIC {
+         return Err(invalid_data("file does not start with GGUF magic"));
+     }
+ 
+@@ -68,7 +68,7 @@ fn inspect_reader<R: Read + Seek>(
+ 
+     let tensor_count = read_u64(reader)?;
+     let metadata_count = read_u64(reader)?;
+-    if tensor_count == 0 || tensor_count > MAX_GGUF_TENSORS {
++    if !(1..=MAX_GGUF_TENSORS).contains(&tensor_count) {
+         return Err(invalid_data(format!(
+             "GGUF tensor count {tensor_count} is outside the supported registration range"
+         )));
+@@ -122,7 +122,7 @@ fn inspect_reader<R: Read + Seek>(
+         }
+         for _ in 0..dimensions {
+             let dimension = read_u64(reader)?;
+-            if dimension == 0 || dimension > i64::MAX as u64 {
++            if !(1..=i64::MAX as u64).contains(&dimension) {
+                 return Err(invalid_data(format!(
+                     "GGUF tensor has invalid dimension size {dimension}"
+                 )));
+@@ -362,6 +362,14 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
+     io::Error::new(io::ErrorKind::InvalidData, message.into())
+ }
+ 
++#[cfg(feature = "visual-validation")]
++pub(super) fn write_visual_validation_gguf(path: &Path) -> io::Result<()> {
++    std::fs::write(
++        path,
++        build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]),
++    )
++}
++
+ #[cfg(test)]
+ pub(super) fn write_test_gguf(
+     path: &Path,
+@@ -371,7 +379,7 @@ pub(super) fn write_test_gguf(
+     std::fs::write(path, build_test_gguf(3, file_type, Some(2), tensor_types))
+ }
+ 
+-#[cfg(test)]
++#[cfg(any(test, feature = "visual-validation"))]
+ fn build_test_gguf(
+     version: u32,
+     file_type: Option<u32>,
+@@ -406,7 +414,7 @@ fn build_test_gguf(
+     bytes
+ }
+ 
+-#[cfg(test)]
++#[cfg(any(test, feature = "visual-validation"))]
+ fn push_string(bytes: &mut Vec<u8>, value: &str) {
+     bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+     bytes.extend_from_slice(value.as_bytes());
+@@ -420,7 +428,7 @@ mod tests {
+     #[test]
+     fn mixed_tensor_types_produce_a_stable_distribution_without_single_quantization() {
+         let bytes = build_test_gguf(3, None, Some(2), &[12, 14, 12, 0]);
+-        let mut reader = Cursor::new(bytes.clone());
++        let mut reader = Cursor::new(bytes.as_slice());
+         let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
+         assert_eq!(representation.canonical_quantization, None);
+         assert_eq!(
+@@ -433,7 +441,7 @@ mod tests {
+     #[test]
+     fn general_file_type_supplies_only_a_canonical_label_while_descriptor_stays_exact() {
+         let bytes = build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]);
+-        let mut reader = Cursor::new(bytes.clone());
++        let mut reader = Cursor::new(bytes.as_slice());
+         let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
+         assert_eq!(
+             representation.canonical_quantization.as_deref(),
+@@ -449,17 +457,17 @@ mod tests {
+     fn malformed_or_truncated_gguf_is_rejected() {
+         let mut bytes = build_test_gguf(3, Some(15), Some(2), &[12]);
+         bytes.truncate(bytes.len() - 3);
+-        let mut reader = Cursor::new(bytes.clone());
++        let mut reader = Cursor::new(bytes.as_slice());
+         assert!(inspect_reader(&mut reader, bytes.len() as u64).is_err());
+ 
+-        let mut reader = Cursor::new(b"not-gguf".to_vec());
++        let mut reader = Cursor::new(b"not-gguf");
+         assert!(inspect_reader(&mut reader, 8).is_err());
+     }
+ 
+     #[test]
+     fn unsupported_gguf_version_is_rejected() {
+         let bytes = build_test_gguf(4, Some(15), Some(2), &[12]);
+-        let mut reader = Cursor::new(bytes.clone());
++        let mut reader = Cursor::new(bytes.as_slice());
+         let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("version");
+         assert!(error.to_string().contains("unsupported GGUF version 4"));
+     }
+@@ -467,7 +475,7 @@ mod tests {
+     #[test]
+     fn unsupported_tensor_type_is_rejected() {
+         let bytes = build_test_gguf(3, None, Some(2), &[999]);
+-        let mut reader = Cursor::new(bytes.clone());
++        let mut reader = Cursor::new(bytes.as_slice());
+         let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("type");
+         assert!(error.to_string().contains("unsupported ggml type 999"));
+     }
