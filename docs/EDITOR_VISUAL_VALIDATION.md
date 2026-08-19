@@ -52,11 +52,20 @@ target:
 <!-- gameengine-visual-authoring-tool: Ability Designer -->
 ```
 
-The value is the human-readable [`AuthoringTool`] label exposed by the exact PR
-head being validated. The workflow accepts only a bounded plain-text label and
-passes it to the checked-out Editor; the Editor resolves that label against its
-own `AuthoringTool::ALL` catalog and fails startup if no exact match exists. The
-workflow does not hard-code product-specific enum variants.
+The value is normally the human-readable [`AuthoringTool`] label exposed by the
+exact PR head being validated. The workflow accepts only a bounded plain-text
+label and passes it to the checked-out Editor; the Editor resolves normal labels
+against its own `AuthoringTool::ALL` catalog and fails startup if no exact match
+exists. The workflow does not hard-code product-specific enum variants.
+
+`ADR First Release` is the one reserved validation-suite label. It does not name
+an `AuthoringTool` and MUST NOT open an authoring window. The capture script pairs
+that reserved selector with one explicit `GAMEENGINE_VISUAL_SCENARIO` value per
+fresh Editor process so a deterministic multi-capture suite can exercise several
+first-release UI states without coordinate input or persisted fixture data. The
+Editor routes each named ADR scenario to its owning production surface; AI Studio
+scenarios use the detached native viewport and authoring-surface scenarios keep
+AI Studio out of the capture. Normal Editor launches do not set either variable.
 
 The scenario is available only with explicit `editor` or `both`. It is rejected
 with `auto` or `launcher` so a requested tool window cannot be silently omitted

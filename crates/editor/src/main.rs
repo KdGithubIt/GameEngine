@@ -74,34 +74,33 @@ impl EditorShell {
         #[cfg(feature = "visual-validation")]
         let visual_scenario = visual_authoring_tool_scenario();
         #[cfg(feature = "visual-validation")]
+        let adr_visual_scenario = requested_adr_visual_scenario();
+        #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
-            let detached_capture = match visual_scenario.as_deref() {
-                Some("ADR 0133 Remote AI Studio") => false,
-                Some("ADR 0143 Model Resources") => {
-                    ai_studio.prepare_local_model_resources_visual_validation();
+            let detached_capture = if let Some(scenario) = adr_visual_scenario.as_deref() {
+                if adr_scenario_targets_ai_studio(scenario) {
+                    ai_studio.prepare_adr_visual_validation(scenario);
                     true
+                } else {
+                    // Authoring-surface ADR scenarios prepare themselves when the
+                    // documents area is built; AI Studio must stay out of their
+                    // captures even when the sweep also uses a validation selector.
+                    false
                 }
-                Some("ADR 0145 External Agent") => {
-                    ai_studio.prepare_external_agent_visual_validation();
-                    true
-                }
-                Some(_) => false,
-                None => {
-                    // ADR scenarios arrive through GAMEENGINE_VISUAL_SCENARIO, a
-                    // separate namespace from the authoring-tool scenarios matched
-                    // above, so they are prepared here rather than as another arm.
-                    if let Some(scenario) = requested_adr_visual_scenario()
-                        .filter(|scenario| adr_scenario_targets_ai_studio(scenario))
-                    {
-                        ai_studio.prepare_adr_visual_validation(&scenario);
+            } else {
+                match visual_scenario.as_deref() {
+                    Some("ADR 0133 Remote AI Studio") => false,
+                    Some("ADR 0143 Model Resources") => {
+                        ai_studio.prepare_local_model_resources_visual_validation();
                         true
-                    } else if requested_adr_visual_scenario().is_some() {
-                        // An authoring-surface ADR scenario prepares itself when the
-                        // documents area is built; AI Studio must stay out of its
-                        // capture.
-                        false
-                    } else {
+                    }
+                    Some("ADR 0145 External Agent") => {
+                        ai_studio.prepare_external_agent_visual_validation();
+                        true
+                    }
+                    Some(_) => false,
+                    None => {
                         let touches_ai_studio = visual_validation_touches_ai_studio();
                         if touches_ai_studio {
                             if visual_validation_touches_managed_local_runtime() {
