@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {\n        match self.model_backend {",
+  "new": "    fn selected_native_model_config(&mut self) -> Result<NativeModelConfig, String> {\n        match self.model_backend {"
+}
