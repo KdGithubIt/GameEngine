@@ -1,0 +1,110 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 7f18999258f1effa9cc5bb05a35727031fbc8a39..a2a2c88b58c461fd88d1b1c049bb9557cd6cdca1 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -16,10 +16,11 @@ use std::io::Write;
+ use std::path::PathBuf;
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+-pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 1;
++pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 2;
++const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
+ pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
+ pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
+-const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
++pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
+ const CATALOG_SCHEMA_VERSION: u32 = 1;
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+@@ -406,6 +407,20 @@ pub(crate) struct BenchmarkToolBudget {
+     pub(crate) work_claims: Vec<String>,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkExecutionIdentity {
++    pub(crate) campaign_harness_version: String,
++    pub(crate) schedule_policy_version: String,
++    pub(crate) comparison_class: String,
++    pub(crate) execution_profile: String,
++    pub(crate) execution_environment: String,
++    pub(crate) fixture_id: String,
++    pub(crate) fixture_version: String,
++    pub(crate) fixture_instance_id: String,
++    pub(crate) sampling_profile: String,
++    pub(crate) seed_policy: String,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub(crate) struct BenchmarkIdentity {
+     pub(crate) corpus_version: String,
+@@ -419,6 +434,8 @@ pub(crate) struct BenchmarkIdentity {
+     pub(crate) observed_workload: TelemetryValue<InferenceWorkload>,
+     pub(crate) tool_budget: BenchmarkToolBudget,
+     pub(crate) completion_criteria: Vec<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) execution: Option<BenchmarkExecutionIdentity>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+@@ -528,6 +545,9 @@ pub(crate) fn comparison_equivalence(
+     if left.identity.completion_criteria != right.identity.completion_criteria {
+         differences.push("completion_criteria");
+     }
++    if left.identity.execution != right.identity.execution {
++        differences.push("execution_identity");
++    }
+     if differences.is_empty() {
+         ComparisonEquivalence::EquivalentModelComparison
+     } else {
+@@ -596,9 +616,14 @@ impl BenchmarkStore {
+ }
+ 
+ fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
+-    if record.schema_version != BENCHMARK_SCHEMA_VERSION {
++    if !(MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION..=BENCHMARK_SCHEMA_VERSION)
++        .contains(&record.schema_version)
++    {
+         return Err(format!("unsupported benchmark schema version {}", record.schema_version));
+     }
++    if record.schema_version == 1 && record.identity.execution.is_some() {
++        return Err("benchmark schema v1 cannot carry campaign execution identity".to_owned());
++    }
+     if record.identity.corpus_version != BENCHMARK_CORPUS_VERSION {
+         return Err(format!("unsupported benchmark corpus `{}`", record.identity.corpus_version));
+     }
+@@ -971,6 +996,7 @@ pub(crate) fn read_question_record(
+                 work_claims: Vec::new(),
+             },
+             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
++            execution: None,
+         },
+         metrics: BenchmarkMetrics {
+             acceptance_success: TelemetryValue::Measured(provenance_reported),
+@@ -1094,6 +1120,7 @@ pub(crate) fn agent_run_record(
+                     .collect(),
+             },
+             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
++            execution: None,
+         },
+         metrics: BenchmarkMetrics {
+             acceptance_success: TelemetryValue::Measured(run.completion.acceptance_criteria == CompletionStatus::Passed),
+@@ -1214,6 +1241,7 @@ mod tests {
+                 work_claims: vec!["code_path".to_owned()],
+             },
+             completion_criteria: BENCHMARK_TASKS[0].completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
++            execution: None,
+         }
+     }
+ 
+diff --git a/crates/editor/src/model_router.rs b/crates/editor/src/model_router.rs
+index 61565459083e413bf52a9f3f7e952d6ebcc93aa2..34c2207f5916ff95e6081d6b2789e930a49d4e83 100644
+--- a/crates/editor/src/model_router.rs
++++ b/crates/editor/src/model_router.rs
+@@ -429,6 +429,7 @@ mod tests {
+                     .iter()
+                     .map(|value| (*value).to_owned())
+                     .collect(),
++                execution: None,
+             },
+             metrics: BenchmarkMetrics {
+                 acceptance_success: TelemetryValue::Measured(successful),
