@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark_fixture.rs","old":"use crate::agent_host::{AgentRun, AgentRunState, CompletionStatus};\nuse engine_authoring::{","new":"use crate::agent_host::{AgentRun, AgentRunState, CompletionStatus};\nuse crate::native_agent::NativeMetrics;\nuse engine_authoring::{"}
