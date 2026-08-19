@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "managed-local-ui-worker-boundaries-20260819-05",
+  "target_branch": "chatgpt/gameengine-managed-local-ui-worker-boundaries-v4",
+  "expected_head_sha": "016731d151fb6c33c04e4e45993a5115a3e09033",
+  "baseline_main_sha": "016731d151fb6c33c04e4e45993a5115a3e09033",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Fix Managed Local UI worker boundaries",
+  "pr_title": "Fix Managed Local AI UI worker boundaries",
+  "pr_body": "## Summary\n\n- reuse one frozen Managed Local resource config across Managed Play capability planning and transition startup instead of resolving it twice\n- keep ADR 0155 Enforced verification inside the native model-turn and model-resource workers now present on current main\n- add worker-boundary regression coverage for Go/native model turns and Release/Reload resource transitions on both WindowsNative and Wsl2Linux\n\n## Scope\n\nThe previously separate Managed Local completion work is now merged to main. This PR contains only the remaining UI-thread/resource-transition deduplication and regression coverage requested here.\n\nNo presentation/layout behavior changes; Visual Validation is not requested."
+}
