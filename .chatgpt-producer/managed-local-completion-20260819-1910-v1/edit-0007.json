@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);\nconst HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);",
+  "new": "const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);\nconst HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);\n/// Leave one GiB of device memory for KV cache, compute buffers, and the rest of the GPU workload.\n///\n/// The pinned llama.cpp revision supports automatic layer selection plus `--fit`; keeping\n/// `--n-gpu-layers` unset lets that fitter account for the exact model and currently available VRAM.\nconst MANAGED_GPU_FIT_TARGET_MIB: u32 = 1024;"
+}
