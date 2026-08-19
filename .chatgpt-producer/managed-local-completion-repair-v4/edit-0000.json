@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "fn execute_managed_resource_operation(\n    config: &ManagedLocalModelConfig,\n    operation: ModelResourceOperation,\n) -> Result<ModelResourceTransition, NativeAgentError> {\n    let before = observe_managed_model(config);",
+  "new": "fn execute_managed_resource_operation(\n    config: &ManagedLocalModelConfig,\n    operation: ModelResourceOperation,\n) -> Result<ModelResourceTransition, NativeAgentError> {\n    // Resource transitions run on the dedicated model-resource worker. Keep the\n    // ADR 0155 pre-operation integrity gate that previously happened during UI\n    // configuration resolution, but perform its full GGUF hash off the frame thread.\n    ManagedLocalRuntime::verify_frozen_configuration(config)\n        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;\n    let before = observe_managed_model(config);"
+}
