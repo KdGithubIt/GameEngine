@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        self.installed_model_inventory\n            .as_ref()\n            .and_then(|inventory| inventory.backend_version.clone())\n            .ok_or_else(|| \"the compatible local backend runtime version is unavailable\".to_owned())",
+  "new": "        self.installed_model_inventory\n            .as_ref()\n            .and_then(|inventory| inventory.backend_version.clone())\n            .ok_or_else(|| {\n                \"the compatible local backend runtime version is unavailable\".to_owned()\n            })"
+}
