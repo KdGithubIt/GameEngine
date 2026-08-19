@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"                \"--install\",\n                \"Ubuntu-24.04\",\n                \"--name\",\n","new":"                \"--install\",\n                MANAGED_WSL_BASE_DISTRIBUTION,\n                \"--name\",\n"}
