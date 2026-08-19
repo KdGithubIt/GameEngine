@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"impl ManagedAcquisitionApproval {\n","new":"// ADR 0156 consumes this exact-approval check when executing a frozen campaign.\n#[allow(dead_code)]\nimpl ManagedAcquisitionApproval {\n"}
