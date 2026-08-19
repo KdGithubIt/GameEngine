@@ -38,6 +38,11 @@ const LLAMA_CPP_REPOSITORY_URL: &str = "https://github.com/ggml-org/llama.cpp.gi
 const STATE_SCHEMA_VERSION: u32 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+/// Leave one GiB of device memory for KV cache, compute buffers, and the rest of the GPU workload.
+///
+/// The pinned llama.cpp revision supports automatic layer selection plus `--fit`; keeping
+/// `--n-gpu-layers` unset lets that fitter account for the exact model and currently available VRAM.
+const MANAGED_GPU_FIT_TARGET_MIB: u32 = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -182,6 +187,19 @@ pub(crate) struct ManagedLocalModelConfig {
     pub(crate) runtime_revision: String,
     pub(crate) runtime_artifact_sha256: String,
     pub(crate) runtime_compatibility_version: String,
+}
+
+impl ManagedRuntimeInstallation {
+    pub(crate) fn benchmark_runtime_identity(&self) -> String {
+        format!(
+            "llama.cpp:{}@{};env={};artifact_sha256={};compat={}",
+            self.runtime_tag,
+            self.runtime_revision,
+            self.environment.benchmark_id(),
+            self.artifact_sha256,
+            self.compatibility_version,
+        )
+    }
 }
 
 impl ManagedLocalModelConfig {
@@ -1019,6 +1037,43 @@ impl ManagedLocalRuntime {
         })
     }
 
+    /// Runs the ADR 0155 pre-inference integrity gate against an identity frozen earlier by the UI.
+    ///
+    /// This function hashes managed model bytes when required and therefore belongs on an
+    /// inference worker, never on the Editor frame thread. It also rejects machine-local state
+    /// drift instead of silently substituting a different model or runtime after Send.
+    pub(crate) fn verify_frozen_configuration(
+        config: &ManagedLocalModelConfig,
+    ) -> Result<(), ManagedLocalRuntimeError> {
+        let manager = Self::open(config.state_root.clone())?;
+        let verified = manager.configuration_for(
+            &config.model_id,
+            config.environment,
+            ManagedIntegrityCheck::Enforced,
+        )?;
+        if verified.model_content_sha256 != config.model_content_sha256
+            || verified.model_path != config.model_path
+            || verified.model_size_bytes != config.model_size_bytes
+            || verified.quantization != config.quantization
+        {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+                "managed model identity changed after the inference request was frozen",
+            ));
+        }
+        if verified.runtime_tag != config.runtime_tag
+            || verified.runtime_revision != config.runtime_revision
+            || verified.runtime_artifact_sha256 != config.runtime_artifact_sha256
+            || verified.runtime_compatibility_version != config.runtime_compatibility_version
+        {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                "managed runtime identity changed after the inference request was frozen",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn ensure_endpoint(
         config: &ManagedLocalModelConfig,
     ) -> Result<ManagedEndpoint, ManagedLocalRuntimeError> {
@@ -1242,7 +1297,7 @@ impl ManagedLocalRuntime {
             config.environment.storage_key()
         );
         let command = format!(
-            "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --n-gpu-layers 999 > {} 2>&1 < /dev/null & echo $!",
+            "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {} 2>&1 < /dev/null & echo $!",
             shell_quote(&log)
         );
         let output = wsl_shell(
@@ -1561,8 +1616,10 @@ fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--n-gpu-layers".to_owned(),
-        "999".to_owned(),
+        "--fit".to_owned(),
+        "on".to_owned(),
+        "--fit-target".to_owned(),
+        MANAGED_GPU_FIT_TARGET_MIB.to_string(),
     ]
 }
 
@@ -2537,10 +2594,11 @@ mod tests {
     }
 
     #[test]
-    fn windows_launch_contract_uses_exact_model_loopback_and_gpu_arguments() {
+    fn windows_launch_contract_leaves_gpu_layers_to_memory_fitter() {
         let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+        let arguments = windows_server_arguments(model, 18443);
         assert_eq!(
-            windows_server_arguments(model, 18443),
+            arguments,
             vec![
                 "--model".to_owned(),
                 model.to_string_lossy().into_owned(),
@@ -2548,10 +2606,13 @@ mod tests {
                 "127.0.0.1".to_owned(),
                 "--port".to_owned(),
                 "18443".to_owned(),
-                "--n-gpu-layers".to_owned(),
-                "999".to_owned(),
+                "--fit".to_owned(),
+                "on".to_owned(),
+                "--fit-target".to_owned(),
+                "1024".to_owned(),
             ]
         );
+        assert!(!arguments.iter().any(|argument| argument == "--n-gpu-layers"));
     }
 
     #[test]

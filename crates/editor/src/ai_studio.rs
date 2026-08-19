@@ -32,8 +32,8 @@ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::managed_local_runtime::{
     ManagedEnvironmentProbe, ManagedEnvironmentProbeTask, ManagedExecutionEnvironment,
-    ManagedIntegrityCheck, ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation,
-    ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask, PINNED_LLAMA_CPP_REVISION,
+    ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation, ManagedSetupResult,
+    ManagedSetupStatus, ManagedSetupTask, MANAGED_BACKEND_ID, PINNED_LLAMA_CPP_REVISION,
     PINNED_LLAMA_CPP_TAG,
 };
 use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
@@ -2977,24 +2977,12 @@ impl AiStudioPanel {
             .cloned()
     }
 
-    fn managed_model_config(&self) -> Result<ManagedLocalModelConfig, String> {
-        if self.managed_model_id.trim().is_empty() {
-            return Err("Register or select a managed GGUF model before starting inference.".to_owned());
-        }
-        self.managed_local_runtime
-            .configuration_for(
-                &self.managed_model_id,
-                self.managed_execution_environment,
-                ManagedIntegrityCheck::Enforced,
-            )
-            .map_err(|error| error.to_string())
-    }
-
-    /// Resolves the managed configuration the panel may render.
+    /// Resolves the frozen managed identity the UI may hand to an inference worker.
     ///
-    /// Answers come from the cached environment probe, so drawing a frame never
-    /// hashes the model. [`Self::managed_model_config`] keeps the ADR 0155
-    /// pre-inference verification for the paths that start inference.
+    /// Answers come from the cached environment probe, so neither drawing a frame nor
+    /// pressing Send hashes the model on the UI thread. The inference worker performs
+    /// ADR 0155 integrity verification against this frozen identity before endpoint
+    /// startup.
     fn described_managed_model_config(&mut self) -> Result<ManagedLocalModelConfig, String> {
         if self.managed_model_id.trim().is_empty() {
             return Err("Register or select a managed GGUF model before starting inference.".to_owned());
@@ -3179,7 +3167,7 @@ impl AiStudioPanel {
             .unwrap_or_default()
     }
 
-    fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
+    fn selected_native_model_config(&mut self) -> Result<NativeModelConfig, String> {
         match self.model_backend {
             ModelBackendPreference::Local => {
                 if self.local_model_name.trim().is_empty() {
@@ -3190,9 +3178,9 @@ impl AiStudioPanel {
                     model: self.local_model_name.clone(),
                 }))
             }
-            ModelBackendPreference::ManagedLocal => {
-                self.managed_model_config().map(NativeModelConfig::Managed)
-            }
+            ModelBackendPreference::ManagedLocal => self
+                .described_managed_model_config()
+                .map(NativeModelConfig::Managed),
             ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
                 if !self.hosted_model_endpoint.trim().starts_with("https://") {
                     return Err("Hosted and enterprise model endpoints must use HTTPS.".to_owned());
@@ -3374,7 +3362,7 @@ impl AiStudioPanel {
         }
     }
 
-    fn selected_local_resource_config(&self) -> Option<LocalModelResourceConfig> {
+    fn selected_local_resource_config(&mut self) -> Option<LocalModelResourceConfig> {
         match self.model_backend {
             ModelBackendPreference::Local if !self.local_model_name.trim().is_empty() => {
                 Some(LocalModelResourceConfig::Ollama(LocalModelConfig {
@@ -3383,7 +3371,7 @@ impl AiStudioPanel {
                 }))
             }
             ModelBackendPreference::ManagedLocal => self
-                .managed_model_config()
+                .described_managed_model_config()
                 .ok()
                 .map(LocalModelResourceConfig::Managed),
             _ => None,
@@ -3655,7 +3643,19 @@ impl AiStudioPanel {
                     Err(error) => self.status = Some(error.to_string()),
                 }
             }
-            Err(error) => self.status = Some(error.to_string()),
+            Err(error) => {
+                let diagnostic = format!("Inference failed: {error}");
+                self.status = Some(diagnostic.clone());
+                if let Err(append_error) = self.host.append_message(
+                    &session_id,
+                    ConversationRole::System,
+                    diagnostic,
+                ) {
+                    self.status = Some(format!(
+                        "Inference failed: {error}; Conversation diagnostic could not be recorded: {append_error}"
+                    ));
+                }
+            }
         }
         if self.restore_for_editing {
             self.begin_model_residency_request(

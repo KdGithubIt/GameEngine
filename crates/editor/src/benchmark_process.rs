@@ -13,6 +13,7 @@ use crate::benchmark_experiment::{
     BenchmarkFixtureSandbox, BenchmarkPlannedRun, BenchmarkRoutingMode, BenchmarkRunFailureKind,
     BenchmarkRunOutcome,
 };
+use crate::managed_local_runtime::{ManagedExecutionEnvironment, MANAGED_BACKEND_ID};
 use crate::resource_arbitration::QualityPreference;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -29,6 +30,8 @@ pub(crate) struct BenchmarkChildRunSpec {
     pub(crate) engine_commit_head: String,
     pub(crate) fixture_version: String,
     pub(crate) backend_id: String,
+    #[serde(default)]
+    pub(crate) managed_execution_environment: Option<ManagedExecutionEnvironment>,
     pub(crate) endpoint: String,
     pub(crate) model_id: String,
     pub(crate) task_id: String,
@@ -52,11 +55,22 @@ impl BenchmarkChildRunSpec {
         }
         if self.experiment_id.trim().is_empty()
             || self.backend_id.trim().is_empty()
-            || self.endpoint.trim().is_empty()
             || self.model_id.trim().is_empty()
             || self.task_id.trim().is_empty()
         {
             return Err("benchmark child identity fields must be non-empty".to_owned());
+        }
+        if self.backend_id == MANAGED_BACKEND_ID {
+            if self.managed_execution_environment.is_none() {
+                return Err("managed benchmark child requires an exact execution environment".to_owned());
+            }
+        } else {
+            if self.endpoint.trim().is_empty() {
+                return Err("compatible-backend benchmark child requires a local endpoint".to_owned());
+            }
+            if self.managed_execution_environment.is_some() {
+                return Err("compatible-backend benchmark child cannot carry managed runtime identity".to_owned());
+            }
         }
         if self.engine_commit_head.len() != 40
             || !self.engine_commit_head.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -234,8 +248,8 @@ impl BenchmarkExperimentCoordinator {
         if spec.routing_mode != BenchmarkRoutingMode::SingleModel {
             return Err("single-model benchmark coordinator cannot execute a routed experiment".to_owned());
         }
-        if endpoint.trim().is_empty() {
-            return Err("benchmark local-model endpoint must be non-empty".to_owned());
+        if spec.backend_id != MANAGED_BACKEND_ID && endpoint.trim().is_empty() {
+            return Err("benchmark compatible-backend endpoint must be non-empty".to_owned());
         }
         let store = BenchmarkExperimentStore::open(spec.output_destination.clone())?;
         store.write_spec(&spec)?;
@@ -374,7 +388,12 @@ impl BenchmarkExperimentCoordinator {
             engine_commit_head: self.spec.engine_commit_head.clone(),
             fixture_version: self.spec.fixture_version.clone(),
             backend_id: self.spec.backend_id.clone(),
-            endpoint: self.endpoint.clone(),
+            managed_execution_environment: self.spec.managed_execution_environment,
+            endpoint: if self.spec.backend_id == MANAGED_BACKEND_ID {
+                String::new()
+            } else {
+                self.endpoint.clone()
+            },
             model_id: run.model_id.clone(),
             task_id: run.task_id.clone(),
             repetition: run.repetition,
@@ -459,6 +478,7 @@ mod tests {
             engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
             fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
             backend_id: "ollama-compatible".to_owned(),
+            managed_execution_environment: None,
             endpoint: "http://127.0.0.1:11434".to_owned(),
             model_id: "model:q4".to_owned(),
             task_id: "visual_evaluation_v1".to_owned(),

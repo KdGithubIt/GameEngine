@@ -514,6 +514,11 @@ fn execute_managed_resource_operation(
     config: &ManagedLocalModelConfig,
     operation: ModelResourceOperation,
 ) -> Result<ModelResourceTransition, NativeAgentError> {
+    // Resource transitions run on the dedicated model-resource worker. Keep the
+    // ADR 0155 pre-operation integrity gate that previously happened during UI
+    // configuration resolution, but perform its full GGUF hash off the frame thread.
+    ManagedLocalRuntime::verify_frozen_configuration(config)
+        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
     let before = observe_managed_model(config);
     let started = Instant::now();
     match operation {
@@ -1297,6 +1302,14 @@ fn generate_managed(
         return Err(NativeAgentError::Interrupted);
     }
     let startup_started = Instant::now();
+    // The UI freezes only the cached managed identity. Full ADR 0155 integrity
+    // verification, including the WSL2 GGUF SHA-256, runs here on the inference
+    // worker so pressing Send never blocks the Editor frame thread.
+    ManagedLocalRuntime::verify_frozen_configuration(config)
+        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
     let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)
         .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
     let load_latency_ms = (!managed_endpoint.reused_process)

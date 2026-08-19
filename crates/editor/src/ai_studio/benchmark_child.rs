@@ -17,14 +17,32 @@ impl AiStudioPanel {
     /// Configures this Editor process as one isolated benchmark child.
     pub fn configure_benchmark_child(&mut self, path: &Path) -> Result<(), String> {
         let spec = BenchmarkChildRunSpec::read(path)?;
-        if spec.backend_id != "ollama-compatible" {
-            return Err("first-release benchmark child supports the local Ollama-compatible backend only".to_owned());
+        match spec.backend_id.as_str() {
+            "ollama-compatible" => {
+                self.model_backend = ModelBackendPreference::Local;
+                self.local_model_endpoint = spec.endpoint.clone();
+                self.local_model_name = spec.model_id.clone();
+            }
+            MANAGED_BACKEND_ID => {
+                let environment = spec.managed_execution_environment.ok_or_else(|| {
+                    "managed benchmark child is missing its frozen execution environment".to_owned()
+                })?;
+                self.model_backend = ModelBackendPreference::ManagedLocal;
+                self.managed_execution_environment = environment;
+                self.managed_model_id = spec.model_id.clone();
+                self.managed_probe = None;
+                self.managed_probe_completed_at = None;
+                self.managed_probe_requested = true;
+            }
+            backend => {
+                return Err(format!(
+                    "first-release benchmark child does not support backend `{backend}`"
+                ));
+            }
         }
-        self.model_backend = ModelBackendPreference::Local;
-        self.local_model_endpoint = spec.endpoint.clone();
-        self.local_model_name = spec.model_id.clone();
         self.quality_preference = spec.quality;
         self.benchmark_task_id = spec.task_id.clone();
+        let compatible_backend = spec.backend_id == "ollama-compatible";
         self.benchmark_child = Some(BenchmarkChildState {
             spec,
             started: false,
@@ -32,12 +50,12 @@ impl AiStudioPanel {
             result_written: false,
         });
         self.presentation.close();
-        // A comparable result must name the exact representation it ran, so the
-        // child discovers the backend inventory before it starts the task. ADR
-        // 0142 equivalence rejects a record whose model version, quantization,
-        // representation size, or backend runtime version is unavailable, and
-        // an undiscovered child would silently produce exactly that record.
-        self.start_model_discovery();
+        // Comparable evidence must freeze the exact backend/model/runtime representation
+        // before task start. Compatible backends discover their inventory; managed runs
+        // wait for the asynchronous managed-environment probe instead.
+        if compatible_backend {
+            self.start_model_discovery();
+        }
         Ok(())
     }
 
@@ -70,22 +88,45 @@ impl AiStudioPanel {
         let Some(child) = self.benchmark_child.as_ref() else {
             return;
         };
-        if child.result_written {
+        let result_written = child.result_written;
+        let backend_id = child.spec.backend_id.clone();
+        let started = child.started;
+        let task_id = child.spec.task_id.clone();
+        if result_written {
             return;
         }
-        if self.model_discovery.is_some() {
+        if backend_id == MANAGED_BACKEND_ID {
+            self.managed_probe_requested = true;
+            if self.managed_probe_task.is_some() {
+                return;
+            }
+            let Some(probe) = self.managed_probe.as_ref() else {
+                return;
+            };
+            if probe.environment != self.managed_execution_environment
+                || probe.model_id != self.managed_model_id
+            {
+                return;
+            }
+            if let Err(error) = probe.described_config.as_ref() {
+                let message = format!("managed benchmark preflight failed: {error}");
+                self.write_benchmark_child_failure(
+                    BenchmarkRunFailureKind::CapabilityUnavailable,
+                    message,
+                );
+                return;
+            }
+        } else if self.model_discovery.is_some() {
             // Representation discovery is still in flight; starting now would
             // freeze an unmeasured model identity for the whole run.
             return;
         }
-        if !child.started {
+        if !started {
             if let Err(error) = self.start_benchmark_child_task() {
                 self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, error);
             }
             return;
         }
-
-        let task_id = child.spec.task_id.clone();
         if task_id == "read_question_v1" {
             if self.native_question.is_none() && self.pending_native_question_start.is_none() {
                 if let Some(snapshot) = self.last_native_question_benchmark.clone()
