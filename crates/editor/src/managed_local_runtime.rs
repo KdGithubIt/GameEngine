@@ -1126,21 +1126,10 @@ impl ManagedLocalRuntime {
             "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --n-gpu-layers 999 > {} 2>&1 < /dev/null & echo $!",
             shell_quote(&log)
         );
-        let output = managed_wsl_command()
-            .args(["sh", "-lc", &command])
-            .output()
-            .map_err(|error| {
-                ManagedLocalRuntimeError::new(
-                    ManagedDiagnosticLayer::ManagedProcessStartup,
-                    format!("could not launch pinned WSL2 llama-server: {error}"),
-                )
-            })?;
-        if !output.status.success() {
-            return Err(ManagedLocalRuntimeError::new(
-                ManagedDiagnosticLayer::ManagedProcessStartup,
-                format!("WSL2 llama-server launch failed: {}", command_output_text(&output)),
-            ));
-        }
+        let output = wsl_shell(
+            &command,
+            ManagedDiagnosticLayer::ManagedProcessStartup,
+        )?;
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .find_map(|line| line.trim().parse::<u32>().ok())
@@ -1854,6 +1843,12 @@ fn managed_wsl_command() -> Command {
     command
 }
 
+fn managed_wsl_script_command() -> Command {
+    let mut command = managed_wsl_command();
+    command.args(["sh", "-s"]);
+    command
+}
+
 fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRuntimeError> {
     let parent = Path::new(remote)
         .parent()
@@ -1869,11 +1864,7 @@ fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRu
         ManagedDiagnosticLayer::ModelTransferOrIntegrity,
     )?;
     let mut child = managed_wsl_command()
-        .args([
-            "sh",
-            "-lc",
-            &format!("cat > {}", shell_quote(remote)),
-        ])
+        .args(["tee", remote])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1909,11 +1900,7 @@ fn wsl_model_path(content_sha256: &str) -> String {
 
 fn wsl_file_exists(path: &str) -> Result<bool, ManagedLocalRuntimeError> {
     let output = managed_wsl_command()
-        .args([
-            "sh",
-            "-lc",
-            &format!("test -f {}", shell_quote(path)),
-        ])
+        .args(["test", "-f", path])
         .output()
         .map_err(model_io)?;
     Ok(output.status.success())
@@ -1942,12 +1929,30 @@ fn wsl_shell(
     command: &str,
     layer: ManagedDiagnosticLayer,
 ) -> Result<std::process::Output, ManagedLocalRuntimeError> {
-    let output = managed_wsl_command()
-        .args(["sh", "-lc", command])
-        .output()
+    let mut child = managed_wsl_script_command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             ManagedLocalRuntimeError::new(layer, format!("could not invoke managed WSL: {error}"))
         })?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(ManagedLocalRuntimeError::new(
+            layer,
+            "managed WSL shell did not expose stdin",
+        ));
+    };
+    stdin.write_all(command.as_bytes()).map_err(|error| {
+        ManagedLocalRuntimeError::new(layer, format!("could not stream managed WSL script: {error}"))
+    })?;
+    stdin.write_all(b"\n").map_err(|error| {
+        ManagedLocalRuntimeError::new(layer, format!("could not terminate managed WSL script: {error}"))
+    })?;
+    drop(stdin);
+    let output = child.wait_with_output().map_err(|error| {
+        ManagedLocalRuntimeError::new(layer, format!("could not wait for managed WSL: {error}"))
+    })?;
     if !output.status.success() {
         return Err(ManagedLocalRuntimeError::new(
             layer,
@@ -2004,11 +2009,9 @@ fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRun
             .args(["/FI", &format!("PID eq {}", state.process_id), "/FO", "CSV", "/NH"])
             .output(),
         ManagedExecutionEnvironment::Wsl2Linux => managed_wsl_command()
-            .args([
-                "sh",
-                "-lc",
-                &format!("kill -0 {}", state.process_id),
-            ])
+            .arg("kill")
+            .arg("-0")
+            .arg(state.process_id.to_string())
             .output(),
     }
     .map_err(|error| {
@@ -2393,6 +2396,25 @@ mod tests {
                 "--".to_owned(),
             ]
         );
+
+        let script_command = managed_wsl_script_command();
+        let script_args = script_command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            script_args,
+            vec![
+                "-d".to_owned(),
+                MANAGED_WSL_DISTRIBUTION.to_owned(),
+                "-u".to_owned(),
+                "root".to_owned(),
+                "--".to_owned(),
+                "sh".to_owned(),
+                "-s".to_owned(),
+            ]
+        );
+        assert!(!script_args.iter().any(|argument| argument == "-lc"));
     }
 
     #[test]
