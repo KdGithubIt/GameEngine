@@ -55,7 +55,7 @@ fn inspect_reader<R: Read + Seek>(
 ) -> io::Result<GgufRepresentation> {
     let mut magic = [0_u8; 4];
     reader.read_exact(&mut magic)?;
-    if &magic != GGUF_MAGIC {
+    if magic != *GGUF_MAGIC {
         return Err(invalid_data("file does not start with GGUF magic"));
     }
 
@@ -68,7 +68,7 @@ fn inspect_reader<R: Read + Seek>(
 
     let tensor_count = read_u64(reader)?;
     let metadata_count = read_u64(reader)?;
-    if tensor_count == 0 || tensor_count > MAX_GGUF_TENSORS {
+    if !(1..=MAX_GGUF_TENSORS).contains(&tensor_count) {
         return Err(invalid_data(format!(
             "GGUF tensor count {tensor_count} is outside the supported registration range"
         )));
@@ -122,7 +122,7 @@ fn inspect_reader<R: Read + Seek>(
         }
         for _ in 0..dimensions {
             let dimension = read_u64(reader)?;
-            if dimension == 0 || dimension > i64::MAX as u64 {
+            if !(1..=i64::MAX as u64).contains(&dimension) {
                 return Err(invalid_data(format!(
                     "GGUF tensor has invalid dimension size {dimension}"
                 )));
@@ -362,6 +362,14 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+#[cfg(feature = "visual-validation")]
+pub(super) fn write_visual_validation_gguf(path: &Path) -> io::Result<()> {
+    std::fs::write(
+        path,
+        build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]),
+    )
+}
+
 #[cfg(test)]
 pub(super) fn write_test_gguf(
     path: &Path,
@@ -371,7 +379,7 @@ pub(super) fn write_test_gguf(
     std::fs::write(path, build_test_gguf(3, file_type, Some(2), tensor_types))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "visual-validation"))]
 fn build_test_gguf(
     version: u32,
     file_type: Option<u32>,
@@ -406,7 +414,7 @@ fn build_test_gguf(
     bytes
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "visual-validation"))]
 fn push_string(bytes: &mut Vec<u8>, value: &str) {
     bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
     bytes.extend_from_slice(value.as_bytes());
@@ -420,7 +428,7 @@ mod tests {
     #[test]
     fn mixed_tensor_types_produce_a_stable_distribution_without_single_quantization() {
         let bytes = build_test_gguf(3, None, Some(2), &[12, 14, 12, 0]);
-        let mut reader = Cursor::new(bytes.clone());
+        let mut reader = Cursor::new(bytes.as_slice());
         let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
         assert_eq!(representation.canonical_quantization, None);
         assert_eq!(
@@ -433,7 +441,7 @@ mod tests {
     #[test]
     fn general_file_type_supplies_only_a_canonical_label_while_descriptor_stays_exact() {
         let bytes = build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]);
-        let mut reader = Cursor::new(bytes.clone());
+        let mut reader = Cursor::new(bytes.as_slice());
         let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
         assert_eq!(
             representation.canonical_quantization.as_deref(),
@@ -449,17 +457,17 @@ mod tests {
     fn malformed_or_truncated_gguf_is_rejected() {
         let mut bytes = build_test_gguf(3, Some(15), Some(2), &[12]);
         bytes.truncate(bytes.len() - 3);
-        let mut reader = Cursor::new(bytes.clone());
+        let mut reader = Cursor::new(bytes.as_slice());
         assert!(inspect_reader(&mut reader, bytes.len() as u64).is_err());
 
-        let mut reader = Cursor::new(b"not-gguf".to_vec());
+        let mut reader = Cursor::new(b"not-gguf");
         assert!(inspect_reader(&mut reader, 8).is_err());
     }
 
     #[test]
     fn unsupported_gguf_version_is_rejected() {
         let bytes = build_test_gguf(4, Some(15), Some(2), &[12]);
-        let mut reader = Cursor::new(bytes.clone());
+        let mut reader = Cursor::new(bytes.as_slice());
         let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("version");
         assert!(error.to_string().contains("unsupported GGUF version 4"));
     }
@@ -467,7 +475,7 @@ mod tests {
     #[test]
     fn unsupported_tensor_type_is_rejected() {
         let bytes = build_test_gguf(3, None, Some(2), &[999]);
-        let mut reader = Cursor::new(bytes.clone());
+        let mut reader = Cursor::new(bytes.as_slice());
         let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("type");
         assert!(error.to_string().contains("unsupported ggml type 999"));
     }

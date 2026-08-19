@@ -881,6 +881,15 @@ impl ManagedLocalRuntime {
         Ok(registration)
     }
 
+    #[cfg(feature = "visual-validation")]
+    pub(crate) fn register_visual_validation_model(
+        &self,
+        path: &Path,
+    ) -> Result<ManagedModelRegistration, ManagedLocalRuntimeError> {
+        gguf::write_visual_validation_gguf(path).map_err(model_io)?;
+        self.register_existing_gguf(path, None)
+    }
+
     pub(crate) fn additional_storage_for_environment(
         &self,
         model_id: &str,

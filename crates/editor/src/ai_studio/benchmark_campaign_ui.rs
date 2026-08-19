@@ -82,6 +82,16 @@ impl Default for BenchmarkCampaignPanel {
 }
 
 impl AiStudioPanel {
+    #[cfg(feature = "visual-validation")]
+    pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {
+        self.benchmark_campaign.execution_environment =
+            CampaignExecutionEnvironment::WindowsNative;
+        self.benchmark_campaign.selected_models.clear();
+        self.benchmark_campaign
+            .selected_models
+            .insert(model_id.to_owned());
+    }
+
     /// Draws the campaign launcher, download review, and progress matrix.
     pub(super) fn show_benchmark_campaign(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Benchmark campaign")
