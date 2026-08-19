@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod agent_benchmark;\nmod agent_host;","new":"mod agent_benchmark;\n// ADR 0156 owns machine-local campaign state above the ADR 0142 record primitives.\n#[allow(dead_code)]\nmod agent_benchmark_campaign;\nmod agent_host;"}
