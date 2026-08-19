@@ -44,6 +44,11 @@ const CORNER_RADIUS: u8 = 7;
 /// chrome keeps the style installed by `crate::ui::chrome`.
 pub(crate) fn apply_studio_style(ui: &mut egui::Ui) {
     let style = ui.style_mut();
+    // egui does not wrap text inside a plain horizontal row, and the studio
+    // reports host status, provider errors, and filesystem paths whose length
+    // is not known when the row is written. Without this, one long line widens
+    // the whole presentation instead of taking a second line.
+    style.wrap_mode = Some(egui::TextWrapMode::Wrap);
     let corner_radius = egui::CornerRadius::same(CORNER_RADIUS);
     let visuals = &mut style.visuals;
     visuals.panel_fill = BACKGROUND;

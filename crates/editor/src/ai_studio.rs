@@ -103,6 +103,8 @@ struct AiStudioPreferences {
     hosted_model_endpoint: String,
     #[serde(default)]
     hosted_model_name: String,
+    #[serde(default)]
+    presentation_mode: AiStudioPresentationMode,
 }
 
 impl Default for AiStudioPreferences {
@@ -119,6 +121,7 @@ impl Default for AiStudioPreferences {
             local_model_name: String::new(),
             hosted_model_endpoint: String::new(),
             hosted_model_name: String::new(),
+            presentation_mode: AiStudioPresentationMode::default(),
         }
     }
 }
@@ -594,9 +597,14 @@ struct PendingQuestionPermission {
     conversation: Vec<QuestionMessage>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 enum AiStudioPresentationMode {
     Embedded,
+    /// AI Studio opens in its own OS window unless the user reattaches it,
+    /// because the studio is a conversation surface used beside the Editor
+    /// rather than one more dock competing with the scene for the same pixels.
+    #[default]
     Detached,
 }
 
@@ -609,7 +617,7 @@ struct AiStudioPresentationState {
 impl Default for AiStudioPresentationState {
     fn default() -> Self {
         Self {
-            mode: AiStudioPresentationMode::Embedded,
+            mode: AiStudioPresentationMode::default(),
             open: true,
         }
     }
@@ -839,7 +847,10 @@ impl AiStudioPanel {
             active_external_args: None,
             provider_program: String::new(),
             provider_args: String::new(),
-            presentation: AiStudioPresentationState::default(),
+            presentation: AiStudioPresentationState {
+                mode: preferences.presentation_mode,
+                open: true,
+            },
             #[cfg(feature = "visual-validation")]
             detached_visual_frames: 0,
             #[cfg(feature = "visual-validation")]
@@ -1567,19 +1578,8 @@ impl AiStudioPanel {
     fn show_embedded(&mut self, context: &egui::Context) {
         let mut open = self.presentation.open;
         let mut detach_requested = false;
-        egui::Window::new("AI Studio")
-            .id(egui::Id::new("gameengine_ai_studio"))
-            .frame(
-                egui::Frame::window(&context.global_style())
-                    .fill(theme::BACKGROUND)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER)),
-            )
+        embedded_window(context)
             .open(&mut open)
-            .default_pos(egui::pos2(940.0, 84.0))
-            .default_size(egui::vec2(600.0, 760.0))
-            .min_width(460.0)
-            .min_height(520.0)
-            .resizable(true)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Detach").clicked() {
@@ -1588,11 +1588,12 @@ impl AiStudioPanel {
                     ui.small("Open AI Studio in its own OS window.");
                 });
                 ui.separator();
-                self.show_contents(ui);
+                embedded_contents_scroll_area().show(ui, |ui| self.show_contents(ui));
             });
         self.presentation.open = open;
         if detach_requested {
             self.presentation.detach();
+            self.save_preferences();
         }
     }
 
@@ -1637,6 +1638,7 @@ impl AiStudioPanel {
 
         if reattach_requested {
             self.presentation.reattach();
+            self.save_preferences();
         } else if close_requested {
             self.presentation.close();
         }
@@ -1966,7 +1968,7 @@ impl AiStudioPanel {
             // The status line is the studio's one running narration, so it keeps
             // a tinted border instead of dissolving into the cards above it.
             theme::attention_card(ui, theme::ACCENT, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_top(|ui| {
                     theme::status_dot(ui, theme::ACCENT_TEXT);
                     ui.label(status);
                 });
@@ -3464,6 +3466,7 @@ impl AiStudioPanel {
             local_model_name: self.local_model_name.clone(),
             hosted_model_endpoint: self.hosted_model_endpoint.clone(),
             hosted_model_name: self.hosted_model_name.clone(),
+            presentation_mode: self.presentation.mode,
         };
         match serde_json::to_vec_pretty(&preferences) {
             Ok(bytes) => {
@@ -5948,6 +5951,54 @@ fn provider_gamepad_axis(axis: &str) -> Result<GamepadAxis, String> {
     }
 }
 
+/// Smallest embedded studio that still shows a conversation beside its cards.
+const EMBEDDED_MIN_SIZE: egui::Vec2 = egui::vec2(460.0_f32, 520.0_f32);
+/// Size the embedded studio opens at before the user resizes it.
+const EMBEDDED_DEFAULT_SIZE: egui::Vec2 = egui::vec2(600.0_f32, 760.0_f32);
+/// Room the embedded studio leaves around itself inside the Editor.
+const EMBEDDED_EDITOR_MARGIN: f32 = 80.0_f32;
+
+/// Returns the embedded AI Studio window, kept inside the Editor around it.
+///
+/// egui moves a window that is larger than the screen but never shrinks one, so
+/// an Editor shorter than the studio's opening size would leave the studio's
+/// lower edge — and the scroll bar that reaches its lower cards — hanging past
+/// the bottom of the display. The bound is generous enough that it never fights
+/// a user dragging the studio wider.
+fn embedded_window(context: &egui::Context) -> egui::Window<'static> {
+    let editor = context.content_rect();
+    let max_width = (editor.width() - EMBEDDED_EDITOR_MARGIN).max(EMBEDDED_MIN_SIZE.x);
+    let max_height = (editor.height() - EMBEDDED_EDITOR_MARGIN).max(EMBEDDED_MIN_SIZE.y);
+    egui::Window::new("AI Studio")
+        .id(egui::Id::new("gameengine_ai_studio"))
+        .frame(
+            egui::Frame::window(&context.global_style())
+                .fill(theme::BACKGROUND)
+                .stroke(egui::Stroke::new(1.0_f32, theme::BORDER)),
+        )
+        .default_pos(egui::pos2(940.0_f32, 84.0_f32))
+        .default_size(EMBEDDED_DEFAULT_SIZE)
+        .min_width(EMBEDDED_MIN_SIZE.x)
+        .min_height(EMBEDDED_MIN_SIZE.y)
+        .max_width(max_width)
+        .max_height(max_height)
+        .resizable(true)
+}
+
+/// Returns the scroll area that carries the embedded studio's cards.
+///
+/// This is what keeps the studio a panel. An `egui::Window` grows to whatever
+/// its contents ask for, so without a scroll area the studio's own cards expand
+/// it until it covers the Editor, and the cards past the screen edge cannot be
+/// reached at all. Refusing to shrink spans the cards across the window the way
+/// the detached presentation already draws them, rather than sizing them to the
+/// widest card.
+fn embedded_contents_scroll_area() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .id_salt("ai_studio_embedded_contents")
+        .auto_shrink([false, false])
+}
+
 fn load_ai_studio_preferences(path: &std::path::Path) -> AiStudioPreferences {
     let Ok(bytes) = fs::read(path) else {
         return AiStudioPreferences::default();
@@ -6357,6 +6408,7 @@ mod tests {
             local_model_name: String::new(),
             hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
             hosted_model_name: "example-model".to_owned(),
+            presentation_mode: AiStudioPresentationMode::default(),
         };
         let json = serde_json::to_string(&preferences).expect("serialize preferences");
         assert!(!json.contains("authorization"));
@@ -6401,6 +6453,107 @@ mod tests {
         assert_eq!(profile.streaming, Some(false));
         assert_eq!(profile.usage, Some(true));
         assert_eq!(profile.resource_capabilities, Default::default());
+    }
+
+    #[test]
+    fn presentation_opens_detached_until_the_user_reattaches_it() {
+        assert_eq!(
+            AiStudioPresentationState::default().mode,
+            AiStudioPresentationMode::Detached
+        );
+        // A studio that was reattached must stay reattached across Editor
+        // restarts, so the chosen mode is machine-local preference state rather
+        // than a per-session default.
+        let reattached: AiStudioPreferences = serde_json::from_str(
+            r#"{"schema_version":1,"presentation_mode":"embedded"}"#,
+        )
+        .expect("deserialize reattached presentation preferences");
+        assert_eq!(
+            reattached.presentation_mode,
+            AiStudioPresentationMode::Embedded
+        );
+        let legacy: AiStudioPreferences = serde_json::from_str(r#"{"schema_version":1}"#)
+            .expect("deserialize preferences written before the mode was persisted");
+        assert_eq!(legacy.presentation_mode, AiStudioPresentationMode::Detached);
+    }
+
+    /// The embedded studio must stay a panel and must reach its lower cards.
+    ///
+    /// Reported together: the studio grew until it covered the Editor, and once
+    /// reattached its contents could not be scrolled, so everything below the
+    /// window edge was unreachable.
+    #[test]
+    fn embedded_presentation_fits_the_editor_and_scrolls_to_its_lower_contents() {
+        // A long unbroken status line is what the studio writes while managed
+        // Local AI setup runs, and it is one of the contents that used to widen
+        // the window.
+        const LONG_STATUS: &str = "Provisioning the dedicated GameEngine-LocalAI WSL environment. Windows may require explicit elevation or restart; GameEngine never bypasses either boundary.";
+        // The window frame draws its title bar and margins outside the content
+        // area the size bounds apply to.
+        const WINDOW_CHROME: f32 = 60.0_f32;
+
+        for (editor, tallest) in [
+            // A roomy Editor: the studio must stay the size it opens at instead
+            // of growing with its contents.
+            (
+                egui::vec2(1_600.0_f32, 900.0_f32),
+                EMBEDDED_DEFAULT_SIZE.y + WINDOW_CHROME,
+            ),
+            // An Editor shorter than the studio's opening size: the studio must
+            // fit anyway, because egui moves an oversized window but never
+            // shrinks one.
+            (egui::vec2(1_000.0_f32, 640.0_f32), 640.0_f32),
+        ] {
+            let context = egui::Context::default();
+            // A window resolves its size from the previous frame's contents, so
+            // unbounded growth needs more than one frame to show up.
+            for frame in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, editor)),
+                    ..egui::RawInput::default()
+                };
+                let mut window_rect = None;
+                let mut overflow = None;
+                let _ = context.run_ui(input, |ui| {
+                    let response = embedded_window(ui.ctx()).show(ui.ctx(), |ui| {
+                        theme::apply_studio_style(ui);
+                        let scrolled = embedded_contents_scroll_area().show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                theme::status_dot(ui, theme::ACCENT_TEXT);
+                                ui.label(LONG_STATUS);
+                            });
+                            // Stands in for the studio's stack of cards, which
+                            // is taller than any window the Editor can host.
+                            ui.allocate_exact_size(
+                                egui::vec2(10.0_f32, 4_000.0_f32),
+                                egui::Sense::hover(),
+                            );
+                        });
+                        overflow = Some(scrolled.content_size.y - scrolled.inner_rect.height());
+                    });
+                    window_rect = response.map(|response| response.response.rect);
+                });
+
+                let window = window_rect.expect("embedded studio must be laid out");
+                assert!(
+                    window.height() <= tallest,
+                    "frame {frame} grew the embedded studio to {} tall in a {}-tall Editor",
+                    window.height(),
+                    editor.y
+                );
+                assert!(
+                    window.width() <= editor.x,
+                    "frame {frame} widened the embedded studio to {} in a {}-wide Editor",
+                    window.width(),
+                    editor.x
+                );
+                let overflow = overflow.expect("embedded contents must be laid out");
+                assert!(
+                    overflow > 0.0_f32,
+                    "frame {frame} left the lower contents unreachable instead of scrollable"
+                );
+            }
+        }
     }
 
     #[test]
