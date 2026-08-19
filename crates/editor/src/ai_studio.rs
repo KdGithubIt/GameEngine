@@ -6055,8 +6055,12 @@ mod tests {
         assert!(preferences.managed_model_id.is_empty());
         assert_eq!(preferences.local_model_name, "legacy-model");
         assert_eq!(
+            preferences.local_model_endpoint,
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(
             AiStudioPreferences::default().model_backend,
-            ModelBackendPreference::ManagedLocal
+            ModelBackendPreference::Local
         );
     }
 
