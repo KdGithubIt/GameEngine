@@ -212,15 +212,64 @@ pub(crate) struct CampaignCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CampaignFixtureIdentity {
+    pub(crate) fixture_id: String,
+    pub(crate) fixture_version: String,
+    pub(crate) instance_id: String,
+    host_seed: u64,
+}
+
+impl CampaignFixtureIdentity {
+    pub(crate) fn for_task(task_id: &str, host_seed: u64) -> Self {
+        let hash = stable_hash(format!("{task_id}:{host_seed}").as_bytes());
+        Self {
+            fixture_id: format!("gameengine-agent-{task_id}"),
+            fixture_version: CAMPAIGN_FIXTURE_VERSION.to_owned(),
+            instance_id: format!("{hash:016x}"),
+            host_seed,
+        }
+    }
+
+    pub(crate) fn candidate_contract(
+        &self,
+        task_id: &str,
+    ) -> Result<CandidateTaskContract, String> {
+        let task = benchmark_task(task_id)
+            .ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+        let marker_hash = self.host_seed.rotate_left(17) ^ stable_hash(task_id.as_bytes());
+        Ok(CandidateTaskContract {
+            task_id: task.id.to_owned(),
+            prompt: format!(
+                "Execute candidate-visible ADR0156 fixture fixture-{:08x} using only normal production tools.",
+                marker_hash as u32
+            ),
+            completion_criteria: task
+                .completion_criteria
+                .iter()
+                .map(|criterion| (*criterion).to_owned())
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct CandidateTaskContract {
+    pub(crate) task_id: String,
+    pub(crate) prompt: String,
+    pub(crate) completion_criteria: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CampaignTaskPlan {
     pub(crate) task_id: String,
+    pub(crate) fixture: CampaignFixtureIdentity,
     pub(crate) runtime_harness_version: String,
     pub(crate) workload: InferenceWorkload,
     pub(crate) tool_budget: BenchmarkToolBudget,
 }
 
 impl CampaignTaskPlan {
-    pub(crate) fn for_task(task_id: &str) -> Result<Self, String> {
+    pub(crate) fn for_task(task_id: &str, host_seed: u64) -> Result<Self, String> {
         let runtime_harness_version = match campaign_task_harness(task_id)? {
             CampaignTaskHarness::NativeReadQuestion => BASELINE_HARNESS_VERSION,
             CampaignTaskHarness::GovernedAgentHost
@@ -228,11 +277,18 @@ impl CampaignTaskPlan {
         };
         Ok(Self {
             task_id: task_id.to_owned(),
+            fixture: CampaignFixtureIdentity::for_task(task_id, host_seed),
             runtime_harness_version: runtime_harness_version.to_owned(),
             workload: campaign_task_workload(task_id)?,
             tool_budget: task_tool_budget(task_id)?,
         })
     }
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 fn measured_text(value: &TelemetryValue<String>) -> Option<String> {
