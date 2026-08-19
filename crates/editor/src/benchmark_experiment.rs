@@ -11,6 +11,7 @@ use crate::agent_benchmark::{
     benchmark_task, BenchmarkExecutionIdentity, BenchmarkRecord, BENCHMARK_CORPUS_VERSION,
     BENCHMARK_HARNESS_VERSION,
 };
+use crate::managed_local_runtime::{ManagedExecutionEnvironment, MANAGED_BACKEND_ID};
 use crate::resource_arbitration::{QualityPreference, TelemetryValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +55,9 @@ pub(crate) struct BenchmarkExperimentSpec {
     pub(crate) harness_version: String,
     pub(crate) fixture_version: String,
     pub(crate) backend_id: String,
+    /// Exact GameEngine-managed execution environment. External compatible backends leave this unset.
+    #[serde(default)]
+    pub(crate) managed_execution_environment: Option<ManagedExecutionEnvironment>,
     pub(crate) model_ids: Vec<String>,
     pub(crate) task_ids: Vec<String>,
     pub(crate) repeat_count: u32,
@@ -95,6 +99,7 @@ impl BenchmarkExperimentSpec {
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
             backend_id: "ollama-compatible".to_owned(),
+            managed_execution_environment: None,
             model_ids,
             task_ids,
             repeat_count,
@@ -129,6 +134,13 @@ impl BenchmarkExperimentSpec {
         }
         if self.backend_id.trim().is_empty() {
             return Err("benchmark backend id must be non-empty".to_owned());
+        }
+        if self.backend_id == MANAGED_BACKEND_ID {
+            if self.managed_execution_environment.is_none() {
+                return Err("managed benchmark experiments require an exact execution environment".to_owned());
+            }
+        } else if self.managed_execution_environment.is_some() {
+            return Err("only the GameEngine-managed backend may carry a managed execution environment".to_owned());
         }
         if self.model_ids.is_empty() {
             return Err("benchmark experiment requires at least one exact model id".to_owned());

@@ -7,6 +7,7 @@ use crate::agent_benchmark::{
     benchmark_task, BenchmarkModelIdentity, BenchmarkTaskKind, BenchmarkToolBudget,
 };
 use crate::native_agent::BASELINE_HARNESS_VERSION;
+use crate::managed_local_runtime::ManagedExecutionEnvironment;
 use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
 use crate::resource_arbitration::{InferenceWorkload, TelemetryValue};
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,14 @@ impl CampaignExecutionEnvironment {
             Self::CompatibleBackend => "Frozen compatible backend",
             Self::WindowsNative => "Windows native",
             Self::Wsl2Linux => "WSL2 Linux",
+        }
+    }
+
+    pub(crate) const fn managed_environment(self) -> Option<ManagedExecutionEnvironment> {
+        match self {
+            Self::CompatibleBackend => None,
+            Self::WindowsNative => Some(ManagedExecutionEnvironment::WindowsNative),
+            Self::Wsl2Linux => Some(ManagedExecutionEnvironment::Wsl2Linux),
         }
     }
 }

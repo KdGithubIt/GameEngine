@@ -26,6 +26,7 @@ use crate::benchmark_experiment::{
 };
 use crate::managed_local_runtime::{
     ManagedAcquisitionApproval, ManagedAcquisitionCandidate, ManagedAcquisitionPlan,
+    MANAGED_BACKEND_ID,
 };
 use crate::resource_arbitration::{QualityPreference, TelemetryValue};
 use serde::{Deserialize, Serialize};
@@ -424,6 +425,20 @@ impl CampaignPlan {
             .first()
             .map(|candidate| candidate.representation.backend_id.clone())
             .ok_or_else(|| "campaign requires at least one candidate".to_owned())?;
+        let managed_execution_environment = if backend_id == MANAGED_BACKEND_ID {
+            Some(self.execution_environment.managed_environment().ok_or_else(|| {
+                "GameEngine-managed campaigns require Windows native or WSL2 Linux execution"
+                    .to_owned()
+            })?)
+        } else {
+            if self.execution_environment != CampaignExecutionEnvironment::CompatibleBackend {
+                return Err(
+                    "Windows native / WSL2 campaign identity requires the GameEngine-managed backend"
+                        .to_owned(),
+                );
+            }
+            None
+        };
         let spec = BenchmarkExperimentSpec {
             schema_version: 1,
             experiment_id: format!("{}-{}", self.campaign_id, self.plan_digest),
@@ -432,6 +447,7 @@ impl CampaignPlan {
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
             backend_id,
+            managed_execution_environment,
             model_ids: self
                 .candidates
                 .iter()

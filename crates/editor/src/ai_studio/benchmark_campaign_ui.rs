@@ -185,8 +185,64 @@ impl AiStudioPanel {
     fn show_campaign_candidates(&mut self, ui: &mut egui::Ui) {
         let frozen = self.benchmark_campaign.plan.is_some();
         ui.strong("Candidates");
+        if let Some(environment) = self
+            .benchmark_campaign
+            .execution_environment
+            .managed_environment()
+        {
+            let models = match self.managed_local_runtime.registered_models() {
+                Ok(models) => models,
+                Err(error) => {
+                    ui.small(format!("Managed model registry unavailable: {error}"));
+                    return;
+                }
+            };
+            if models.is_empty() {
+                ui.small("No managed GGUF models are registered. Register exact GGUF files in Local AI first.");
+                return;
+            }
+            ui.small(format!(
+                "{} campaigns run these registered GGUF representations through GameEngine-managed llama.cpp.",
+                environment.label()
+            ));
+            for model in &models {
+                let exact = model.content_sha256.len() == 64
+                    && model.quantization.is_some()
+                    && model.size_bytes > 0;
+                let mut selected = self
+                    .benchmark_campaign
+                    .selected_models
+                    .contains(&model.model_id);
+                if ui
+                    .add_enabled(
+                        !frozen && exact,
+                        egui::Checkbox::new(
+                            &mut selected,
+                            format!("{} · {}", model.display_name, model.model_id),
+                        ),
+                    )
+                    .changed()
+                {
+                    if selected {
+                        self.benchmark_campaign
+                            .selected_models
+                            .insert(model.model_id.clone());
+                    } else {
+                        self.benchmark_campaign.selected_models.remove(&model.model_id);
+                    }
+                }
+                if !exact {
+                    ui.small(format!(
+                        "{} cannot be a candidate: its exact digest, quantization, or byte size is not measured.",
+                        model.display_name
+                    ));
+                }
+            }
+            return;
+        }
+
         let Some(inventory) = self.installed_model_inventory.clone() else {
-            ui.small("No local model inventory yet. Discover installed models first.");
+            ui.small("No compatible local model inventory yet. Discover installed models first.");
             return;
         };
         for model in &inventory.models {
@@ -492,38 +548,86 @@ impl AiStudioPanel {
         if ENGINE_COMMIT_HEAD.is_empty() {
             return Err("this Editor build carries no exact GameEngine commit identity".to_owned());
         }
-        let inventory = self
-            .installed_model_inventory
-            .as_ref()
-            .ok_or_else(|| "no local model inventory is available".to_owned())?;
-        let backend_runtime_version = inventory
-            .backend_version
-            .clone()
-            .ok_or_else(|| "the local backend did not report an exact runtime version".to_owned())?;
-        let mut candidates = Vec::new();
-        for model in &inventory.models {
-            if !self.benchmark_campaign.selected_models.contains(&model.name) {
-                continue;
+        let (backend_runtime_version, candidates) = if let Some(environment) = self
+            .benchmark_campaign
+            .execution_environment
+            .managed_environment()
+        {
+            let installation = self
+                .managed_local_runtime
+                .active_installation(environment)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    format!(
+                        "the GameEngine-managed {} runtime is not installed",
+                        environment.label()
+                    )
+                })?;
+            let models = self
+                .managed_local_runtime
+                .registered_models()
+                .map_err(|error| error.to_string())?;
+            let mut candidates = Vec::new();
+            for model in models {
+                if !self
+                    .benchmark_campaign
+                    .selected_models
+                    .contains(&model.model_id)
+                {
+                    continue;
+                }
+                let quantization = model.quantization.clone().ok_or_else(|| {
+                    format!("model `{}` has no measured quantization", model.display_name)
+                })?;
+                if model.size_bytes == 0 {
+                    return Err(format!("model `{}` has no measured size", model.display_name));
+                }
+                candidates.push(CampaignCandidate {
+                    representation: CampaignRepresentation {
+                        backend_id: MANAGED_BACKEND_ID.to_owned(),
+                        model_id: model.model_id,
+                        model_version: model.content_sha256,
+                        quantization,
+                        representation_size_bytes: model.size_bytes,
+                    },
+                    source: CampaignCandidateSource::installed(),
+                });
             }
-            let representation = CampaignRepresentation {
-                backend_id: "ollama-compatible".to_owned(),
-                model_id: model.name.clone(),
-                model_version: model
-                    .digest
-                    .clone()
-                    .ok_or_else(|| format!("model `{}` has no measured digest", model.name))?,
-                quantization: model.quantization_level.clone().ok_or_else(|| {
-                    format!("model `{}` has no measured quantization", model.name)
-                })?,
-                representation_size_bytes: model
-                    .size_bytes
-                    .ok_or_else(|| format!("model `{}` has no measured size", model.name))?,
-            };
-            candidates.push(CampaignCandidate {
-                representation,
-                source: CampaignCandidateSource::installed(),
-            });
-        }
+            (installation.benchmark_runtime_identity(), candidates)
+        } else {
+            let inventory = self
+                .installed_model_inventory
+                .as_ref()
+                .ok_or_else(|| "no compatible local model inventory is available".to_owned())?;
+            let backend_runtime_version = inventory
+                .backend_version
+                .clone()
+                .ok_or_else(|| "the compatible local backend did not report an exact runtime version".to_owned())?;
+            let mut candidates = Vec::new();
+            for model in &inventory.models {
+                if !self.benchmark_campaign.selected_models.contains(&model.name) {
+                    continue;
+                }
+                candidates.push(CampaignCandidate {
+                    representation: CampaignRepresentation {
+                        backend_id: "ollama-compatible".to_owned(),
+                        model_id: model.name.clone(),
+                        model_version: model
+                            .digest
+                            .clone()
+                            .ok_or_else(|| format!("model `{}` has no measured digest", model.name))?,
+                        quantization: model.quantization_level.clone().ok_or_else(|| {
+                            format!("model `{}` has no measured quantization", model.name)
+                        })?,
+                        representation_size_bytes: model
+                            .size_bytes
+                            .ok_or_else(|| format!("model `{}` has no measured size", model.name))?,
+                    },
+                    source: CampaignCandidateSource::installed(),
+                });
+            }
+            (backend_runtime_version, candidates)
+        };
         Ok(CampaignPolicy {
             campaign_id: self.benchmark_campaign.campaign_id.trim().to_owned(),
             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
@@ -542,7 +646,38 @@ impl AiStudioPanel {
         })
     }
 
+    fn campaign_backend_runtime_version(&self) -> Result<String, String> {
+        if let Some(environment) = self
+            .benchmark_campaign
+            .execution_environment
+            .managed_environment()
+        {
+            return self
+                .managed_local_runtime
+                .active_installation(environment)
+                .map_err(|error| error.to_string())?
+                .map(|installation| installation.benchmark_runtime_identity())
+                .ok_or_else(|| format!("the GameEngine-managed {} runtime is not installed", environment.label()));
+        }
+        self.installed_model_inventory
+            .as_ref()
+            .and_then(|inventory| inventory.backend_version.clone())
+            .ok_or_else(|| "the compatible local backend runtime version is unavailable".to_owned())
+    }
+
     fn installed_campaign_model_ids(&self) -> BTreeSet<String> {
+        if self
+            .benchmark_campaign
+            .execution_environment
+            .managed_environment()
+            .is_some()
+        {
+            return self
+                .managed_local_runtime
+                .registered_models()
+                .map(|models| models.into_iter().map(|model| model.model_id).collect())
+                .unwrap_or_default();
+        }
         self.installed_model_inventory
             .as_ref()
             .map(|inventory| {
@@ -598,11 +733,14 @@ impl AiStudioPanel {
         let bytes = serde_json::to_vec_pretty(&spec).map_err(|error| error.to_string())?;
         fs::write(&spec_path, bytes).map_err(|error| error.to_string())?;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let process = Command::new(executable)
-            .arg("--benchmark-experiment")
-            .arg(&spec_path)
-            .arg("--benchmark-endpoint")
-            .arg(self.local_model_endpoint.trim())
+        let mut command = Command::new(executable);
+        command.arg("--benchmark-experiment").arg(&spec_path);
+        if spec.backend_id != MANAGED_BACKEND_ID {
+            command
+                .arg("--benchmark-endpoint")
+                .arg(self.local_model_endpoint.trim());
+        }
+        let process = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -620,9 +758,7 @@ impl AiStudioPanel {
         let probe = CampaignEnvironmentProbe {
             execution_environment: self.benchmark_campaign.execution_environment,
             backend_runtime_version: self
-                .installed_model_inventory
-                .as_ref()
-                .and_then(|inventory| inventory.backend_version.clone())
+                .campaign_backend_runtime_version()
                 .unwrap_or_default(),
             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
         };
