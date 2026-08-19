@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "                model_path: state_root.join(\"missing-model.gguf\"),\n                model_size_bytes: 1,\n                quantization: Some(\"Q4_K_M\".to_owned()),\n                runtime_tag: \"test-runtime\".to_owned(),",
+  "new": "                model_path: state_root.join(\"missing-model.gguf\"),\n                model_size_bytes: 1,\n                quantization: Some(\"Q4_K_M\".to_owned()),\n                model_representation: None,\n                runtime_tag: \"test-runtime\".to_owned(),"
+}
