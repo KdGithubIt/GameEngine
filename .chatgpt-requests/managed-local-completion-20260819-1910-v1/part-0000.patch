@@ -1,0 +1,788 @@
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index 0fb26e772874fbc389e000e3e9525daefa5b0468..cffcd94dc1479788783095c4a9d9ddca48bcb467 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -7,6 +7,7 @@ use crate::agent_benchmark::{
+     benchmark_task, BenchmarkModelIdentity, BenchmarkTaskKind, BenchmarkToolBudget,
+ };
+ use crate::native_agent::BASELINE_HARNESS_VERSION;
++use crate::managed_local_runtime::ManagedExecutionEnvironment;
+ use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
+ use crate::resource_arbitration::{InferenceWorkload, TelemetryValue};
+ use serde::{Deserialize, Serialize};
+@@ -65,6 +66,14 @@ impl CampaignExecutionEnvironment {
+             Self::Wsl2Linux => "WSL2 Linux",
+         }
+     }
++
++    pub(crate) const fn managed_environment(self) -> Option<ManagedExecutionEnvironment> {
++        match self {
++            Self::CompatibleBackend => None,
++            Self::WindowsNative => Some(ManagedExecutionEnvironment::WindowsNative),
++            Self::Wsl2Linux => Some(ManagedExecutionEnvironment::Wsl2Linux),
++        }
++    }
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 349bdc4f3a36f7bd16fbcf9917f936d7dd43a529..42e37f135102e015fea4fc50ccab1becb8af1e8a 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -32,8 +32,8 @@ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
+ use crate::managed_local_runtime::{
+     ManagedEnvironmentProbe, ManagedEnvironmentProbeTask, ManagedExecutionEnvironment,
+-    ManagedIntegrityCheck, ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation,
+-    ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask, PINNED_LLAMA_CPP_REVISION,
++    ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation, ManagedSetupResult,
++    ManagedSetupStatus, ManagedSetupTask, MANAGED_BACKEND_ID, PINNED_LLAMA_CPP_REVISION,
+     PINNED_LLAMA_CPP_TAG,
+ };
+ use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
+@@ -2977,24 +2977,12 @@ impl AiStudioPanel {
+             .cloned()
+     }
+ 
+-    fn managed_model_config(&self) -> Result<ManagedLocalModelConfig, String> {
+-        if self.managed_model_id.trim().is_empty() {
+-            return Err("Register or select a managed GGUF model before starting inference.".to_owned());
+-        }
+-        self.managed_local_runtime
+-            .configuration_for(
+-                &self.managed_model_id,
+-                self.managed_execution_environment,
+-                ManagedIntegrityCheck::Enforced,
+-            )
+-            .map_err(|error| error.to_string())
+-    }
+-
+-    /// Resolves the managed configuration the panel may render.
++    /// Resolves the frozen managed identity the UI may hand to an inference worker.
+     ///
+-    /// Answers come from the cached environment probe, so drawing a frame never
+-    /// hashes the model. [`Self::managed_model_config`] keeps the ADR 0155
+-    /// pre-inference verification for the paths that start inference.
++    /// Answers come from the cached environment probe, so neither drawing a frame nor
++    /// pressing Send hashes the model on the UI thread. The inference worker performs
++    /// ADR 0155 integrity verification against this frozen identity before endpoint
++    /// startup.
+     fn described_managed_model_config(&mut self) -> Result<ManagedLocalModelConfig, String> {
+         if self.managed_model_id.trim().is_empty() {
+             return Err("Register or select a managed GGUF model before starting inference.".to_owned());
+@@ -3179,7 +3167,7 @@ impl AiStudioPanel {
+             .unwrap_or_default()
+     }
+ 
+-    fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
++    fn selected_native_model_config(&mut self) -> Result<NativeModelConfig, String> {
+         match self.model_backend {
+             ModelBackendPreference::Local => {
+                 if self.local_model_name.trim().is_empty() {
+@@ -3190,9 +3178,9 @@ impl AiStudioPanel {
+                     model: self.local_model_name.clone(),
+                 }))
+             }
+-            ModelBackendPreference::ManagedLocal => {
+-                self.managed_model_config().map(NativeModelConfig::Managed)
+-            }
++            ModelBackendPreference::ManagedLocal => self
++                .described_managed_model_config()
++                .map(NativeModelConfig::Managed),
+             ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
+                 if !self.hosted_model_endpoint.trim().starts_with("https://") {
+                     return Err("Hosted and enterprise model endpoints must use HTTPS.".to_owned());
+@@ -3374,7 +3362,7 @@ impl AiStudioPanel {
+         }
+     }
+ 
+-    fn selected_local_resource_config(&self) -> Option<LocalModelResourceConfig> {
++    fn selected_local_resource_config(&mut self) -> Option<LocalModelResourceConfig> {
+         match self.model_backend {
+             ModelBackendPreference::Local if !self.local_model_name.trim().is_empty() => {
+                 Some(LocalModelResourceConfig::Ollama(LocalModelConfig {
+@@ -3383,7 +3371,7 @@ impl AiStudioPanel {
+                 }))
+             }
+             ModelBackendPreference::ManagedLocal => self
+-                .managed_model_config()
++                .described_managed_model_config()
+                 .ok()
+                 .map(LocalModelResourceConfig::Managed),
+             _ => None,
+@@ -3655,7 +3643,19 @@ impl AiStudioPanel {
+                     Err(error) => self.status = Some(error.to_string()),
+                 }
+             }
+-            Err(error) => self.status = Some(error.to_string()),
++            Err(error) => {
++                let diagnostic = format!("Inference failed: {error}");
++                self.status = Some(diagnostic.clone());
++                if let Err(append_error) = self.host.append_message(
++                    &session_id,
++                    ConversationRole::System,
++                    diagnostic,
++                ) {
++                    self.status = Some(format!(
++                        "Inference failed: {error}; Conversation diagnostic could not be recorded: {append_error}"
++                    ));
++                }
++            }
+         }
+         if self.restore_for_editing {
+             self.begin_model_residency_request(
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index b3b1dc6487c1b0405831e40db83d701d336ab6df..2456fea9080cf4bf3621f7407248406081b92df4 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -185,8 +185,64 @@ impl AiStudioPanel {
+     fn show_campaign_candidates(&mut self, ui: &mut egui::Ui) {
+         let frozen = self.benchmark_campaign.plan.is_some();
+         ui.strong("Candidates");
++        if let Some(environment) = self
++            .benchmark_campaign
++            .execution_environment
++            .managed_environment()
++        {
++            let models = match self.managed_local_runtime.registered_models() {
++                Ok(models) => models,
++                Err(error) => {
++                    ui.small(format!("Managed model registry unavailable: {error}"));
++                    return;
++                }
++            };
++            if models.is_empty() {
++                ui.small("No managed GGUF models are registered. Register exact GGUF files in Local AI first.");
++                return;
++            }
++            ui.small(format!(
++                "{} campaigns run these registered GGUF representations through GameEngine-managed llama.cpp.",
++                environment.label()
++            ));
++            for model in &models {
++                let exact = model.content_sha256.len() == 64
++                    && model.quantization.is_some()
++                    && model.size_bytes > 0;
++                let mut selected = self
++                    .benchmark_campaign
++                    .selected_models
++                    .contains(&model.model_id);
++                if ui
++                    .add_enabled(
++                        !frozen && exact,
++                        egui::Checkbox::new(
++                            &mut selected,
++                            format!("{} · {}", model.display_name, model.model_id),
++                        ),
++                    )
++                    .changed()
++                {
++                    if selected {
++                        self.benchmark_campaign
++                            .selected_models
++                            .insert(model.model_id.clone());
++                    } else {
++                        self.benchmark_campaign.selected_models.remove(&model.model_id);
++                    }
++                }
++                if !exact {
++                    ui.small(format!(
++                        "{} cannot be a candidate: its exact digest, quantization, or byte size is not measured.",
++                        model.display_name
++                    ));
++                }
++            }
++            return;
++        }
++
+         let Some(inventory) = self.installed_model_inventory.clone() else {
+-            ui.small("No local model inventory yet. Discover installed models first.");
++            ui.small("No compatible local model inventory yet. Discover installed models first.");
+             return;
+         };
+         for model in &inventory.models {
+@@ -492,38 +548,86 @@ impl AiStudioPanel {
+         if ENGINE_COMMIT_HEAD.is_empty() {
+             return Err("this Editor build carries no exact GameEngine commit identity".to_owned());
+         }
+-        let inventory = self
+-            .installed_model_inventory
+-            .as_ref()
+-            .ok_or_else(|| "no local model inventory is available".to_owned())?;
+-        let backend_runtime_version = inventory
+-            .backend_version
+-            .clone()
+-            .ok_or_else(|| "the local backend did not report an exact runtime version".to_owned())?;
+-        let mut candidates = Vec::new();
+-        for model in &inventory.models {
+-            if !self.benchmark_campaign.selected_models.contains(&model.name) {
+-                continue;
++        let (backend_runtime_version, candidates) = if let Some(environment) = self
++            .benchmark_campaign
++            .execution_environment
++            .managed_environment()
++        {
++            let installation = self
++                .managed_local_runtime
++                .active_installation(environment)
++                .map_err(|error| error.to_string())?
++                .ok_or_else(|| {
++                    format!(
++                        "the GameEngine-managed {} runtime is not installed",
++                        environment.label()
++                    )
++                })?;
++            let models = self
++                .managed_local_runtime
++                .registered_models()
++                .map_err(|error| error.to_string())?;
++            let mut candidates = Vec::new();
++            for model in models {
++                if !self
++                    .benchmark_campaign
++                    .selected_models
++                    .contains(&model.model_id)
++                {
++                    continue;
++                }
++                let quantization = model.quantization.clone().ok_or_else(|| {
++                    format!("model `{}` has no measured quantization", model.display_name)
++                })?;
++                if model.size_bytes == 0 {
++                    return Err(format!("model `{}` has no measured size", model.display_name));
++                }
++                candidates.push(CampaignCandidate {
++                    representation: CampaignRepresentation {
++                        backend_id: MANAGED_BACKEND_ID.to_owned(),
++                        model_id: model.model_id,
++                        model_version: model.content_sha256,
++                        quantization,
++                        representation_size_bytes: model.size_bytes,
++                    },
++                    source: CampaignCandidateSource::installed(),
++                });
+             }
+-            let representation = CampaignRepresentation {
+-                backend_id: "ollama-compatible".to_owned(),
+-                model_id: model.name.clone(),
+-                model_version: model
+-                    .digest
+-                    .clone()
+-                    .ok_or_else(|| format!("model `{}` has no measured digest", model.name))?,
+-                quantization: model.quantization_level.clone().ok_or_else(|| {
+-                    format!("model `{}` has no measured quantization", model.name)
+-                })?,
+-                representation_size_bytes: model
+-                    .size_bytes
+-                    .ok_or_else(|| format!("model `{}` has no measured size", model.name))?,
+-            };
+-            candidates.push(CampaignCandidate {
+-                representation,
+-                source: CampaignCandidateSource::installed(),
+-            });
+-        }
++            (installation.benchmark_runtime_identity(), candidates)
++        } else {
++            let inventory = self
++                .installed_model_inventory
++                .as_ref()
++                .ok_or_else(|| "no compatible local model inventory is available".to_owned())?;
++            let backend_runtime_version = inventory
++                .backend_version
++                .clone()
++                .ok_or_else(|| "the compatible local backend did not report an exact runtime version".to_owned())?;
++            let mut candidates = Vec::new();
++            for model in &inventory.models {
++                if !self.benchmark_campaign.selected_models.contains(&model.name) {
++                    continue;
++                }
++                candidates.push(CampaignCandidate {
++                    representation: CampaignRepresentation {
++                        backend_id: "ollama-compatible".to_owned(),
++                        model_id: model.name.clone(),
++                        model_version: model
++                            .digest
++                            .clone()
++                            .ok_or_else(|| format!("model `{}` has no measured digest", model.name))?,
++                        quantization: model.quantization_level.clone().ok_or_else(|| {
++                            format!("model `{}` has no measured quantization", model.name)
++                        })?,
++                        representation_size_bytes: model
++                            .size_bytes
++                            .ok_or_else(|| format!("model `{}` has no measured size", model.name))?,
++                    },
++                    source: CampaignCandidateSource::installed(),
++                });
++            }
++            (backend_runtime_version, candidates)
++        };
+         Ok(CampaignPolicy {
+             campaign_id: self.benchmark_campaign.campaign_id.trim().to_owned(),
+             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
+@@ -542,7 +646,38 @@ impl AiStudioPanel {
+         })
+     }
+ 
++    fn campaign_backend_runtime_version(&self) -> Result<String, String> {
++        if let Some(environment) = self
++            .benchmark_campaign
++            .execution_environment
++            .managed_environment()
++        {
++            return self
++                .managed_local_runtime
++                .active_installation(environment)
++                .map_err(|error| error.to_string())?
++                .map(|installation| installation.benchmark_runtime_identity())
++                .ok_or_else(|| format!("the GameEngine-managed {} runtime is not installed", environment.label()));
++        }
++        self.installed_model_inventory
++            .as_ref()
++            .and_then(|inventory| inventory.backend_version.clone())
++            .ok_or_else(|| "the compatible local backend runtime version is unavailable".to_owned())
++    }
++
+     fn installed_campaign_model_ids(&self) -> BTreeSet<String> {
++        if self
++            .benchmark_campaign
++            .execution_environment
++            .managed_environment()
++            .is_some()
++        {
++            return self
++                .managed_local_runtime
++                .registered_models()
++                .map(|models| models.into_iter().map(|model| model.model_id).collect())
++                .unwrap_or_default();
++        }
+         self.installed_model_inventory
+             .as_ref()
+             .map(|inventory| {
+@@ -598,11 +733,14 @@ impl AiStudioPanel {
+         let bytes = serde_json::to_vec_pretty(&spec).map_err(|error| error.to_string())?;
+         fs::write(&spec_path, bytes).map_err(|error| error.to_string())?;
+         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+-        let process = Command::new(executable)
+-            .arg("--benchmark-experiment")
+-            .arg(&spec_path)
+-            .arg("--benchmark-endpoint")
+-            .arg(self.local_model_endpoint.trim())
++        let mut command = Command::new(executable);
++        command.arg("--benchmark-experiment").arg(&spec_path);
++        if spec.backend_id != MANAGED_BACKEND_ID {
++            command
++                .arg("--benchmark-endpoint")
++                .arg(self.local_model_endpoint.trim());
++        }
++        let process = command
+             .stdin(Stdio::null())
+             .stdout(Stdio::null())
+             .stderr(Stdio::null())
+@@ -620,9 +758,7 @@ impl AiStudioPanel {
+         let probe = CampaignEnvironmentProbe {
+             execution_environment: self.benchmark_campaign.execution_environment,
+             backend_runtime_version: self
+-                .installed_model_inventory
+-                .as_ref()
+-                .and_then(|inventory| inventory.backend_version.clone())
++                .campaign_backend_runtime_version()
+                 .unwrap_or_default(),
+             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
+         };
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index 280c327d95dad4331182b7697736f8266b8831dc..28c514290bc81701cde29dd2aa010e17fd1223bf 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -17,14 +17,32 @@ impl AiStudioPanel {
+     /// Configures this Editor process as one isolated benchmark child.
+     pub fn configure_benchmark_child(&mut self, path: &Path) -> Result<(), String> {
+         let spec = BenchmarkChildRunSpec::read(path)?;
+-        if spec.backend_id != "ollama-compatible" {
+-            return Err("first-release benchmark child supports the local Ollama-compatible backend only".to_owned());
++        match spec.backend_id.as_str() {
++            "ollama-compatible" => {
++                self.model_backend = ModelBackendPreference::Local;
++                self.local_model_endpoint = spec.endpoint.clone();
++                self.local_model_name = spec.model_id.clone();
++            }
++            MANAGED_BACKEND_ID => {
++                let environment = spec.managed_execution_environment.ok_or_else(|| {
++                    "managed benchmark child is missing its frozen execution environment".to_owned()
++                })?;
++                self.model_backend = ModelBackendPreference::ManagedLocal;
++                self.managed_execution_environment = environment;
++                self.managed_model_id = spec.model_id.clone();
++                self.managed_probe = None;
++                self.managed_probe_completed_at = None;
++                self.managed_probe_requested = true;
++            }
++            backend => {
++                return Err(format!(
++                    "first-release benchmark child does not support backend `{backend}`"
++                ));
++            }
+         }
+-        self.model_backend = ModelBackendPreference::Local;
+-        self.local_model_endpoint = spec.endpoint.clone();
+-        self.local_model_name = spec.model_id.clone();
+         self.quality_preference = spec.quality;
+         self.benchmark_task_id = spec.task_id.clone();
++        let compatible_backend = spec.backend_id == "ollama-compatible";
+         self.benchmark_child = Some(BenchmarkChildState {
+             spec,
+             started: false,
+@@ -32,12 +50,12 @@ impl AiStudioPanel {
+             result_written: false,
+         });
+         self.presentation.close();
+-        // A comparable result must name the exact representation it ran, so the
+-        // child discovers the backend inventory before it starts the task. ADR
+-        // 0142 equivalence rejects a record whose model version, quantization,
+-        // representation size, or backend runtime version is unavailable, and
+-        // an undiscovered child would silently produce exactly that record.
+-        self.start_model_discovery();
++        // Comparable evidence must freeze the exact backend/model/runtime representation
++        // before task start. Compatible backends discover their inventory; managed runs
++        // wait for the asynchronous managed-environment probe instead.
++        if compatible_backend {
++            self.start_model_discovery();
++        }
+         Ok(())
+     }
+ 
+@@ -73,7 +91,27 @@ impl AiStudioPanel {
+         if child.result_written {
+             return;
+         }
+-        if self.model_discovery.is_some() {
++        if child.spec.backend_id == MANAGED_BACKEND_ID {
++            self.managed_probe_requested = true;
++            if self.managed_probe_task.is_some() {
++                return;
++            }
++            let Some(probe) = self.managed_probe.as_ref() else {
++                return;
++            };
++            if probe.environment != self.managed_execution_environment
++                || probe.model_id != self.managed_model_id
++            {
++                return;
++            }
++            if let Err(error) = probe.described_config.as_ref() {
++                self.write_benchmark_child_failure(
++                    BenchmarkRunFailureKind::CapabilityUnavailable,
++                    format!("managed benchmark preflight failed: {error}"),
++                );
++                return;
++            }
++        } else if self.model_discovery.is_some() {
+             // Representation discovery is still in flight; starting now would
+             // freeze an unmeasured model identity for the whole run.
+             return;
+diff --git a/crates/editor/src/benchmark_campaign.rs b/crates/editor/src/benchmark_campaign.rs
+index 208043d7ebce716138f43821ae3d72fb3dce8cae..575cb80996a80160e1b6f354cf43f7e6287c510b 100644
+--- a/crates/editor/src/benchmark_campaign.rs
++++ b/crates/editor/src/benchmark_campaign.rs
+@@ -26,6 +26,7 @@ use crate::benchmark_experiment::{
+ };
+ use crate::managed_local_runtime::{
+     ManagedAcquisitionApproval, ManagedAcquisitionCandidate, ManagedAcquisitionPlan,
++    MANAGED_BACKEND_ID,
+ };
+ use crate::resource_arbitration::{QualityPreference, TelemetryValue};
+ use serde::{Deserialize, Serialize};
+@@ -424,6 +425,20 @@ impl CampaignPlan {
+             .first()
+             .map(|candidate| candidate.representation.backend_id.clone())
+             .ok_or_else(|| "campaign requires at least one candidate".to_owned())?;
++        let managed_execution_environment = if backend_id == MANAGED_BACKEND_ID {
++            Some(self.execution_environment.managed_environment().ok_or_else(|| {
++                "GameEngine-managed campaigns require Windows native or WSL2 Linux execution"
++                    .to_owned()
++            })?)
++        } else {
++            if self.execution_environment != CampaignExecutionEnvironment::CompatibleBackend {
++                return Err(
++                    "Windows native / WSL2 campaign identity requires the GameEngine-managed backend"
++                        .to_owned(),
++                );
++            }
++            None
++        };
+         let spec = BenchmarkExperimentSpec {
+             schema_version: 1,
+             experiment_id: format!("{}-{}", self.campaign_id, self.plan_digest),
+@@ -432,6 +447,7 @@ impl CampaignPlan {
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
+             backend_id,
++            managed_execution_environment,
+             model_ids: self
+                 .candidates
+                 .iter()
+diff --git a/crates/editor/src/benchmark_experiment.rs b/crates/editor/src/benchmark_experiment.rs
+index fbd712b9cf5907659cbb702d25bb558c5a748066..41e16e478285a564b20fdfa59ad9c0c6bb15c956 100644
+--- a/crates/editor/src/benchmark_experiment.rs
++++ b/crates/editor/src/benchmark_experiment.rs
+@@ -11,6 +11,7 @@ use crate::agent_benchmark::{
+     benchmark_task, BenchmarkExecutionIdentity, BenchmarkRecord, BENCHMARK_CORPUS_VERSION,
+     BENCHMARK_HARNESS_VERSION,
+ };
++use crate::managed_local_runtime::{ManagedExecutionEnvironment, MANAGED_BACKEND_ID};
+ use crate::resource_arbitration::{QualityPreference, TelemetryValue};
+ use serde::{Deserialize, Serialize};
+ use std::collections::{BTreeMap, BTreeSet};
+@@ -54,6 +55,9 @@ pub(crate) struct BenchmarkExperimentSpec {
+     pub(crate) harness_version: String,
+     pub(crate) fixture_version: String,
+     pub(crate) backend_id: String,
++    /// Exact GameEngine-managed execution environment. External compatible backends leave this unset.
++    #[serde(default)]
++    pub(crate) managed_execution_environment: Option<ManagedExecutionEnvironment>,
+     pub(crate) model_ids: Vec<String>,
+     pub(crate) task_ids: Vec<String>,
+     pub(crate) repeat_count: u32,
+@@ -95,6 +99,7 @@ impl BenchmarkExperimentSpec {
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
+             backend_id: "ollama-compatible".to_owned(),
++            managed_execution_environment: None,
+             model_ids,
+             task_ids,
+             repeat_count,
+@@ -130,6 +135,13 @@ impl BenchmarkExperimentSpec {
+         if self.backend_id.trim().is_empty() {
+             return Err("benchmark backend id must be non-empty".to_owned());
+         }
++        if self.backend_id == MANAGED_BACKEND_ID {
++            if self.managed_execution_environment.is_none() {
++                return Err("managed benchmark experiments require an exact execution environment".to_owned());
++            }
++        } else if self.managed_execution_environment.is_some() {
++            return Err("only the GameEngine-managed backend may carry a managed execution environment".to_owned());
++        }
+         if self.model_ids.is_empty() {
+             return Err("benchmark experiment requires at least one exact model id".to_owned());
+         }
+diff --git a/crates/editor/src/benchmark_process.rs b/crates/editor/src/benchmark_process.rs
+index f7fbf07b5cea9f11d21a3faaf07cd45e598be7aa..44a52a7ad49f44b575fb15fe0dd83501817597f1 100644
+--- a/crates/editor/src/benchmark_process.rs
++++ b/crates/editor/src/benchmark_process.rs
+@@ -13,6 +13,7 @@ use crate::benchmark_experiment::{
+     BenchmarkFixtureSandbox, BenchmarkPlannedRun, BenchmarkRoutingMode, BenchmarkRunFailureKind,
+     BenchmarkRunOutcome,
+ };
++use crate::managed_local_runtime::{ManagedExecutionEnvironment, MANAGED_BACKEND_ID};
+ use crate::resource_arbitration::QualityPreference;
+ use serde::{Deserialize, Serialize};
+ use std::collections::VecDeque;
+@@ -29,6 +30,8 @@ pub(crate) struct BenchmarkChildRunSpec {
+     pub(crate) engine_commit_head: String,
+     pub(crate) fixture_version: String,
+     pub(crate) backend_id: String,
++    #[serde(default)]
++    pub(crate) managed_execution_environment: Option<ManagedExecutionEnvironment>,
+     pub(crate) endpoint: String,
+     pub(crate) model_id: String,
+     pub(crate) task_id: String,
+@@ -52,12 +55,23 @@ impl BenchmarkChildRunSpec {
+         }
+         if self.experiment_id.trim().is_empty()
+             || self.backend_id.trim().is_empty()
+-            || self.endpoint.trim().is_empty()
+             || self.model_id.trim().is_empty()
+             || self.task_id.trim().is_empty()
+         {
+             return Err("benchmark child identity fields must be non-empty".to_owned());
+         }
++        if self.backend_id == MANAGED_BACKEND_ID {
++            if self.managed_execution_environment.is_none() {
++                return Err("managed benchmark child requires an exact execution environment".to_owned());
++            }
++        } else {
++            if self.endpoint.trim().is_empty() {
++                return Err("compatible-backend benchmark child requires a local endpoint".to_owned());
++            }
++            if self.managed_execution_environment.is_some() {
++                return Err("compatible-backend benchmark child cannot carry managed runtime identity".to_owned());
++            }
++        }
+         if self.engine_commit_head.len() != 40
+             || !self.engine_commit_head.bytes().all(|byte| byte.is_ascii_hexdigit())
+         {
+@@ -234,8 +248,8 @@ impl BenchmarkExperimentCoordinator {
+         if spec.routing_mode != BenchmarkRoutingMode::SingleModel {
+             return Err("single-model benchmark coordinator cannot execute a routed experiment".to_owned());
+         }
+-        if endpoint.trim().is_empty() {
+-            return Err("benchmark local-model endpoint must be non-empty".to_owned());
++        if spec.backend_id != MANAGED_BACKEND_ID && endpoint.trim().is_empty() {
++            return Err("benchmark compatible-backend endpoint must be non-empty".to_owned());
+         }
+         let store = BenchmarkExperimentStore::open(spec.output_destination.clone())?;
+         store.write_spec(&spec)?;
+@@ -374,7 +388,12 @@ impl BenchmarkExperimentCoordinator {
+             engine_commit_head: self.spec.engine_commit_head.clone(),
+             fixture_version: self.spec.fixture_version.clone(),
+             backend_id: self.spec.backend_id.clone(),
+-            endpoint: self.endpoint.clone(),
++            managed_execution_environment: self.spec.managed_execution_environment,
++            endpoint: if self.spec.backend_id == MANAGED_BACKEND_ID {
++                String::new()
++            } else {
++                self.endpoint.clone()
++            },
+             model_id: run.model_id.clone(),
+             task_id: run.task_id.clone(),
+             repetition: run.repetition,
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 563656b1db93d94a1cdc0d74f2a5c765039f9a37..54c68963b069fa154fb9d986330a677749c17c98 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -38,6 +38,11 @@ const LLAMA_CPP_REPOSITORY_URL: &str = "https://github.com/ggml-org/llama.cpp.gi
+ const STATE_SCHEMA_VERSION: u32 = 2;
+ const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
+ const HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
++/// Leave one GiB of device memory for KV cache, compute buffers, and the rest of the GPU workload.
++///
++/// The pinned llama.cpp revision supports automatic layer selection plus `--fit`; keeping
++/// `--n-gpu-layers` unset lets that fitter account for the exact model and currently available VRAM.
++const MANAGED_GPU_FIT_TARGET_MIB: u32 = 1024;
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+ #[serde(rename_all = "snake_case")]
+@@ -184,6 +189,19 @@ pub(crate) struct ManagedLocalModelConfig {
+     pub(crate) runtime_compatibility_version: String,
+ }
+ 
++impl ManagedRuntimeInstallation {
++    pub(crate) fn benchmark_runtime_identity(&self) -> String {
++        format!(
++            "llama.cpp:{}@{};env={};artifact_sha256={};compat={}",
++            self.runtime_tag,
++            self.runtime_revision,
++            self.environment.benchmark_id(),
++            self.artifact_sha256,
++            self.compatibility_version,
++        )
++    }
++}
++
+ impl ManagedLocalModelConfig {
+     pub(crate) fn benchmark_runtime_identity(&self) -> String {
+         format!(
+@@ -1019,6 +1037,43 @@ impl ManagedLocalRuntime {
+         })
+     }
+ 
++    /// Runs the ADR 0155 pre-inference integrity gate against an identity frozen earlier by the UI.
++    ///
++    /// This function hashes managed model bytes when required and therefore belongs on an
++    /// inference worker, never on the Editor frame thread. It also rejects machine-local state
++    /// drift instead of silently substituting a different model or runtime after Send.
++    pub(crate) fn verify_frozen_configuration(
++        config: &ManagedLocalModelConfig,
++    ) -> Result<(), ManagedLocalRuntimeError> {
++        let manager = Self::open(config.state_root.clone())?;
++        let verified = manager.configuration_for(
++            &config.model_id,
++            config.environment,
++            ManagedIntegrityCheck::Enforced,
++        )?;
++        if verified.model_content_sha256 != config.model_content_sha256
++            || verified.model_path != config.model_path
++            || verified.model_size_bytes != config.model_size_bytes
++            || verified.quantization != config.quantization
++        {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
++                "managed model identity changed after the inference request was frozen",
++            ));
++        }
++        if verified.runtime_tag != config.runtime_tag
++            || verified.runtime_revision != config.runtime_revision
++            || verified.runtime_artifact_sha256 != config.runtime_artifact_sha256
++            || verified.runtime_compatibility_version != config.runtime_compatibility_version
++        {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++                "managed runtime identity changed after the inference request was frozen",
++            ));
++        }
++        Ok(())
++    }
++
+     pub(crate) fn ensure_endpoint(
+         config: &ManagedLocalModelConfig,
+     ) -> Result<ManagedEndpoint, ManagedLocalRuntimeError> {
+@@ -1242,7 +1297,7 @@ impl ManagedLocalRuntime {
+             config.environment.storage_key()
+         );
+         let command = format!(
+-            "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --n-gpu-layers 999 > {} 2>&1 < /dev/null & echo $!",
++            "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {} 2>&1 < /dev/null & echo $!",
+             shell_quote(&log)
+         );
+         let output = wsl_shell(
+@@ -1561,8 +1616,10 @@ fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
+         "127.0.0.1".to_owned(),
+         "--port".to_owned(),
+         port.to_string(),
+-        "--n-gpu-layers".to_owned(),
+-        "999".to_owned(),
++        "--fit".to_owned(),
++        "on".to_owned(),
++        "--fit-target".to_owned(),
++        MANAGED_GPU_FIT_TARGET_MIB.to_string(),
+     ]
+ }
+ 
+@@ -2537,10 +2594,11 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn windows_launch_contract_uses_exact_model_loopback_and_gpu_arguments() {
++    fn windows_launch_contract_leaves_gpu_layers_to_memory_fitter() {
+         let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
++        let arguments = windows_server_arguments(model, 18443);
+         assert_eq!(
+-            windows_server_arguments(model, 18443),
++            arguments,
+             vec![
+                 "--model".to_owned(),
+                 model.to_string_lossy().into_owned(),
+@@ -2548,10 +2606,13 @@ mod tests {
+                 "127.0.0.1".to_owned(),
+                 "--port".to_owned(),
+                 "18443".to_owned(),
+-                "--n-gpu-layers".to_owned(),
+-                "999".to_owned(),
++                "--fit".to_owned(),
++                "on".to_owned(),
++                "--fit-target".to_owned(),
++                "1024".to_owned(),
+             ]
+         );
++        assert!(!arguments.iter().any(|argument| argument == "--n-gpu-layers"));
+     }
+ 
+     #[test]
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index 60ff3e87f093e6ce22f68095645c2ee60d75eb77..329cc83424dfcb95593cbe1fc9a667b8ccac4a10 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -1297,6 +1297,14 @@ fn generate_managed(
+         return Err(NativeAgentError::Interrupted);
+     }
+     let startup_started = Instant::now();
++    // The UI freezes only the cached managed identity. Full ADR 0155 integrity
++    // verification, including the WSL2 GGUF SHA-256, runs here on the inference
++    // worker so pressing Send never blocks the Editor frame thread.
++    ManagedLocalRuntime::verify_frozen_configuration(config)
++        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
+     let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)
+         .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
+     let load_latency_ms = (!managed_endpoint.reused_process)
