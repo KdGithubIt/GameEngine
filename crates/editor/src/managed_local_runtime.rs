@@ -4,6 +4,8 @@
 //! Windows/WSL execution-environment setup, and demand-driven loopback process
 //! lifecycle. It deliberately has no authoring or egui dependency.
 
+mod gguf;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -160,9 +162,30 @@ pub(crate) struct ManagedModelRegistration {
     pub(crate) source_path: PathBuf,
     pub(crate) size_bytes: u64,
     pub(crate) modified_unix_ms: Option<u64>,
+    /// Canonical llama.cpp file-type label when GGUF metadata safely provides one.
+    ///
+    /// Older registries may contain a filename-derived value here. Benchmark
+    /// identity never treats this legacy field as authoritative.
     pub(crate) quantization: Option<String>,
+    /// Stable descriptor measured from GGUF metadata and every tensor descriptor.
+    #[serde(default)]
+    pub(crate) representation: Option<String>,
     pub(crate) source: Option<String>,
     pub(crate) license: Option<String>,
+}
+
+impl ManagedModelRegistration {
+    pub(crate) fn exact_representation(&self) -> Option<&str> {
+        self.representation
+            .as_deref()
+            .filter(|descriptor| gguf::is_representation_descriptor(descriptor))
+    }
+
+    pub(crate) fn has_exact_representation_identity(&self) -> bool {
+        is_sha256_hex(&self.content_sha256)
+            && self.size_bytes > 0
+            && self.exact_representation().is_some()
+    }
 }
 
 /// Whether a resolved managed configuration also runs content verification.
@@ -187,6 +210,7 @@ pub(crate) struct ManagedLocalModelConfig {
     pub(crate) model_path: PathBuf,
     pub(crate) model_size_bytes: u64,
     pub(crate) quantization: Option<String>,
+    pub(crate) model_representation: Option<String>,
     pub(crate) runtime_tag: String,
     pub(crate) runtime_revision: String,
     pub(crate) runtime_artifact_sha256: String,
@@ -819,6 +843,7 @@ impl ManagedLocalRuntime {
             ));
         }
         let canonical = fs::canonicalize(path).map_err(model_io)?;
+        let representation = gguf::inspect_representation(&canonical).map_err(model_io)?;
         let content_sha256 = sha256_via_platform(&canonical)?;
         let metadata = fs::metadata(&canonical).map_err(model_io)?;
         let model_id = format!("gguf:{}", &content_sha256[..16]);
@@ -839,7 +864,8 @@ impl ManagedLocalRuntime {
             source_path: canonical.clone(),
             size_bytes: metadata.len(),
             modified_unix_ms: metadata.modified().ok().and_then(system_time_unix_ms),
-            quantization: infer_quantization_from_name(&canonical),
+            quantization: representation.canonical_quantization,
+            representation: Some(representation.descriptor),
             source: None,
             license: None,
         };
@@ -860,6 +886,15 @@ impl ManagedLocalRuntime {
         }
         write_json(&self.model_registry_path(), &registry).map_err(model_io)?;
         Ok(registration)
+    }
+
+    #[cfg(feature = "visual-validation")]
+    pub(crate) fn register_visual_validation_model(
+        &self,
+        path: &Path,
+    ) -> Result<ManagedModelRegistration, ManagedLocalRuntimeError> {
+        gguf::write_visual_validation_gguf(path).map_err(model_io)?;
+        self.register_existing_gguf(path, None)
     }
 
     pub(crate) fn additional_storage_for_environment(
@@ -1044,6 +1079,7 @@ impl ManagedLocalRuntime {
             model_path,
             model_size_bytes: model.size_bytes,
             quantization: model.quantization,
+            model_representation: model.representation,
             runtime_tag: installation.runtime_tag,
             runtime_revision: installation.runtime_revision,
             runtime_artifact_sha256: installation.artifact_sha256,
@@ -1069,6 +1105,7 @@ impl ManagedLocalRuntime {
             || verified.model_path != config.model_path
             || verified.model_size_bytes != config.model_size_bytes
             || verified.quantization != config.quantization
+            || verified.model_representation != config.model_representation
         {
             return Err(ManagedLocalRuntimeError::new(
                 ManagedDiagnosticLayer::ModelTransferOrIntegrity,
@@ -2318,19 +2355,6 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn infer_quantization_from_name(path: &Path) -> Option<String> {
-    let name = path.file_name()?.to_str()?.to_ascii_uppercase();
-    for marker in [
-        "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_0", "Q5_K_S",
-        "Q5_K_M", "Q6_K", "Q8_0", "IQ2", "IQ3", "IQ4",
-    ] {
-        if name.contains(marker) {
-            return Some(marker.to_owned());
-        }
-    }
-    None
-}
-
 fn read_optional_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>> {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
@@ -2508,7 +2532,7 @@ mod tests {
         let root = temp_root("register");
         let model = root.join("sample-Q4_K_M.gguf");
         fs::create_dir_all(&root).expect("temp root");
-        fs::write(&model, b"GGUF-test-bytes").expect("model fixture");
+        gguf::write_test_gguf(&model, Some(15), &[12, 12, 14]).expect("model fixture");
         let before = fs::read(&model).expect("before bytes");
         let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
         let registration = manager
@@ -2517,8 +2541,82 @@ mod tests {
         let after = fs::read(&model).expect("after bytes");
         assert_eq!(before, after);
         assert_eq!(registration.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(
+            registration.exact_representation(),
+            Some("gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:2,Q6_K:1")
+        );
         assert!(registration.model_id.starts_with("gguf:"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registration_representation_is_filename_independent() {
+        let root = temp_root("representation-name");
+        fs::create_dir_all(&root).expect("temp root");
+        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+        let names = [
+            "named-Q4_K_M.gguf",
+            "no-marker.gguf",
+            "qwen3.8-27b-abliterated-3.69bpw.gguf",
+        ];
+        let mut registrations = Vec::new();
+        for name in names {
+            let path = root.join(name);
+            gguf::write_test_gguf(&path, Some(15), &[12, 12, 14]).expect("model fixture");
+            registrations.push(
+                manager
+                    .register_existing_gguf(&path, None)
+                    .expect("register GGUF"),
+            );
+        }
+        for registration in registrations.iter().skip(1) {
+            assert_eq!(registration.content_sha256, registrations[0].content_sha256);
+            assert_eq!(registration.representation, registrations[0].representation);
+        }
+        assert!(registrations[2].has_exact_representation_identity());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn filename_quantization_marker_cannot_override_gguf_metadata() {
+        let root = temp_root("representation-lie");
+        let model = root.join("actually-q6-fake-Q4_K_M.gguf");
+        fs::create_dir_all(&root).expect("temp root");
+        gguf::write_test_gguf(&model, Some(18), &[14, 14, 0]).expect("model fixture");
+        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+        let registration = manager
+            .register_existing_gguf(&model, None)
+            .expect("register GGUF");
+        assert_eq!(registration.quantization.as_deref(), Some("Q6_K"));
+        let representation = registration
+            .exact_representation()
+            .expect("exact representation");
+        assert!(representation.contains("file_type=18"));
+        assert!(representation.contains("types=F32:1,Q6_K:2"));
+        assert!(!representation.contains("Q4_K_M"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_registry_deserializes_without_claiming_exact_representation() {
+        let registry: ManagedModelRegistry = serde_json::from_value(serde_json::json!({
+            "models": [{
+                "model_id": "gguf:legacy",
+                "display_name": "legacy-Q4_K_M.gguf",
+                "content_sha256": "a".repeat(64),
+                "source_path": "C:/models/legacy-Q4_K_M.gguf",
+                "size_bytes": 1024,
+                "modified_unix_ms": 1,
+                "quantization": "Q4_K_M",
+                "source": null,
+                "license": null
+            }]
+        }))
+        .expect("legacy registry");
+        let model = &registry.models[0];
+        assert_eq!(model.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(model.representation, None);
+        assert!(!model.has_exact_representation_identity());
     }
 
     #[test]
@@ -2767,6 +2865,9 @@ mod tests {
             model_path: PathBuf::from("model.gguf"),
             model_size_bytes: 1,
             quantization: Some("Q4_K_M".to_owned()),
+            model_representation: Some(
+                "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:1".to_owned(),
+            ),
             runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
             runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
             runtime_artifact_sha256: "b".repeat(64),
@@ -2803,7 +2904,7 @@ mod tests {
         let root = temp_root("describe-runtime");
         let model_source = root.join("sample-Q4_K_M.gguf");
         fs::create_dir_all(&root).expect("temp root");
-        fs::write(&model_source, b"GGUF-test-bytes").expect("model fixture");
+        gguf::write_test_gguf(&model_source, Some(15), &[12, 14]).expect("model fixture");
         let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
         let registration = manager
             .register_existing_gguf(&model_source, None)
@@ -2841,7 +2942,7 @@ mod tests {
         let root = temp_root("describe-model");
         let model_source = root.join("sample-Q4_K_M.gguf");
         fs::create_dir_all(&root).expect("temp root");
-        fs::write(&model_source, b"GGUF-test-bytes").expect("model fixture");
+        gguf::write_test_gguf(&model_source, Some(15), &[12, 14]).expect("model fixture");
         let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
         let registration = manager
             .register_existing_gguf(&model_source, None)
