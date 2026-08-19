@@ -712,11 +712,6 @@ fn recent_project_row(ui: &mut egui::Ui, index: usize, project: &RecentProject) 
                 .sense(egui::Sense::click()),
             |ui| {
                 let state = ui.response();
-                // Labels are selectable by default, and a selectable label
-                // claims the text cursor for the glyphs it covers. The row is a
-                // single click target, so its name and path must not flip the
-                // pointer between the hand and the I-beam as it crosses them.
-                ui.style_mut().interaction.selectable_labels = false;
                 // The background spans the finished row, so its shape is
                 // reserved now and written once the height is known.
                 let background = ui.painter().add(egui::Shape::Noop);

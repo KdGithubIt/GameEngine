@@ -49,6 +49,12 @@ pub(crate) fn apply_studio_style(ui: &mut egui::Ui) {
     // is not known when the row is written. Without this, one long line widens
     // the whole presentation instead of taking a second line.
     style.wrap_mode = Some(egui::TextWrapMode::Wrap);
+    // A selectable label claims the text cursor for every glyph it covers, and
+    // the studio is mostly labels: four of every five widgets here are text, so
+    // the pointer would flip between the arrow and the I-beam across every row
+    // of controls. Studio chrome is therefore not selectable, and the text
+    // worth copying opts back in through [`selectable_text`].
+    style.interaction.selectable_labels = false;
     let corner_radius = egui::CornerRadius::same(CORNER_RADIUS);
     let visuals = &mut style.visuals;
     visuals.panel_fill = BACKGROUND;
@@ -102,6 +108,17 @@ pub(crate) fn apply_studio_style(ui: &mut egui::Ui) {
         (egui::TextStyle::Small, egui::FontId::proportional(11.5)),
     ]
     .into();
+}
+
+/// Draws studio text the reader may need to copy out.
+///
+/// This is the exception to the studio's non-selectable chrome, for text the
+/// host produced rather than text the studio authored: a message, an error, an
+/// endpoint, an identifier, a path. Losing the ability to copy those costs more
+/// than the pointer flicker they reintroduce, and they are a small enough part
+/// of the surface that the flicker stays local to them.
+pub(crate) fn selectable_text(ui: &mut egui::Ui, text: impl Into<egui::RichText>) -> egui::Response {
+    ui.add(egui::Label::new(text.into()).selectable(true))
 }
 
 /// Returns the frame shared by every raised card.

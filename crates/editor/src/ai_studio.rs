@@ -1923,8 +1923,8 @@ impl AiStudioPanel {
             .default_open(false)
             .show(ui, |ui| {
                 ui.small("Loopback-only companion gateway. Expose it only through a trusted private overlay or local reverse proxy. Remote authentication is separate from Agent Host permissions; MCP is never exposed remotely.");
-                ui.label(format!("Gateway: {}", server.endpoint()));
-                ui.monospace(server.companion_url());
+                theme::selectable_text(ui, format!("Gateway: {}", server.endpoint()));
+                theme::selectable_text(ui, egui::RichText::new(server.companion_url()).monospace());
             });
     }
 
@@ -1970,7 +1970,7 @@ impl AiStudioPanel {
             theme::attention_card(ui, theme::ACCENT, |ui| {
                 ui.horizontal_top(|ui| {
                     theme::status_dot(ui, theme::ACCENT_TEXT);
-                    ui.label(status);
+                    theme::selectable_text(ui, status);
                 });
             });
         }
@@ -2052,7 +2052,7 @@ impl AiStudioPanel {
                             ConversationRole::Assistant => "Agent",
                             ConversationRole::System => "System",
                         });
-                        ui.label(message.text);
+                        theme::selectable_text(ui, message.text);
                     });
                 }
             });
@@ -4407,7 +4407,10 @@ impl AiStudioPanel {
         .show(ui, |ui| {
             for change in &self.pending_code_changes {
                 ui.horizontal(|ui| {
-                    ui.monospace(change.relative_path.display().to_string());
+                    theme::selectable_text(
+                        ui,
+                        egui::RichText::new(change.relative_path.display().to_string()).monospace(),
+                    );
                     ui.weak(change_summary(change));
                 });
             }
@@ -4449,7 +4452,7 @@ impl AiStudioPanel {
                             ui.horizontal_wrapped(|ui| {
                                 ui.monospace(format!("#{:03}", event.sequence));
                                 ui.strong(format!("{:?}", event.kind));
-                                ui.label(&event.message);
+                                theme::selectable_text(ui, &event.message);
                             });
                         }
                     });
@@ -6475,6 +6478,62 @@ mod tests {
         let legacy: AiStudioPreferences = serde_json::from_str(r#"{"schema_version":1}"#)
             .expect("deserialize preferences written before the mode was persisted");
         assert_eq!(legacy.presentation_mode, AiStudioPresentationMode::Detached);
+    }
+
+    /// Returns the cursor the studio asks for while one piece of text is hovered.
+    fn studio_cursor_over_text(selectable: bool) -> egui::CursorIcon {
+        const TEXT: &str = "Managed Local AI";
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0_f32, 400.0_f32));
+        let context = egui::Context::default();
+        let draw = |ui: &mut egui::Ui| {
+            theme::apply_studio_style(ui);
+            if selectable {
+                theme::selectable_text(ui, TEXT).rect
+            } else {
+                ui.label(TEXT).rect
+            }
+        };
+
+        // The first pass lays the text out so the second can aim the pointer at
+        // it; a cursor is only claimed by whatever the pointer is over.
+        let mut rect = egui::Rect::NOTHING;
+        let _ = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..egui::RawInput::default()
+            },
+            |ui| rect = draw(ui),
+        );
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::PointerMoved(rect.center())],
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                draw(ui);
+            },
+        );
+        output.platform_output.cursor_icon
+    }
+
+    /// Studio chrome must not turn the pointer into a text caret.
+    ///
+    /// Reported as buttons that become text selection where their labels are:
+    /// a selectable label claims the I-beam for its glyphs, so a row of
+    /// controls flickered between the pointer and the caret as it was crossed.
+    #[test]
+    fn only_copyable_studio_text_claims_the_text_cursor() {
+        assert_ne!(
+            studio_cursor_over_text(false),
+            egui::CursorIcon::Text,
+            "studio chrome claimed the text caret"
+        );
+        assert_eq!(
+            studio_cursor_over_text(true),
+            egui::CursorIcon::Text,
+            "text offered for copying must still be selectable"
+        );
     }
 
     /// The embedded studio must stay a panel and must reach its lower cards.

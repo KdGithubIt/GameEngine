@@ -95,6 +95,14 @@ pub(crate) fn apply_launcher_style(context: &egui::Context) {
 
     context.set_visuals_of(egui::Theme::Dark, visuals);
     context.all_styles_mut(|style| {
+        // A selectable label claims the text cursor for the glyphs it covers.
+        // The Launcher is a page of labels over click targets: a recent-project
+        // row is one button whose name and path would flip the pointer between
+        // the hand and the I-beam, and every hint sits directly under the
+        // button it explains. Nothing here is worth copying out — the status
+        // line and the project path are already offered as hover text — so the
+        // whole window keeps the pointer it advertises.
+        style.interaction.selectable_labels = false;
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(12.0, 7.0);
         style.spacing.interact_size.y = 28.0;
