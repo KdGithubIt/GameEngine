@@ -5,6 +5,7 @@
 //! workspace rules live in the GUI-free `agent_host` module.
 
 mod benchmark_child;
+mod benchmark_campaign_ui;
 mod benchmark_experiment_ui;
 
 use crate::agent_benchmark::{
@@ -727,6 +728,7 @@ pub struct AiStudioPanel {
     managed_playtest_started_at: Option<std::time::Instant>,
     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
     benchmark_child: Option<benchmark_child::BenchmarkChildState>,
+    benchmark_campaign: benchmark_campaign_ui::BenchmarkCampaignPanel,
     benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel,
     benchmark_experiment_root: PathBuf,
     status: Option<String>,
@@ -866,6 +868,7 @@ impl AiStudioPanel {
             managed_playtest_started_at: None,
             last_captured_frame: None,
             benchmark_child: None,
+            benchmark_campaign: benchmark_campaign_ui::BenchmarkCampaignPanel::default(),
             benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel::default(),
             benchmark_experiment_root,
             status: benchmark_status,
@@ -1499,6 +1502,7 @@ impl AiStudioPanel {
         self.poll_managed_playtest_timeout();
         self.poll_benchmark_child();
         self.poll_benchmark_experiment();
+        self.poll_benchmark_campaign();
 
         if !self.presentation.open {
             return;
@@ -2652,6 +2656,8 @@ impl AiStudioPanel {
             );
             ui.separator();
             self.show_benchmark_experiment(ui);
+            ui.separator();
+            self.show_benchmark_campaign(ui);
         });
     }
 

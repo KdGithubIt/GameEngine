@@ -519,7 +519,7 @@ fn count_recorded_runs(experiment_root: &Path) -> usize {
 }
 
 /// Mirrors the directory naming the experiment store uses on disk.
-fn experiment_directory_name(experiment_id: &str) -> String {
+pub(super) fn experiment_directory_name(experiment_id: &str) -> String {
     let name = experiment_id
         .chars()
         .map(|character| {

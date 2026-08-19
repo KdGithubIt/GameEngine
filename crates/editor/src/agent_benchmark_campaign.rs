@@ -230,6 +230,33 @@ impl CampaignFixtureIdentity {
         }
     }
 
+    /// Derives the host-owned evaluation material for this frozen instance.
+    ///
+    /// The host seed stays private to this module: only the derived assertions
+    /// leave, and they leave in a type the candidate context cannot serialize.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `task_id` is not one of the seven ADR 0142 tasks.
+    pub(crate) fn host_only_evaluation(
+        &self,
+        task_id: &str,
+    ) -> Result<HostOnlyEvaluation, String> {
+        let task = benchmark_task(task_id)
+            .ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+        let expected_marker = self.host_seed.rotate_right(29) ^ stable_hash(task.id.as_bytes());
+        Ok(HostOnlyEvaluation {
+            task_id: task.id.to_owned(),
+            hidden_assertions: task
+                .completion_criteria
+                .iter()
+                .map(|criterion| format!("host-verified: {criterion}"))
+                .collect(),
+            scoring_threshold: task.completion_criteria.len() as u32,
+            expected_marker,
+        })
+    }
+
     pub(crate) fn candidate_contract(
         &self,
         task_id: &str,
@@ -252,7 +279,21 @@ impl CampaignFixtureIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Host-owned evaluation material for one frozen fixture instance.
+///
+/// This deliberately does not implement `Serialize`. Candidate-visible context
+/// is assembled only from serializable contract types, so hidden assertions and
+/// scoring thresholds cannot reach a prompt, a tool result, or an on-disk
+/// candidate document by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostOnlyEvaluation {
+    pub(crate) task_id: String,
+    pub(crate) hidden_assertions: Vec<String>,
+    pub(crate) scoring_threshold: u32,
+    pub(crate) expected_marker: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CandidateTaskContract {
     pub(crate) task_id: String,
     pub(crate) prompt: String,
