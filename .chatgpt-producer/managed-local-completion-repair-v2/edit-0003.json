@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "            backend_id: \"ollama-compatible\".to_owned(),\n            endpoint: \"http://127.0.0.1:11434\".to_owned(),",
+  "new": "            backend_id: \"ollama-compatible\".to_owned(),\n            managed_execution_environment: None,\n            endpoint: \"http://127.0.0.1:11434\".to_owned(),"
+}
