@@ -209,6 +209,11 @@ impl NativeAgentRuntime {
         std::mem::take(&mut self.routing_decisions)
     }
     pub(crate) fn is_busy(&self) -> bool { self.active.is_some() }
+    pub(crate) fn supports_visual_evaluation(&self) -> bool {
+        self.routing
+            .select(RoutingWorkload::VisualEvaluation, true)
+            .is_ok()
+    }
     pub(crate) fn interrupt(&mut self) {
         if let Some(task) = self.active.as_ref() { task.interrupt(); }
         self.active = None;
@@ -358,7 +363,7 @@ fn build_prompt(run: &AgentRun, profile: &ModelCapabilityProfile, policy: Harnes
         "Output {\"summary\":\"persistable facts\",\"working_state\":{},\"action\":ACTION}. ACTION one of:\n",
         "{\"type\":\"mcp_call\",\"tool\":\"...\",\"arguments\":{}}\n",
         "{\"type\":\"code_write\",\"path\":\"game/...\",\"text\":\"complete text\"}\n",
-        "{\"type\":\"runtime_input\",\"input\":{...}}\n",
+        "{\"type\":\"runtime_input\",\"input\":{\"kind\":\"key|hold_key|mouse_button|hold_mouse_button|gamepad_button|gamepad_axis|mouse_move|mouse_delta|mouse_scroll\",\"at_tick\":0,...}} -- at_tick is a fixed simulation tick offset; hold_* requires integer ticks and expands host-side without model wall-clock timing\n",
         "{\"type\":\"completion_gate\",\"gate\":\"acceptance_criteria|authoring_validation|visual_evaluation\",\"status\":\"passed|failed|not_applicable\",\"message\":\"...\"}\n",
         "{\"type\":\"progress\",\"step\":\"...\",\"detail\":\"...\"}\n",
         "{\"type\":\"await_user\",\"question\":\"...\"}\n{\"type\":\"ready_for_validation\"}\n"));

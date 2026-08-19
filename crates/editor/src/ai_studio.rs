@@ -28,11 +28,17 @@ use crate::external_agent_provider::{
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
+use crate::managed_local_runtime::{
+    ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
+    ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
+    PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
+};
 use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
 use crate::native_agent::{
-    InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
-    ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
-    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+    InstalledLocalModel, InstalledModelDiscoveryTask, InstalledModelInventory,
+    LocalModelConfig, LocalModelResourceConfig, ModelCapabilityProfile, ModelResourceTask,
+    NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask, QuestionMessage,
+    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
 use crate::native_agent_runtime::{mcp_write, NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
 use crate::resource_arbitration::{
@@ -45,11 +51,14 @@ use crate::remote_ai_studio::{
     events_json, frame_bytes, sessions_json, snapshot_json, RemoteAiStudioRequest,
     RemoteAiStudioResponse, RemoteAiStudioServer, RemoteOperation, RemotePermissionScope,
 };
+use crate::runtime_debug::{
+    RuntimeDebugExecutionReport, RuntimeDebugObservation, RuntimeDebugPlan, RuntimeDebugPredicate,
+    RuntimeDebugScheduledInput, RuntimeDebugWaitResult,
+};
 use eframe::egui;
-use engine::{InputCommand, KeyCode, MouseButton};
+use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
@@ -64,6 +73,7 @@ const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
 enum ModelBackendPreference {
     #[default]
     Local,
+    ManagedLocal,
     HostedApi,
     Enterprise,
 }
@@ -79,6 +89,10 @@ struct AiStudioPreferences {
     external_agent_provider: ExternalAgentProviderKind,
     #[serde(default)]
     model_backend: ModelBackendPreference,
+    #[serde(default)]
+    managed_execution_environment: ManagedExecutionEnvironment,
+    #[serde(default)]
+    managed_model_id: String,
     #[serde(default = "default_local_model_endpoint")]
     local_model_endpoint: String,
     #[serde(default)]
@@ -97,6 +111,8 @@ impl Default for AiStudioPreferences {
             confinement_requirement: AgentConfinementRequirement::default(),
             external_agent_provider: ExternalAgentProviderKind::default(),
             model_backend: ModelBackendPreference::Local,
+            managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
+            managed_model_id: String::new(),
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
             hosted_model_endpoint: String::new(),
@@ -248,38 +264,192 @@ enum ProviderAgentEvent {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ProviderRuntimeInput {
-    Key { key: String, pressed: bool },
-    MouseButton { button: String, pressed: bool },
-    MouseMove { x: f32, y: f32 },
-    MouseDelta { x: f64, y: f64 },
-    MouseScroll { amount: f32 },
+    Key {
+        key: String,
+        pressed: bool,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    HoldKey {
+        key: String,
+        ticks: u64,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    MouseButton {
+        button: String,
+        pressed: bool,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    HoldMouseButton {
+        button: String,
+        ticks: u64,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    GamepadButton {
+        gamepad: u32,
+        button: String,
+        pressed: bool,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    GamepadAxis {
+        gamepad: u32,
+        axis: String,
+        value: f32,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    MouseMove {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    MouseDelta {
+        x: f64,
+        y: f64,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
+    MouseScroll {
+        amount: f32,
+        #[serde(default)]
+        at_tick: Option<u64>,
+    },
 }
 
 impl ProviderRuntimeInput {
-    fn command(&self) -> Result<InputCommand, String> {
+    fn scheduled_commands(
+        &self,
+        default_tick: u64,
+    ) -> Result<Vec<RuntimeDebugScheduledInput>, String> {
+        let schedule = |tick: u64, command: InputCommand| {
+            RuntimeDebugScheduledInput::at_tick(tick, command).map_err(|error| error.to_string())
+        };
         match self {
-            Self::Key { key, pressed } => Ok(InputCommand::Key {
-                key: provider_key_code(key)?,
-                pressed: *pressed,
-            }),
-            Self::MouseButton { button, pressed } => Ok(InputCommand::MouseButton {
-                button: provider_mouse_button(button)?,
-                pressed: *pressed,
-            }),
-            Self::MouseMove { x, y } if x.is_finite() && y.is_finite() => {
-                Ok(InputCommand::MouseMove { position: (*x, *y) })
+            Self::Key { key, pressed, at_tick } => Ok(vec![schedule(
+                at_tick.unwrap_or(default_tick),
+                InputCommand::Key {
+                    key: provider_key_code(key)?,
+                    pressed: *pressed,
+                },
+            )?]),
+            Self::HoldKey { key, ticks, at_tick } => {
+                let start = at_tick.unwrap_or(default_tick);
+                let end = runtime_hold_end_tick(start, *ticks)?;
+                let key = provider_key_code(key)?;
+                Ok(vec![
+                    schedule(start, InputCommand::Key { key, pressed: true })?,
+                    schedule(end, InputCommand::Key { key, pressed: false })?,
+                ])
             }
-            Self::MouseDelta { x, y } if x.is_finite() && y.is_finite() => {
-                Ok(InputCommand::MouseDelta { delta: (*x, *y) })
+            Self::MouseButton {
+                button,
+                pressed,
+                at_tick,
+            } => Ok(vec![schedule(
+                at_tick.unwrap_or(default_tick),
+                InputCommand::MouseButton {
+                    button: provider_mouse_button(button)?,
+                    pressed: *pressed,
+                },
+            )?]),
+            Self::HoldMouseButton {
+                button,
+                ticks,
+                at_tick,
+            } => {
+                let start = at_tick.unwrap_or(default_tick);
+                let end = runtime_hold_end_tick(start, *ticks)?;
+                let button = provider_mouse_button(button)?;
+                Ok(vec![
+                    schedule(
+                        start,
+                        InputCommand::MouseButton {
+                            button,
+                            pressed: true,
+                        },
+                    )?,
+                    schedule(
+                        end,
+                        InputCommand::MouseButton {
+                            button,
+                            pressed: false,
+                        },
+                    )?,
+                ])
             }
-            Self::MouseScroll { amount } if amount.is_finite() => {
-                Ok(InputCommand::MouseScroll { amount: *amount })
+            Self::GamepadButton {
+                gamepad,
+                button,
+                pressed,
+                at_tick,
+            } => Ok(vec![schedule(
+                at_tick.unwrap_or(default_tick),
+                InputCommand::GamepadButton {
+                    gamepad: GamepadId(*gamepad),
+                    button: provider_gamepad_button(button)?,
+                    pressed: *pressed,
+                },
+            )?]),
+            Self::GamepadAxis {
+                gamepad,
+                axis,
+                value,
+                at_tick,
+            } if value.is_finite() => Ok(vec![schedule(
+                at_tick.unwrap_or(default_tick),
+                InputCommand::GamepadAxis {
+                    gamepad: GamepadId(*gamepad),
+                    axis: provider_gamepad_axis(axis)?,
+                    value: *value,
+                },
+            )?]),
+            Self::GamepadAxis { .. } => {
+                Err("runtime gamepad axis values must be finite".to_owned())
             }
+            Self::MouseMove { x, y, at_tick } if x.is_finite() && y.is_finite() => Ok(vec![
+                schedule(
+                    at_tick.unwrap_or(default_tick),
+                    InputCommand::MouseMove { position: (*x, *y) },
+                )?,
+            ]),
+            Self::MouseDelta { x, y, at_tick } if x.is_finite() && y.is_finite() => Ok(vec![
+                schedule(
+                    at_tick.unwrap_or(default_tick),
+                    InputCommand::MouseDelta { delta: (*x, *y) },
+                )?,
+            ]),
+            Self::MouseScroll { amount, at_tick } if amount.is_finite() => Ok(vec![schedule(
+                at_tick.unwrap_or(default_tick),
+                InputCommand::MouseScroll { amount: *amount },
+            )?]),
             Self::MouseMove { .. } | Self::MouseDelta { .. } | Self::MouseScroll { .. } => {
                 Err("runtime input numeric values must be finite".to_owned())
             }
         }
     }
+}
+
+fn runtime_hold_end_tick(start: u64, ticks: u64) -> Result<u64, String> {
+    if ticks == 0 {
+        return Err("runtime hold duration must contain at least one fixed tick".to_owned());
+    }
+    start
+        .checked_add(ticks)
+        .ok_or_else(|| "runtime hold tick overflowed u64".to_owned())
+}
+
+fn next_runtime_input_tick(inputs: &[RuntimeDebugScheduledInput]) -> u64 {
+    inputs
+        .iter()
+        .map(RuntimeDebugScheduledInput::tick_offset)
+        .max()
+        .and_then(|tick| tick.checked_add(1))
+        .unwrap_or(0)
 }
 
 /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
@@ -303,7 +473,7 @@ impl AiStudioConnection {
 }
 
 /// Managed Editor-runtime operation requested by AI Studio after authorization.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AiStudioRuntimeAction {
     /// Suspend optional Editor presentation and release recreatable GPU resources.
     EnterInferenceFocused {
@@ -314,10 +484,37 @@ pub enum AiStudioRuntimeAction {
     RestoreEditorPresentation,
     /// Capture current authoritative Editor revision/generation before resuming a run.
     InspectAuthoritativeState,
-    /// Start the normal Editor Play path for the active project.
+    /// Start the normal Editor Play path for the active project. Managed starts are paused immediately.
     StartPlaytest,
-    /// Queue one provider-planned command through the normal AI Agent virtual-input source.
+    /// Compatibility path for one already-authorized virtual input command.
     SendInput(InputCommand),
+    /// Pause normal Play advancement without destroying the runtime world.
+    PausePlaytest,
+    /// Resume normal Play advancement.
+    ResumePlaytest,
+    /// Advance a bounded number of fixed simulation ticks while paused.
+    StepPlaytest {
+        /// Number of fixed ticks to execute.
+        steps: u32,
+    },
+    /// Execute one frozen fixed-tick input plan through `InputSource::AiAgent`.
+    RunDebugPlan(RuntimeDebugPlan),
+    /// Capture bounded typed runtime state without mutating Play.
+    ObserveRuntime,
+    /// Advance paused Play until one allowlisted predicate matches or the budget expires.
+    WaitRuntime {
+        /// Host-owned typed predicate.
+        predicate: RuntimeDebugPredicate,
+        /// Maximum fixed ticks the host may advance.
+        max_ticks: u32,
+    },
+    /// Evaluate one allowlisted predicate without advancing Play.
+    AssertRuntime {
+        /// Host-owned typed predicate.
+        predicate: RuntimeDebugPredicate,
+    },
+    /// Re-run the most recent ADR 0064 input artifact through normal replay.
+    ReplayLast,
     /// Capture the currently rendered Game View through the engine frame-capture path.
     CaptureFrame,
     /// Stop the managed Editor Play session.
@@ -346,6 +543,24 @@ pub enum AiStudioRuntimeResult {
     PlayStartPending,
     /// One AI Agent input command was accepted by the normal runtime input queue.
     RuntimeInputQueued(InputCommand),
+    /// Managed Play is paused and exposes the captured structured observation.
+    RuntimePaused(RuntimeDebugObservation),
+    /// Managed Play resumed from Pause.
+    RuntimeResumed(RuntimeDebugObservation),
+    /// Bounded fixed-step execution completed.
+    RuntimeStepped(RuntimeDebugObservation),
+    /// Frozen deterministic input plan completed and was recorded as replay evidence.
+    RuntimeDebugPlanCompleted(RuntimeDebugExecutionReport),
+    /// Deterministic input execution aborted and the Editor discarded the Play world.
+    RuntimeDebugPlanFailed(String),
+    /// Bounded typed runtime observation was captured.
+    RuntimeObserved(RuntimeDebugObservation),
+    /// Bounded host wait completed.
+    RuntimeWaited(RuntimeDebugWaitResult),
+    /// Host assertion completed.
+    RuntimeAsserted(RuntimeDebugWaitResult),
+    /// ADR 0064 replay reproduction completed.
+    RuntimeReplayCompleted(RuntimeDebugExecutionReport),
     /// The managed Play session stopped.
     PlayStopped,
     /// A Game View frame was captured by the runtime renderer.
@@ -354,14 +569,14 @@ pub enum AiStudioRuntimeResult {
     Failed(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum PendingPermissionAction {
     LaunchExternalAgent,
     StartNativeAgent,
     LaunchRuntimeEvaluation,
     ApplyCodeChanges,
     LaunchPlaytest,
-    SendRuntimeInput(InputCommand),
+    RunRuntimeDebugPlan(RuntimeDebugPlan),
     CaptureFrame,
 }
 
@@ -440,6 +655,10 @@ pub struct AiStudioPanel {
     external_provider_kind: ExternalAgentProviderKind,
     external_provider_status: ExternalAgentProviderStatus,
     model_backend: ModelBackendPreference,
+    managed_local_runtime: ManagedLocalRuntime,
+    managed_execution_environment: ManagedExecutionEnvironment,
+    managed_model_id: String,
+    managed_setup_task: Option<ManagedSetupTask>,
     local_model_endpoint: String,
     local_model_name: String,
     benchmark_store: BenchmarkStore,
@@ -481,6 +700,10 @@ pub struct AiStudioPanel {
     presentation: AiStudioPresentationState,
     #[cfg(feature = "visual-validation")]
     detached_visual_frames: u8,
+    #[cfg(feature = "visual-validation")]
+    visual_scroll_offset: f32,
+    #[cfg(feature = "visual-validation")]
+    visual_external_provider_evidence: bool,
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
     process_purpose: Option<ExternalAgentPurpose>,
@@ -490,15 +713,17 @@ pub struct AiStudioPanel {
     pending_code_changes: Vec<CodeChange>,
     pending_permission: Option<PendingPermission>,
     pending_runtime_action: Option<AiStudioRuntimeAction>,
-    managed_input_plan: VecDeque<InputCommand>,
-    managed_input_recipe: Vec<InputCommand>,
-    managed_candidate_input_recipe: Vec<InputCommand>,
+    managed_input_recipe: Vec<RuntimeDebugScheduledInput>,
+    managed_candidate_input_recipe: Vec<RuntimeDebugScheduledInput>,
+    managed_runtime_plan_completed: bool,
+    managed_runtime_debug_observation: Option<String>,
     managed_playtest_requested: bool,
     managed_capture_requested: bool,
     managed_repair_requested: bool,
     managed_runtime_repairs: usize,
     managed_runtime_observation: Option<ManagedRuntimeObservation>,
     managed_evaluation_requested: bool,
+    native_evaluation_had_image: bool,
     managed_playtest_started_at: Option<std::time::Instant>,
     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
     benchmark_child: Option<benchmark_child::BenchmarkChildState>,
@@ -519,6 +744,8 @@ impl AiStudioPanel {
         let preferences_path = data_root.join("preferences.json");
         let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
         let preferences = load_ai_studio_preferences(&preferences_path);
+        let managed_local_runtime = ManagedLocalRuntime::open(ai_root.join("managed-local"))
+            .map_err(|error| error.to_string())?;
         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
         let benchmark_experiment_root = ai_root.join("benchmark-experiments");
         let (benchmark_records, benchmark_status) = match benchmark_store.load() {
@@ -562,6 +789,10 @@ impl AiStudioPanel {
                 preferences.external_agent_provider,
             ),
             model_backend: preferences.model_backend,
+            managed_local_runtime,
+            managed_execution_environment: preferences.managed_execution_environment,
+            managed_model_id: preferences.managed_model_id,
+            managed_setup_task: None,
             local_model_endpoint: preferences.local_model_endpoint,
             local_model_name: preferences.local_model_name,
             benchmark_store,
@@ -608,6 +839,10 @@ impl AiStudioPanel {
             presentation: AiStudioPresentationState::default(),
             #[cfg(feature = "visual-validation")]
             detached_visual_frames: 0,
+            #[cfg(feature = "visual-validation")]
+            visual_scroll_offset: 480.0,
+            #[cfg(feature = "visual-validation")]
+            visual_external_provider_evidence: false,
             active_run_id,
             process: None,
             process_purpose: None,
@@ -617,15 +852,17 @@ impl AiStudioPanel {
             pending_code_changes: Vec::new(),
             pending_permission: None,
             pending_runtime_action: None,
-            managed_input_plan: VecDeque::new(),
             managed_input_recipe: Vec::new(),
             managed_candidate_input_recipe: Vec::new(),
+            managed_runtime_plan_completed: false,
+            managed_runtime_debug_observation: None,
             managed_playtest_requested: false,
             managed_capture_requested: false,
             managed_repair_requested: false,
             managed_runtime_repairs: 0,
             managed_runtime_observation: None,
             managed_evaluation_requested: false,
+            native_evaluation_had_image: false,
             managed_playtest_started_at: None,
             last_captured_frame: None,
             benchmark_child: None,
@@ -674,6 +911,227 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
         self.external_provider_status =
             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+        self.visual_scroll_offset = 480.0;
+        self.visual_external_provider_evidence = false;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Selects deterministic local-resource telemetry for ADR 0143 screenshot validation.
+    pub fn prepare_local_model_resources_visual_validation(&mut self) {
+        self.model_backend = ModelBackendPreference::Local;
+        self.local_model_endpoint = DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned();
+        self.local_model_name = "qwen2.5-coder:7b".to_owned();
+        self.last_model_resource_telemetry = ModelResourceTelemetry {
+            resident: TelemetryValue::Measured(true),
+            representation_size_bytes: TelemetryValue::Measured(4_700_000_000),
+            gpu_residency_bytes: TelemetryValue::Measured(3_200_000_000),
+            context_length_tokens: TelemetryValue::Measured(8_192),
+        };
+        self.visual_scroll_offset = 480.0;
+        self.visual_external_provider_evidence = false;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Selects deterministic external-provider state for ADR 0145 screenshot validation.
+    pub fn prepare_external_agent_visual_validation(&mut self) {
+        self.prepare_hosted_backend_visual_validation();
+        self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+        self.external_provider_status =
+            ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+        self.visual_scroll_offset = 1_600.0;
+        self.visual_external_provider_evidence = true;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Seeds deterministic host-owned state for Remote AI Studio browser screenshot validation.
+    pub fn prepare_remote_companion_visual_validation(&mut self) -> Result<(), String> {
+        let session_id = self.selected_session.clone();
+        self.host
+            .append_message(
+                &session_id,
+                ConversationRole::User,
+                "Build a compact playable sample and verify the result from the managed Game View.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .append_message(
+                &session_id,
+                ConversationRole::Assistant,
+                "I will keep the proposal version exact, report progress, and request permission before the next managed frame capture.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        let mut proposal = self
+            .host
+            .session(&session_id)
+            .map_err(|error| error.to_string())?
+            .proposal
+            .clone();
+        proposal.goal = "Complete the Remote AI Studio visual-validation sample.".to_owned();
+        proposal.requirements = vec![
+            "Keep the authoritative project inside the Editor Agent Host.".to_owned(),
+            "Preserve reconnect-safe progress and exact proposal authorization.".to_owned(),
+        ];
+        proposal.acceptance_criteria = vec![
+            "Go and Stop remain available without exposing raw MCP or process controls.".to_owned(),
+            "Captured frame review stays readable at responsive browser widths.".to_owned(),
+        ];
+        proposal.validation_plan = vec![
+            "Validate the managed source changes.".to_owned(),
+            "Review the captured Game View frame.".to_owned(),
+        ];
+        proposal.playtest_plan =
+            vec!["Launch managed Play and capture one Game View frame.".to_owned()];
+        proposal.requested_capabilities =
+            [AgentCapability::RuntimeLaunch, AgentCapability::FrameCapture]
+                .into_iter()
+                .collect();
+        let proposal_version = self
+            .host
+            .update_proposal(&session_id, proposal)
+            .map_err(|error| error.to_string())?;
+        self.proposal_draft = self
+            .host
+            .session(&session_id)
+            .map_err(|error| error.to_string())?
+            .proposal
+            .clone();
+
+        let run_id = self
+            .host
+            .start_run_authorized(&session_id, proposal_version, "visual-validation")
+            .map_err(|error| error.to_string())?;
+        self.active_run_id = Some(run_id.clone());
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Planning,
+                "Authoritative snapshot loaded; planning the managed change.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Executing,
+                "Executing through the normal Agent Host path.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_semantic_progress(
+                &run_id,
+                "Reconnect ready",
+                "Authoritative snapshot and ordered event cursor are synchronized.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Validating,
+                "Managed source validation is represented by deterministic visual evidence.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Playtesting,
+                "Managed Play launched for deterministic frame review.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_playtest_result(
+                &run_id,
+                true,
+                Some(true),
+                "Managed Play launched and the scripted interaction completed.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        let width = 640_u32;
+        let height = 360_u32;
+        let mut rgba = vec![0_u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let offset = ((y * width + x) * 4) as usize;
+                let checker = ((x / 80) + (y / 60)) % 2;
+                rgba[offset] = if checker == 0 { 42 } else { 28 };
+                rgba[offset + 1] = if checker == 0 { 112 } else { 76 };
+                rgba[offset + 2] = if checker == 0 { 176 } else { 126 };
+                rgba[offset + 3] = 255;
+            }
+        }
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+            writer
+                .write_image_data(&rgba)
+                .map_err(|error| error.to_string())?;
+            writer.finish().map_err(|error| error.to_string())?;
+        }
+        self.host
+            .store_captured_frame_artifact(&run_id, width, height, &png_bytes)
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "acceptance_criteria",
+                CompletionStatus::Passed,
+                "Acceptance criteria are represented in the deterministic browser fixture.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "authoring_validation",
+                CompletionStatus::Passed,
+                "Authoring validation is represented in the deterministic browser fixture.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "visual_evaluation",
+                CompletionStatus::Passed,
+                "Captured Game View frame is ready for visual review.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        self.pending_permission = Some(PendingPermission {
+            run_id,
+            capability: AgentCapability::FrameCapture,
+            action: PendingPermissionAction::CaptureFrame,
+        });
+        self.status =
+            Some("Remote AI Studio browser visual-validation fixture is ready.".to_owned());
+        Ok(())
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Selects a deterministic managed-local setup state for ADR 0155 screenshot validation.
+    pub fn prepare_managed_local_visual_validation(&mut self) -> Result<(), String> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos();
+        let fixture_root = std::env::temp_dir().join(format!(
+            "gameengine-managed-local-visual-{}-{unique}",
+            std::process::id()
+        ));
+        self.managed_local_runtime =
+            ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
+        self.model_backend = ModelBackendPreference::ManagedLocal;
+        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
+        self.managed_model_id.clear();
+        self.managed_setup_task = None;
+        self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+        self.external_provider_kind = ExternalAgentProviderKind::Generic;
+        self.external_provider_status =
+            ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
+        self.visual_scroll_offset = 0.0;
+        self.visual_external_provider_evidence = false;
+        Ok(())
     }
 
     #[cfg(feature = "visual-validation")]
@@ -809,7 +1267,8 @@ impl AiStudioPanel {
                         "Managed Editor Play launched successfully.",
                     ) {
                         self.status = Some(error.to_string());
-                    } else if self.managed_input_plan.is_empty() {
+                    } else if self.managed_input_recipe.is_empty() {
+                        self.managed_runtime_plan_completed = true;
                         self.request_managed_frame_capture_if_ready(&run_id);
                     }
                 }
@@ -824,14 +1283,112 @@ impl AiStudioPanel {
                 {
                     self.status = Some(error.to_string());
                 } else {
-                    self.status = Some(format!(
-                        "Queued managed AI Agent runtime input; {} planned command(s) remain.",
-                        self.managed_input_plan.len()
-                    ));
-                    if self.managed_input_plan.is_empty() {
-                        self.request_managed_frame_capture_if_ready(&run_id);
-                    }
+                    self.status = Some("Queued one compatibility AI Agent runtime input.".to_owned());
                 }
+            }
+            AiStudioRuntimeResult::RuntimePaused(observation) => {
+                self.managed_runtime_debug_observation = Some(observation.summary());
+                self.status = Some(format!(
+                    "Managed Play paused at fixed tick {}.",
+                    observation.fixed_tick()
+                ));
+            }
+            AiStudioRuntimeResult::RuntimeResumed(observation) => {
+                self.managed_runtime_debug_observation = Some(observation.summary());
+                self.status = Some(format!(
+                    "Managed Play resumed from fixed tick {}.",
+                    observation.fixed_tick()
+                ));
+            }
+            AiStudioRuntimeResult::RuntimeStepped(observation)
+            | AiStudioRuntimeResult::RuntimeObserved(observation) => {
+                let summary = observation.summary();
+                self.managed_runtime_debug_observation = Some(summary.clone());
+                let _ = self.host.record_semantic_progress(
+                    &run_id,
+                    "runtime_observation",
+                    summary.clone(),
+                );
+                self.status = Some(summary);
+            }
+            AiStudioRuntimeResult::RuntimeDebugPlanCompleted(report) => {
+                let summary = report.summary();
+                self.managed_runtime_plan_completed = true;
+                self.managed_runtime_debug_observation = Some(summary.clone());
+                if let Err(error) = self
+                    .host
+                    .record_managed_runtime_input(&run_id, summary.clone())
+                    .and_then(|()| {
+                        self.host.record_playtest_result(
+                            &run_id,
+                            true,
+                            Some(true),
+                            "Host executed the provider-planned interaction recipe on a frozen fixed-tick schedule.",
+                        )
+                    })
+                {
+                    self.status = Some(error.to_string());
+                } else {
+                    self.status = Some(summary);
+                    self.request_managed_frame_capture_if_ready(&run_id);
+                }
+            }
+            AiStudioRuntimeResult::RuntimeDebugPlanFailed(message) => {
+                self.managed_runtime_plan_completed = true;
+                self.managed_playtest_started_at = None;
+                if let Err(error) = self.host.record_playtest_result(
+                    &run_id,
+                    true,
+                    Some(false),
+                    message.clone(),
+                ) {
+                    self.status = Some(error.to_string());
+                } else {
+                    self.status = Some(message);
+                }
+            }
+            AiStudioRuntimeResult::RuntimeWaited(wait) => {
+                let summary = wait.summary();
+                self.managed_runtime_debug_observation = Some(summary.clone());
+                let _ = self.host.record_semantic_progress(
+                    &run_id,
+                    "runtime_wait",
+                    summary.clone(),
+                );
+                self.status = Some(summary);
+            }
+            AiStudioRuntimeResult::RuntimeAsserted(assertion) => {
+                let summary = assertion.summary();
+                let passed = assertion.matched() && assertion.unavailable().is_none();
+                self.managed_runtime_debug_observation = Some(summary.clone());
+                let _ = self.host.record_semantic_progress(
+                    &run_id,
+                    "runtime_assertion",
+                    summary.clone(),
+                );
+                if let Err(error) = self.host.record_playtest_result(
+                    &run_id,
+                    true,
+                    Some(passed),
+                    format!("Host-owned runtime assertion passed={passed}: {summary}"),
+                ) {
+                    self.status = Some(error.to_string());
+                } else {
+                    if !passed && self.pending_runtime_action.is_none() {
+                        self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+                    }
+                    self.status = Some(summary);
+                }
+            }
+            AiStudioRuntimeResult::RuntimeReplayCompleted(report) => {
+                let summary = format!("ADR 0064 replay reproduction completed; {}", report.summary());
+                self.managed_runtime_debug_observation = Some(summary.clone());
+                let _ = self.host.record_semantic_progress(
+                    &run_id,
+                    "runtime_replay",
+                    summary.clone(),
+                );
+                self.status = Some(summary);
             }
             AiStudioRuntimeResult::PlayStopped => {
                 self.managed_playtest_started_at = None;
@@ -927,6 +1484,7 @@ impl AiStudioPanel {
         self.ensure_remote_gateway(context);
         self.poll_remote_requests();
         self.poll_model_discovery(context);
+        self.poll_managed_setup(context);
         self.poll_native_question(context);
         self.poll_model_resource_task(context);
         self.poll_native_mcp(context);
@@ -937,7 +1495,7 @@ impl AiStudioPanel {
         self.request_managed_source_repair_if_ready();
         self.request_managed_runtime_repair_if_ready();
         self.request_managed_playtest_if_ready();
-        self.request_next_managed_runtime_input_if_ready();
+        self.request_managed_runtime_debug_plan_if_ready();
         self.poll_managed_playtest_timeout();
         self.poll_benchmark_child();
         self.poll_benchmark_experiment();
@@ -1003,7 +1561,7 @@ impl AiStudioPanel {
                     .id_salt("ai_studio_detached_contents")
                     .auto_shrink([false, false]);
                 #[cfg(feature = "visual-validation")]
-                let scroll_area = scroll_area.vertical_scroll_offset(480.0);
+                let scroll_area = scroll_area.vertical_scroll_offset(self.visual_scroll_offset);
                 scroll_area.show(ui, |ui| self.show_contents(ui));
             },
         );
@@ -1026,6 +1584,29 @@ impl AiStudioPanel {
         }
         match RemoteAiStudioServer::start(context.clone()) {
             Ok((server, requests)) => {
+                #[cfg(feature = "visual-validation")]
+                if let Some(path) = std::env::var_os("GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO") {
+                    let path = PathBuf::from(path);
+                    match self.prepare_remote_companion_visual_validation() {
+                        Ok(()) => {
+                            if let Err(error) = fs::write(&path, server.companion_url()) {
+                                let message = format!(
+                                    "Remote AI Studio visual-validation URL could not be published: {error}"
+                                );
+                                eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
+                                self.status = Some(message);
+                            }
+                        }
+                        Err(error) => {
+                            let message = format!(
+                                "Remote AI Studio visual-validation fixture failed: {error}"
+                            );
+                            eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
+                            self.status = Some(message.clone());
+                            let _ = fs::write(&path, format!("ERROR: {message}"));
+                        }
+                    }
+                }
                 self.remote_server = Some(server);
                 self.remote_requests = Some(requests);
             }
@@ -1061,8 +1642,14 @@ impl AiStudioPanel {
                         if let Some(object) = snapshot.as_object_mut() {
                             let posture = match self.model_backend {
                                 ModelBackendPreference::Local => serde_json::json!({
-                                    "kind": "local",
+                                    "kind": "external_local",
                                     "remote_processing": false
+                                }),
+                                ModelBackendPreference::ManagedLocal => serde_json::json!({
+                                    "kind": "managed_local",
+                                    "remote_processing": false,
+                                    "execution_environment": self.managed_execution_environment.benchmark_id(),
+                                    "runtime_family": "llama.cpp"
                                 }),
                                 ModelBackendPreference::HostedApi => serde_json::json!({
                                     "kind": "hosted_api",
@@ -1155,7 +1742,7 @@ impl AiStudioPanel {
                 if pending.run_id != run_id || pending.capability != capability {
                     return RemoteAiStudioResponse::error(409, "permission_stale", "The permission request no longer matches the active decision.", false);
                 }
-                let action = pending.action;
+                let action = pending.action.clone();
                 let approval = match scope {
                     RemotePermissionScope::Once => ApprovalScope::Once,
                     RemotePermissionScope::Run => ApprovalScope::Run,
@@ -1445,15 +2032,21 @@ impl AiStudioPanel {
                     let previous = self.model_backend;
                     egui::ComboBox::from_id_salt("ai_studio_model_backend")
                         .selected_text(match self.model_backend {
-                            ModelBackendPreference::Local => "Local",
+                            ModelBackendPreference::Local => "External local (Ollama-compatible)",
+                            ModelBackendPreference::ManagedLocal => "Managed Local AI",
                             ModelBackendPreference::HostedApi => "Hosted API",
                             ModelBackendPreference::Enterprise => "Enterprise",
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut self.model_backend,
+                                ModelBackendPreference::ManagedLocal,
+                                "Managed Local AI",
+                            );
+                            ui.selectable_value(
+                                &mut self.model_backend,
                                 ModelBackendPreference::Local,
-                                "Local",
+                                "External local (Ollama-compatible)",
                             );
                             ui.selectable_value(
                                 &mut self.model_backend,
@@ -1471,7 +2064,8 @@ impl AiStudioPanel {
                     }
                 });
                 ui.small(match self.model_backend {
-                    ModelBackendPreference::Local => "Processing posture: local machine only.",
+                    ModelBackendPreference::Local => "Processing posture: external loopback local runtime; existing Ollama-compatible settings retain their original meaning.",
+                    ModelBackendPreference::ManagedLocal => "Processing posture: GameEngine-managed llama.cpp on this machine; the inference server remains loopback-only and never gains authoring authority.",
                     ModelBackendPreference::HostedApi => "Processing posture: selected task context is sent to the configured remote HTTPS provider only after Network access approval.",
                     ModelBackendPreference::Enterprise => "Processing posture: selected task context is sent to the configured enterprise HTTPS endpoint only after Network access approval.",
                 });
@@ -1489,6 +2083,223 @@ impl AiStudioPanel {
                     "Quality is a machine-local latency/reasoning preference. Remote GPU controls are never projected as local residency controls.",
                 );
                 match self.model_backend {
+                    ModelBackendPreference::ManagedLocal => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Execution environment");
+                            let previous = self.managed_execution_environment;
+                            egui::ComboBox::from_id_salt("ai_studio_managed_environment")
+                                .selected_text(self.managed_execution_environment.label())
+                                .show_ui(ui, |ui| {
+                                    for environment in ManagedExecutionEnvironment::ALL {
+                                        ui.selectable_value(
+                                            &mut self.managed_execution_environment,
+                                            environment,
+                                            environment.label(),
+                                        );
+                                    }
+                                });
+                            if self.managed_execution_environment != previous {
+                                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+                                self.save_preferences();
+                            }
+                        });
+                        ui.small(
+                            "Managed Local AI remains an engineering path until Windows-native versus WSL2 characterization selects the normal product default. Windows native is the currently selected candidate; WSL2 remains available for characterization and fallback in the dedicated GameEngine-LocalAI distribution.",
+                        );
+                        let setup_status = self
+                            .managed_local_runtime
+                            .setup_status(self.managed_execution_environment);
+                        let setup_busy = self.managed_setup_task.is_some();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Runtime");
+                            ui.monospace(format!(
+                                "llama.cpp {PINNED_LLAMA_CPP_TAG} @ {PINNED_LLAMA_CPP_REVISION}"
+                            ));
+                            match &setup_status {
+                                ManagedSetupStatus::Ready => {
+                                    ui.strong("Ready");
+                                }
+                                ManagedSetupStatus::RuntimeNotInstalled => {
+                                    if ui
+                                        .add_enabled(
+                                            !setup_busy,
+                                            egui::Button::new("Set up Local AI"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.start_managed_setup(
+                                            ManagedSetupOperation::InstallRuntime(
+                                                self.managed_execution_environment,
+                                            ),
+                                            "Downloading and verifying the pinned GameEngine llama.cpp runtime...",
+                                        );
+                                    }
+                                }
+                                ManagedSetupStatus::WslDistributionMissing => {
+                                    if ui
+                                        .add_enabled(
+                                            !setup_busy,
+                                            egui::Button::new("Set up WSL2 Local AI"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.start_managed_setup(
+                                            ManagedSetupOperation::ProvisionWsl,
+                                            "Provisioning the dedicated GameEngine-LocalAI WSL environment. Windows may require explicit elevation or restart; GameEngine never bypasses either boundary.",
+                                        );
+                                    }
+                                }
+                                ManagedSetupStatus::RestartRequired => {
+                                    ui.strong("Restart required");
+                                }
+                                ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
+                                    message,
+                                ) => {
+                                    ui.strong("Unavailable");
+                                    ui.small(message);
+                                }
+                            }
+                            if setup_busy {
+                                ui.spinner();
+                            }
+                        });
+                        if matches!(&setup_status, ManagedSetupStatus::RestartRequired) {
+                            ui.small(
+                                "Windows reported that setup requires a restart. GameEngine persists only a machine-local continuation marker and does not reboot automatically. Reopen the Editor after the restart to continue.",
+                            );
+                        }
+                        if !matches!(
+                            &setup_status,
+                            ManagedSetupStatus::RuntimeNotInstalled
+                                | ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(_)
+                        ) {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.small(
+                                    "Removal deletes GameEngine-owned runtime/cache state and unregisters only the dedicated GameEngine-LocalAI WSL distribution. User-owned GGUF source files are preserved.",
+                                );
+                                if ui
+                                    .add_enabled(
+                                        !setup_busy,
+                                        egui::Button::new("Remove managed environment"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.start_managed_setup(
+                                        ManagedSetupOperation::RemoveEnvironment(
+                                            self.managed_execution_environment,
+                                        ),
+                                        "Removing the selected GameEngine-managed Local AI environment...",
+                                    );
+                                }
+                            });
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Managed GGUF");
+                            let models = self
+                                .managed_local_runtime
+                                .registered_models()
+                                .unwrap_or_default();
+                            egui::ComboBox::from_id_salt("ai_studio_managed_model")
+                                .selected_text(
+                                    models
+                                        .iter()
+                                        .find(|model| model.model_id == self.managed_model_id)
+                                        .map(|model| model.display_name.as_str())
+                                        .unwrap_or("Select registered GGUF"),
+                                )
+                                .width(260.0)
+                                .show_ui(ui, |ui| {
+                                    for model in &models {
+                                        if ui
+                                            .selectable_label(
+                                                self.managed_model_id == model.model_id,
+                                                &model.display_name,
+                                            )
+                                            .clicked()
+                                        {
+                                            self.managed_model_id = model.model_id.clone();
+                                            self.last_model_resource_telemetry =
+                                                ModelResourceTelemetry::default();
+                                            self.save_preferences();
+                                        }
+                                    }
+                                });
+                            if ui
+                                .add_enabled(
+                                    !setup_busy,
+                                    egui::Button::new("Register existing GGUF..."),
+                                )
+                                .clicked()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("GGUF model", &["gguf"])
+                                    .pick_file()
+                            {
+                                self.start_managed_setup(
+                                    ManagedSetupOperation::RegisterModel(path),
+                                    "Hashing and registering the exact GGUF bytes without modifying the source file...",
+                                );
+                            }
+                        });
+                        let selected_model = self
+                            .managed_local_runtime
+                            .registered_models()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .find(|model| model.model_id == self.managed_model_id);
+                        if let Some(model) = selected_model {
+                            ui.small(format!(
+                                "Representation: sha256={} · size={} · quantization={}",
+                                model.content_sha256,
+                                format_model_bytes(model.size_bytes),
+                                optional_text(model.quantization.as_deref()),
+                            ));
+                            if self.managed_execution_environment
+                                == ManagedExecutionEnvironment::Wsl2Linux
+                            {
+                                match self.managed_local_runtime.additional_storage_for_environment(
+                                    &model.model_id,
+                                    self.managed_execution_environment,
+                                ) {
+                                    Ok(0) => {
+                                        ui.small("Linux-native WSL model copy: verified/present.");
+                                    }
+                                    Ok(bytes) => {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.small(format!(
+                                                "WSL2 needs an additional {} Linux-native copy of these same model bytes.",
+                                                format_model_bytes(bytes)
+                                            ));
+                                            if ui
+                                                .add_enabled(
+                                                    !setup_busy,
+                                                    egui::Button::new("Approve copy"),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.start_managed_setup(
+                                                    ManagedSetupOperation::PrepareModel {
+                                                        model_id: model.model_id.clone(),
+                                                        environment: self.managed_execution_environment,
+                                                        duplicate_storage_approved: true,
+                                                    },
+                                                    "Copying the exact verified GGUF bytes into the dedicated Linux-native WSL model store...",
+                                                );
+                                            }
+                                        });
+                                    }
+                                    Err(error) => {
+                                        ui.small(format!(
+                                            "WSL model preparation unavailable: {error}"
+                                        ));
+                                    }
+                                }
+                            }
+                        } else {
+                            ui.small(
+                                "No managed model selected. Model weights are never downloaded merely because a model is recommended; register an existing GGUF or use an explicit future catalog acquisition action.",
+                            );
+                        }
+                    }
                     ModelBackendPreference::Local => {
                         ui.horizontal(|ui| {
                             ui.label("Endpoint");
@@ -1658,6 +2469,26 @@ impl AiStudioPanel {
                         model: self.local_model_name.clone(),
                     })
                     .capability_profile(),
+                    ModelBackendPreference::ManagedLocal => self
+                        .managed_model_config()
+                        .map(NativeModelConfig::Managed)
+                        .map(|config| config.capability_profile())
+                        .unwrap_or_else(|_| {
+                            NativeModelConfig::Managed(ManagedLocalModelConfig {
+                                state_root: self.managed_local_runtime.root().to_path_buf(),
+                                environment: self.managed_execution_environment,
+                                model_id: self.managed_model_id.clone(),
+                                model_content_sha256: String::new(),
+                                model_path: PathBuf::new(),
+                                model_size_bytes: 0,
+                                quantization: None,
+                                runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
+                                runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
+                                runtime_artifact_sha256: String::new(),
+                                runtime_compatibility_version: "llama-server-openai-v1".to_owned(),
+                            })
+                            .capability_profile()
+                        }),
                     ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
                         NativeModelConfig::Hosted(HostedModelConfig {
                             endpoint: self.hosted_model_endpoint.clone(),
@@ -1693,7 +2524,10 @@ impl AiStudioPanel {
                         "GameEngine status: Recommended · {labels} · corpus {BENCHMARK_CORPUS_VERSION}"
                     ));
                 }
-                if self.model_backend == ModelBackendPreference::Local {
+                if matches!(
+                    self.model_backend,
+                    ModelBackendPreference::Local | ModelBackendPreference::ManagedLocal
+                ) {
                     ui.small(format!(
                         "Resource controls: unload/reload {} · CPU offload {} · GPU residency telemetry {} · memory telemetry {}",
                         capability_label(profile.resource_capabilities.unload_reload),
@@ -1888,6 +2722,112 @@ impl AiStudioPanel {
         }
     }
 
+    fn start_managed_setup(&mut self, operation: ManagedSetupOperation, message: &str) {
+        if self.managed_setup_task.is_some() {
+            self.status = Some("A managed Local AI setup operation is already running.".to_owned());
+            return;
+        }
+        match ManagedSetupTask::spawn(self.managed_local_runtime.clone(), operation) {
+            Ok(task) => {
+                self.managed_setup_task = Some(task);
+                self.status = Some(message.to_owned());
+            }
+            Err(error) => self.status = Some(format!(
+                "Managed Local AI setup failed to start ({}): {error}",
+                error.layer().label()
+            )),
+        }
+    }
+
+    fn poll_managed_setup(&mut self, context: &egui::Context) {
+        let Some(task) = self.managed_setup_task.as_ref() else {
+            return;
+        };
+        let Some(result) = task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        self.managed_setup_task = None;
+        match result {
+            Ok(ManagedSetupResult::RuntimeInstalled(installation)) => {
+                self.status = Some(format!(
+                    "Managed Local AI runtime ready: llama.cpp {} @ {} · {}.",
+                    installation.runtime_tag,
+                    installation.runtime_revision,
+                    installation.environment.label()
+                ));
+            }
+            Ok(ManagedSetupResult::WslProvisioned) => {
+                self.status = Some(
+                    "Dedicated GameEngine-LocalAI WSL environment is provisioned. Install the pinned runtime next."
+                        .to_owned(),
+                );
+            }
+            Ok(ManagedSetupResult::ModelRegistered(model)) => {
+                self.managed_model_id = model.model_id.clone();
+                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+                self.save_preferences();
+                self.status = Some(format!(
+                    "Registered existing GGUF without modifying its bytes: {} · sha256={}.",
+                    model.display_name, model.content_sha256
+                ));
+            }
+            Ok(ManagedSetupResult::ModelPrepared(path)) => {
+                self.status = Some(format!(
+                    "Verified managed model copy for {}: {}.",
+                    self.managed_execution_environment.label(),
+                    path.display()
+                ));
+            }
+            Ok(ManagedSetupResult::EnvironmentRemoved(environment)) => {
+                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+                self.status = Some(format!(
+                    "Removed the GameEngine-managed {} runtime environment. Registered user-owned GGUF source files were not deleted.",
+                    environment.label()
+                ));
+            }
+            Err(error) => {
+                self.status = Some(format!(
+                    "Managed Local AI setup failed ({}): {error}",
+                    error.layer().label()
+                ));
+            }
+        }
+    }
+
+    fn managed_model_config(&self) -> Result<ManagedLocalModelConfig, String> {
+        if self.managed_model_id.trim().is_empty() {
+            return Err("Register or select a managed GGUF model before starting inference.".to_owned());
+        }
+        self.managed_local_runtime
+            .configuration_for(
+                &self.managed_model_id,
+                self.managed_execution_environment,
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    fn managed_benchmark_inventory(
+        &self,
+        config: &ManagedLocalModelConfig,
+    ) -> InstalledModelInventory {
+        InstalledModelInventory {
+            endpoint: format!(
+                "managed://{}",
+                config.environment.benchmark_id()
+            ),
+            backend_version: Some(config.benchmark_runtime_identity()),
+            models: vec![InstalledLocalModel {
+                name: config.model_id.clone(),
+                digest: Some(config.model_content_sha256.clone()),
+                size_bytes: Some(config.model_size_bytes),
+                parameter_size: None,
+                quantization_level: config.quantization.clone(),
+                family: Some("managed llama.cpp GGUF".to_owned()),
+            }],
+        }
+    }
+
     fn benchmark_task_record_available(&self) -> bool {
         let Some(task) = benchmark_task(&self.benchmark_task_id) else {
             return false;
@@ -2035,12 +2975,15 @@ impl AiStudioPanel {
         match self.model_backend {
             ModelBackendPreference::Local => {
                 if self.local_model_name.trim().is_empty() {
-                    return Err("Set an installed local model before starting inference.".to_owned());
+                    return Err("Set an installed external local model before starting inference.".to_owned());
                 }
                 Ok(NativeModelConfig::Local(LocalModelConfig {
                     endpoint: self.local_model_endpoint.clone(),
                     model: self.local_model_name.clone(),
                 }))
+            }
+            ModelBackendPreference::ManagedLocal => {
+                self.managed_model_config().map(NativeModelConfig::Managed)
             }
             ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
                 if !self.hosted_model_endpoint.trim().starts_with("https://") {
@@ -2176,10 +3119,10 @@ impl AiStudioPanel {
             MemoryPressure::Unknown,
             profile.resource_capabilities,
         );
-        let inventory = if matches!(&config, NativeModelConfig::Local(_)) {
-            self.current_installed_inventory().cloned()
-        } else {
-            None
+        let inventory = match &config {
+            NativeModelConfig::Local(_) => self.current_installed_inventory().cloned(),
+            NativeModelConfig::Managed(config) => Some(self.managed_benchmark_inventory(config)),
+            NativeModelConfig::Hosted(_) => None,
         };
         self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
             task_id: self.benchmark_task_id.clone(),
@@ -2223,16 +3166,20 @@ impl AiStudioPanel {
         }
     }
 
-    fn selected_local_resource_config(&self) -> Option<LocalModelConfig> {
-        if self.model_backend != ModelBackendPreference::Local
-            || self.local_model_name.trim().is_empty()
-        {
-            return None;
+    fn selected_local_resource_config(&self) -> Option<LocalModelResourceConfig> {
+        match self.model_backend {
+            ModelBackendPreference::Local if !self.local_model_name.trim().is_empty() => {
+                Some(LocalModelResourceConfig::Ollama(LocalModelConfig {
+                    endpoint: self.local_model_endpoint.clone(),
+                    model: self.local_model_name.clone(),
+                }))
+            }
+            ModelBackendPreference::ManagedLocal => self
+                .managed_model_config()
+                .ok()
+                .map(LocalModelResourceConfig::Managed),
+            _ => None,
         }
-        Some(LocalModelConfig {
-            endpoint: self.local_model_endpoint.clone(),
-            model: self.local_model_name.clone(),
-        })
     }
 
     fn begin_model_reload_after_authoritative_inspection(
@@ -2426,6 +3373,8 @@ impl AiStudioPanel {
             confinement_requirement: self.confinement_requirement,
             external_agent_provider: self.external_provider_kind,
             model_backend: self.model_backend,
+            managed_execution_environment: self.managed_execution_environment,
+            managed_model_id: self.managed_model_id.clone(),
             local_model_endpoint: self.local_model_endpoint.clone(),
             local_model_name: self.local_model_name.clone(),
             hosted_model_endpoint: self.hosted_model_endpoint.clone(),
@@ -2476,7 +3425,10 @@ impl AiStudioPanel {
                         policy,
                     });
                 }
-                if self.model_backend == ModelBackendPreference::Local {
+                if matches!(
+                    self.model_backend,
+                    ModelBackendPreference::Local | ModelBackendPreference::ManagedLocal
+                ) {
                     self.last_model_resource_telemetry = answer.resource_telemetry.clone();
                 }
                 let message = format_native_answer(&answer);
@@ -2836,22 +3788,31 @@ impl AiStudioPanel {
                 );
             }
             NativeAgentAction::RuntimeInput { input } => {
+                let default_tick = next_runtime_input_tick(&self.managed_candidate_input_recipe);
                 let result = serde_json::from_value::<ProviderRuntimeInput>(input)
                     .map_err(|error| error.to_string())
-                    .and_then(|input| input.command());
+                    .and_then(|input| input.scheduled_commands(default_tick));
                 match result {
-                    Ok(command) => {
-                        self.managed_candidate_input_recipe.push(command);
+                    Ok(scheduled) => {
+                        let summary = scheduled
+                            .iter()
+                            .map(|input| {
+                                format!("tick {} {:?}", input.tick_offset(), input.command())
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", " );
+                        self.managed_candidate_input_recipe
+                            .extend(scheduled.iter().cloned());
                         let _ = self.host.record_semantic_progress(
                             run_id,
                             "runtime_input_plan",
-                            format!("Native runtime planned managed input {command:?}."),
+                            format!("Native runtime planned fixed-tick input: {summary}."),
                         );
                         self.record_native_result_and_continue(
                             run_id,
                             "runtime_input",
                             true,
-                            "Input was added to the host-managed Play recipe.",
+                            "Input was added to the frozen host-managed Play recipe.",
                         );
                     }
                     Err(error) => self.record_native_result_and_continue(
@@ -2872,14 +3833,31 @@ impl AiStudioPanel {
                     .record_completion_gate(run_id, &gate, status, message)
                     .map_err(|error| error.to_string());
                 if gate == "visual_evaluation" {
+                    if status == CompletionStatus::Passed && !self.native_evaluation_had_image {
+                        self.record_runtime_evaluation_failure(
+                            run_id,
+                            "Native model attempted to pass visual_evaluation without verified image input; false visual claims are rejected.".to_owned(),
+                        );
+                        return;
+                    }
                     match result {
                         Ok(()) => {
-                            let interactions_passed = match status {
-                                CompletionStatus::Passed => Some(true),
-                                CompletionStatus::Failed => Some(false),
-                                CompletionStatus::Pending | CompletionStatus::NotApplicable => None,
+                            let playtest_result = match status {
+                                CompletionStatus::Passed => self.host.record_playtest_result(
+                                    run_id,
+                                    true,
+                                    Some(true),
+                                    "Native visual evaluation completed against the host-captured managed Play frame.",
+                                ),
+                                CompletionStatus::Failed => self.host.record_playtest_result(
+                                    run_id,
+                                    true,
+                                    Some(false),
+                                    "Native visual evaluation failed against the host-captured managed Play frame.",
+                                ),
+                                CompletionStatus::Pending | CompletionStatus::NotApplicable => Ok(()),
                             };
-                            if let Err(error) = self.host.record_playtest_result(run_id, true, interactions_passed, "Native visual evaluation completed against the host-captured managed Play frame.") {
+                            if let Err(error) = playtest_result {
                                 self.record_runtime_evaluation_failure(run_id, error.to_string());
                             } else {
                                 self.finish_runtime_evaluation(run_id, Some(0));
@@ -3078,6 +4056,30 @@ impl AiStudioPanel {
                 "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
             );
         });
+        #[cfg(feature = "visual-validation")]
+        if self.visual_external_provider_evidence {
+            ui.group(|ui| {
+                ui.strong("First-class AgentRuntime provider evidence");
+                for provider in ExternalAgentProviderKind::ALL {
+                    let status = ExternalAgentProviderStatus::visual_fixture(provider);
+                    ui.label(format!(
+                        "{} · discovery {} · authentication {}",
+                        provider.label(),
+                        status.discovery.label(),
+                        status.auth.label(),
+                    ));
+                }
+                ui.small(
+                    "Claude Code and Codex keep provider-owned credentials; Generic command remains the explicit compatibility fallback.",
+                );
+                ui.small(
+                    "MCP bearer: ephemeral environment reference only. Secret values are never displayed, serialized, or copied into provider arguments.",
+                );
+                ui.small(
+                    "Sanitized error presentation: provider failures report adapter/status context without credential or bearer contents.",
+                );
+            });
+        }
         if self.external_provider_kind == ExternalAgentProviderKind::Generic {
             ui.horizontal(|ui| {
                 ui.label("Compatible agent program");
@@ -3132,7 +4134,7 @@ impl AiStudioPanel {
             }
         });
         ui.small(
-            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Local, Hosted API, or Enterprise ModelBackend. External adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
+            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Managed Local, external local, Hosted API, or Enterprise ModelBackend. External and managed adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
         );
         let mut stop_requested = false;
         let mut interrupt_requested = false;
@@ -3278,7 +4280,7 @@ impl AiStudioPanel {
         };
         let run_id = pending.run_id.clone();
         let capability = pending.capability;
-        let action = pending.action;
+        let action = pending.action.clone();
         ui.separator();
         ui.group(|ui| {
             ui.strong("Approval required");
@@ -3292,7 +4294,12 @@ impl AiStudioPanel {
                     ("Deny", ApprovalScope::Deny),
                 ] {
                     if ui.button(label).clicked() {
-                        self.resolve_pending_permission(&run_id, capability, action, scope);
+                        self.resolve_pending_permission(
+                            &run_id,
+                            capability,
+                            action.clone(),
+                            scope,
+                        );
                     }
                 }
             });
@@ -3453,10 +4460,12 @@ impl AiStudioPanel {
             ..WorkloadSignals::default()
         });
         let native_benchmark_identity = native_config.as_ref().map(|config| {
-            let inventory = if matches!(config, NativeModelConfig::Local(_)) {
-                self.current_installed_inventory().cloned()
-            } else {
-                None
+            let inventory = match config {
+                NativeModelConfig::Local(_) => self.current_installed_inventory().cloned(),
+                NativeModelConfig::Managed(config) => {
+                    Some(self.managed_benchmark_inventory(config))
+                }
+                NativeModelConfig::Hosted(_) => None,
             };
             (config.backend_id().to_owned(), config.model_id(), inventory)
         });
@@ -3501,15 +4510,17 @@ impl AiStudioPanel {
         self.code_workspace = None;
         self.pending_code_changes.clear();
         self.pending_runtime_action = None;
-        self.managed_input_plan.clear();
         self.managed_input_recipe.clear();
         self.managed_candidate_input_recipe.clear();
+        self.managed_runtime_plan_completed = false;
+        self.managed_runtime_debug_observation = None;
         self.managed_playtest_requested = false;
         self.managed_capture_requested = false;
         self.managed_repair_requested = false;
         self.managed_runtime_repairs = 0;
         self.managed_runtime_observation = None;
         self.managed_evaluation_requested = false;
+        self.native_evaluation_had_image = false;
         self.managed_playtest_started_at = None;
         self.last_captured_frame = None;
         if mode == AgentRuntimeMode::Native
@@ -3578,6 +4589,16 @@ impl AiStudioPanel {
                 });
             }
             Ok(PermissionCheck::Denied) => {
+                if matches!(action, PendingPermissionAction::RunRuntimeDebugPlan(_)) {
+                    self.managed_runtime_plan_completed = true;
+                    let _ = self.host.record_playtest_result(
+                        &run_id,
+                        true,
+                        Some(false),
+                        "Deterministic managed runtime input was denied by Runtime Input Control permission.",
+                    );
+                    self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+                }
                 self.status = Some(format!("Permission denied: {}.", capability.label()));
             }
             Err(error) => self.status = Some(error.to_string()),
@@ -3600,6 +4621,16 @@ impl AiStudioPanel {
             return;
         }
         if scope == ApprovalScope::Deny {
+            if matches!(action, PendingPermissionAction::RunRuntimeDebugPlan(_)) {
+                self.managed_runtime_plan_completed = true;
+                let _ = self.host.record_playtest_result(
+                    run_id,
+                    true,
+                    Some(false),
+                    "Deterministic managed runtime input approval was denied.",
+                );
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+            }
             self.status = Some(format!("Denied {}.", capability.label()));
             return;
         }
@@ -3627,8 +4658,8 @@ impl AiStudioPanel {
             PendingPermissionAction::LaunchPlaytest => {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::StartPlaytest);
             }
-            PendingPermissionAction::SendRuntimeInput(command) => {
-                self.pending_runtime_action = Some(AiStudioRuntimeAction::SendInput(command));
+            PendingPermissionAction::RunRuntimeDebugPlan(plan) => {
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::RunDebugPlan(plan));
             }
             PendingPermissionAction::CaptureFrame => {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);
@@ -4109,19 +5140,61 @@ impl AiStudioPanel {
             return;
         }
         self.managed_evaluation_requested = true;
+        self.native_evaluation_had_image = false;
         if self.active_runtime_mode == Some(AgentRuntimeMode::Native) {
-            let Some(observation) = self.managed_runtime_observation.clone() else {
-                self.record_runtime_evaluation_failure(run_id, "Native runtime evaluation requires a host-captured frame artifact.".to_owned());
-                return;
-            };
-            let image = match fs::read(&observation.path) {
-                Ok(image) => image,
-                Err(error) => { self.record_runtime_evaluation_failure(run_id, format!("Could not read host-captured frame for native evaluation: {error}")); return; }
-            };
-            let context = format!("Evaluate the attached host-captured managed Play frame {} ({}x{}). Resolve visual_evaluation with host-reportable evidence; interaction success must be consistent with the observed frame and the immutable playtest plan.", observation.artifact_id, observation.width, observation.height);
-            if let Err(error) = self.start_native_agent_turn(run_id, Some(context), vec![image]) { self.record_runtime_evaluation_failure(run_id, error); }
+            let structured = self
+                .managed_runtime_debug_observation
+                .clone()
+                .unwrap_or_else(|| "Structured runtime observation unavailable.".to_owned());
+            let visual_supported = self
+                .native_agent_runtime
+                .as_ref()
+                .is_some_and(NativeAgentRuntime::supports_visual_evaluation);
+            if visual_supported {
+                let Some(observation) = self.managed_runtime_observation.clone() else {
+                    self.record_runtime_evaluation_failure(
+                        run_id,
+                        "Native visual runtime evaluation requires a host-captured frame artifact."
+                            .to_owned(),
+                    );
+                    return;
+                };
+                let image = match fs::read(&observation.path) {
+                    Ok(image) => image,
+                    Err(error) => {
+                        self.record_runtime_evaluation_failure(
+                            run_id,
+                            format!("Could not read host-captured frame for native evaluation: {error}"),
+                        );
+                        return;
+                    }
+                };
+                self.native_evaluation_had_image = true;
+                let context = format!(
+                    "Evaluate the attached host-captured managed Play frame {} ({}x{}). Resolve visual_evaluation with host-reportable evidence. Deterministic structured runtime evidence: {structured}",
+                    observation.artifact_id, observation.width, observation.height
+                );
+                if let Err(error) =
+                    self.start_native_agent_turn(run_id, Some(context), vec![image])
+                {
+                    self.record_runtime_evaluation_failure(run_id, error);
+                }
+            } else {
+                let context = format!(
+                    "The selected Native ModelBackend has no verified image-input route. Do not claim visual inspection. Evaluate only deterministic structured host runtime evidence and report visual_evaluation as not_applicable unless host evidence proves a failure: {structured}"
+                );
+                if let Err(error) =
+                    self.start_native_agent_turn(run_id, Some(context), Vec::new())
+                {
+                    self.record_runtime_evaluation_failure(run_id, error);
+                }
+            }
         } else {
-            self.request_permission(run_id.to_owned(), AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchRuntimeEvaluation);
+            self.request_permission(
+                run_id.to_owned(),
+                AgentCapability::ExternalAgentProcess,
+                PendingPermissionAction::LaunchRuntimeEvaluation,
+            );
         }
     }
 
@@ -4261,7 +5334,8 @@ impl AiStudioPanel {
         if !self.host.run(&run_id).is_ok_and(|run| run.state == AgentRunState::Playtesting) {
             return;
         }
-        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
+        self.managed_runtime_plan_completed = false;
+        self.managed_runtime_debug_observation = None;
         self.managed_capture_requested = false;
         self.managed_evaluation_requested = false;
         self.managed_runtime_observation = None;
@@ -4278,15 +5352,37 @@ impl AiStudioPanel {
         );
     }
 
-    fn request_next_managed_runtime_input_if_ready(&mut self) {
+    fn request_managed_runtime_debug_plan_if_ready(&mut self) {
         if self.managed_playtest_started_at.is_none()
+            || self.managed_runtime_plan_completed
+            || self.managed_input_recipe.is_empty()
             || self.pending_permission.is_some()
             || self.pending_runtime_action.is_some()
         {
             return;
         }
-        let Some(command) = self.managed_input_plan.pop_front() else {
-            return;
+        let end_tick = self
+            .managed_input_recipe
+            .iter()
+            .map(RuntimeDebugScheduledInput::tick_offset)
+            .max()
+            .unwrap_or(0);
+        let plan = match RuntimeDebugPlan::new(self.managed_input_recipe.clone(), end_tick) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.managed_runtime_plan_completed = true;
+                if let Some(run_id) = self.active_run_id.clone() {
+                    let _ = self.host.record_playtest_result(
+                        &run_id,
+                        true,
+                        Some(false),
+                        format!("Managed deterministic runtime plan was invalid: {error}"),
+                    );
+                    self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+                }
+                self.status = Some(error.to_string());
+                return;
+            }
         };
         let Some(run_id) = self.active_run_id.clone() else {
             return;
@@ -4294,7 +5390,7 @@ impl AiStudioPanel {
         self.request_permission(
             run_id,
             AgentCapability::RuntimeInputControl,
-            PendingPermissionAction::SendRuntimeInput(command),
+            PendingPermissionAction::RunRuntimeDebugPlan(plan),
         );
     }
 
@@ -4334,6 +5430,7 @@ impl AiStudioPanel {
 
     fn record_runtime_evaluation_failure(&mut self, run_id: &str, message: String) {
         self.managed_evaluation_requested = false;
+        self.native_evaluation_had_image = false;
         if let Err(error) = self.host.record_completion_gate(
             run_id,
             "visual_evaluation",
@@ -4367,15 +5464,21 @@ impl AiStudioPanel {
                     "Runtime evaluator finished with {exit_code:?}; visual evaluation failed and repair is required."
                 ));
             }
-            CompletionStatus::Pending | CompletionStatus::NotApplicable => {
+            CompletionStatus::NotApplicable => {
+                self.status = Some(format!(
+                    "Runtime evaluator finished with {exit_code:?}; visual evaluation is not applicable because no verified image-input path was used. Structured runtime evidence remains authoritative."
+                ));
+            }
+            CompletionStatus::Pending => {
                 self.record_runtime_evaluation_failure(
                     run_id,
                     format!(
-                        "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation from the host-captured frame; runtime repair is required."
+                        "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation; runtime repair is required."
                     ),
                 );
             }
         }
+        self.native_evaluation_had_image = false;
         if self.managed_playtest_started_at.is_some() && self.pending_runtime_action.is_none() {
             self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
         }
@@ -4400,7 +5503,8 @@ impl AiStudioPanel {
         if !self.managed_candidate_input_recipe.is_empty() {
             self.managed_input_recipe = std::mem::take(&mut self.managed_candidate_input_recipe);
         }
-        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
+        self.managed_runtime_plan_completed = false;
+        self.managed_runtime_debug_observation = None;
         self.managed_repair_requested = false;
         if let Err(error) = self
             .host
@@ -4478,13 +5582,20 @@ impl AiStudioPanel {
                 {
                     return Err("runtime_input planning is accepted only during provider execution, before managed Play evaluation".to_owned());
                 }
-                let command = input.command()?;
-                self.managed_candidate_input_recipe.push(command);
+                let default_tick = next_runtime_input_tick(&self.managed_candidate_input_recipe);
+                let scheduled = input.scheduled_commands(default_tick)?;
+                let summary = scheduled
+                    .iter()
+                    .map(|input| format!("tick {} {:?}", input.tick_offset(), input.command()))
+                    .collect::<Vec<_>>()
+                    .join(", " );
+                self.managed_candidate_input_recipe
+                    .extend(scheduled.iter().cloned());
                 self.host
                     .record_semantic_progress(
                         run_id,
                         "runtime_input_plan",
-                        format!("Queued provider-planned runtime input {command:?} for managed Editor Play."),
+                        format!("Queued provider-planned fixed-tick runtime input: {summary}."),
                     )
                     .map_err(|error| error.to_string())
             }
@@ -4723,6 +5834,32 @@ fn provider_mouse_button(button: &str) -> Result<MouseButton, String> {
         "right" | "secondary" => Ok(MouseButton::Right),
         "middle" => Ok(MouseButton::Middle),
         _ => Err(format!("unsupported managed runtime mouse button `{button}`")),
+    }
+}
+
+fn provider_gamepad_button(button: &str) -> Result<GamepadButton, String> {
+    match button.trim().to_ascii_lowercase().as_str() {
+        "south" | "a" => Ok(GamepadButton::South),
+        "east" | "b" => Ok(GamepadButton::East),
+        "west" | "x" => Ok(GamepadButton::West),
+        "north" | "y" => Ok(GamepadButton::North),
+        "left_shoulder" | "lb" => Ok(GamepadButton::LeftShoulder),
+        "right_shoulder" | "rb" => Ok(GamepadButton::RightShoulder),
+        "select" | "back" => Ok(GamepadButton::Select),
+        "start" | "menu" => Ok(GamepadButton::Start),
+        _ => Err(format!("unsupported managed runtime gamepad button `{button}`")),
+    }
+}
+
+fn provider_gamepad_axis(axis: &str) -> Result<GamepadAxis, String> {
+    match axis.trim().to_ascii_lowercase().as_str() {
+        "left_stick_x" => Ok(GamepadAxis::LeftStickX),
+        "left_stick_y" => Ok(GamepadAxis::LeftStickY),
+        "right_stick_x" => Ok(GamepadAxis::RightStickX),
+        "right_stick_y" => Ok(GamepadAxis::RightStickY),
+        "left_trigger" => Ok(GamepadAxis::LeftTrigger),
+        "right_trigger" => Ok(GamepadAxis::RightTrigger),
+        _ => Err(format!("unsupported managed runtime gamepad axis `{axis}`")),
     }
 }
 
@@ -5017,8 +6154,11 @@ mod tests {
         let ProviderAgentEvent::RuntimeInput { input } = event else {
             panic!("runtime input event");
         };
+        let scheduled = input.scheduled_commands(0).expect("scheduled command");
+        assert_eq!(scheduled.len(), 1);
+        assert_eq!(scheduled[0].tick_offset(), 0);
         assert_eq!(
-            input.command().expect("command"),
+            scheduled[0].command(),
             InputCommand::Key {
                 key: KeyCode::KeyW,
                 pressed: true,
@@ -5031,8 +6171,9 @@ mod tests {
         let input = ProviderRuntimeInput::MouseMove {
             x: f32::NAN,
             y: 1.0,
+            at_tick: None,
         };
-        assert!(input.command().is_err());
+        assert!(input.scheduled_commands(0).is_err());
     }
 
     #[test]
@@ -5125,6 +6266,8 @@ mod tests {
             confinement_requirement: AgentConfinementRequirement::default(),
             external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
             model_backend: ModelBackendPreference::HostedApi,
+            managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
+            managed_model_id: String::new(),
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
             hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
@@ -5134,6 +6277,29 @@ mod tests {
         assert!(!json.contains("authorization"));
         assert!(!json.contains("bearer"));
         assert!(!json.contains("protected_path"));
+    }
+
+    #[test]
+    fn legacy_external_local_preferences_are_not_silently_migrated_to_managed() {
+        let preferences: AiStudioPreferences = serde_json::from_str(
+            r#"{"schema_version":1,"model_backend":"local","local_model_endpoint":"http://127.0.0.1:11434","local_model_name":"legacy-model"}"#,
+        )
+        .expect("deserialize legacy external-local preferences");
+        assert_eq!(preferences.model_backend, ModelBackendPreference::Local);
+        assert_eq!(
+            preferences.managed_execution_environment,
+            ManagedExecutionEnvironment::WindowsNative
+        );
+        assert!(preferences.managed_model_id.is_empty());
+        assert_eq!(preferences.local_model_name, "legacy-model");
+        assert_eq!(
+            preferences.local_model_endpoint,
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(
+            AiStudioPreferences::default().model_backend,
+            ModelBackendPreference::Local
+        );
     }
 
     #[test]

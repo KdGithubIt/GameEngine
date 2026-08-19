@@ -119,8 +119,11 @@ the beginning:
   [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md),
   [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md),
   [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md),
-  [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md), and
-  [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md).
+  [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md),
+  [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md),
+  [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md),
+  [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md),
+  and [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md).
 
 ## Proposed Decisions
 
@@ -300,3 +303,6 @@ implementation contract.
 | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | Multi-Agent Writer Coordination and Conflict Ownership |
 | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
 | [0154](0154-target-aware-animation-motion-binding-resolution.md) | Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
+| [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md) | GameEngine-Managed Local Inference Runtime and Platform Selection |
+| [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md) | Automated Multi-Model Benchmark Campaigns and Reproducible Runtime Characterization |
+| [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md) | AI Runtime Debugging, Deterministic Playtest Control, and Host-Owned Observation |

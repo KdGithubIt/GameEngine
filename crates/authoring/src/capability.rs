@@ -174,6 +174,8 @@ pub enum AuthoringDomain {
     ProjectSettings,
     /// Animation Set asset documents.
     AnimationSet,
+    /// Native 2D sprite, animation, and tile asset documents.
+    Native2d,
 }
 
 /// Authoring document a capability reads or mutates.
@@ -207,6 +209,14 @@ pub enum AuthoringDocumentKind {
     ProjectSettings,
     /// An Animation Set asset document.
     AnimationSet,
+    /// A Native 2D Sprite Atlas asset document.
+    SpriteAtlas,
+    /// A Native 2D Sprite Animation asset document.
+    SpriteAnimation,
+    /// A Native 2D Tile Set asset document.
+    TileSet,
+    /// A Native 2D Tile Map asset document.
+    TileMap,
 }
 
 /// Semantic shape of one capability.
@@ -927,6 +937,22 @@ fn builtin_capabilities() -> Vec<AuthoringCapability> {
         validation("animation_set.validate", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate the active Animation Set through the shared typed-document boundary."),
         with_input(preview("animation_set.preview", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], "AnimationSet", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<AnimationSet>"), "Preview one atomic Animation Set replacement."), typed_document_replace_schema("AnimationSet")),
         with_input(commit("animation_set.apply", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], "AnimationSet", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<AnimationSet>"), "Apply one atomic Animation Set replacement."), typed_document_replace_schema("AnimationSet")),
+        query("sprite_atlas.inspect", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAtlas], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<SpriteAtlasDocument>"), "Inspect a Native 2D Sprite Atlas through the shared typed-document boundary."),
+        validation("sprite_atlas.validate", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAtlas], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate a Native 2D Sprite Atlas through the shared typed-document boundary."),
+        with_input(preview("sprite_atlas.preview", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAtlas], "SpriteAtlasDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<SpriteAtlasDocument>"), "Preview one atomic Sprite Atlas replacement."), typed_document_replace_schema("SpriteAtlasDocument")),
+        with_input(commit("sprite_atlas.apply", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAtlas], "SpriteAtlasDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<SpriteAtlasDocument>"), "Apply one atomic Sprite Atlas replacement."), typed_document_replace_schema("SpriteAtlasDocument")),
+        query("sprite_animation.inspect", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAnimation], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<SpriteAnimationDocument>"), "Inspect a Native 2D Sprite Animation through the shared typed-document boundary."),
+        validation("sprite_animation.validate", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAnimation], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate a Native 2D Sprite Animation through the shared typed-document boundary."),
+        with_input(preview("sprite_animation.preview", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAnimation], "SpriteAnimationDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<SpriteAnimationDocument>"), "Preview one atomic Sprite Animation replacement."), typed_document_replace_schema("SpriteAnimationDocument")),
+        with_input(commit("sprite_animation.apply", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::SpriteAnimation], "SpriteAnimationDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<SpriteAnimationDocument>"), "Apply one atomic Sprite Animation replacement."), typed_document_replace_schema("SpriteAnimationDocument")),
+        query("tile_set.inspect", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileSet], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<TileSetDocument>"), "Inspect a Native 2D Tile Set through the shared typed-document boundary."),
+        validation("tile_set.validate", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileSet], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate a Native 2D Tile Set through the shared typed-document boundary."),
+        with_input(preview("tile_set.preview", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileSet], "TileSetDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<TileSetDocument>"), "Preview one atomic Tile Set replacement."), typed_document_replace_schema("TileSetDocument")),
+        with_input(commit("tile_set.apply", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileSet], "TileSetDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<TileSetDocument>"), "Apply one atomic Tile Set replacement."), typed_document_replace_schema("TileSetDocument")),
+        query("tile_map.inspect", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileMap], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<TileMapDocument>"), "Inspect a Native 2D Tile Map through the shared typed-document boundary."),
+        validation("tile_map.validate", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileMap], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate a Native 2D Tile Map through the shared typed-document boundary."),
+        with_input(preview("tile_map.preview", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileMap], "TileMapDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<TileMapDocument>"), "Preview one atomic sparse Tile Map replacement."), typed_document_replace_schema("TileMapDocument")),
+        with_input(commit("tile_map.apply", AuthoringDomain::Native2d, vec![AuthoringDocumentKind::TileMap], "TileMapDocument", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<TileMapDocument>"), "Apply one atomic sparse Tile Map replacement."), typed_document_replace_schema("TileMapDocument")),
     ];
     capabilities.extend(specialized_capabilities());
     capabilities

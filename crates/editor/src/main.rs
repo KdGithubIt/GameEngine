@@ -72,11 +72,34 @@ impl EditorShell {
             ai_studio.configure_benchmark_child(benchmark_run)?;
         }
         #[cfg(feature = "visual-validation")]
+        let visual_scenario = visual_authoring_tool_scenario();
+        #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
-            let detached_capture = visual_validation_touches_ai_studio();
+            let detached_capture = match visual_scenario.as_deref() {
+                Some("ADR 0133 Remote AI Studio") => false,
+                Some("ADR 0143 Model Resources") => {
+                    ai_studio.prepare_local_model_resources_visual_validation();
+                    true
+                }
+                Some("ADR 0145 External Agent") => {
+                    ai_studio.prepare_external_agent_visual_validation();
+                    true
+                }
+                Some(_) => false,
+                None => {
+                    let touches_ai_studio = visual_validation_touches_ai_studio();
+                    if touches_ai_studio {
+                        if visual_validation_touches_managed_local_runtime() {
+                            ai_studio.prepare_managed_local_visual_validation()?;
+                        } else {
+                            ai_studio.prepare_hosted_backend_visual_validation();
+                        }
+                    }
+                    touches_ai_studio
+                }
+            };
             if detached_capture {
-                ai_studio.prepare_hosted_backend_visual_validation();
                 ai_studio.detach();
             }
             (ai_studio, detached_capture)
@@ -86,9 +109,17 @@ impl EditorShell {
         #[cfg(not(feature = "visual-validation"))]
         let authoring_windows = AuthoringWindows::default();
         #[cfg(feature = "visual-validation")]
-        if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
-            let requested = requested.to_string_lossy();
-            if requested == "Navigation" {
+        if let Some(requested) = visual_scenario.as_deref() {
+            if matches!(
+                requested,
+                "ADR 0133 Remote AI Studio"
+                    | "ADR 0143 Model Resources"
+                    | "ADR 0145 External Agent"
+            ) {
+                // AI Studio scenarios are prepared above and use its detached native viewport.
+            } else if requested == "ADR 0154 Animation Set" {
+                app.prepare_animation_set_visual_validation();
+            } else if requested == "Navigation" {
                 app.prepare_navigation_visual_validation();
             } else if requested == "Spatial Audio" {
                 app.prepare_spatial_audio_visual_validation();
@@ -124,7 +155,7 @@ impl EditorShell {
             _mcp_server: mcp_server,
             mcp_requests,
             #[cfg(feature = "visual-validation")]
-            visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO").map(PathBuf::from),
+            visual_capture_path: visual_screenshot_path(visual_scenario.as_deref()),
             #[cfg(feature = "visual-validation")]
             visual_capture_requested_at: None,
             #[cfg(feature = "visual-validation")]
@@ -363,20 +394,54 @@ impl eframe::App for EditorShell {
         let context = ui.ctx().clone();
         eframe::App::ui(&mut self.app, ui, frame);
         self.show_authoring_tools_launcher(&context);
-        self.authoring_windows
-            .show(&context, frame, self.app.project_root());
+        self.authoring_windows.show(
+            &context,
+            frame,
+            self.app.project_root(),
+            self.app.asset_manifest(),
+        );
         #[cfg(not(feature = "visual-validation"))]
         self.ai_studio.show(&context);
         #[cfg(feature = "visual-validation")]
-        if !self.visual_behavior_debug_capture
-            && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
         {
-            self.ai_studio.show(&context);
+            let visual_scenario = visual_authoring_tool_scenario();
+            let ai_studio_scenario = matches!(
+                visual_scenario.as_deref(),
+                Some("ADR 0133 Remote AI Studio")
+                    | Some("ADR 0143 Model Resources")
+                    | Some("ADR 0145 External Agent")
+            );
+            if !self.visual_behavior_debug_capture
+                && (visual_scenario.is_none() || ai_studio_scenario)
+            {
+                self.ai_studio.show(&context);
+            }
         }
     }
 
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
         eframe::egui::Color32::from_rgb(20, 22, 26).to_normalized_gamma_f32()
+    }
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_authoring_tool_scenario() -> Option<String> {
+    std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_screenshot_path(visual_scenario: Option<&str>) -> Option<PathBuf> {
+    if visual_scenario == Some("ADR 0133 Remote AI Studio") {
+        return None;
+    }
+    let value = std::env::var_os("GAMEENGINE_SCREENSHOT_TO")?;
+    if value.to_string_lossy().trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
     }
 }
 
@@ -409,6 +474,24 @@ fn visual_validation_touches_ai_studio() -> bool {
             &base,
             "--",
             "crates/editor/src/ai_studio.rs",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_validation_touches_managed_local_runtime() -> bool {
+    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+    let base = format!("origin/{base_ref}...HEAD");
+    std::process::Command::new("git")
+        .args([
+            "diff",
+            "--name-only",
+            &base,
+            "--",
+            "crates/editor/src/managed_local_runtime.rs",
         ])
         .output()
         .ok()

@@ -9,7 +9,8 @@ use crate::animation::{AnimationClip, Animator};
 use crate::animation_parameters::AnimationParameterKind;
 use crate::asset::{Assets, Handle};
 use crate::game_io::GameEntityHandle;
-use engine_authoring::Value;
+use crate::native_2d::{SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d};
+use engine_authoring::{AssetId, StableId, Value};
 use engine_ecs::{Entity, World};
 
 pub(crate) enum PreparedAnimationCommand {
@@ -25,6 +26,21 @@ pub(crate) enum PreparedAnimationCommand {
     },
     Stop {
         entity: Entity,
+    },
+    SpritePlay {
+        entity: Entity,
+    },
+    SpritePause {
+        entity: Entity,
+    },
+    SpriteStop {
+        entity: Entity,
+    },
+    SpriteSelectClip {
+        entity: Entity,
+        clip_asset: AssetId,
+        clip: std::sync::Arc<engine_authoring::SpriteAnimationDocument>,
+        initial_frame: usize,
     },
     SetBool {
         entity: Entity,
@@ -88,6 +104,61 @@ pub(super) fn prepare(
             require_animator(world, index, target, entity)?;
             Ok(PreparedAnimationCommand::Stop { entity })
         }
+        "sprite_play" => {
+            require_sprite_animator(world, index, target, entity)?;
+            Ok(PreparedAnimationCommand::SpritePlay { entity })
+        }
+        "sprite_pause" => {
+            require_sprite_animator(world, index, target, entity)?;
+            Ok(PreparedAnimationCommand::SpritePause { entity })
+        }
+        "sprite_stop" => {
+            require_sprite_animator(world, index, target, entity)?;
+            Ok(PreparedAnimationCommand::SpriteStop { entity })
+        }
+        "sprite_select_clip" => {
+            require_sprite_animator(world, index, target, entity)?;
+            let clip_text = string_field(fields, "clip_asset", index)?;
+            let clip_asset = AssetId::from_stable_id(StableId::new(clip_text)).map_err(|_| {
+                GameCommandError::InvalidPayload {
+                    index,
+                    message: format!("field `clip_asset` must be a valid stable AssetId, found `{clip_text}`"),
+                }
+            })?;
+            let initial_frame = match fields.get("initial_frame") {
+                Some(Value::U64(value)) => usize::try_from(*value).map_err(|_| GameCommandError::InvalidPayload {
+                    index,
+                    message: "field `initial_frame` is too large for this runtime".to_owned(),
+                })?,
+                Some(Value::I64(value)) if *value >= 0 => usize::try_from(*value as u64).map_err(|_| GameCommandError::InvalidPayload {
+                    index,
+                    message: "field `initial_frame` is too large for this runtime".to_owned(),
+                })?,
+                _ => return Err(GameCommandError::InvalidPayload {
+                    index,
+                    message: "field `initial_frame` must be a non-negative integer".to_owned(),
+                }),
+            };
+            let clip = world
+                .get_resource::<SpriteAnimationClipRegistry2d>()
+                .and_then(|registry| registry.get(&clip_asset))
+                .ok_or_else(|| GameCommandError::InvalidPayload {
+                    index,
+                    message: format!("Sprite Animation asset `{}` is not loaded in the current runtime", clip_asset.as_str()),
+                })?;
+            if initial_frame >= clip.frames.len() {
+                return Err(GameCommandError::InvalidPayload {
+                    index,
+                    message: format!("initial Sprite Animation frame {initial_frame} is outside {} frames", clip.frames.len()),
+                });
+            }
+            Ok(PreparedAnimationCommand::SpriteSelectClip {
+                entity,
+                clip_asset,
+                clip,
+                initial_frame,
+            })
+        }
         "set_bool" => {
             let player = require_graph_player(world, index, target, entity)?;
             prepare_bool_parameter(
@@ -150,6 +221,39 @@ pub(super) fn apply(world: &mut World, command: PreparedAnimationCommand) {
                 .get_component_mut::<Animator>(entity)
                 .expect("preflighted animator must remain live during exclusive apply")
                 .stop();
+        }
+        PreparedAnimationCommand::SpritePlay { entity } => {
+            world
+                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
+                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
+                .state
+                .play();
+        }
+        PreparedAnimationCommand::SpritePause { entity } => {
+            world
+                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
+                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
+                .state
+                .pause();
+        }
+        PreparedAnimationCommand::SpriteStop { entity } => {
+            world
+                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
+                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
+                .state
+                .stop();
+        }
+        PreparedAnimationCommand::SpriteSelectClip {
+            entity,
+            clip_asset,
+            clip,
+            initial_frame,
+        } => {
+            world
+                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
+                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
+                .select_clip(clip_asset, clip, initial_frame)
+                .expect("preflighted Sprite Animation selection must remain valid");
         }
         PreparedAnimationCommand::SetBool {
             entity,
@@ -270,6 +374,22 @@ fn require_graph_player(
     world
         .get_component::<AnimGraphPlayer>(entity)
         .ok_or(GameCommandError::MissingAnimationGraph { index, target })
+}
+
+fn require_sprite_animator(
+    world: &World,
+    index: usize,
+    target: GameEntityHandle,
+    entity: Entity,
+) -> Result<(), GameCommandError> {
+    if world.get_component::<SpriteAnimatorRuntime2d>(entity).is_none() {
+        Err(GameCommandError::InvalidPayload {
+            index,
+            message: format!("target {}:{} has no SpriteAnimator2D", target.id, target.generation),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn require_animator(
