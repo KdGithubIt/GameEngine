@@ -478,6 +478,7 @@ mod tests {
             engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
             fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
             backend_id: "ollama-compatible".to_owned(),
+            managed_execution_environment: None,
             endpoint: "http://127.0.0.1:11434".to_owned(),
             model_id: "model:q4".to_owned(),
             task_id: "visual_evaluation_v1".to_owned(),

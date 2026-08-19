@@ -88,10 +88,14 @@ impl AiStudioPanel {
         let Some(child) = self.benchmark_child.as_ref() else {
             return;
         };
-        if child.result_written {
+        let result_written = child.result_written;
+        let backend_id = child.spec.backend_id.clone();
+        let started = child.started;
+        let task_id = child.spec.task_id.clone();
+        if result_written {
             return;
         }
-        if child.spec.backend_id == MANAGED_BACKEND_ID {
+        if backend_id == MANAGED_BACKEND_ID {
             self.managed_probe_requested = true;
             if self.managed_probe_task.is_some() {
                 return;
@@ -105,9 +109,10 @@ impl AiStudioPanel {
                 return;
             }
             if let Err(error) = probe.described_config.as_ref() {
+                let message = format!("managed benchmark preflight failed: {error}");
                 self.write_benchmark_child_failure(
                     BenchmarkRunFailureKind::CapabilityUnavailable,
-                    format!("managed benchmark preflight failed: {error}"),
+                    message,
                 );
                 return;
             }
@@ -116,14 +121,12 @@ impl AiStudioPanel {
             // freeze an unmeasured model identity for the whole run.
             return;
         }
-        if !child.started {
+        if !started {
             if let Err(error) = self.start_benchmark_child_task() {
                 self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, error);
             }
             return;
         }
-
-        let task_id = child.spec.task_id.clone();
         if task_id == "read_question_v1" {
             if self.native_question.is_none() && self.pending_native_question_start.is_none() {
                 if let Some(snapshot) = self.last_native_question_benchmark.clone()
