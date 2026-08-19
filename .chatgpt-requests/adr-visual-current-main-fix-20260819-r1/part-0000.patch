@@ -1,0 +1,164 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index d3ef520d72e3134085ceaabbb7791c8ee6e8bdc0..73979c9755ebbebd8dec3eb230d1a41ffb4a32f5 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -74,34 +74,33 @@ impl EditorShell {
+         #[cfg(feature = "visual-validation")]
+         let visual_scenario = visual_authoring_tool_scenario();
+         #[cfg(feature = "visual-validation")]
++        let adr_visual_scenario = requested_adr_visual_scenario();
++        #[cfg(feature = "visual-validation")]
+         let (ai_studio, visual_ai_studio_detached_capture) = {
+             let mut ai_studio = ai_studio;
+-            let detached_capture = match visual_scenario.as_deref() {
+-                Some("ADR 0133 Remote AI Studio") => false,
+-                Some("ADR 0143 Model Resources") => {
+-                    ai_studio.prepare_local_model_resources_visual_validation();
+-                    true
+-                }
+-                Some("ADR 0145 External Agent") => {
+-                    ai_studio.prepare_external_agent_visual_validation();
++            let detached_capture = if let Some(scenario) = adr_visual_scenario.as_deref() {
++                if adr_scenario_targets_ai_studio(scenario) {
++                    ai_studio.prepare_adr_visual_validation(scenario);
+                     true
++                } else {
++                    // Authoring-surface ADR scenarios prepare themselves when the
++                    // documents area is built; AI Studio must stay out of their
++                    // captures even when the sweep also uses a validation selector.
++                    false
+                 }
+-                Some(_) => false,
+-                None => {
+-                    // ADR scenarios arrive through GAMEENGINE_VISUAL_SCENARIO, a
+-                    // separate namespace from the authoring-tool scenarios matched
+-                    // above, so they are prepared here rather than as another arm.
+-                    if let Some(scenario) = requested_adr_visual_scenario()
+-                        .filter(|scenario| adr_scenario_targets_ai_studio(scenario))
+-                    {
+-                        ai_studio.prepare_adr_visual_validation(&scenario);
++            } else {
++                match visual_scenario.as_deref() {
++                    Some("ADR 0133 Remote AI Studio") => false,
++                    Some("ADR 0143 Model Resources") => {
++                        ai_studio.prepare_local_model_resources_visual_validation();
+                         true
+-                    } else if requested_adr_visual_scenario().is_some() {
+-                        // An authoring-surface ADR scenario prepares itself when the
+-                        // documents area is built; AI Studio must stay out of its
+-                        // capture.
+-                        false
+-                    } else {
++                    }
++                    Some("ADR 0145 External Agent") => {
++                        ai_studio.prepare_external_agent_visual_validation();
++                        true
++                    }
++                    Some(_) => false,
++                    None => {
+                         let touches_ai_studio = visual_validation_touches_ai_studio();
+                         if touches_ai_studio {
+                             if visual_validation_touches_managed_local_runtime() {
+diff --git a/crates/editor/src/ui/adr_visual_scenarios.rs b/crates/editor/src/ui/adr_visual_scenarios.rs
+index 048193707ca9179eed088ce21640ca0784085896..1674d0e5244b4ab4f4f70f919c261af80d617afa 100644
+--- a/crates/editor/src/ui/adr_visual_scenarios.rs
++++ b/crates/editor/src/ui/adr_visual_scenarios.rs
+@@ -48,6 +48,7 @@ impl EditorApp {
+             .session
+             .scene()
+             .and_then(|scene| scene.entities().next().map(|(id, _)| id.clone()))
++            .or_else(|| self.session.create_scene_entity("Player Character").ok())
+             .unwrap_or_else(EntityId::generate);
+         let related = self
+             .session
+@@ -58,6 +59,7 @@ impl EditorApp {
+                     .map(|(id, _)| id.clone())
+                     .find(|id| id != &entity)
+             })
++            .or_else(|| self.session.create_scene_entity("Animation Rig").ok())
+             .unwrap_or_else(|| entity.clone());
+ 
+         self.selected_entity = Some(entity.clone());
+@@ -199,8 +201,8 @@ impl EditorApp {
+             .id(egui::Id::new("adr0136_preview_residency_fixture"))
+             .collapsible(false)
+             .resizable(false)
+-            .fixed_pos(egui::pos2(900.0, 86.0))
+-            .fixed_size(egui::vec2(680.0, 430.0))
++            .fixed_pos(egui::pos2(350.0, 74.0))
++            .fixed_size(egui::vec2(720.0, 380.0))
+             .show(context, |ui| {
+                 ui.heading("Async preview lifecycle");
+                 ui.horizontal_wrapped(|ui| {
+@@ -251,8 +253,8 @@ impl EditorApp {
+             .id(egui::Id::new("adr0137_navigation_fixture"))
+             .collapsible(false)
+             .resizable(false)
+-            .fixed_pos(egui::pos2(1030.0, 82.0))
+-            .fixed_size(egui::vec2(500.0, 270.0))
++            .fixed_pos(egui::pos2(280.0, 82.0))
++            .fixed_size(egui::vec2(410.0, 280.0))
+             .show(context, |ui| {
+                 ui.heading("Progressive disclosure + navigation");
+                 ui.label("The selected Hierarchy row and Inspector target are the same entity referenced by the visible Problems rows.");
+@@ -306,8 +308,8 @@ impl EditorApp {
+             .id(egui::Id::new("adr0138_graph_debug_visual_fixture"))
+             .collapsible(false)
+             .resizable(false)
+-            .fixed_pos(egui::pos2(18.0, 76.0))
+-            .fixed_size(egui::vec2(1520.0, 850.0))
++            .fixed_pos(egui::pos2(8.0, 42.0))
++            .fixed_size(egui::vec2(1084.0, 710.0))
+             .show(context, |ui| {
+                 control_row(ui, |ui| {
+                     ui.strong("Graph Debug");
+@@ -345,8 +347,8 @@ impl EditorApp {
+ 
+                 ui.horizontal_top(|ui| {
+                     ui.vertical(|ui| {
+-                        ui.set_width(1090.0);
+-                        ui.set_min_height(700.0);
++                        ui.set_width(700.0);
++                        ui.set_min_height(580.0);
+                         show_graph_debug_canvas(
+                             ui,
+                             &self.session,
+@@ -357,7 +359,7 @@ impl EditorApp {
+                     });
+                     ui.separator();
+                     ui.vertical(|ui| {
+-                        ui.set_width(360.0);
++                        ui.set_width(320.0);
+                         ui.heading("Animation Graph");
+                         ui.small("Stable source identity");
+                         ui.monospace(self.session.graph().id.as_str());
+diff --git a/docs/EDITOR_VISUAL_VALIDATION.md b/docs/EDITOR_VISUAL_VALIDATION.md
+index 323496de7cc727609bdf354653772756817a4ff6..1ef194228a5d15cb2c4b8a80a915042a04968758 100644
+--- a/docs/EDITOR_VISUAL_VALIDATION.md
++++ b/docs/EDITOR_VISUAL_VALIDATION.md
+@@ -52,11 +52,20 @@ target:
+ <!-- gameengine-visual-authoring-tool: Ability Designer -->
+ ```
+ 
+-The value is the human-readable [`AuthoringTool`] label exposed by the exact PR
+-head being validated. The workflow accepts only a bounded plain-text label and
+-passes it to the checked-out Editor; the Editor resolves that label against its
+-own `AuthoringTool::ALL` catalog and fails startup if no exact match exists. The
+-workflow does not hard-code product-specific enum variants.
++The value is normally the human-readable [`AuthoringTool`] label exposed by the
++exact PR head being validated. The workflow accepts only a bounded plain-text
++label and passes it to the checked-out Editor; the Editor resolves normal labels
++against its own `AuthoringTool::ALL` catalog and fails startup if no exact match
++exists. The workflow does not hard-code product-specific enum variants.
++
++`ADR First Release` is the one reserved validation-suite label. It does not name
++an `AuthoringTool` and MUST NOT open an authoring window. The capture script pairs
++that reserved selector with one explicit `GAMEENGINE_VISUAL_SCENARIO` value per
++fresh Editor process so a deterministic multi-capture suite can exercise several
++first-release UI states without coordinate input or persisted fixture data. The
++Editor routes each named ADR scenario to its owning production surface; AI Studio
++scenarios use the detached native viewport and authoring-surface scenarios keep
++AI Studio out of the capture. Normal Editor launches do not set either variable.
+ 
+ The scenario is available only with explicit `editor` or `both`. It is rejected
+ with `auto` or `launcher` so a requested tool window cannot be silently omitted
