@@ -48,6 +48,7 @@ impl EditorApp {
             .session
             .scene()
             .and_then(|scene| scene.entities().next().map(|(id, _)| id.clone()))
+            .or_else(|| self.session.create_scene_entity("Player Character").ok())
             .unwrap_or_else(EntityId::generate);
         let related = self
             .session
@@ -58,6 +59,7 @@ impl EditorApp {
                     .map(|(id, _)| id.clone())
                     .find(|id| id != &entity)
             })
+            .or_else(|| self.session.create_scene_entity("Animation Rig").ok())
             .unwrap_or_else(|| entity.clone());
 
         self.selected_entity = Some(entity.clone());
@@ -199,8 +201,8 @@ impl EditorApp {
             .id(egui::Id::new("adr0136_preview_residency_fixture"))
             .collapsible(false)
             .resizable(false)
-            .fixed_pos(egui::pos2(900.0, 86.0))
-            .fixed_size(egui::vec2(680.0, 430.0))
+            .fixed_pos(egui::pos2(350.0, 74.0))
+            .fixed_size(egui::vec2(720.0, 380.0))
             .show(context, |ui| {
                 ui.heading("Async preview lifecycle");
                 ui.horizontal_wrapped(|ui| {
@@ -251,8 +253,8 @@ impl EditorApp {
             .id(egui::Id::new("adr0137_navigation_fixture"))
             .collapsible(false)
             .resizable(false)
-            .fixed_pos(egui::pos2(1030.0, 82.0))
-            .fixed_size(egui::vec2(500.0, 270.0))
+            .fixed_pos(egui::pos2(280.0, 82.0))
+            .fixed_size(egui::vec2(410.0, 280.0))
             .show(context, |ui| {
                 ui.heading("Progressive disclosure + navigation");
                 ui.label("The selected Hierarchy row and Inspector target are the same entity referenced by the visible Problems rows.");
@@ -306,8 +308,8 @@ impl EditorApp {
             .id(egui::Id::new("adr0138_graph_debug_visual_fixture"))
             .collapsible(false)
             .resizable(false)
-            .fixed_pos(egui::pos2(18.0, 76.0))
-            .fixed_size(egui::vec2(1520.0, 850.0))
+            .fixed_pos(egui::pos2(8.0, 42.0))
+            .fixed_size(egui::vec2(1084.0, 710.0))
             .show(context, |ui| {
                 control_row(ui, |ui| {
                     ui.strong("Graph Debug");
@@ -345,8 +347,8 @@ impl EditorApp {
 
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(1090.0);
-                        ui.set_min_height(700.0);
+                        ui.set_width(700.0);
+                        ui.set_min_height(580.0);
                         show_graph_debug_canvas(
                             ui,
                             &self.session,
@@ -357,7 +359,7 @@ impl EditorApp {
                     });
                     ui.separator();
                     ui.vertical(|ui| {
-                        ui.set_width(360.0);
+                        ui.set_width(320.0);
                         ui.heading("Animation Graph");
                         ui.small("Stable source identity");
                         ui.monospace(self.session.graph().id.as_str());
