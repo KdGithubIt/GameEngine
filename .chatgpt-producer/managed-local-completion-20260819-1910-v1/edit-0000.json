@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "use crate::managed_local_runtime::{\n    ManagedEnvironmentProbe, ManagedEnvironmentProbeTask, ManagedExecutionEnvironment,\n    ManagedIntegrityCheck, ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation,\n    ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask, PINNED_LLAMA_CPP_REVISION,\n    PINNED_LLAMA_CPP_TAG,\n};",
+  "new": "use crate::managed_local_runtime::{\n    ManagedEnvironmentProbe, ManagedEnvironmentProbeTask, ManagedExecutionEnvironment,\n    ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation, ManagedSetupResult,\n    ManagedSetupStatus, ManagedSetupTask, MANAGED_BACKEND_ID, PINNED_LLAMA_CPP_REVISION,\n    PINNED_LLAMA_CPP_TAG,\n};"
+}
