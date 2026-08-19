@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "    let mut child = Command::new(\"wsl.exe\")\n        .args([\n            \"-d\",\n            MANAGED_WSL_DISTRIBUTION,\n            \"--\",\n            \"sh\",\n            \"-lc\",\n            &format!(\"cat > {}\", shell_quote(remote)),\n        ])",
+  "new": "    let mut child = managed_wsl_command()\n        .args([\n            \"sh\",\n            \"-lc\",\n            &format!(\"cat > {}\", shell_quote(remote)),\n        ])"
+}
