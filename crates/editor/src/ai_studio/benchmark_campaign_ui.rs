@@ -593,7 +593,7 @@ impl AiStudioPanel {
                         backend_id: MANAGED_BACKEND_ID.to_owned(),
                         model_id: model.model_id,
                         model_version: model.content_sha256,
-                        quantization: representation.to_owned(),
+                        quantization: representation,
                         representation_size_bytes: model.size_bytes,
                     },
                     source: CampaignCandidateSource::installed(),
