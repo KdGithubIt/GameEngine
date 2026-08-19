@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr-visual-current-main-fix-20260819-r1",
+  "target_branch": "chatgpt/gameengine-adr-visual-current-main-fix-v1",
+  "expected_head_sha": "25036154184b3d653d463e2872a512287f33d4e1",
+  "baseline_main_sha": "25036154184b3d653d463e2872a512287f33d4e1",
+  "patch_sha256": "a61b0a36dd3b62cd6d19a78828061f48ab37109468c7cdd6c2e1c2aeb4774d2b",
+  "patch_bytes": 8812,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix first-release ADR visual evidence on current main",
+  "pr_title": "GameEngine: fix first-release ADR visual evidence",
+  "pr_body": "## Summary\n\nFixes first-release ADR Visual Validation on current main by routing AI Studio-owned ADR scenarios independently of the reserved sweep selector, making ADR 0136/0137/0138 evidence fit the 1100x768 capture viewport, and creating real diagnostic navigation entities for Hierarchy/Inspector evidence.\n\nDocuments the reserved `ADR First Release` validation suite selector.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR First Release -->"
+}
