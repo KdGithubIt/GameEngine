@@ -68,11 +68,12 @@ impl EditorShell {
             ),
         )?;
         #[cfg(feature = "visual-validation")]
-        let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
+        let visual_scenario = visual_authoring_tool_scenario();
         #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
             let detached_capture = match visual_scenario.as_deref() {
+                Some("ADR 0133 Remote AI Studio") => false,
                 Some("ADR 0143 Model Resources") => {
                     ai_studio.prepare_local_model_resources_visual_validation();
                     true
@@ -107,7 +108,9 @@ impl EditorShell {
         if let Some(requested) = visual_scenario.as_deref() {
             if matches!(
                 requested,
-                "ADR 0143 Model Resources" | "ADR 0145 External Agent"
+                "ADR 0133 Remote AI Studio"
+                    | "ADR 0143 Model Resources"
+                    | "ADR 0145 External Agent"
             ) {
                 // AI Studio scenarios are prepared above and use its detached native viewport.
             } else if requested == "ADR 0154 Animation Set" {
@@ -148,7 +151,7 @@ impl EditorShell {
             _mcp_server: mcp_server,
             mcp_requests,
             #[cfg(feature = "visual-validation")]
-            visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO").map(PathBuf::from),
+            visual_capture_path: visual_screenshot_path(visual_scenario.as_deref()),
             #[cfg(feature = "visual-validation")]
             visual_capture_requested_at: None,
             #[cfg(feature = "visual-validation")]
@@ -389,10 +392,12 @@ impl eframe::App for EditorShell {
         self.ai_studio.show(&context);
         #[cfg(feature = "visual-validation")]
         {
-            let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
+            let visual_scenario = visual_authoring_tool_scenario();
             let ai_studio_scenario = matches!(
                 visual_scenario.as_deref(),
-                Some("ADR 0143 Model Resources") | Some("ADR 0145 External Agent")
+                Some("ADR 0133 Remote AI Studio")
+                    | Some("ADR 0143 Model Resources")
+                    | Some("ADR 0145 External Agent")
             );
             if !self.visual_behavior_debug_capture
                 && (visual_scenario.is_none() || ai_studio_scenario)
@@ -404,6 +409,27 @@ impl eframe::App for EditorShell {
 
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
         eframe::egui::Color32::from_rgb(20, 22, 26).to_normalized_gamma_f32()
+    }
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_authoring_tool_scenario() -> Option<String> {
+    std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_screenshot_path(visual_scenario: Option<&str>) -> Option<PathBuf> {
+    if visual_scenario == Some("ADR 0133 Remote AI Studio") {
+        return None;
+    }
+    let value = std::env::var_os("GAMEENGINE_SCREENSHOT_TO")?;
+    if value.to_string_lossy().trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
     }
 }
 
