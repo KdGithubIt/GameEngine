@@ -1134,6 +1134,56 @@ impl AiStudioPanel {
         Ok(())
     }
 
+    /// Prepares AI Studio presentation state for one named ADR visual scenario.
+    ///
+    /// Unknown scenario names fall back to the hosted-backend fixture so a
+    /// capture never renders an unprepared panel.
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_adr_visual_validation(&mut self, scenario: &str) {
+        match scenario {
+            "adr0144-hosted-backend" => {
+                self.prepare_hosted_backend_visual_validation();
+                self.status = Some(
+                    "Hosted API selected · remote processing · credential stored outside project data · secret value hidden."
+                        .to_owned(),
+                );
+            }
+            "adr0144-enterprise-backend" => {
+                self.model_backend = ModelBackendPreference::Enterprise;
+                self.hosted_model_endpoint =
+                    "https://enterprise.example/v1/chat/completions".to_owned();
+                self.hosted_model_name = "enterprise-governed-model".to_owned();
+                self.hosted_secret_draft.clear();
+                self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+                self.external_provider_status =
+                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+                self.status = Some(
+                    "Enterprise backend selected · organization-managed remote processing · credential value hidden."
+                        .to_owned(),
+                );
+            }
+            "adr0149-live-observation" => {
+                self.model_backend = ModelBackendPreference::Local;
+                self.status = Some(
+                    "Live Game View observation · engine-native readback · PNG transport · 6 FPS cap · latest-frame-only retention · metrics enabled."
+                        .to_owned(),
+                );
+            }
+            "adr0153-confinement" => {
+                self.confinement_requirement =
+                    AgentConfinementRequirement::RequireProviderOrOsConfinement;
+                self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+                self.external_provider_status =
+                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+                self.status = Some(
+                    "Confinement required · provider/OS enforcement must be proven before launch · fail closed when unavailable · no OS-sandbox claim is active."
+                        .to_owned(),
+                );
+            }
+            _ => self.prepare_hosted_backend_visual_validation(),
+        }
+    }
+
     #[cfg(feature = "visual-validation")]
     /// Returns whether the detached native viewport has completed two rendered frames.
     pub fn detached_visual_validation_capture_ready(&self) -> bool {
