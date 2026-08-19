@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "                    runtime_artifact_sha256: \"b\".repeat(64),\n                    runtime_compatibility_version: \"test-compat\".to_owned(),\n                });\n\n                let task = ModelResourceTask::spawn(config, operation)",
+  "new": "                    runtime_artifact_sha256: \"b\".repeat(64),\n                    runtime_compatibility_version: \"test-compat\".to_owned(),\n                }));\n\n                let task = ModelResourceTask::spawn(config, operation)"
+}
