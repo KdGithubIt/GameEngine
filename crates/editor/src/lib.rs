@@ -22,6 +22,9 @@ mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;
 mod live_observation;
+// The same loopback transport backs both the visible Editor host and controlled
+// ADR 0156 fixture workers; tool business logic remains EditorApp-owned.
+mod mcp_transport;
 mod model_router;
 mod native_agent;
 mod native_agent_runtime;

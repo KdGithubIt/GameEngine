@@ -148,6 +148,9 @@ fn expected_runtime_harness(harness: CampaignTaskHarness) -> &'static str {
 
 fn task_permission_budget(kind: BenchmarkTaskKind) -> Vec<String> {
     match kind {
+        BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair => {
+            vec!["code_workspace_apply".to_owned()]
+        }
         BenchmarkTaskKind::RuntimeInteraction => {
             vec!["runtime_launch".to_owned(), "runtime_input_control".to_owned()]
         }
@@ -825,15 +828,33 @@ impl BenchmarkCampaign {
     }
 
     pub(crate) fn preparing_run_request(&self) -> Result<Option<CampaignRunRequest>, String> {
-        let preparing = self
+        self.request_for_status(
+            CampaignRunStatus::Preparing,
+            "campaign persistence contains multiple preparing runs",
+        )
+    }
+
+    pub(crate) fn running_run_request(&self) -> Result<Option<CampaignRunRequest>, String> {
+        self.request_for_status(
+            CampaignRunStatus::Running,
+            "campaign persistence contains multiple measured runs",
+        )
+    }
+
+    fn request_for_status(
+        &self,
+        status: CampaignRunStatus,
+        duplicate_message: &str,
+    ) -> Result<Option<CampaignRunRequest>, String> {
+        let matches = self
             .runs
             .iter()
-            .filter(|run| run.status == CampaignRunStatus::Preparing)
+            .filter(|run| run.status == status)
             .collect::<Vec<_>>();
-        if preparing.len() > 1 {
-            return Err("campaign persistence contains multiple preparing runs".to_owned());
+        if matches.len() > 1 {
+            return Err(duplicate_message.to_owned());
         }
-        preparing
+        matches
             .first()
             .map(|run| self.run_request(run.schedule.clone()))
             .transpose()
@@ -913,8 +934,52 @@ impl BenchmarkCampaign {
     pub(crate) fn complete_run(
         &mut self,
         request: &CampaignRunRequest,
-        mut record: BenchmarkRecord,
+        record: BenchmarkRecord,
     ) -> Result<(), String> {
+        let record = self.validate_and_attach_record(request, record)?;
+        let run = &mut self.runs[request.schedule.ordinal as usize];
+        run.status = CampaignRunStatus::Completed;
+        run.record = Some(record);
+        self.touch();
+        Ok(())
+    }
+
+    pub(crate) fn fail_measured_run(
+        &mut self,
+        request: &CampaignRunRequest,
+        failure: CampaignFailureKind,
+    ) -> Result<(), String> {
+        self.fail_measured_run_with_record(request, failure, None)
+    }
+
+    pub(crate) fn fail_measured_run_with_record(
+        &mut self,
+        request: &CampaignRunRequest,
+        failure: CampaignFailureKind,
+        record: Option<BenchmarkRecord>,
+    ) -> Result<(), String> {
+        if failure == CampaignFailureKind::InfrastructurePreMeasurement {
+            return Err(
+                "pre-measurement infrastructure failures use the bounded retry path".to_owned(),
+            );
+        }
+        self.validate_request(request, CampaignRunStatus::Running)?;
+        let record = record
+            .map(|record| self.validate_and_attach_record(request, record))
+            .transpose()?;
+        let run = &mut self.runs[request.schedule.ordinal as usize];
+        run.status = CampaignRunStatus::Failed;
+        run.failure = Some(failure);
+        run.record = record;
+        self.touch();
+        Ok(())
+    }
+
+    fn validate_and_attach_record(
+        &mut self,
+        request: &CampaignRunRequest,
+        mut record: BenchmarkRecord,
+    ) -> Result<BenchmarkRecord, String> {
         self.validate_request(request, CampaignRunStatus::Running)?;
         let task_plan = &self.plan.tasks[request.schedule.task_index];
         let descriptor = benchmark_task(&request.schedule.task_id)
@@ -943,29 +1008,7 @@ impl BenchmarkCampaign {
             return Err("automatic campaign evidence identity mismatch".to_owned());
         }
         apply_execution_identity(&mut record, self, request)?;
-        let run = &mut self.runs[request.schedule.ordinal as usize];
-        run.status = CampaignRunStatus::Completed;
-        run.record = Some(record);
-        self.touch();
-        Ok(())
-    }
-
-    pub(crate) fn fail_measured_run(
-        &mut self,
-        request: &CampaignRunRequest,
-        failure: CampaignFailureKind,
-    ) -> Result<(), String> {
-        if failure == CampaignFailureKind::InfrastructurePreMeasurement {
-            return Err(
-                "pre-measurement infrastructure failures use the bounded retry path".to_owned(),
-            );
-        }
-        self.validate_request(request, CampaignRunStatus::Running)?;
-        let run = &mut self.runs[request.schedule.ordinal as usize];
-        run.status = CampaignRunStatus::Failed;
-        run.failure = Some(failure);
-        self.touch();
-        Ok(())
+        Ok(record)
     }
 
     pub(crate) fn pause(&mut self) -> Result<(), String> {

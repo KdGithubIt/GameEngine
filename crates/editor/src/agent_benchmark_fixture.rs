@@ -7,6 +7,7 @@
 use crate::agent_benchmark::BenchmarkTaskKind;
 use crate::agent_benchmark_campaign::{CampaignFailureKind, CampaignRunRequest};
 use crate::agent_host::{AgentRun, AgentRunState, CompletionStatus};
+use crate::native_agent::NativeMetrics;
 use engine_authoring::{
     initialize_game_project, refresh_game_module_indexes, ProjectConfig,
     ProjectRoot, ProjectSettings, PROJECT_SCHEMA_VERSION,
@@ -250,6 +251,22 @@ pub(crate) fn evaluate_agent_run(
             passed.then_some(()).ok_or(CampaignFailureKind::VisualFailure)
         }
     }
+}
+
+pub(crate) fn evaluate_read_question_answer(
+    answer: &str,
+    metrics: &NativeMetrics,
+) -> Result<(), CampaignFailureKind> {
+    let normalized = answer.to_ascii_lowercase();
+    let provenance = metrics.retrieval_chunks > 0;
+    let project = normalized.contains("gameengine adr0156 fixture");
+    let scene = normalized.contains("benchmark.scene.json");
+    let target = normalized.contains("benchmark_target");
+    let transform = normalized.contains("1.0")
+        && (normalized.contains("transform") || normalized.contains("x"));
+    (provenance && project && scene && target && transform)
+        .then_some(())
+        .ok_or(CampaignFailureKind::Other)
 }
 
 pub(crate) fn fixture_root(project: &ProjectRoot) -> PathBuf {

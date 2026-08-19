@@ -1064,6 +1064,21 @@ impl RuntimePlayState {
         game_view.capture(render_state)
     }
 
+    /// Captures the Game View, rendering one production frame first when no view exists yet.
+    ///
+    /// This keeps managed AI/remote observation on the normal runtime renderer even when the
+    /// visible Editor is not currently showing the Game View panel.
+    pub fn capture_or_render_game_view(
+        &mut self,
+        render_state: &egui_wgpu::RenderState,
+        fallback_size: [u32; 2],
+    ) -> Result<FrameCapture, GameViewError> {
+        if self.game_view.is_none() {
+            self.render_game_view(render_state, fallback_size)?;
+        }
+        self.capture_game_view(render_state)
+    }
+
     /// Releases the egui texture registration for the current Game View.
     pub fn release_game_view(&mut self, render_state: &egui_wgpu::RenderState) {
         if let Some(game_view) = self.game_view.take() {

@@ -981,10 +981,10 @@ impl EditorApp {
                 let Some(render_state) = render_state else {
                     return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());
                 };
-                let Some(runtime) = self.runtime_state.as_ref() else {
+                let Some(runtime) = self.runtime_state.as_mut() else {
                     return AiStudioRuntimeResult::Failed("Managed frame capture requires an active Editor Play session.".to_owned());
                 };
-                match runtime.capture_game_view(render_state) {
+                match runtime.capture_or_render_game_view(render_state, [960, 540]) {
                     Ok(capture) => AiStudioRuntimeResult::FrameCaptured(capture),
                     Err(error) => AiStudioRuntimeResult::Failed(format!("Managed Game View capture failed: {error}")),
                 }
