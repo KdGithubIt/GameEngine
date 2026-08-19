@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/remote_ai_studio.rs","old":".card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0}.row{","new":".card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0;overflow-wrap:anywhere}.row{"}
