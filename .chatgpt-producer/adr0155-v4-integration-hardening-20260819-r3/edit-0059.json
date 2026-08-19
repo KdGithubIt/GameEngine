@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        let child = Command::new(&installation.server_path)\n            .args([\n                \"--model\",\n                config.model_path.to_string_lossy().as_ref(),\n                \"--host\",\n                \"127.0.0.1\",\n                \"--port\",\n                &port.to_string(),\n                \"--n-gpu-layers\",\n                \"999\",\n            ])\n",
+  "new": "        let child = Command::new(&installation.server_path)\n            .args(windows_server_arguments(&config.model_path, port))\n"
+}

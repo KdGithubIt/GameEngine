@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                        if matches!(setup_status, ManagedSetupStatus::RestartRequired) {\n","new":"                        if matches!(&setup_status, ManagedSetupStatus::RestartRequired) {\n"}
