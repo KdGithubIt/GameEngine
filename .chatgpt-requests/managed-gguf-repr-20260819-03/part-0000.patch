@@ -1,0 +1,26 @@
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index a26a706f120ce883dd36c11555968cb01861a64c..12ab0d85eb21fffc1ce910dffe95a9ef9bedf091 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -576,12 +576,15 @@ impl AiStudioPanel {
+                 {
+                     continue;
+                 }
+-                let representation = model.exact_representation().ok_or_else(|| {
+-                    format!(
+-                        "model `{}` has no GGUF-derived exact representation",
+-                        model.display_name
+-                    )
+-                })?;
++                let representation = model
++                    .exact_representation()
++                    .map(str::to_owned)
++                    .ok_or_else(|| {
++                        format!(
++                            "model `{}` has no GGUF-derived exact representation",
++                            model.display_name
++                        )
++                    })?;
+                 if model.size_bytes == 0 {
+                     return Err(format!("model `{}` has no measured size", model.display_name));
+                 }
