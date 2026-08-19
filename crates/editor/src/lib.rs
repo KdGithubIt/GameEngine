@@ -16,6 +16,7 @@ mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;
 mod live_observation;
+mod managed_local_runtime;
 mod model_router;
 mod native_agent;
 mod native_agent_runtime;
