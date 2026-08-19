@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        \"--n-gpu-layers\".to_owned(),\n        \"999\".to_owned(),",
+  "new": "        \"--fit\".to_owned(),\n        \"on\".to_owned(),\n        \"--fit-target\".to_owned(),\n        MANAGED_GPU_FIT_TARGET_MIB.to_string(),"
+}
