@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "                if model.size_bytes == 0 {\n                    return Err(format!(\"model `{}` has no measured size\", model.display_name));\n                }",
+  "new": "                if model.size_bytes == 0 {\n                    return Err(format!(\n                        \"model `{}` has no measured size\",\n                        model.display_name\n                    ));\n                }"
+}
