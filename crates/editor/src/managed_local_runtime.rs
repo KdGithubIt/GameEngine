@@ -505,15 +505,27 @@ impl ManagedLocalRuntime {
         &self,
         environment: ManagedExecutionEnvironment,
     ) -> ManagedSetupStatus {
-        if self.restart_marker_path().is_file() {
-            let continuation_ready = cfg!(target_os = "windows")
+        self.setup_status_with_continuation(environment, || {
+            cfg!(target_os = "windows")
                 && matches!(
                     wsl_status(),
                     Ok(WslStatus::Available {
                         managed_distribution: true
                     })
-                );
-            if continuation_ready {
+                )
+        })
+    }
+
+    /// Setup status with the restart continuation check supplied by the caller,
+    /// so the marker lifecycle can be exercised without depending on the host
+    /// WSL state.
+    fn setup_status_with_continuation(
+        &self,
+        environment: ManagedExecutionEnvironment,
+        continuation_ready: impl FnOnce() -> bool,
+    ) -> ManagedSetupStatus {
+        if self.restart_marker_path().is_file() {
+            if continuation_ready() {
                 let _ = self.clear_restart_required();
             } else {
                 return ManagedSetupStatus::RestartRequired;
@@ -2623,13 +2635,43 @@ mod tests {
     fn restart_continuation_is_machine_local_state() {
         let root = temp_root("restart");
         let manager = ManagedLocalRuntime::open(root.clone()).expect("manager");
+        let marker = manager.restart_marker_path();
+
         manager.mark_restart_required().expect("mark restart");
+        assert!(marker.is_file(), "continuation marker must be persisted");
+        assert!(
+            marker.starts_with(&root),
+            "continuation marker must live under machine-local runtime state"
+        );
+
+        // While the continuation is unsatisfied, setup stays blocked and the
+        // marker survives, independently of the host WSL state.
         assert_eq!(
-            manager.setup_status(ManagedExecutionEnvironment::WindowsNative),
+            manager
+                .setup_status_with_continuation(ManagedExecutionEnvironment::WindowsNative, || {
+                    false
+                }),
             ManagedSetupStatus::RestartRequired
         );
+        assert!(marker.is_file());
+
+        // Once the continuation is satisfied the marker is consumed and setup
+        // resumes the ordinary installation probe.
+        assert_ne!(
+            manager
+                .setup_status_with_continuation(ManagedExecutionEnvironment::WindowsNative, || {
+                    true
+                }),
+            ManagedSetupStatus::RestartRequired
+        );
+        assert!(!marker.exists());
+
+        manager.mark_restart_required().expect("mark restart again");
         manager.clear_restart_required().expect("clear restart");
-        assert!(!manager.restart_marker_path().exists());
+        assert!(!marker.exists());
+        manager
+            .clear_restart_required()
+            .expect("clear is idempotent");
         let _ = fs::remove_dir_all(root);
     }
 
