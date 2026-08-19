@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "            backend_id,\n            model_ids: self",
+  "new": "            backend_id,\n            managed_execution_environment,\n            model_ids: self"
+}
