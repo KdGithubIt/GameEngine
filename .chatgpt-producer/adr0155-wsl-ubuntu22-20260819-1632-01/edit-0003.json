@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"        ),\n        compiler_package = WSL_CUDA_COMPILER_PACKAGE,\n","new":"        ),\n        ubuntu_version = MANAGED_WSL_EXPECTED_VERSION_ID,\n        compiler_package = WSL_CUDA_COMPILER_PACKAGE,\n"}
