@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"crates/editor/src/agent_benchmark_campaign.rs","content":"//! ADR 0156 machine-local benchmark campaign identity and state.\n//!\n//! Physical model bytes and runtime/platform identity are frozen independently so\n//! Windows-native versus WSL2 evidence cannot be mistaken for model-only evidence.\n\n//__ADR0156_CORE_NEXT__\n"}
