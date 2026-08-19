@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "managed-gguf-repr-20260819-04",
+  "target_branch": "chatgpt/gameengine-managed-gguf-representation",
+  "expected_head_sha": "47b82eb73687f121e25a27903f755cb8ad364fd1",
+  "baseline_main_sha": "a481fcc3ee05e0520a47ffbdb55309aac3a0284d",
+  "patch_sha256": "b7b13bb160f800c8820ca14249962fb57382ec659c3afb92979965cda9b45912",
+  "patch_bytes": 839,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Move exact managed representation into campaign identity",
+  "pr_title": "GameEngine: derive managed GGUF representation from file contents",
+  "pr_body": "## Summary\n\n- parse GGUF metadata and every tensor descriptor during managed registration without reading tensor payload bytes\n- persist a path-independent exact representation descriptor while retaining canonical file-type quantization only when GGUF metadata supports it\n- make managed Benchmark Campaign eligibility and evidence identity use the GGUF-derived representation instead of filename markers\n- keep legacy registry JSON readable and add synthetic GGUF coverage for filename independence, mixed types, malformed/unsupported files, and candidate eligibility\n- move the owned exact representation directly into campaign identity without a redundant clone\n\n## Scope\n\nManaged Local AI GGUF registration and ADR 0156 Benchmark Campaign representation identity only."
+}
