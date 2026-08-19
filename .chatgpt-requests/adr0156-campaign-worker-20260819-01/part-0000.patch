@@ -1,0 +1,1305 @@
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index ad40fb00ba47176bab5b6b9971b26afa99f9af80..273d8970c64ae8b6e363276b20140434d02d13bd 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -148,6 +148,9 @@ fn expected_runtime_harness(harness: CampaignTaskHarness) -> &'static str {
+ 
+ fn task_permission_budget(kind: BenchmarkTaskKind) -> Vec<String> {
+     match kind {
++        BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair => {
++            vec!["code_workspace_apply".to_owned()]
++        }
+         BenchmarkTaskKind::RuntimeInteraction => {
+             vec!["runtime_launch".to_owned(), "runtime_input_control".to_owned()]
+         }
+@@ -825,15 +828,33 @@ impl BenchmarkCampaign {
+     }
+ 
+     pub(crate) fn preparing_run_request(&self) -> Result<Option<CampaignRunRequest>, String> {
+-        let preparing = self
++        self.request_for_status(
++            CampaignRunStatus::Preparing,
++            "campaign persistence contains multiple preparing runs",
++        )
++    }
++
++    pub(crate) fn running_run_request(&self) -> Result<Option<CampaignRunRequest>, String> {
++        self.request_for_status(
++            CampaignRunStatus::Running,
++            "campaign persistence contains multiple measured runs",
++        )
++    }
++
++    fn request_for_status(
++        &self,
++        status: CampaignRunStatus,
++        duplicate_message: &str,
++    ) -> Result<Option<CampaignRunRequest>, String> {
++        let matches = self
+             .runs
+             .iter()
+-            .filter(|run| run.status == CampaignRunStatus::Preparing)
++            .filter(|run| run.status == status)
+             .collect::<Vec<_>>();
+-        if preparing.len() > 1 {
+-            return Err("campaign persistence contains multiple preparing runs".to_owned());
++        if matches.len() > 1 {
++            return Err(duplicate_message.to_owned());
+         }
+-        preparing
++        matches
+             .first()
+             .map(|run| self.run_request(run.schedule.clone()))
+             .transpose()
+@@ -913,8 +934,52 @@ impl BenchmarkCampaign {
+     pub(crate) fn complete_run(
+         &mut self,
+         request: &CampaignRunRequest,
+-        mut record: BenchmarkRecord,
++        record: BenchmarkRecord,
+     ) -> Result<(), String> {
++        let record = self.validate_and_attach_record(request, record)?;
++        let run = &mut self.runs[request.schedule.ordinal as usize];
++        run.status = CampaignRunStatus::Completed;
++        run.record = Some(record);
++        self.touch();
++        Ok(())
++    }
++
++    pub(crate) fn fail_measured_run(
++        &mut self,
++        request: &CampaignRunRequest,
++        failure: CampaignFailureKind,
++    ) -> Result<(), String> {
++        self.fail_measured_run_with_record(request, failure, None)
++    }
++
++    pub(crate) fn fail_measured_run_with_record(
++        &mut self,
++        request: &CampaignRunRequest,
++        failure: CampaignFailureKind,
++        record: Option<BenchmarkRecord>,
++    ) -> Result<(), String> {
++        if failure == CampaignFailureKind::InfrastructurePreMeasurement {
++            return Err(
++                "pre-measurement infrastructure failures use the bounded retry path".to_owned(),
++            );
++        }
++        self.validate_request(request, CampaignRunStatus::Running)?;
++        let record = record
++            .map(|record| self.validate_and_attach_record(request, record))
++            .transpose()?;
++        let run = &mut self.runs[request.schedule.ordinal as usize];
++        run.status = CampaignRunStatus::Failed;
++        run.failure = Some(failure);
++        run.record = record;
++        self.touch();
++        Ok(())
++    }
++
++    fn validate_and_attach_record(
++        &mut self,
++        request: &CampaignRunRequest,
++        mut record: BenchmarkRecord,
++    ) -> Result<BenchmarkRecord, String> {
+         self.validate_request(request, CampaignRunStatus::Running)?;
+         let task_plan = &self.plan.tasks[request.schedule.task_index];
+         let descriptor = benchmark_task(&request.schedule.task_id)
+@@ -943,29 +1008,7 @@ impl BenchmarkCampaign {
+             return Err("automatic campaign evidence identity mismatch".to_owned());
+         }
+         apply_execution_identity(&mut record, self, request)?;
+-        let run = &mut self.runs[request.schedule.ordinal as usize];
+-        run.status = CampaignRunStatus::Completed;
+-        run.record = Some(record);
+-        self.touch();
+-        Ok(())
+-    }
+-
+-    pub(crate) fn fail_measured_run(
+-        &mut self,
+-        request: &CampaignRunRequest,
+-        failure: CampaignFailureKind,
+-    ) -> Result<(), String> {
+-        if failure == CampaignFailureKind::InfrastructurePreMeasurement {
+-            return Err(
+-                "pre-measurement infrastructure failures use the bounded retry path".to_owned(),
+-            );
+-        }
+-        self.validate_request(request, CampaignRunStatus::Running)?;
+-        let run = &mut self.runs[request.schedule.ordinal as usize];
+-        run.status = CampaignRunStatus::Failed;
+-        run.failure = Some(failure);
+-        self.touch();
+-        Ok(())
++        Ok(record)
+     }
+ 
+     pub(crate) fn pause(&mut self) -> Result<(), String> {
+diff --git a/crates/editor/src/agent_benchmark_fixture.rs b/crates/editor/src/agent_benchmark_fixture.rs
+index a038b21c1d9e20b8fcd705da0ebafca6e00b684c..d7934bc1619b917b140d2694542d72a2e8926fa8 100644
+--- a/crates/editor/src/agent_benchmark_fixture.rs
++++ b/crates/editor/src/agent_benchmark_fixture.rs
+@@ -7,6 +7,7 @@
+ use crate::agent_benchmark::BenchmarkTaskKind;
+ use crate::agent_benchmark_campaign::{CampaignFailureKind, CampaignRunRequest};
+ use crate::agent_host::{AgentRun, AgentRunState, CompletionStatus};
++use crate::native_agent::NativeMetrics;
+ use engine_authoring::{
+     initialize_game_project, refresh_game_module_indexes, ProjectConfig,
+     ProjectRoot, ProjectSettings, PROJECT_SCHEMA_VERSION,
+@@ -252,6 +253,22 @@ pub(crate) fn evaluate_agent_run(
+     }
+ }
+ 
++pub(crate) fn evaluate_read_question_answer(
++    answer: &str,
++    metrics: &NativeMetrics,
++) -> Result<(), CampaignFailureKind> {
++    let normalized = answer.to_ascii_lowercase();
++    let provenance = metrics.retrieval_chunks > 0;
++    let project = normalized.contains("gameengine adr0156 fixture");
++    let scene = normalized.contains("benchmark.scene.json");
++    let target = normalized.contains("benchmark_target");
++    let transform = normalized.contains("1.0")
++        && (normalized.contains("transform") || normalized.contains("x"));
++    (provenance && project && scene && target && transform)
++        .then_some(())
++        .ok_or(CampaignFailureKind::Other)
++}
++
+ pub(crate) fn fixture_root(project: &ProjectRoot) -> PathBuf {
+     project.path().to_path_buf()
+ }
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 5a96e8ac1e5eac17aa991e970f97112aa5261c5a..0b59d0b395759477139b975488270ffa691cde49 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -12,12 +12,16 @@ use crate::agent_benchmark::{
+     WORKLOAD_POLICY_VERSION,
+ };
+ use crate::agent_benchmark_campaign::{
+-    BenchmarkCampaign, BenchmarkCampaignPlan, BenchmarkCampaignState, BenchmarkCampaignStore,
+-    CampaignCandidate, CampaignCandidateSource, CampaignComparisonClass,
+-    CampaignExecutionEnvironment, CampaignExecutionProfile, CampaignPreflight, CampaignRunStatus,
+-    CampaignSeedPolicy, CampaignTaskPlan, CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION,
++    campaign_task_workload, BenchmarkCampaign, BenchmarkCampaignPlan, BenchmarkCampaignState,
++    BenchmarkCampaignStore, CampaignCandidate, CampaignCandidateSource, CampaignComparisonClass,
++    CampaignExecutionEnvironment, CampaignExecutionProfile, CampaignFailureKind, CampaignPreflight,
++    CampaignRunRequest, CampaignRunStatus, CampaignSeedPolicy, CampaignTaskHarness, CampaignTaskPlan,
++    PreMeasurementFailureDisposition, CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION,
+     CAMPAIGN_SCHEMA_VERSION, DEFAULT_CAMPAIGN_REPETITIONS,
+ };
++use crate::agent_benchmark_fixture::{
++    evaluate_agent_run, evaluate_read_question_answer, fixture_root, materialize_fixture,
++};
+ use crate::agent_host::{
+     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
+     AgentConfinementRequirement, AgentEventKind, AgentHost, AgentHostError, AgentProposal,
+@@ -34,6 +38,7 @@ use crate::external_agent_provider::{
+ use crate::hosted_model_backend;
+ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
++use crate::mcp_transport::{EditorMcpHostResult, EditorMcpRequest, EditorMcpServer};
+ use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
+ use crate::native_agent::{
+     InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
+@@ -64,7 +69,7 @@ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ use std::ffi::OsString;
+ use std::fs;
+-use std::path::PathBuf;
++use std::path::{Path, PathBuf};
+ 
+ const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
+ const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
+@@ -448,6 +453,94 @@ fn next_runtime_input_tick(inputs: &[RuntimeDebugScheduledInput]) -> u64 {
+         .unwrap_or(0)
+ }
+ 
++fn campaign_agent_proposal(request: &CampaignRunRequest) -> Result<AgentProposal, String> {
++    let task = benchmark_task(&request.schedule.task_id)
++        .ok_or_else(|| "frozen benchmark task descriptor is unavailable".to_owned())?;
++    let mut proposal = AgentProposal {
++        goal: request.candidate_contract.prompt.clone(),
++        requirements: vec![
++            "Use only the candidate-visible fixture project, benchmark-visible-task.json, and normal production tools.".to_owned(),
++            "Do not request broader filesystem, command, network, or external-process authority than the frozen task requires.".to_owned(),
++        ],
++        acceptance_criteria: request.candidate_contract.completion_criteria.clone(),
++        assumptions: vec![
++            "Host-only benchmark evaluation is unavailable to the model and must not be inferred from hidden files.".to_owned(),
++        ],
++        ..AgentProposal::default()
++    };
++
++    const SOURCE: &str = "assets/scripts/rust/shared/benchmark_fixture.rs";
++    const SCENE: &str = "assets/scenes/benchmark.scene.json";
++    match task.kind {
++        BenchmarkTaskKind::ReadQuestion => {
++            return Err("read questions use the native read/provenance harness".to_owned());
++        }
++        BenchmarkTaskKind::ProjectInspection => {}
++        BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair => {
++            proposal.planned_code_changes.push(SOURCE.to_owned());
++            proposal
++                .work_claims
++                .insert(AgentWorkClaim::code_path(SOURCE));
++            proposal.validation_plan.push("cargo check".to_owned());
++            proposal
++                .requested_capabilities
++                .insert(AgentCapability::CodeWorkspaceApply);
++        }
++        BenchmarkTaskKind::TypedAuthoringMutation => {
++            proposal.planned_project_changes.push(SCENE.to_owned());
++            proposal
++                .work_claims
++                .insert(AgentWorkClaim::authoring_document(SCENE));
++        }
++        BenchmarkTaskKind::RuntimeInteraction => {
++            proposal.playtest_plan.push(
++                "Execute the candidate-planned deterministic fixed-tick interaction through managed Play."
++                    .to_owned(),
++            );
++            proposal
++                .requested_capabilities
++                .extend([
++                    AgentCapability::RuntimeLaunch,
++                    AgentCapability::RuntimeInputControl,
++                ]);
++        }
++        BenchmarkTaskKind::VisualEvaluation => {
++            proposal.playtest_plan.push(
++                "Launch managed Play, capture a host-owned Game View frame, and evaluate only that production observation."
++                    .to_owned(),
++            );
++            proposal
++                .requested_capabilities
++                .extend([
++                    AgentCapability::RuntimeLaunch,
++                    AgentCapability::RuntimeInputControl,
++                    AgentCapability::FrameCapture,
++                ]);
++        }
++    }
++    Ok(proposal)
++}
++
++fn classify_campaign_failure(
++    message: &str,
++    fallback: CampaignFailureKind,
++) -> CampaignFailureKind {
++    let normalized = message.to_ascii_lowercase();
++    if normalized.contains("out of memory") || normalized.contains("oom") {
++        CampaignFailureKind::OutOfMemory
++    } else if normalized.contains("backend")
++        && (normalized.contains("crash")
++            || normalized.contains("unavailable")
++            || normalized.contains("connection"))
++    {
++        CampaignFailureKind::BackendCrash
++    } else if normalized.contains("validation") {
++        CampaignFailureKind::ValidationFailure
++    } else {
++        fallback
++    }
++}
++
+ /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
+ ///
+ /// The authorization token is intentionally private and is never serialized by
+@@ -588,6 +681,360 @@ struct PendingQuestionPermission {
+     conversation: Vec<QuestionMessage>,
+ }
+ 
++enum BenchmarkWorkerPreparation {
++    Pending,
++    Ready,
++}
++
++enum BenchmarkWorkerOutcome {
++    Pending,
++    Succeeded(BenchmarkRecord),
++    Failed {
++        failure: CampaignFailureKind,
++        record: Option<BenchmarkRecord>,
++    },
++}
++
++struct BenchmarkCampaignWorker {
++    request: CampaignRunRequest,
++    project: ProjectRoot,
++    app: crate::ui::EditorApp,
++    ai_studio: Box<AiStudioPanel>,
++    _mcp_server: EditorMcpServer,
++    mcp_requests: std::sync::mpsc::Receiver<EditorMcpRequest>,
++    preparation: Option<ModelResourceTask>,
++    preparation_done: bool,
++    measured_started: bool,
++    read_session_id: Option<String>,
++    run_id: Option<String>,
++    started_at: Option<std::time::Instant>,
++}
++
++impl BenchmarkCampaignWorker {
++    fn new(
++        context: &egui::Context,
++        fixtures_root: &Path,
++        request: CampaignRunRequest,
++        inventory: InstalledModelInventory,
++        quality: QualityPreference,
++        hardware: BenchmarkHardwareIdentity,
++        profile: CampaignExecutionProfile,
++    ) -> Result<Self, String> {
++        let project = materialize_fixture(fixtures_root, &request)?;
++        let app = crate::ui::EditorApp::from_project(project.clone());
++        let (mcp_server, mcp_requests) =
++            EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
++        let mut ai_studio = AiStudioPanel::new(
++            &project,
++            AiStudioConnection::new(
++                mcp_server.endpoint().to_owned(),
++                mcp_server.authorization_token().to_owned(),
++            ),
++        )?;
++        ai_studio.presentation.close();
++        ai_studio.benchmark_campaign = None;
++        ai_studio.benchmark_campaign_preflight = None;
++        ai_studio.model_backend = ModelBackendPreference::Local;
++        ai_studio.local_model_endpoint = inventory.endpoint.clone();
++        ai_studio.local_model_name = request.model.model_id.clone();
++        ai_studio.installed_model_inventory = Some(inventory);
++        ai_studio.benchmark_task_id = request.schedule.task_id.clone();
++        ai_studio.quality_preference = quality;
++        ai_studio.benchmark_hardware = hardware;
++        ai_studio.benchmark_hardware_probe_attempted = true;
++        ai_studio.status = None;
++
++        let config = LocalModelConfig {
++            endpoint: ai_studio.local_model_endpoint.clone(),
++            model: ai_studio.local_model_name.clone(),
++        };
++        let operation = match profile {
++            CampaignExecutionProfile::Warm => ModelResourceOperation::Reload,
++            CampaignExecutionProfile::Cold => ModelResourceOperation::Release,
++        };
++        let preparation = Some(
++            ModelResourceTask::spawn(config, operation).map_err(|error| error.to_string())?,
++        );
++
++        Ok(Self {
++            request,
++            project,
++            app,
++            ai_studio: Box::new(ai_studio),
++            _mcp_server: mcp_server,
++            mcp_requests,
++            preparation,
++            preparation_done: false,
++            measured_started: false,
++            read_session_id: None,
++            run_id: None,
++            started_at: None,
++        })
++    }
++
++    fn poll_preparation(
++        &mut self,
++        context: &egui::Context,
++    ) -> Result<BenchmarkWorkerPreparation, String> {
++        if self.preparation_done {
++            return Ok(BenchmarkWorkerPreparation::Ready);
++        }
++        let Some(task) = self.preparation.as_ref() else {
++            return Err("benchmark model preparation disappeared before measurement".to_owned());
++        };
++        let Some(result) = task.poll() else {
++            context.request_repaint_after(std::time::Duration::from_millis(100));
++            return Ok(BenchmarkWorkerPreparation::Pending);
++        };
++        self.preparation = None;
++        result.map_err(|error| error.to_string())?;
++        self.preparation_done = true;
++        Ok(BenchmarkWorkerPreparation::Ready)
++    }
++
++    fn start_measured(&mut self) -> Result<(), String> {
++        if self.measured_started {
++            return Ok(());
++        }
++        self.started_at = Some(std::time::Instant::now());
++        match self.request.harness {
++            CampaignTaskHarness::NativeReadQuestion => {
++                let session_id = self
++                    .ai_studio
++                    .host
++                    .create_session("ADR 0156 benchmark read question")
++                    .map_err(|error| error.to_string())?;
++                self.ai_studio.selected_session = session_id.clone();
++                self.ai_studio
++                    .host
++                    .append_message(
++                        &session_id,
++                        ConversationRole::User,
++                        self.request.candidate_contract.prompt.clone(),
++                    )
++                    .map_err(|error| error.to_string())?;
++                let config = NativeModelConfig::Local(LocalModelConfig {
++                    endpoint: self.ai_studio.local_model_endpoint.clone(),
++                    model: self.request.model.model_id.clone(),
++                });
++                self.ai_studio.start_native_question_authorized(
++                    config,
++                    vec![QuestionMessage {
++                        role: QuestionRole::User,
++                        text: self.request.candidate_contract.prompt.clone(),
++                    }],
++                    session_id.clone(),
++                );
++                self.read_session_id = Some(session_id);
++            }
++            CampaignTaskHarness::GovernedAgentHost
++            | CampaignTaskHarness::ProductionRuntimeDebug => {
++                self.run_id = Some(self.ai_studio.start_campaign_agent_run(&self.request)?);
++            }
++        }
++        self.measured_started = true;
++        Ok(())
++    }
++
++    fn handle_mcp_requests(&mut self) {
++        while let Ok(request) = self.mcp_requests.try_recv() {
++            let result = self
++                .app
++                .handle_mcp_tool_call(request.name(), request.arguments().clone());
++            request.respond(match result {
++                Ok(value) => EditorMcpHostResult::Success(value),
++                Err(error) => EditorMcpHostResult::ToolError {
++                    code: error.code().to_owned(),
++                    message: error.message().to_owned(),
++                },
++            });
++        }
++    }
++
++    fn tick(
++        &mut self,
++        context: &egui::Context,
++        frame: &mut eframe::Frame,
++    ) -> Result<BenchmarkWorkerOutcome, String> {
++        if !self.measured_started {
++            return Ok(BenchmarkWorkerOutcome::Pending);
++        }
++
++        self.handle_mcp_requests();
++        self.ai_studio.advance_host_owned_work(context);
++        self.ai_studio.resolve_campaign_pending_permission()?;
++
++        if self.app.take_ai_studio_restore_completed() {
++            self.ai_studio
++                .report_runtime_result(context, AiStudioRuntimeResult::EditorRestored);
++        }
++        if let Some(action) = self.ai_studio.take_runtime_action() {
++            let result = self
++                .app
++                .handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
++            self.ai_studio.report_runtime_result(context, result);
++        }
++        eframe::App::logic(&mut self.app, context, frame);
++        if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {
++            self.ai_studio
++                .report_runtime_result(context, AiStudioRuntimeResult::PlayStarted);
++        }
++
++        self.ai_studio.resolve_campaign_pending_permission()?;
++        self.ai_studio
++            .maybe_apply_campaign_code_changes(&self.request)?;
++        self.finish_if_ready()
++    }
++
++    fn finish_if_ready(&mut self) -> Result<BenchmarkWorkerOutcome, String> {
++        if self
++            .started_at
++            .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(300))
++        {
++            if let Some(run_id) = self.run_id.clone() {
++                let _ = self.ai_studio.stop_run_exact(&run_id);
++            }
++            return Ok(BenchmarkWorkerOutcome::Failed {
++                failure: CampaignFailureKind::TaskTimeout,
++                record: None,
++            });
++        }
++
++        match self.request.harness {
++            CampaignTaskHarness::NativeReadQuestion => self.finish_read_question(),
++            CampaignTaskHarness::GovernedAgentHost
++            | CampaignTaskHarness::ProductionRuntimeDebug => self.finish_agent_run(),
++        }
++    }
++
++    fn finish_read_question(&mut self) -> Result<BenchmarkWorkerOutcome, String> {
++        if self.ai_studio.native_question.is_some()
++            || self.ai_studio.pending_native_question_start.is_some()
++            || self.ai_studio.pending_runtime_action.is_some()
++        {
++            return Ok(BenchmarkWorkerOutcome::Pending);
++        }
++        let Some(snapshot) = self.ai_studio.last_native_question_benchmark.clone() else {
++            let message = self
++                .ai_studio
++                .status
++                .clone()
++                .unwrap_or_else(|| "native read-question benchmark ended without metrics".to_owned());
++            return Ok(BenchmarkWorkerOutcome::Failed {
++                failure: classify_campaign_failure(&message, CampaignFailureKind::Other),
++                record: None,
++            });
++        };
++        let session_id = self
++            .read_session_id
++            .as_deref()
++            .ok_or_else(|| "benchmark read session identity is unavailable".to_owned())?;
++        let answer = self
++            .ai_studio
++            .host
++            .session(session_id)
++            .map_err(|error| error.to_string())?
++            .messages
++            .iter()
++            .rev()
++            .find(|message| message.role == ConversationRole::Assistant)
++            .map(|message| message.text.clone())
++            .ok_or_else(|| "benchmark read question produced no assistant answer".to_owned())?;
++        let record = read_question_record(
++            &snapshot.policy.task_id,
++            &snapshot.metrics,
++            snapshot.policy.inventory.as_ref(),
++            snapshot.policy.quality,
++            snapshot.policy.workload,
++            &snapshot.policy.hardware,
++        )?;
++        match evaluate_read_question_answer(&answer, &snapshot.metrics) {
++            Ok(()) => Ok(BenchmarkWorkerOutcome::Succeeded(record)),
++            Err(failure) => Ok(BenchmarkWorkerOutcome::Failed {
++                failure,
++                record: Some(record),
++            }),
++        }
++    }
++
++    fn finish_agent_run(&mut self) -> Result<BenchmarkWorkerOutcome, String> {
++        let run_id = self
++            .run_id
++            .as_deref()
++            .ok_or_else(|| "benchmark AgentRun identity is unavailable".to_owned())?;
++
++        let state = self
++            .ai_studio
++            .host
++            .run(run_id)
++            .map_err(|error| error.to_string())?
++            .state;
++        if state == AgentRunState::Evaluating
++            && self.ai_studio.pending_code_changes.is_empty()
++            && !self.ai_studio.native_runtime_busy()
++            && self.ai_studio.pending_permission.is_none()
++            && self.ai_studio.pending_runtime_action.is_none()
++            && self.ai_studio.process.is_none()
++        {
++            match self.ai_studio.host.complete_run(run_id) {
++                Ok(()) | Err(AgentHostError::CompletionPending) => {}
++                Err(error) => return Err(error.to_string()),
++            }
++        }
++
++        let run = self
++            .ai_studio
++            .host
++            .run(run_id)
++            .map_err(|error| error.to_string())?
++            .clone();
++        if !matches!(
++            run.state,
++            AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
++        ) {
++            return Ok(BenchmarkWorkerOutcome::Pending);
++        }
++
++        let context = self
++            .ai_studio
++            .native_run_benchmark_context
++            .clone()
++            .ok_or_else(|| "benchmark AgentRun evidence context is unavailable".to_owned())?;
++        let record = agent_run_record(
++            &context.task_id,
++            &run,
++            AgentRunBenchmarkIdentity {
++                backend_id: &context.backend_id,
++                model_id: &context.model_id,
++                inventory: context.inventory.as_ref(),
++                quality: context.quality,
++                workload: context.workload,
++                hardware: &context.hardware,
++            },
++        )?;
++        let task = benchmark_task(&self.request.schedule.task_id)
++            .ok_or_else(|| "frozen benchmark task descriptor is unavailable".to_owned())?;
++        let evaluation = evaluate_agent_run(task.kind, &fixture_root(&self.project), &run);
++        if run.state == AgentRunState::Completed && evaluation.is_ok() {
++            Ok(BenchmarkWorkerOutcome::Succeeded(record))
++        } else {
++            let fallback = match task.kind {
++                BenchmarkTaskKind::RuntimeInteraction => CampaignFailureKind::RuntimeFailure,
++                BenchmarkTaskKind::VisualEvaluation => CampaignFailureKind::VisualFailure,
++                BenchmarkTaskKind::CodeImplementation
++                | BenchmarkTaskKind::TypedAuthoringMutation
++                | BenchmarkTaskKind::ValidationRepair => CampaignFailureKind::ValidationFailure,
++                BenchmarkTaskKind::ProjectInspection => CampaignFailureKind::InvalidToolBehavior,
++                BenchmarkTaskKind::ReadQuestion => CampaignFailureKind::Other,
++            };
++            Ok(BenchmarkWorkerOutcome::Failed {
++                failure: evaluation.err().unwrap_or(fallback),
++                record: Some(record),
++            })
++        }
++    }
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum AiStudioPresentationMode {
+     Embedded,
+@@ -664,6 +1111,7 @@ pub struct AiStudioPanel {
+     benchmark_campaign_tasks: BTreeSet<String>,
+     benchmark_campaign_repetitions: u32,
+     benchmark_campaign_profile: CampaignExecutionProfile,
++    benchmark_worker: Option<Box<BenchmarkCampaignWorker>>,
+     benchmark_hardware: BenchmarkHardwareIdentity,
+     benchmark_hardware_probe_attempted: bool,
+     installed_model_inventory: Option<InstalledModelInventory>,
+@@ -840,6 +1288,7 @@ impl AiStudioPanel {
+             benchmark_campaign_tasks,
+             benchmark_campaign_repetitions,
+             benchmark_campaign_profile,
++            benchmark_worker: None,
+             benchmark_hardware: BenchmarkHardwareIdentity::default(),
+             benchmark_hardware_probe_attempted: false,
+             installed_model_inventory: None,
+@@ -939,6 +1388,302 @@ impl AiStudioPanel {
+         self.benchmark_hardware_probe_attempted = true;
+     }
+ 
++    /// Advances an explicitly started ADR 0156 campaign on controlled fixture Editors.
++    ///
++    /// The worker uses a separate fixture project, AgentHost, MCP endpoint, and normal EditorApp
++    /// runtime surface. It never borrows the user's active project as benchmark input.
++    pub fn advance_benchmark_campaign(
++        &mut self,
++        context: &egui::Context,
++        frame: &mut eframe::Frame,
++    ) {
++        let Some(state) = self.benchmark_campaign.as_ref().map(|campaign| campaign.state) else {
++            return;
++        };
++        if state != BenchmarkCampaignState::Running && self.benchmark_worker.is_none() {
++            return;
++        }
++
++        if self.benchmark_worker.is_none() {
++            let interrupted = self
++                .benchmark_campaign
++                .as_ref()
++                .and_then(|campaign| campaign.running_run_request().transpose())
++                .transpose();
++            match interrupted {
++                Ok(Some(request)) => {
++                    let result = match self.benchmark_campaign.as_mut() {
++                        Some(campaign) => campaign
++                            .fail_measured_run(&request, CampaignFailureKind::Cancelled),
++                        None => Err("Campaign disappeared.".to_owned()),
++                    }
++                    .and_then(|()| self.persist_benchmark_campaign());
++                    self.status = Some(match result {
++                        Ok(()) => format!(
++                            "Recovered interrupted measured campaign run {} as failed evidence; it was not retried.",
++                            request.schedule.ordinal
++                        ),
++                        Err(error) => error,
++                    });
++                    context.request_repaint();
++                    return;
++                }
++                Ok(None) => {}
++                Err(error) => {
++                    self.status = Some(error);
++                    return;
++                }
++            }
++
++            let request = {
++                let Some(campaign) = self.benchmark_campaign.as_mut() else {
++                    return;
++                };
++                match campaign.preparing_run_request() {
++                    Ok(Some(request)) => Some(request),
++                    Ok(None) => match campaign.begin_next_run() {
++                        Ok(request) => request,
++                        Err(error) => {
++                            self.status = Some(error);
++                            return;
++                        }
++                    },
++                    Err(error) => {
++                        self.status = Some(error);
++                        return;
++                    }
++                }
++            };
++            if let Err(error) = self.persist_benchmark_campaign() {
++                self.status = Some(error);
++                return;
++            }
++            let Some(request) = request else {
++                self.status = Some("Benchmark campaign completed its frozen schedule.".to_owned());
++                return;
++            };
++
++            let inventory = match self.current_installed_inventory().cloned() {
++                Some(inventory) => inventory,
++                None => {
++                    self.record_campaign_preparation_failure(
++                        &request,
++                        "Installed-model inventory is unavailable for exact run verification.",
++                    );
++                    return;
++                }
++            };
++            let observed = model_identity(
++                &request.model.backend_id,
++                &request.model.model_id,
++                Some(&inventory),
++            );
++            if observed != request.model {
++                self.record_campaign_preparation_failure(
++                    &request,
++                    "Exact model representation drifted before measured execution.",
++                );
++                return;
++            }
++
++            let (quality, hardware, profile) = match self.benchmark_campaign.as_ref() {
++                Some(campaign) => (
++                    campaign.plan.quality,
++                    campaign.plan.hardware.clone(),
++                    campaign.plan.execution_profile,
++                ),
++                None => return,
++            };
++            let fixtures_root = dirs::data_local_dir()
++                .unwrap_or_else(std::env::temp_dir)
++                .join("GameEngine")
++                .join("ai")
++                .join("benchmark-fixtures");
++            match BenchmarkCampaignWorker::new(
++                context,
++                &fixtures_root,
++                request.clone(),
++                inventory,
++                quality,
++                hardware,
++                profile,
++            ) {
++                Ok(worker) => {
++                    self.benchmark_worker = Some(Box::new(worker));
++                    self.status = Some(format!(
++                        "Preparing controlled fixture run {}/{}: {} · repetition {}.",
++                        request.schedule.ordinal + 1,
++                        self.benchmark_campaign
++                            .as_ref()
++                            .map(|campaign| campaign.runs.len())
++                            .unwrap_or_default(),
++                        request.schedule.task_id,
++                        request.schedule.repetition,
++                    ));
++                }
++                Err(error) => {
++                    self.record_campaign_preparation_failure(&request, &error);
++                    return;
++                }
++            }
++        }
++
++        let Some(mut worker) = self.benchmark_worker.take() else {
++            return;
++        };
++        match worker.poll_preparation(context) {
++            Ok(BenchmarkWorkerPreparation::Pending) => {
++                self.benchmark_worker = Some(worker);
++                return;
++            }
++            Ok(BenchmarkWorkerPreparation::Ready) => {}
++            Err(error) => {
++                let request = worker.request.clone();
++                self.record_campaign_preparation_failure(&request, &error);
++                return;
++            }
++        }
++
++        if !worker.measured_started {
++            let request = worker.request.clone();
++            let marked = match self.benchmark_campaign.as_mut() {
++                Some(campaign) => campaign.mark_measurement_started(&request),
++                None => Err("Campaign disappeared.".to_owned()),
++            }
++            .and_then(|()| self.persist_benchmark_campaign());
++            if let Err(error) = marked {
++                self.status = Some(error);
++                return;
++            }
++            if let Err(error) = worker.start_measured() {
++                let failure = classify_campaign_failure(&error, CampaignFailureKind::Other);
++                let result = match self.benchmark_campaign.as_mut() {
++                    Some(campaign) => campaign.fail_measured_run(&request, failure),
++                    None => Err("Campaign disappeared.".to_owned()),
++                }
++                .and_then(|()| self.persist_benchmark_campaign());
++                self.status = Some(match result {
++                    Ok(()) => format!(
++                        "Measured campaign run {} failed while starting: {error}",
++                        request.schedule.ordinal
++                    ),
++                    Err(persist_error) => persist_error,
++                });
++                context.request_repaint();
++                return;
++            }
++        }
++
++        let request = worker.request.clone();
++        match worker.tick(context, frame) {
++            Ok(BenchmarkWorkerOutcome::Pending) => {
++                self.benchmark_worker = Some(worker);
++                context.request_repaint_after(std::time::Duration::from_millis(50));
++            }
++            Ok(outcome) => {
++                self.finish_benchmark_worker(&request, outcome);
++                context.request_repaint();
++            }
++            Err(error) => {
++                let failure = classify_campaign_failure(&error, CampaignFailureKind::Other);
++                let result = match self.benchmark_campaign.as_mut() {
++                    Some(campaign) => campaign.fail_measured_run(&request, failure),
++                    None => Err("Campaign disappeared.".to_owned()),
++                }
++                .and_then(|()| self.persist_benchmark_campaign());
++                self.status = Some(match result {
++                    Ok(()) => format!(
++                        "Measured campaign run {} failed: {error}",
++                        request.schedule.ordinal
++                    ),
++                    Err(persist_error) => persist_error,
++                });
++                context.request_repaint();
++            }
++        }
++    }
++
++    fn record_campaign_preparation_failure(
++        &mut self,
++        request: &CampaignRunRequest,
++        message: &str,
++    ) {
++        let disposition = match self.benchmark_campaign.as_mut() {
++            Some(campaign) => campaign.record_pre_measurement_failure(request),
++            None => Err("Campaign disappeared.".to_owned()),
++        };
++        let result = disposition.and_then(|disposition| {
++            self.persist_benchmark_campaign()?;
++            Ok(disposition)
++        });
++        self.status = Some(match result {
++            Ok(PreMeasurementFailureDisposition::Retry) => format!(
++                "Campaign preparation failed before measurement and will retry within the bounded infrastructure budget: {message}"
++            ),
++            Ok(PreMeasurementFailureDisposition::Exhausted) => format!(
++                "Campaign preparation exhausted its bounded pre-measurement retry budget: {message}"
++            ),
++            Err(error) => error,
++        });
++    }
++
++    fn finish_benchmark_worker(
++        &mut self,
++        request: &CampaignRunRequest,
++        outcome: BenchmarkWorkerOutcome,
++    ) {
++        let result = match outcome {
++            BenchmarkWorkerOutcome::Pending => return,
++            BenchmarkWorkerOutcome::Succeeded(record) => match self.benchmark_campaign.as_mut() {
++                Some(campaign) => campaign.complete_run(request, record),
++                None => Err("Campaign disappeared.".to_owned()),
++            },
++            BenchmarkWorkerOutcome::Failed { failure, record } => {
++                match self.benchmark_campaign.as_mut() {
++                    Some(campaign) => {
++                        campaign.fail_measured_run_with_record(request, failure, record)
++                    }
++                    None => Err("Campaign disappeared.".to_owned()),
++                }
++            }
++        };
++        if let Err(error) = result {
++            self.status = Some(error);
++            let _ = self.persist_benchmark_campaign();
++            return;
++        }
++
++        let record = self
++            .benchmark_campaign
++            .as_ref()
++            .and_then(|campaign| campaign.runs.get(request.schedule.ordinal as usize))
++            .and_then(|run| run.record.clone());
++        if let Err(error) = self.persist_benchmark_campaign() {
++            self.status = Some(error);
++            return;
++        }
++        if let Some(record) = record {
++            if let Err(error) = self.benchmark_store.record(&record) {
++                self.status = Some(format!(
++                    "Campaign progress was saved, but ADR 0142 evidence storage failed: {error}"
++                ));
++                return;
++            }
++            if let Err(error) = self.refresh_benchmark_catalog() {
++                self.status = Some(format!(
++                    "Campaign evidence was stored, but catalog refresh failed: {error}"
++                ));
++                return;
++            }
++        }
++        self.status = Some(format!(
++            "Finished campaign run {} ({}, repetition {}).",
++            request.schedule.ordinal,
++            request.schedule.task_id,
++            request.schedule.repetition,
++        ));
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Selects a deterministic hosted-backend state for screenshot validation.
+     pub fn prepare_hosted_backend_visual_validation(&mut self) {
+@@ -1418,10 +2163,7 @@ impl AiStudioPanel {
+         self.launch_external_agent(&run_id, purpose);
+     }
+ 
+-    /// Draws the current AI Studio presentation and advances host-owned work.
+-    pub fn show(&mut self, context: &egui::Context) {
+-        self.ensure_remote_gateway(context);
+-        self.poll_remote_requests();
++    fn advance_host_owned_work(&mut self, context: &egui::Context) {
+         self.poll_model_discovery(context);
+         self.poll_native_question(context);
+         self.poll_model_resource_task(context);
+@@ -1435,6 +2177,13 @@ impl AiStudioPanel {
+         self.request_managed_playtest_if_ready();
+         self.request_managed_runtime_debug_plan_if_ready();
+         self.poll_managed_playtest_timeout();
++    }
++
++    /// Draws the current AI Studio presentation and advances host-owned work.
++    pub fn show(&mut self, context: &egui::Context) {
++        self.ensure_remote_gateway(context);
++        self.poll_remote_requests();
++        self.advance_host_owned_work(context);
+ 
+         if !self.presentation.open {
+             return;
+@@ -2298,6 +3047,24 @@ impl AiStudioPanel {
+     }
+ 
+     fn start_benchmark_campaign(&mut self) -> Result<(), String> {
++        let manual_run_active = self.active_run_id.as_deref().is_some_and(|run_id| {
++            self.host.run(run_id).is_ok_and(|run| {
++                !matches!(
++                    run.state,
++                    AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
++                )
++            })
++        });
++        if manual_run_active
++            || self.native_question.is_some()
++            || self.process.is_some()
++            || self.model_resource_task.is_some()
++        {
++            return Err(
++                "Finish or stop current AI Studio inference/runtime work before starting a measured campaign."
++                    .to_owned(),
++            );
++        }
+         let verified = self.benchmark_campaign_verified_models()?;
+         let mut campaign = self.build_benchmark_campaign_draft()?;
+         let preflight = campaign.preflight(&verified)?;
+@@ -2997,6 +3764,17 @@ impl AiStudioPanel {
+     }
+ 
+     fn start_native_question(&mut self) {
++        if self
++            .benchmark_campaign
++            .as_ref()
++            .is_some_and(|campaign| campaign.state == BenchmarkCampaignState::Running)
++        {
++            self.status = Some(
++                "Manual inference is suspended while the measured benchmark campaign is running."
++                    .to_owned(),
++            );
++            return;
++        }
+         let config = match self.selected_native_model_config() {
+             Ok(config) => config,
+             Err(error) => {
+@@ -4401,6 +5179,16 @@ impl AiStudioPanel {
+     }
+ 
+     fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {
++        if self
++            .benchmark_campaign
++            .as_ref()
++            .is_some_and(|campaign| campaign.state == BenchmarkCampaignState::Running)
++        {
++            return Err(
++                "Manual AgentRun start is suspended while the measured benchmark campaign is running."
++                    .to_owned(),
++            );
++        }
+         let external_provider = self.selected_external_provider()?;
+         let (mode, provider_label, native_config) = if let Some(provider) = external_provider {
+             (
+@@ -4501,6 +5289,159 @@ impl AiStudioPanel {
+         Ok(run_id)
+     }
+ 
++    fn start_campaign_agent_run(
++        &mut self,
++        request: &CampaignRunRequest,
++    ) -> Result<String, String> {
++        let proposal = campaign_agent_proposal(request)?;
++        let session_id = self
++            .host
++            .create_session(format!("ADR 0156 {}", request.schedule.task_id))
++            .map_err(|error| error.to_string())?;
++        self.selected_session = session_id.clone();
++        self.host
++            .append_message(
++                &session_id,
++                ConversationRole::User,
++                request.candidate_contract.prompt.clone(),
++            )
++            .map_err(|error| error.to_string())?;
++        let version = self
++            .host
++            .update_proposal(&session_id, proposal.clone())
++            .map_err(|error| error.to_string())?;
++        self.proposal_draft = proposal;
++        self.proposal_draft.version = version;
++
++        let config = NativeModelConfig::Local(LocalModelConfig {
++            endpoint: self.local_model_endpoint.clone(),
++            model: request.model.model_id.clone(),
++        });
++        let run_id = self
++            .host
++            .start_run_authorized(&session_id, version, config.label())
++            .map_err(|error| error.to_string())?;
++        self.active_run_id = Some(run_id.clone());
++        self.active_runtime_mode = Some(AgentRuntimeMode::Native);
++        self.active_external_provider = None;
++        self.active_external_program = None;
++        self.active_external_args = None;
++        self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
++        self.native_agent_runtime = Some(NativeAgentRuntime::configured(config.clone()));
++        let inventory = self.current_installed_inventory().cloned();
++        self.native_run_benchmark_context = Some(NativeRunBenchmarkContext {
++            run_id: run_id.clone(),
++            task_id: request.schedule.task_id.clone(),
++            backend_id: config.backend_id().to_owned(),
++            model_id: config.model_id(),
++            quality: self.quality_preference,
++            workload: campaign_task_workload(&request.schedule.task_id)?,
++            hardware: self.benchmark_hardware.clone(),
++            inventory,
++            routed: false,
++        });
++        self.native_mcp_task = None;
++        self.pending_native_mcp_tool = None;
++        self.code_workspace = None;
++        self.pending_code_changes.clear();
++        self.pending_permission = None;
++        self.pending_runtime_action = None;
++        self.managed_input_recipe.clear();
++        self.managed_candidate_input_recipe.clear();
++        self.managed_runtime_plan_completed = false;
++        self.managed_runtime_debug_observation = None;
++        self.managed_playtest_requested = false;
++        self.managed_capture_requested = false;
++        self.managed_repair_requested = false;
++        self.managed_runtime_repairs = 0;
++        self.managed_runtime_observation = None;
++        self.managed_evaluation_requested = false;
++        self.native_evaluation_had_image = false;
++        self.managed_playtest_started_at = None;
++        self.last_captured_frame = None;
++
++        let task = benchmark_task(&request.schedule.task_id)
++            .ok_or_else(|| "frozen benchmark task descriptor is unavailable".to_owned())?;
++        if task.kind == BenchmarkTaskKind::ValidationRepair {
++            self.prepare_native_workspace(&run_id)?;
++            self.host
++                .transition_run(
++                    &run_id,
++                    AgentRunState::Executing,
++                    "ADR 0156 validation-repair baseline entered normal execution before validation.",
++                )
++                .map_err(|error| error.to_string())?;
++            self.host
++                .begin_managed_validation(&run_id, false)
++                .map_err(|error| error.to_string())?;
++        } else {
++            self.start_native_agent_execution(&run_id)?;
++        }
++        Ok(run_id)
++    }
++
++    fn resolve_campaign_pending_permission(&mut self) -> Result<(), String> {
++        let Some(pending) = self.pending_permission.as_ref() else {
++            return Ok(());
++        };
++        let run_id = pending.run_id.clone();
++        let capability = pending.capability;
++        let action = pending.action.clone();
++        let allowed = self
++            .host
++            .run(&run_id)
++            .map_err(|error| error.to_string())?
++            .proposal_snapshot
++            .requested_capabilities
++            .contains(&capability);
++        if !allowed {
++            self.pending_permission = None;
++            return Err(format!(
++                "benchmark model requested capability `{}` outside the frozen campaign budget",
++                capability.label()
++            ));
++        }
++        self.pending_permission = None;
++        self.host
++            .resolve_permission(&run_id, capability, ApprovalScope::Run)
++            .map_err(|error| error.to_string())?;
++        self.execute_permission_action(&run_id, action);
++        Ok(())
++    }
++
++    fn maybe_apply_campaign_code_changes(
++        &mut self,
++        request: &CampaignRunRequest,
++    ) -> Result<(), String> {
++        let task = benchmark_task(&request.schedule.task_id)
++            .ok_or_else(|| "frozen benchmark task descriptor is unavailable".to_owned())?;
++        if !matches!(
++            task.kind,
++            BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair
++        ) || self.pending_code_changes.is_empty()
++        {
++            return Ok(());
++        }
++        let Some(run_id) = self.active_run_id.clone() else {
++            return Err("benchmark code apply lost the active AgentRun".to_owned());
++        };
++        if !self
++            .host
++            .run(&run_id)
++            .is_ok_and(|run| run.state == AgentRunState::Evaluating)
++        {
++            return Ok(());
++        }
++        if self.pending_permission.is_none() {
++            self.request_permission(
++                run_id,
++                AgentCapability::CodeWorkspaceApply,
++                PendingPermissionAction::ApplyCodeChanges,
++            );
++        }
++        self.resolve_campaign_pending_permission()
++    }
++
+     fn request_code_apply(&mut self) {
+         let Some(run_id) = self.active_run_id.clone() else {
+             return;
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 95532ccb64100cb6d81e50aab04a51beb3c802e0..13ca297b62f05c9a5f63f5995928b08f607db09f 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -22,6 +22,9 @@ mod agent_host;
+ mod external_agent_provider;
+ mod hosted_model_backend;
+ mod live_observation;
++// The same loopback transport backs both the visible Editor host and controlled
++// ADR 0156 fixture workers; tool business logic remains EditorApp-owned.
++mod mcp_transport;
+ mod model_router;
+ mod native_agent;
+ mod native_agent_runtime;
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 1ea41015d946b990a6da8164b24bfe50bf7579e5..a18304fc75ea4a80fc29b499e19c862770b8bde6 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -339,6 +339,7 @@ impl eframe::App for EditorShell {
+     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
+         self.handle_mcp_requests();
+         self.ai_studio.observe_benchmark_hardware(frame);
++        self.ai_studio.advance_benchmark_campaign(context, frame);
+         if self.project_lease.take_activation_request() {
+             context.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
+         }
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+index 8879170e12b9c0ac50686e0371427d2466c83c4e..c132f993e93b9bc822c7258f161dea162737b624 100644
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -1064,6 +1064,21 @@ impl RuntimePlayState {
+         game_view.capture(render_state)
+     }
+ 
++    /// Captures the Game View, rendering one production frame first when no view exists yet.
++    ///
++    /// This keeps managed AI/remote observation on the normal runtime renderer even when the
++    /// visible Editor is not currently showing the Game View panel.
++    pub fn capture_or_render_game_view(
++        &mut self,
++        render_state: &egui_wgpu::RenderState,
++        fallback_size: [u32; 2],
++    ) -> Result<FrameCapture, GameViewError> {
++        if self.game_view.is_none() {
++            self.render_game_view(render_state, fallback_size)?;
++        }
++        self.capture_game_view(render_state)
++    }
++
+     /// Releases the egui texture registration for the current Game View.
+     pub fn release_game_view(&mut self, render_state: &egui_wgpu::RenderState) {
+         if let Some(game_view) = self.game_view.take() {
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index 6e6e05a011c3a55edcc1442e8924a9f197bb1b27..50cf8083561a5fd56eccea05f3ec027297ffe976 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -981,10 +981,10 @@ impl EditorApp {
+                 let Some(render_state) = render_state else {
+                     return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());
+                 };
+-                let Some(runtime) = self.runtime_state.as_ref() else {
++                let Some(runtime) = self.runtime_state.as_mut() else {
+                     return AiStudioRuntimeResult::Failed("Managed frame capture requires an active Editor Play session.".to_owned());
+                 };
+-                match runtime.capture_game_view(render_state) {
++                match runtime.capture_or_render_game_view(render_state, [960, 540]) {
+                     Ok(capture) => AiStudioRuntimeResult::FrameCaptured(capture),
+                     Err(error) => AiStudioRuntimeResult::Failed(format!("Managed Game View capture failed: {error}")),
+                 }
