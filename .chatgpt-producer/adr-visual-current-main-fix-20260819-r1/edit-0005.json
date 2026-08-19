@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/adr_visual_scenarios.rs","old":"                        ui.set_width(1090.0);\n                        ui.set_min_height(700.0);","new":"                        ui.set_width(700.0);\n                        ui.set_min_height(580.0);"}
