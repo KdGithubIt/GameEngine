@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-v4-integration-hardening-20260819-r3",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai-v4",
+  "expected_head_sha": "546288aa46ebb0e093abc903f4b0c2f903167e91",
+  "baseline_main_sha": "ad370648d044b63c562622dd1e3b1c5981af8454",
+  "patch_sha256": "ecccfb552db17285e9b0a3b1692d8b3eebabb24ca070e99ab4cb374455dd5626",
+  "patch_bytes": 78303,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR0155 managed Local AI integration and hardening",
+  "pr_title": "GameEngine: ADR0155 managed Local AI implementation v4",
+  "pr_body": "## Summary\n\nCompletes ADR0155 managed llama.cpp integration on latest main, including provider-independent backend/runtime lifecycle, AI Studio setup, Windows/WSL identities, GGUF registration, resource arbitration, benchmark provenance, Visual fixture, migration preservation, Windows SHA-256 verification, deterministic failure-boundary tests, and preservation of the existing external-local ordinary default while measured platform characterization is pending.\n\nA final one-edit follow-up updates the Managed Local environment guidance text to match that measured-default policy.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
