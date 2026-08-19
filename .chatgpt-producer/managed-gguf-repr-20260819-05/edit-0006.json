@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.visual_scroll_offset = 0.0;",
+  "new": "        self.visual_scroll_offset = 2_400.0;"
+}
