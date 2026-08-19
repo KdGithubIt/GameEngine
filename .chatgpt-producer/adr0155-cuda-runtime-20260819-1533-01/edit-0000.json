@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "const RELEASE_METADATA_URL: &str =\n    \"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b10336\";\nconst STATE_SCHEMA_VERSION: u32 = 1;\nconst STARTUP_TIMEOUT: Duration = Duration::from_secs(120);",
+  "new": "const RELEASE_METADATA_URL: &str =\n    \"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b10336\";\nconst WINDOWS_CUDA_RUNTIME_ASSET: &str = \"llama-b10336-bin-win-cuda-12.4-x64.zip\";\nconst WINDOWS_CUDA_SUPPORT_ASSET: &str = \"cudart-llama-bin-win-cuda-12.4-x64.zip\";\nconst WINDOWS_CUDA_MANIFEST: &str = \"llama-b10336-win-cuda-12.4-manifest.txt\";\nconst WSL_CUDA_MANIFEST: &str = \"llama-b10336-wsl-cuda-12.4-source-manifest.txt\";\nconst WSL_CUDA_REPOSITORY_URL: &str =\n    \"https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64\";\nconst WSL_CUDA_TOOLKIT_PACKAGE: &str = \"cuda-toolkit-12-4\";\nconst WSL_CUDA_KEYRING_ASSET: &str = \"cuda-keyring_1.1-1_all.deb\";\nconst LLAMA_CPP_REPOSITORY_URL: &str = \"https://github.com/ggml-org/llama.cpp.git\";\nconst STATE_SCHEMA_VERSION: u32 = 2;\nconst STARTUP_TIMEOUT: Duration = Duration::from_secs(120);"
+}
