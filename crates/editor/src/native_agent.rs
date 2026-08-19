@@ -2196,4 +2196,49 @@ mod tests {
             TelemetryValue::Measured(42)
         );
     }
+
+    #[test]
+    fn managed_resource_integrity_verification_runs_inside_worker_for_both_environments() {
+        for environment in [
+            crate::managed_local_runtime::ManagedExecutionEnvironment::WindowsNative,
+            crate::managed_local_runtime::ManagedExecutionEnvironment::Wsl2Linux,
+        ] {
+            for operation in [
+                ModelResourceOperation::Release,
+                ModelResourceOperation::Reload,
+            ] {
+                let state_root = temp_path(&format!(
+                    "managed-resource-worker-{}-{operation:?}",
+                    environment.benchmark_id()
+                ));
+                let _ = fs::remove_dir_all(&state_root);
+                let config = LocalModelResourceConfig::Managed(ManagedLocalModelConfig {
+                    state_root: state_root.clone(),
+                    environment,
+                    model_id: "gguf:test".to_owned(),
+                    model_content_sha256: "a".repeat(64),
+                    model_path: state_root.join("missing-model.gguf"),
+                    model_size_bytes: 1,
+                    quantization: Some("Q4_K_M".to_owned()),
+                    runtime_tag: "test-runtime".to_owned(),
+                    runtime_revision: "test-revision".to_owned(),
+                    runtime_artifact_sha256: "b".repeat(64),
+                    runtime_compatibility_version: "test-compat".to_owned(),
+                });
+
+                let task = ModelResourceTask::spawn(config, operation)
+                    .expect("spawning a resource worker must not verify managed files inline");
+                let result = task
+                    .result
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("managed resource worker should report its integrity result");
+                assert!(matches!(
+                    result,
+                    Err(NativeAgentError::BackendUnavailable(message))
+                        if message.contains("runtime artifact integrity/update")
+                ));
+                let _ = fs::remove_dir_all(state_root);
+            }
+        }
+    }
 }
