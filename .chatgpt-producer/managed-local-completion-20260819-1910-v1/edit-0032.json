@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        let process = Command::new(executable)\n            .arg(\"--benchmark-experiment\")\n            .arg(&spec_path)\n            .arg(\"--benchmark-endpoint\")\n            .arg(self.local_model_endpoint.trim())\n            .stdin(Stdio::null())\n            .stdout(Stdio::null())\n            .stderr(Stdio::null())\n            .spawn()\n            .map_err(|error| format!(\"could not start the campaign parent: {error}\"))?;",
+  "new": "        let mut command = Command::new(executable);\n        command.arg(\"--benchmark-experiment\").arg(&spec_path);\n        if spec.backend_id != MANAGED_BACKEND_ID {\n            command\n                .arg(\"--benchmark-endpoint\")\n                .arg(self.local_model_endpoint.trim());\n        }\n        let process = command\n            .stdin(Stdio::null())\n            .stdout(Stdio::null())\n            .stderr(Stdio::null())\n            .spawn()\n            .map_err(|error| format!(\"could not start the campaign parent: {error}\"))?;"
+}
