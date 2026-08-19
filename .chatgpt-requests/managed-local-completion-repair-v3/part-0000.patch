@@ -1,0 +1,61 @@
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index 28c514290bc81701cde29dd2aa010e17fd1223bf..5689c530b5437c0c1c32bf3e17861edb563935e4 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -88,10 +88,14 @@ impl AiStudioPanel {
+         let Some(child) = self.benchmark_child.as_ref() else {
+             return;
+         };
+-        if child.result_written {
++        let result_written = child.result_written;
++        let backend_id = child.spec.backend_id.clone();
++        let started = child.started;
++        let task_id = child.spec.task_id.clone();
++        if result_written {
+             return;
+         }
+-        if child.spec.backend_id == MANAGED_BACKEND_ID {
++        if backend_id == MANAGED_BACKEND_ID {
+             self.managed_probe_requested = true;
+             if self.managed_probe_task.is_some() {
+                 return;
+@@ -105,9 +109,10 @@ impl AiStudioPanel {
+                 return;
+             }
+             if let Err(error) = probe.described_config.as_ref() {
++                let message = format!("managed benchmark preflight failed: {error}");
+                 self.write_benchmark_child_failure(
+                     BenchmarkRunFailureKind::CapabilityUnavailable,
+-                    format!("managed benchmark preflight failed: {error}"),
++                    message,
+                 );
+                 return;
+             }
+@@ -116,14 +121,12 @@ impl AiStudioPanel {
+             // freeze an unmeasured model identity for the whole run.
+             return;
+         }
+-        if !child.started {
++        if !started {
+             if let Err(error) = self.start_benchmark_child_task() {
+                 self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, error);
+             }
+             return;
+         }
+-
+-        let task_id = child.spec.task_id.clone();
+         if task_id == "read_question_v1" {
+             if self.native_question.is_none() && self.pending_native_question_start.is_none() {
+                 if let Some(snapshot) = self.last_native_question_benchmark.clone()
+diff --git a/crates/editor/src/benchmark_process.rs b/crates/editor/src/benchmark_process.rs
+index 44a52a7ad49f44b575fb15fe0dd83501817597f1..9e90d570e90730f77ef08a9ce2127cb07e638280 100644
+--- a/crates/editor/src/benchmark_process.rs
++++ b/crates/editor/src/benchmark_process.rs
+@@ -478,6 +478,7 @@ mod tests {
+             engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+             fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
+             backend_id: "ollama-compatible".to_owned(),
++            managed_execution_environment: None,
+             endpoint: "http://127.0.0.1:11434".to_owned(),
+             model_id: "model:q4".to_owned(),
+             task_id: "visual_evaluation_v1".to_owned(),
