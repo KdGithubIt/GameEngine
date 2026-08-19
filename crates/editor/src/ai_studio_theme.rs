@@ -110,7 +110,17 @@ pub(crate) fn card_frame() -> egui::Frame {
 
 /// Draws a card with the shared surface treatment.
 pub(crate) fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    card_frame().show(ui, add_contents).inner
+    card_frame().show(ui, |ui| full_width(ui, add_contents)).inner
+}
+
+/// Makes a card span the panel instead of shrinking to its contents.
+///
+/// An `egui::Frame` sizes to what it holds, so a card of short fields would
+/// otherwise be narrower than a card of prose, and the header rule drawn across
+/// the available width would overhang the border.
+fn full_width<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.set_width(ui.available_width());
+    add_contents(ui)
 }
 
 /// Draws a card whose border is tinted because it is waiting on the user.
@@ -121,7 +131,7 @@ pub(crate) fn attention_card<R>(
 ) -> R {
     card_frame()
         .stroke(egui::Stroke::new(1.0_f32, accent))
-        .show(ui, add_contents)
+        .show(ui, |ui| full_width(ui, add_contents))
         .inner
 }
 
