@@ -1,8 +1,8 @@
 //! Thin file-oriented CLI adapter for VFX authoring.
 
-use super::{to_json, CliError, CliRunResult};
+use super::{CliError, CliRunResult, to_json};
 use engine_authoring::{
-    replace_file_contents, Diagnostic, VfxAuthoringService, VfxCommand, VfxEffect, VfxTemplate,
+    Diagnostic, VfxAuthoringService, VfxCommand, VfxEffect, VfxTemplate, replace_file_contents,
 };
 use serde::Serialize;
 use std::fs;
@@ -18,9 +18,9 @@ struct VfxInspectOutput {
 
 pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
     match args {
-        [domain, command] if domain == "vfx" && command == "schemas" => Some(
-            to_json(&VfxAuthoringService::new().schemas()).map(CliRunResult::success),
-        ),
+        [domain, command] if domain == "vfx" && command == "schemas" => {
+            Some(to_json(&VfxAuthoringService::new().schemas()).map(CliRunResult::success))
+        }
         [domain, command, path] if domain == "vfx" && command == "inspect" => {
             Some(inspect(Path::new(path)))
         }
@@ -62,7 +62,10 @@ fn inspect(path: &Path) -> Result<CliRunResult, CliError> {
 fn validate(path: &Path) -> Result<CliRunResult, CliError> {
     let effect = load_effect(path)?;
     let output = VfxAuthoringService::new().validate(&effect);
-    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
 }
 
 fn mutate(path: &Path, commands_path: &Path, persist: bool) -> Result<CliRunResult, CliError> {
@@ -82,7 +85,10 @@ fn mutate(path: &Path, commands_path: &Path, persist: bool) -> Result<CliRunResu
             .map_err(vfx_error)?;
         replace_file_contents(path, &json).map_err(|source| CliError::Persist { source })?;
     }
-    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
 }
 
 fn create(template: &str, path: &Path) -> Result<CliRunResult, CliError> {
@@ -94,7 +100,9 @@ fn create(template: &str, path: &Path) -> Result<CliRunResult, CliError> {
     })?;
     let service = VfxAuthoringService::new();
     let effect = service.template(template);
-    let json = service.effect_to_canonical_json(&effect).map_err(vfx_error)?;
+    let json = service
+        .effect_to_canonical_json(&effect)
+        .map_err(vfx_error)?;
     replace_file_contents(path, &json).map_err(|source| CliError::Persist { source })?;
     Ok(CliRunResult::success(to_json(&effect)?))
 }
@@ -171,7 +179,13 @@ mod tests {
         let preview = mutate(&effect_path, &commands_path, false).expect("preview succeeds");
         let after_preview = fs::read_to_string(&effect_path).expect("effect remains readable");
         assert_eq!(preview.exit_code, 0);
-        assert_eq!(service.effect_from_json(&after_preview).expect("effect parses").seed, effect.seed);
+        assert_eq!(
+            service
+                .effect_from_json(&after_preview)
+                .expect("effect parses")
+                .seed,
+            effect.seed
+        );
 
         let applied = mutate(&effect_path, &commands_path, true).expect("apply succeeds");
         assert_eq!(applied.exit_code, 0);

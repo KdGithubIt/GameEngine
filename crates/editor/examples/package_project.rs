@@ -4,7 +4,7 @@
 //! editor button. It exists so release verification can be repeated without
 //! automating native file-picker dialogs.
 
-use engine_editor::build::{package_project_with_game_module, BuildConfig};
+use engine_editor::build::{BuildConfig, package_project_with_game_module};
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

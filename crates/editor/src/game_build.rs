@@ -1,6 +1,6 @@
 //! Non-blocking Cargo builds for project-local Rust game modules.
 
-use engine_authoring::{initialize_game_project, replace_file_contents, ProjectRoot};
+use engine_authoring::{ProjectRoot, initialize_game_project, replace_file_contents};
 use serde_json::Value as JsonValue;
 use std::fmt;
 use std::io::{BufRead, BufReader};
@@ -245,7 +245,7 @@ fn run_cargo_build(
             Ok(Some(status)) => break status,
             Ok(None) => thread::sleep(Duration::from_millis(25)),
             Err(error) => {
-                return failed_result(kind, format!("Cargo status could not be read: {error}"))
+                return failed_result(kind, format!("Cargo status could not be read: {error}"));
             }
         }
     };
@@ -307,7 +307,7 @@ fn run_cargo_build(
                     diagnostics,
                     module_path: None,
                     error: Some(error),
-                }
+                };
             }
         }
     };
@@ -520,8 +520,8 @@ impl std::error::Error for GameBuildStartError {}
 mod tests {
     use super::*;
     use engine_authoring::{
+        PROJECT_SCHEMA_VERSION, ProjectConfig, RustScriptKind, RustScriptSchedule,
         create_rust_script, initialize_game_project, load_scene_from_json, move_rust_script,
-        ProjectConfig, RustScriptKind, RustScriptSchedule, PROJECT_SCHEMA_VERSION,
     };
 
     #[test]

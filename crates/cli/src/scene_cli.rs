@@ -1,10 +1,10 @@
-use super::{input_error_json, to_json, CliError, CliRunResult};
+use super::{CliError, CliRunResult, input_error_json, to_json};
 use engine_authoring::{
-    load_scene_from_json, replace_file_contents, AuthoringCapabilityId,
-    AuthoringCapabilityRegistry, AuthoringCommand, AuthoringDomain, AuthoringEntity,
-    AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchema,
+    AuthoringCapabilityId, AuthoringCapabilityRegistry, AuthoringCommand, AuthoringDomain,
+    AuthoringEntity, AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchema,
     ComponentSchemaRegistry, EntityId, ProjectId, ProjectRoot, SceneAuthoringError,
-    SceneAuthoringService, SceneLoadError, SceneSaveError, StableId,
+    SceneAuthoringService, SceneLoadError, SceneSaveError, StableId, load_scene_from_json,
+    replace_file_contents,
 };
 use serde::Serialize;
 use std::fs;
@@ -72,9 +72,7 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
                 false,
             ))
         }
-        [domain, command, project, scene, commands]
-            if domain == "scene" && command == "apply" =>
-        {
+        [domain, command, project, scene, commands] if domain == "scene" && command == "apply" => {
             Some(scene_mutate(
                 Path::new(project),
                 scene,
@@ -298,8 +296,8 @@ pub(super) fn load_scene_context(
     })?;
     let json = fs::read_to_string(&scene_path)
         .map_err(|error| input_error("io_error", &scene_path, &error.to_string()))?;
-    let scene = load_scene_from_json(&json)
-        .map_err(|error| scene_load_error(&scene_path, error))?;
+    let scene =
+        load_scene_from_json(&json).map_err(|error| scene_load_error(&scene_path, error))?;
 
     Ok(SceneContext {
         path: scene_path,
@@ -359,9 +357,7 @@ fn write_permissions() -> AuthoringPermissions {
 mod tests {
     use super::*;
     use crate::run_cli_with_status;
-    use engine_authoring::{
-        AuthoringScene, ProjectConfig, PROJECT_SCHEMA_VERSION,
-    };
+    use engine_authoring::{AuthoringScene, PROJECT_SCHEMA_VERSION, ProjectConfig};
     use serde_json::Value;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -438,15 +434,19 @@ mod tests {
         let json: Value = serde_json::from_str(&result.output).expect("JSON output");
 
         assert_eq!(result.exit_code, 0);
-        assert!(json["project_id"]
-            .as_str()
-            .is_some_and(|id| id.starts_with("project_")));
+        assert!(
+            json["project_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("project_"))
+        );
         assert_eq!(json["name"], "Scene CLI Test");
-        assert!(json["capabilities"]
-            .as_array()
-            .expect("capabilities")
-            .iter()
-            .any(|capability| capability == "scene.apply"));
+        assert!(
+            json["capabilities"]
+                .as_array()
+                .expect("capabilities")
+                .iter()
+                .any(|capability| capability == "scene.apply")
+        );
     }
 
     #[test]
@@ -493,10 +493,9 @@ mod tests {
         };
         write_commands(&project, std::slice::from_ref(&command));
 
-        let source = load_scene_from_json(
-            &fs::read_to_string(project.scene_path()).expect("source scene"),
-        )
-        .expect("source scene loads");
+        let source =
+            load_scene_from_json(&fs::read_to_string(project.scene_path()).expect("source scene"))
+                .expect("source scene loads");
         let service = SceneAuthoringService::new();
         let permissions = write_permissions();
         let mut direct = AuthoringSession::new(source);

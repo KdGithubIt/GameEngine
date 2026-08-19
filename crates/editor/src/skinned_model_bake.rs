@@ -14,8 +14,8 @@ use engine::{
     AssetManifest, ImportSettings, ImportedSubAssetKind, ManifestEntry, Mesh, ModelImportError,
 };
 use engine_authoring::{
-    replace_file_contents, AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId, EntityId,
-    ProjectRoot, Transaction, Value,
+    AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId, EntityId, ProjectRoot, Transaction,
+    Value, replace_file_contents,
 };
 
 use crate::session::{EditorSession, EditorSessionError};
@@ -100,7 +100,11 @@ impl fmt::Display for SkinnedModelBakeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingModel(entity) => {
-                write!(formatter, "Skinned Model `{}` no longer exists", entity.as_str())
+                write!(
+                    formatter,
+                    "Skinned Model `{}` no longer exists",
+                    entity.as_str()
+                )
             }
             Self::InvalidModel(entity) => write!(
                 formatter,
@@ -123,16 +127,26 @@ impl fmt::Display for SkinnedModelBakeError {
                 entity.as_str()
             ),
             Self::UnresolvedMesh { mesh, reason } => {
-                write!(formatter, "mesh `{}` cannot be baked: {reason}", mesh.as_str())
+                write!(
+                    formatter,
+                    "mesh `{}` cannot be baked: {reason}",
+                    mesh.as_str()
+                )
             }
             Self::Import { path, source } => {
-                write!(formatter, "could not import `{}` for baking: {source}", path.display())
+                write!(
+                    formatter,
+                    "could not import `{}` for baking: {source}",
+                    path.display()
+                )
             }
             Self::InvalidCommands(reason) => {
                 write!(formatter, "bake command batch is invalid: {reason}")
             }
             Self::Project(reason) => write!(formatter, "bake project path failed: {reason}"),
-            Self::Manifest(reason) => write!(formatter, "could not update asset manifest: {reason}"),
+            Self::Manifest(reason) => {
+                write!(formatter, "could not update asset manifest: {reason}")
+            }
             Self::Io { path, source } => {
                 write!(formatter, "could not write `{}`: {source}", path.display())
             }
@@ -641,7 +655,7 @@ fn restore_project_files(
 mod tests {
     use super::*;
     use engine_authoring::test_fixtures::load_scene_fixture;
-    use engine_authoring::{ProjectConfig, PROJECT_SCHEMA_VERSION};
+    use engine_authoring::{PROJECT_SCHEMA_VERSION, ProjectConfig};
 
     /// Creates a complete project fixture with one placed Skinned Model.
     fn skinned_project(
@@ -764,10 +778,12 @@ mod tests {
 
         assert_eq!(result.baked_meshes, 1);
         assert_eq!(result.render_parts, 1);
-        assert!(project
-            .assets_root()
-            .join(&result.output_paths[0])
-            .is_file());
+        assert!(
+            project
+                .assets_root()
+                .join(&result.output_paths[0])
+                .is_file()
+        );
         let baked_id = manifest
             .iter()
             .find(|(_, entry)| {
@@ -818,9 +834,11 @@ mod tests {
             .filter(|(_, entity)| entity.components.contains_key(&static_type))
             .collect::<Vec<_>>();
         assert_eq!(static_parts.len(), 2);
-        assert!(static_parts
-            .iter()
-            .all(|(_, entity)| entity.parent == original_parent));
+        assert!(
+            static_parts
+                .iter()
+                .all(|(_, entity)| entity.parent == original_parent)
+        );
     }
 
     #[test]
@@ -892,19 +910,23 @@ mod tests {
 
         assert!(session.undo());
 
-        assert!(session
-            .scene_entity(&model)
-            .expect("model")
-            .components
-            .contains_key(&ComponentTypeId::new(
-                engine::scene_bridge::SKINNED_MODEL_COMPONENT
-            )));
-        assert!(session
-            .scene_entity(&part)
-            .expect("part")
-            .components
-            .contains_key(&ComponentTypeId::new(
-                engine::scene_bridge::SKINNED_MESH_RENDERER_COMPONENT
-            )));
+        assert!(
+            session
+                .scene_entity(&model)
+                .expect("model")
+                .components
+                .contains_key(&ComponentTypeId::new(
+                    engine::scene_bridge::SKINNED_MODEL_COMPONENT
+                ))
+        );
+        assert!(
+            session
+                .scene_entity(&part)
+                .expect("part")
+                .components
+                .contains_key(&ComponentTypeId::new(
+                    engine::scene_bridge::SKINNED_MESH_RENDERER_COMPONENT
+                ))
+        );
     }
 }

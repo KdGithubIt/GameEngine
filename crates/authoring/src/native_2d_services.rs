@@ -41,12 +41,21 @@ pub enum Native2dAuthoringError {
 impl fmt::Display for Native2dAuthoringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SpriteNotFound(id) => write!(formatter, "SpriteId `{}` was not found", id.as_str()),
-            Self::LayerNotFound(id) => write!(formatter, "TileLayerId `{}` was not found", id.as_str()),
+            Self::SpriteNotFound(id) => {
+                write!(formatter, "SpriteId `{}` was not found", id.as_str())
+            }
+            Self::LayerNotFound(id) => {
+                write!(formatter, "TileLayerId `{}` was not found", id.as_str())
+            }
             Self::LayerLocked(id) => write!(formatter, "TileLayerId `{}` is locked", id.as_str()),
-            Self::GestureAlreadyActive => formatter.write_str("a Tile Map gesture is already active"),
+            Self::GestureAlreadyActive => {
+                formatter.write_str("a Tile Map gesture is already active")
+            }
             Self::GestureNotActive => formatter.write_str("no Tile Map gesture is active"),
-            Self::WorkBudgetExceeded { limit } => write!(formatter, "Tile Map operation exceeded its {limit}-cell work budget"),
+            Self::WorkBudgetExceeded { limit } => write!(
+                formatter,
+                "Tile Map operation exceeded its {limit}-cell work budget"
+            ),
             Self::InvalidPivot => formatter.write_str("sprite pivot must be finite and normalized"),
         }
     }
@@ -64,7 +73,10 @@ pub struct SpriteAtlasAuthoringService {
 impl SpriteAtlasAuthoringService {
     /// Creates the service from one typed Sprite Atlas document.
     pub fn new(document: SpriteAtlasDocument) -> Self {
-        Self { document, undo: Vec::new() }
+        Self {
+            document,
+            undo: Vec::new(),
+        }
     }
 
     /// Returns the current committed document.
@@ -74,7 +86,12 @@ impl SpriteAtlasAuthoringService {
 
     /// Renames a region without changing its stable SpriteId.
     pub fn rename(&mut self, id: &SpriteId, name: String) -> Result<(), Native2dAuthoringError> {
-        let Some(index) = self.document.regions.iter().position(|region| &region.id == id) else {
+        let Some(index) = self
+            .document
+            .regions
+            .iter()
+            .position(|region| &region.id == id)
+        else {
             return Err(Native2dAuthoringError::SpriteNotFound(id.clone()));
         };
         let before = self.document.clone();
@@ -84,11 +101,23 @@ impl SpriteAtlasAuthoringService {
     }
 
     /// Changes one normalized pivot as a single semantic mutation.
-    pub fn set_pivot(&mut self, id: &SpriteId, pivot: [f32; 2]) -> Result<(), Native2dAuthoringError> {
-        if pivot.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+    pub fn set_pivot(
+        &mut self,
+        id: &SpriteId,
+        pivot: [f32; 2],
+    ) -> Result<(), Native2dAuthoringError> {
+        if pivot
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
             return Err(Native2dAuthoringError::InvalidPivot);
         }
-        let Some(index) = self.document.regions.iter().position(|region| &region.id == id) else {
+        let Some(index) = self
+            .document
+            .regions
+            .iter()
+            .position(|region| &region.id == id)
+        else {
             return Err(Native2dAuthoringError::SpriteNotFound(id.clone()));
         };
         let before = self.document.clone();
@@ -120,15 +149,20 @@ impl TileRect {
     /// Creates a normalized rectangle from two arbitrary corners.
     pub fn from_corners(a: TileCell, b: TileCell) -> Self {
         Self {
-            min: TileCell { x: a.x.min(b.x), y: a.y.min(b.y) },
-            max: TileCell { x: a.x.max(b.x), y: a.y.max(b.y) },
+            min: TileCell {
+                x: a.x.min(b.x),
+                y: a.y.min(b.y),
+            },
+            max: TileCell {
+                x: a.x.max(b.x),
+                y: a.y.max(b.y),
+            },
         }
     }
 
     fn cells(self) -> impl Iterator<Item = TileCell> {
-        (self.min.y..=self.max.y).flat_map(move |y| {
-            (self.min.x..=self.max.x).map(move |x| TileCell { x, y })
-        })
+        (self.min.y..=self.max.y)
+            .flat_map(move |y| (self.min.x..=self.max.x).map(move |x| TileCell { x, y }))
     }
 }
 
@@ -157,7 +191,11 @@ struct TileMapGesture {
 
 impl TileMapGesture {
     fn new(document: &TileMapDocument) -> Self {
-        Self { before: document.clone(), working: document.clone(), affected: BTreeSet::new() }
+        Self {
+            before: document.clone(),
+            working: document.clone(),
+            affected: BTreeSet::new(),
+        }
     }
 }
 
@@ -172,7 +210,11 @@ pub struct TileMapAuthoringService {
 impl TileMapAuthoringService {
     /// Creates a service from one committed sparse Tile Map document.
     pub fn new(document: TileMapDocument) -> Self {
-        Self { document, active: None, undo: Vec::new() }
+        Self {
+            document,
+            active: None,
+            undo: Vec::new(),
+        }
     }
 
     /// Returns the current committed document.
@@ -182,7 +224,9 @@ impl TileMapAuthoringService {
 
     /// Returns transient preview content while a gesture is active.
     pub fn preview(&self) -> &TileMapDocument {
-        self.active.as_ref().map_or(&self.document, |gesture| &gesture.working)
+        self.active
+            .as_ref()
+            .map_or(&self.document, |gesture| &gesture.working)
     }
 
     /// Begins one pointer gesture. Nested gestures are rejected.
@@ -201,27 +245,46 @@ impl TileMapAuthoringService {
         cell: TileCell,
         tile: Option<TileId>,
     ) -> Result<TileMapChunkKey, Native2dAuthoringError> {
-        let gesture = self.active.as_mut().ok_or(Native2dAuthoringError::GestureNotActive)?;
+        let gesture = self
+            .active
+            .as_mut()
+            .ok_or(Native2dAuthoringError::GestureNotActive)?;
         let (coord, local) = gesture.working.split_cell(cell);
-        let Some(layer_document) = gesture.working.layers.iter_mut().find(|candidate| &candidate.id == layer) else {
+        let Some(layer_document) = gesture
+            .working
+            .layers
+            .iter_mut()
+            .find(|candidate| &candidate.id == layer)
+        else {
             return Err(Native2dAuthoringError::LayerNotFound(layer.clone()));
         };
         if layer_document.locked {
             return Err(Native2dAuthoringError::LayerLocked(layer.clone()));
         }
-        let chunk_index = layer_document.chunks.iter().position(|chunk| chunk.coord == coord);
+        let chunk_index = layer_document
+            .chunks
+            .iter()
+            .position(|chunk| chunk.coord == coord);
         if let Some(index) = chunk_index {
             layer_document.chunks[index].set(local, tile);
             if layer_document.chunks[index].cells.is_empty() {
                 layer_document.chunks.remove(index);
             }
         } else if let Some(tile) = tile {
-            let mut chunk = TileChunk { coord, cells: Vec::new() };
+            let mut chunk = TileChunk {
+                coord,
+                cells: Vec::new(),
+            };
             chunk.set(local, Some(tile));
             layer_document.chunks.push(chunk);
-            layer_document.chunks.sort_by_key(|chunk| (chunk.coord.y, chunk.coord.x));
+            layer_document
+                .chunks
+                .sort_by_key(|chunk| (chunk.coord.y, chunk.coord.x));
         }
-        let key = TileMapChunkKey { layer: layer.clone(), chunk: coord };
+        let key = TileMapChunkKey {
+            layer: layer.clone(),
+            chunk: coord,
+        };
         gesture.affected.insert(key.clone());
         Ok(key)
     }
@@ -294,7 +357,11 @@ impl TileMapAuthoringService {
         tile: Option<TileId>,
         max_cells: usize,
     ) -> Result<(), Native2dAuthoringError> {
-        if start.x < bounds.min.x || start.x > bounds.max.x || start.y < bounds.min.y || start.y > bounds.max.y {
+        if start.x < bounds.min.x
+            || start.x > bounds.max.x
+            || start.y < bounds.min.y
+            || start.y > bounds.max.y
+        {
             return Ok(());
         }
         let target = self.preview().tile_at(layer, start).cloned();
@@ -305,7 +372,12 @@ impl TileMapAuthoringService {
         let mut queue = VecDeque::from([start]);
         let mut visited = BTreeSet::new();
         while let Some(cell) = queue.pop_front() {
-            if cell.x < bounds.min.x || cell.x > bounds.max.x || cell.y < bounds.min.y || cell.y > bounds.max.y || !visited.insert(cell) {
+            if cell.x < bounds.min.x
+                || cell.x > bounds.max.x
+                || cell.y < bounds.min.y
+                || cell.y > bounds.max.y
+                || !visited.insert(cell)
+            {
                 continue;
             }
             if self.preview().tile_at(layer, cell).cloned() != target {
@@ -316,10 +388,22 @@ impl TileMapAuthoringService {
                 return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
             }
             self.paint(layer, cell, tile.clone())?;
-            queue.push_back(TileCell { x: cell.x + 1, y: cell.y });
-            queue.push_back(TileCell { x: cell.x - 1, y: cell.y });
-            queue.push_back(TileCell { x: cell.x, y: cell.y + 1 });
-            queue.push_back(TileCell { x: cell.x, y: cell.y - 1 });
+            queue.push_back(TileCell {
+                x: cell.x + 1,
+                y: cell.y,
+            });
+            queue.push_back(TileCell {
+                x: cell.x - 1,
+                y: cell.y,
+            });
+            queue.push_back(TileCell {
+                x: cell.x,
+                y: cell.y + 1,
+            });
+            queue.push_back(TileCell {
+                x: cell.x,
+                y: cell.y - 1,
+            });
         }
         Ok(())
     }
@@ -335,7 +419,13 @@ impl TileMapAuthoringService {
             .cells()
             .filter_map(|cell| {
                 self.preview().tile_at(layer, cell).cloned().map(|tile| {
-                    (TileCell { x: cell.x - rect.min.x, y: cell.y - rect.min.y }, tile)
+                    (
+                        TileCell {
+                            x: cell.x - rect.min.x,
+                            y: cell.y - rect.min.y,
+                        },
+                        tile,
+                    )
                 })
             })
             .collect::<Vec<_>>();
@@ -357,7 +447,10 @@ impl TileMapAuthoringService {
         for (offset, tile) in &stamp.cells {
             self.paint(
                 layer,
-                TileCell { x: origin.x + offset.x, y: origin.y + offset.y },
+                TileCell {
+                    x: origin.x + offset.x,
+                    y: origin.y + offset.y,
+                },
                 Some(tile.clone()),
             )?;
         }
@@ -366,14 +459,20 @@ impl TileMapAuthoringService {
 
     /// Cancels a gesture and restores the exact pre-gesture snapshot.
     pub fn cancel_gesture(&mut self) -> Result<(), Native2dAuthoringError> {
-        let gesture = self.active.take().ok_or(Native2dAuthoringError::GestureNotActive)?;
+        let gesture = self
+            .active
+            .take()
+            .ok_or(Native2dAuthoringError::GestureNotActive)?;
         self.document = gesture.before;
         Ok(())
     }
 
     /// Commits the complete gesture as exactly one semantic undo entry.
     pub fn commit_gesture(&mut self) -> Result<TileMapGestureCommit, Native2dAuthoringError> {
-        let gesture = self.active.take().ok_or(Native2dAuthoringError::GestureNotActive)?;
+        let gesture = self
+            .active
+            .take()
+            .ok_or(Native2dAuthoringError::GestureNotActive)?;
         self.undo.push(gesture.before);
         self.document = gesture.working;
         Ok(TileMapGestureCommit {
@@ -398,7 +497,7 @@ impl TileMapAuthoringService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_2d_assets::{TileMapLayer, TILE_MAP_SCHEMA_VERSION};
+    use crate::native_2d_assets::{TILE_MAP_SCHEMA_VERSION, TileMapLayer};
     use crate::{AssetId, SortingLayerId};
 
     fn map() -> TileMapDocument {
@@ -424,15 +523,22 @@ mod tests {
         let layer = original.layers[0].id.clone();
         let mut service = TileMapAuthoringService::new(original.clone());
         service.begin_gesture().unwrap();
-        service.paint(&layer, TileCell { x: 2, y: 3 }, Some(TileId::generate())).unwrap();
+        service
+            .paint(&layer, TileCell { x: 2, y: 3 }, Some(TileId::generate()))
+            .unwrap();
         service.cancel_gesture().unwrap();
         assert_eq!(service.document(), &original);
 
         service.begin_gesture().unwrap();
-        service.paint(&layer, TileCell { x: 33, y: 3 }, Some(TileId::generate())).unwrap();
+        service
+            .paint(&layer, TileCell { x: 33, y: 3 }, Some(TileId::generate()))
+            .unwrap();
         let commit = service.commit_gesture().unwrap();
         assert_eq!(commit.undo_entries, 1);
-        assert_eq!(commit.affected_chunks[0].chunk, TileChunkCoord { x: 1, y: 0 });
+        assert_eq!(
+            commit.affected_chunks[0].chunk,
+            TileChunkCoord { x: 1, y: 0 }
+        );
         assert!(service.undo());
         assert_eq!(service.document(), &original);
     }

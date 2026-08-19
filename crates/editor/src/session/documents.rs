@@ -8,8 +8,8 @@ use super::errors::EditorSessionError;
 use super::persistence::remove_recovery_file;
 use super::{EditorGraphDomain, EditorSession};
 use crate::document::{
-    open_graph_from_path, open_scene_from_path, open_ui_from_path, CurrentDocument,
-    OpenDocumentError,
+    CurrentDocument, OpenDocumentError, open_graph_from_path, open_scene_from_path,
+    open_ui_from_path,
 };
 use engine_authoring::{
     AuthoringSession, UiAuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction,
@@ -155,10 +155,7 @@ impl EditorSession {
             .unwrap_or_default();
         self.record_clean_snapshot();
         self.restore_newer_recovery();
-        self.ui_authoring_session = self
-            .ui_document()
-            .cloned()
-            .map(UiAuthoringSession::new);
+        self.ui_authoring_session = self.ui_document().cloned().map(UiAuthoringSession::new);
         self.bump_document_revision();
         Ok(())
     }
@@ -224,7 +221,6 @@ mod tests {
         };
         session.current_document.mark_dirty();
     }
-
 
     #[test]
     fn opening_a_graph_repairs_a_view_that_names_a_deleted_node() {

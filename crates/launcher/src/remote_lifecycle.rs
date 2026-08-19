@@ -8,11 +8,11 @@
 
 use crate::preferences::{LauncherPreferences, LauncherPreferencesLoadError};
 use engine_project_lifecycle::{
-    editor_is_ready, editor_owner_metadata, inspect_project, launch_or_activate_editor,
-    launcher_is_active, project_location_key, EditorLaunchOutcome, LifecycleError,
+    EditorLaunchOutcome, LifecycleError, editor_is_ready, editor_owner_metadata, inspect_project,
+    launch_or_activate_editor, launcher_is_active, project_location_key,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
@@ -443,7 +443,7 @@ fn map_launch_error(error: LifecycleError) -> PublicLifecycleError {
                 message: "The Editor lifecycle changed while the activation request was being processed.",
                 retryable: true,
             }
-        },
+        }
         LifecycleError::Io { .. }
         | LifecycleError::Json(_)
         | LifecycleError::Scaffold { .. }
@@ -457,11 +457,7 @@ fn map_launch_error(error: LifecycleError) -> PublicLifecycleError {
 }
 
 fn validate_bearer_token(token: &str) -> Result<(), RemoteLifecycleHostError> {
-    if token.len() < 32
-        || !token
-            .bytes()
-            .all(|byte| (0x21..=0x7e).contains(&byte))
-    {
+    if token.len() < 32 || !token.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
         return Err(RemoteLifecycleHostError::InvalidCredential);
     }
     Ok(())
@@ -473,7 +469,9 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     }
     left.iter()
         .zip(right)
-        .fold(0_u8, |difference, (left, right)| difference | (left ^ right))
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
         == 0
 }
 
@@ -517,9 +515,8 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
             break index + 4;
         }
     };
-    let header_text = std::str::from_utf8(&bytes[..header_end]).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "HTTP headers are not UTF-8")
-    })?;
+    let header_text = std::str::from_utf8(&bytes[..header_end])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "HTTP headers are not UTF-8"))?;
     let mut lines = header_text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
     let mut request_parts = request_line.split_whitespace();
@@ -660,7 +657,11 @@ fn write_error(
     )
 }
 
-fn write_serialized<T: Serialize>(stream: &mut TcpStream, status: u16, value: &T) -> io::Result<()> {
+fn write_serialized<T: Serialize>(
+    stream: &mut TcpStream,
+    status: u16,
+    value: &T,
+) -> io::Result<()> {
     let value = serde_json::to_value(value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_json(stream, status, &value)
@@ -690,7 +691,9 @@ fn write_json(stream: &mut TcpStream, status: u16, value: &Value) -> io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_project_lifecycle::{LifecycleError, acquire_editor_project, create_standard_project};
+    use engine_project_lifecycle::{
+        LifecycleError, acquire_editor_project, create_standard_project,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDir(PathBuf);
@@ -846,9 +849,7 @@ mod tests {
     #[test]
     fn bearer_token_validation_rejects_short_or_header_unsafe_credentials() {
         assert!(validate_bearer_token("short").is_err());
-        assert!(
-            validate_bearer_token("0123456789abcdef0123456789abcde\n").is_err()
-        );
+        assert!(validate_bearer_token("0123456789abcdef0123456789abcde\n").is_err());
         assert!(validate_bearer_token("0123456789abcdef0123456789abcdef").is_ok());
     }
 }

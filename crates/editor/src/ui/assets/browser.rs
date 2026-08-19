@@ -4,8 +4,8 @@
 //! reports what the author activated as an `AssetBrowserAction` for the
 //! surrounding panels to act on.
 
-use crate::ui::*;
 use super::manifest::normalize_manifest_path;
+use crate::ui::*;
 
 impl EditorApp {
     pub(in crate::ui) fn notify_registered_assets(&mut self, paths: &[PathBuf]) {
@@ -62,7 +62,6 @@ impl EditorApp {
                 ));
         }
     }
-
 }
 
 /// Sub-assets of the selected glTF source shown as draggable rows.
@@ -85,8 +84,7 @@ fn show_selected_gltf_sub_assets(
         return;
     };
     let relative = path.to_string_lossy().replace('\\', "/");
-    let Some((source_id, entry)) = manifest.iter().find(|(_, entry)| entry.path == relative)
-    else {
+    let Some((source_id, entry)) = manifest.iter().find(|(_, entry)| entry.path == relative) else {
         return;
     };
     if entry.import_settings.sub_assets.is_empty() {
@@ -169,7 +167,11 @@ fn show_selected_sprite_atlas_regions(
     let Some((atlas_id, entry)) = manifest.iter().find(|(_, entry)| entry.path == relative) else {
         return;
     };
-    if !entry.path.to_ascii_lowercase().ends_with(".spriteatlas.json") {
+    if !entry
+        .path
+        .to_ascii_lowercase()
+        .ends_with(".spriteatlas.json")
+    {
         return;
     }
     let Ok(text) = std::fs::read_to_string(assets_root.join(&path)) else {
@@ -192,7 +194,9 @@ fn show_selected_sprite_atlas_regions(
                     .sense(egui::Sense::click_and_drag()),
             );
             response
-                .on_hover_text("Drag this stable SpriteRef onto the Scene View or a Native 2D field")
+                .on_hover_text(
+                    "Drag this stable SpriteRef onto the Scene View or a Native 2D field",
+                )
                 .dnd_set_drag_payload(crate::native_2d_editor::SpriteRegionDragPayload {
                     sprite: engine_authoring::SpriteRef {
                         atlas: atlas_id.clone(),
@@ -323,7 +327,10 @@ pub(in crate::ui) fn is_direct_asset_folder_child(folder: &Path, parent: &Path) 
 
 /// Returns whether a folder owns at least one direct child folder and should
 /// therefore display an expand/collapse affordance.
-pub(in crate::ui) fn asset_folder_has_children(folder: &Path, folders: &[crate::AssetFolder]) -> bool {
+pub(in crate::ui) fn asset_folder_has_children(
+    folder: &Path,
+    folders: &[crate::AssetFolder],
+) -> bool {
     folders
         .iter()
         .any(|candidate| is_direct_asset_folder_child(&candidate.relative_path, folder))

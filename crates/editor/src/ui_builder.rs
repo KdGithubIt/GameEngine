@@ -7,8 +7,8 @@
 use crate::session::{EditorSession, EditorSessionError};
 use eframe::egui;
 use engine_authoring::{
-    find_ui_node, UiAnchor, UiDocumentCommand, UiElementConstraints, UiLayout, UiNode, UiNodeKind,
-    UiNumber, UiScaleMatch, UiScalePolicy, UiString,
+    UiAnchor, UiDocumentCommand, UiElementConstraints, UiLayout, UiNode, UiNodeKind, UiNumber,
+    UiScaleMatch, UiScalePolicy, UiString, find_ui_node,
 };
 use std::collections::BTreeSet;
 
@@ -795,12 +795,13 @@ pub fn show_ui_builder_inspector(
         if ui
             .add_enabled(state.clipboard.is_some(), egui::Button::new("Paste Child"))
             .clicked()
-            && let Some(mut copy) = state.clipboard.clone() {
-                copy.id = unique_node_id(&document.root, copy.id);
-                if node.kind.is_container() {
-                    paste_copy = Some(copy);
-                }
+            && let Some(mut copy) = state.clipboard.clone()
+        {
+            copy.id = unique_node_id(&document.root, copy.id);
+            if node.kind.is_container() {
+                paste_copy = Some(copy);
             }
+        }
         if ui
             .add_enabled(!is_root, egui::Button::new("Delete"))
             .clicked()
@@ -832,18 +833,19 @@ pub fn show_ui_builder_inspector(
     }
 
     if let Some(new_id) = renamed
-        && new_id != selected {
-            session.apply_ui_command(UiDocumentCommand::RenameNode {
-                node: selected,
-                new_id: new_id.clone(),
-            })?;
-            state.selected_node = Some(new_id);
-            state.selected_nodes.clear();
-            state
-                .selected_nodes
-                .insert(state.selected_node.clone().unwrap());
-            return Ok(());
-        }
+        && new_id != selected
+    {
+        session.apply_ui_command(UiDocumentCommand::RenameNode {
+            node: selected,
+            new_id: new_id.clone(),
+        })?;
+        state.selected_node = Some(new_id);
+        state.selected_nodes.clear();
+        state
+            .selected_nodes
+            .insert(state.selected_node.clone().unwrap());
+        return Ok(());
+    }
     if changed {
         session.apply_ui_command(UiDocumentCommand::ReplaceNode {
             node: selected,
@@ -1013,11 +1015,12 @@ fn show_preview(
                 );
             }
             if let Some(position) = preview_click_position(ui.ctx(), canvas)
-                && let Some(hit) = frontmost_preview_node(&report.nodes, position) {
-                    let id = hit.node_id.clone();
-                    let modifiers = ui.input(|input| input.modifiers);
-                    update_ui_selection(state, id, modifiers);
-                }
+                && let Some(hit) = frontmost_preview_node(&report.nodes, position)
+            {
+                let id = hit.node_id.clone();
+                let modifiers = ui.input(|input| input.modifiers);
+                update_ui_selection(state, id, modifiers);
+            }
         }
     });
 }
@@ -1107,20 +1110,21 @@ fn show_hierarchy_node(
                     && let (Some(start), Some(end)) = (
                         visible_ids.iter().position(|id| id == &anchor),
                         visible_ids.iter().position(|id| id == &node.id),
-                    ) {
-                        if !modifiers.command {
-                            state.selected_nodes.clear();
-                        }
-                        let (start, end) = if start <= end {
-                            (start, end)
-                        } else {
-                            (end, start)
-                        };
-                        state
-                            .selected_nodes
-                            .extend(visible_ids[start..=end].iter().cloned());
-                        state.selected_node = Some(node.id.clone());
+                    )
+                {
+                    if !modifiers.command {
+                        state.selected_nodes.clear();
                     }
+                    let (start, end) = if start <= end {
+                        (start, end)
+                    } else {
+                        (end, start)
+                    };
+                    state
+                        .selected_nodes
+                        .extend(visible_ids[start..=end].iter().cloned());
+                    state.selected_node = Some(node.id.clone());
+                }
             } else {
                 update_ui_selection(state, node.id.clone(), modifiers);
             }

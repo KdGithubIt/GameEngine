@@ -9,7 +9,7 @@
 //! `engine-cli scene apply`. Generic invocation therefore adds no second
 //! authoring implementation and cannot drift from the domain commands.
 
-use super::{to_json, CliError, CliRunResult};
+use super::{CliError, CliRunResult, to_json};
 use engine_authoring::{
     AuthoringCapability, AuthoringCapabilityId, AuthoringCapabilityKind,
     AuthoringCapabilityRegistry, Diagnostic,
@@ -170,8 +170,8 @@ mod tests {
     use super::*;
     use crate::run_cli_with_status;
     use engine_authoring::{
-        AuthoringCommand, AuthoringScene, EntityId, ProjectConfig, ProjectRoot,
-        PROJECT_SCHEMA_VERSION,
+        AuthoringCommand, AuthoringScene, EntityId, PROJECT_SCHEMA_VERSION, ProjectConfig,
+        ProjectRoot,
     };
     use serde_json::Value;
     use std::fs;
@@ -279,7 +279,10 @@ mod tests {
         .expect("capability description");
         let json: Value = serde_json::from_str(&result.output).expect("JSON output");
 
-        assert_eq!(json["command"], serde_json::json!(["graph", "layout", "apply"]));
+        assert_eq!(
+            json["command"],
+            serde_json::json!(["graph", "layout", "apply"])
+        );
         assert_eq!(json["capability"]["permission"], "project_data_write");
         assert_eq!(json["capability"]["transaction"], "atomic_commit");
     }
@@ -325,9 +328,11 @@ mod tests {
             scene_entities(&generic.scene_path()),
             scene_entities(&direct.scene_path())
         );
-        assert!(scene_entities(&generic.scene_path())
-            .iter()
-            .any(|value| value["id"] == serde_json::json!(entity.as_str())));
+        assert!(
+            scene_entities(&generic.scene_path())
+                .iter()
+                .any(|value| value["id"] == serde_json::json!(entity.as_str()))
+        );
     }
 
     fn mutation_semantics(output: &str) -> Value {
@@ -343,10 +348,7 @@ mod tests {
         let scene: Value =
             serde_json::from_str(&fs::read_to_string(path).expect("persisted scene"))
                 .expect("scene JSON");
-        scene["entities"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
+        scene["entities"].as_array().cloned().unwrap_or_default()
     }
 
     #[test]
@@ -359,7 +361,8 @@ mod tests {
         {
             let command = capability.id.segments().collect::<Vec<_>>().join(" ");
             assert!(
-                help.contains(&format!("engine-cli {command} ")) || help.contains(&format!("engine-cli {command}\n")),
+                help.contains(&format!("engine-cli {command} "))
+                    || help.contains(&format!("engine-cli {command}\n")),
                 "generic capability `{}` has no headless command path",
                 capability.id
             );

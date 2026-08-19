@@ -129,15 +129,27 @@ fn display_name_field(ui: &mut egui::Ui, buffer: &mut String, committed: &str) -
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AssetInspectorAction {
-    Rename { id: AssetId, name: String },
+    Rename {
+        id: AssetId,
+        name: String,
+    },
     SelectSub(String),
-    RenameSub { id: String, name: String },
-    ResetSub { id: String },
+    RenameSub {
+        id: String,
+        name: String,
+    },
+    ResetSub {
+        id: String,
+    },
     /// Extracts an imported Material sub-asset into a standalone, editable
     /// `.material.json` file and remaps the sub-asset ID to it (ADR 0101).
-    ExtractSubAssetMaterial { id: String },
+    ExtractSubAssetMaterial {
+        id: String,
+    },
     /// Opens the standalone Material a sub-asset was already extracted to.
-    OpenRemappedMaterial { asset_id: AssetId },
+    OpenRemappedMaterial {
+        asset_id: AssetId,
+    },
     /// Assigns one compatible existing asset as a model-level override.
     SetSubAssetOverride {
         source_id: AssetId,
@@ -443,11 +455,11 @@ impl AssetInspectorState {
                         if sub_asset_supports_override(selected.kind) {
                             ui.separator();
                             ui.heading("Model-level Override");
-                            let mut selected_target = selected.override_target.as_deref().and_then(
-                                |id| {
-                                    AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
-                                }
-                            );
+                            let mut selected_target =
+                                selected.override_target.as_deref().and_then(|id| {
+                                    AssetId::from_stable_id(engine_authoring::StableId::new(id))
+                                        .ok()
+                                });
                             let before = selected_target.clone();
                             egui::ComboBox::from_id_salt(("sub_asset_override", &selected.id))
                                 .selected_text(match &selected.override_target {
@@ -473,12 +485,14 @@ impl AssetInspectorState {
                                 });
                             if selected_target != before {
                                 action = match selected_target {
-                                    Some(target) => Some(AssetInspectorAction::SetSubAssetOverride {
-                                        source_id: registered.id.clone(),
-                                        id: selected.id.clone(),
-                                        kind: selected.kind,
-                                        target,
-                                    }),
+                                    Some(target) => {
+                                        Some(AssetInspectorAction::SetSubAssetOverride {
+                                            source_id: registered.id.clone(),
+                                            id: selected.id.clone(),
+                                            kind: selected.kind,
+                                            target,
+                                        })
+                                    }
                                     None => Some(AssetInspectorAction::ResetSubAssetOverride {
                                         source_id: registered.id.clone(),
                                         id: selected.id.clone(),
@@ -501,9 +515,10 @@ impl AssetInspectorState {
                                         });
                                     }
                                     if ui.button("Duplicate Material...").clicked() {
-                                        action = Some(AssetInspectorAction::ExtractSubAssetMaterial {
-                                            id: selected.id.clone(),
-                                        });
+                                        action =
+                                            Some(AssetInspectorAction::ExtractSubAssetMaterial {
+                                                id: selected.id.clone(),
+                                            });
                                     }
                                 });
                             }
@@ -596,7 +611,10 @@ impl EditorApp {
             &self.asset_manifest,
             &mut self.asset_inspector,
             self.session.scene(),
-            self.project_root.as_ref().map(ProjectRoot::assets_root).as_deref(),
+            self.project_root
+                .as_ref()
+                .map(ProjectRoot::assets_root)
+                .as_deref(),
         );
         let action = self.asset_inspector.show(ui, model.as_ref());
         if let Some(action) = action {
@@ -813,7 +831,10 @@ impl EditorApp {
         if !sub_asset_supports_override(kind) {
             self.report_error(
                 "editor.sub_asset_override_unsupported",
-                format!("{} sub-assets cannot be overridden", imported_sub_asset_label(kind)),
+                format!(
+                    "{} sub-assets cannot be overridden",
+                    imported_sub_asset_label(kind)
+                ),
             );
             return;
         }
@@ -853,9 +874,7 @@ impl EditorApp {
         }
 
         let remaps = match kind {
-            engine::ImportedSubAssetKind::Material => {
-                &mut source.import_settings.material_remaps
-            }
+            engine::ImportedSubAssetKind::Material => &mut source.import_settings.material_remaps,
             engine::ImportedSubAssetKind::Texture => &mut source.import_settings.texture_remaps,
             _ => unreachable!("unsupported kinds returned above"),
         };
@@ -879,9 +898,15 @@ impl EditorApp {
                 self.push_notification(
                     EditorNotificationLevel::Success,
                     if applying {
-                        format!("{} override applied to every model instance", imported_sub_asset_label(kind))
+                        format!(
+                            "{} override applied to every model instance",
+                            imported_sub_asset_label(kind)
+                        )
                     } else {
-                        format!("{} reverted to the imported value", imported_sub_asset_label(kind))
+                        format!(
+                            "{} reverted to the imported value",
+                            imported_sub_asset_label(kind)
+                        )
                     },
                 );
             }
@@ -901,7 +926,9 @@ impl EditorApp {
             );
             return;
         };
-        let Some(source_id) = model.and_then(|model| model.registered.as_ref()).map(|registered| registered.id.clone())
+        let Some(source_id) = model
+            .and_then(|model| model.registered.as_ref())
+            .map(|registered| registered.id.clone())
         else {
             return;
         };
@@ -1033,8 +1060,7 @@ impl EditorApp {
                 self.scene_view.invalidate_asset_preview();
                 self.push_notification(
                     EditorNotificationLevel::Success,
-                    "Material duplicated; existing references now use the editable copy"
-                        .to_owned(),
+                    "Material duplicated; existing references now use the editable copy".to_owned(),
                 );
             }
             Err(error) => self.report_error("editor.material_extract_failed", error),
@@ -1210,13 +1236,7 @@ fn build_asset_inspector_model(
         .iter()
         .find(|(_, entry)| entry.path.replace('\\', "/") == manifest_path)
         .map(|(id, entry)| {
-            refresh_selected_sub_asset_detail_cache(
-                state,
-                entry,
-                manifest,
-                scene,
-                assets_root,
-            );
+            refresh_selected_sub_asset_detail_cache(state, entry, manifest, scene, assets_root);
             RegisteredAssetInspectorModel {
                 id: id.clone(),
                 display_name: entry.name.clone().unwrap_or_else(|| entry.path.clone()),
@@ -1225,43 +1245,43 @@ fn build_asset_inspector_model(
                     .sub_assets
                     .iter()
                     .map(|sub_asset| {
-                    let override_target = sub_asset_override_target(entry, sub_asset).cloned();
-                    let override_target_id = override_target.as_deref().and_then(|target| {
-                        AssetId::from_stable_id(engine_authoring::StableId::new(target)).ok()
-                    });
-                    let override_target_name = override_target_id
-                        .as_ref()
-                        .and_then(|target| override_target_label(target, manifest));
-                    let selected_detail = state
-                        .detail_cache
-                        .as_ref()
-                        .filter(|detail| detail.sub_asset_id == sub_asset.id);
-                    SubAssetInspectorModel {
-                        id: sub_asset.id.clone(),
-                        kind: sub_asset.kind,
-                        source_name: state
-                            .source_names
-                            .get(&sub_asset.id)
-                            .cloned()
-                            .unwrap_or_else(|| sub_asset.name.clone()),
-                        display_name: sub_asset.name.clone(),
-                        name_overridden: state.overrides.contains_key(&sub_asset.id),
-                        override_target,
-                        override_target_name,
-                        override_target_editable_material: sub_asset.kind
-                            == engine::ImportedSubAssetKind::Material
-                            && override_target_id
-                                .as_ref()
-                                .is_some_and(|target| manifest.get(target).is_some()),
-                        override_choices: selected_detail
-                            .map(|detail| detail.override_choices.clone())
-                            .unwrap_or_default(),
-                        current_scene_usages: selected_detail
-                            .map(|detail| detail.current_scene_usages.clone())
-                            .unwrap_or_default(),
-                    }
-                })
-                .collect(),
+                        let override_target = sub_asset_override_target(entry, sub_asset).cloned();
+                        let override_target_id = override_target.as_deref().and_then(|target| {
+                            AssetId::from_stable_id(engine_authoring::StableId::new(target)).ok()
+                        });
+                        let override_target_name = override_target_id
+                            .as_ref()
+                            .and_then(|target| override_target_label(target, manifest));
+                        let selected_detail = state
+                            .detail_cache
+                            .as_ref()
+                            .filter(|detail| detail.sub_asset_id == sub_asset.id);
+                        SubAssetInspectorModel {
+                            id: sub_asset.id.clone(),
+                            kind: sub_asset.kind,
+                            source_name: state
+                                .source_names
+                                .get(&sub_asset.id)
+                                .cloned()
+                                .unwrap_or_else(|| sub_asset.name.clone()),
+                            display_name: sub_asset.name.clone(),
+                            name_overridden: state.overrides.contains_key(&sub_asset.id),
+                            override_target,
+                            override_target_name,
+                            override_target_editable_material: sub_asset.kind
+                                == engine::ImportedSubAssetKind::Material
+                                && override_target_id
+                                    .as_ref()
+                                    .is_some_and(|target| manifest.get(target).is_some()),
+                            override_choices: selected_detail
+                                .map(|detail| detail.override_choices.clone())
+                                .unwrap_or_default(),
+                            current_scene_usages: selected_detail
+                                .map(|detail| detail.current_scene_usages.clone())
+                                .unwrap_or_default(),
+                        }
+                    })
+                    .collect(),
             }
         });
     Some(AssetInspectorModel {
@@ -1427,9 +1447,7 @@ fn current_scene_asset_usages(
         for (component_type, value) in &entity.components {
             let relation = if value_references_asset(value, &source_id) {
                 Some("model override applies")
-            } else if override_target
-                .is_some_and(|target| value_references_asset(value, target))
-            {
+            } else if override_target.is_some_and(|target| value_references_asset(value, target)) {
                 Some("override target used directly")
             } else {
                 None
@@ -1597,12 +1615,7 @@ mod tests {
             project.assets_root().join("characters/miku")
         );
         assert_eq!(
-            material_duplicate_directory(
-                &project,
-                &manifest,
-                &source,
-                Some(override_id.as_str()),
-            ),
+            material_duplicate_directory(&project, &manifest, &source, Some(override_id.as_str()),),
             project.assets_root().join("shared/costumes")
         );
         assert_eq!(
@@ -1635,8 +1648,7 @@ mod tests {
         let path = project.assets_root().join("materials/source.material.json");
         fs::create_dir_all(path.parent().expect("material directory"))
             .expect("material directory fixture");
-        fs::write(&path, material.to_json().expect("material JSON"))
-            .expect("material fixture");
+        fs::write(&path, material.to_json().expect("material JSON")).expect("material fixture");
         let material_id = AssetId::generate();
         let mut manifest = engine::AssetManifest::default();
         manifest.insert(
@@ -1648,12 +1660,9 @@ mod tests {
             },
         );
 
-        let duplicate = material_asset_for_override_duplication(
-            &project,
-            &manifest,
-            material_id.as_str(),
-        )
-        .expect("effective override material must load");
+        let duplicate =
+            material_asset_for_override_duplication(&project, &manifest, material_id.as_str())
+                .expect("effective override material must load");
         assert_eq!(duplicate, material);
 
         let builtin = material_asset_for_override_duplication(
@@ -1670,11 +1679,8 @@ mod tests {
     #[test]
     fn override_choices_include_only_compatible_standalone_assets() {
         let source = AssetId::generate();
-        let imported_material = engine::imported_sub_asset_id(
-            &source,
-            engine::ImportedSubAssetKind::Material,
-            0,
-        );
+        let imported_material =
+            engine::imported_sub_asset_id(&source, engine::ImportedSubAssetKind::Material, 0);
         let standalone_material = AssetId::generate();
         let standalone_texture = AssetId::generate();
         let mut manifest = engine::AssetManifest::default();
@@ -1712,26 +1718,26 @@ mod tests {
             },
         );
 
-        let material_choices = override_choices_for_kind(
-            engine::ImportedSubAssetKind::Material,
-            &manifest,
-            None,
+        let material_choices =
+            override_choices_for_kind(engine::ImportedSubAssetKind::Material, &manifest, None);
+        assert!(
+            material_choices
+                .iter()
+                .any(|choice| choice.id == standalone_material)
         );
-        assert!(material_choices
-            .iter()
-            .any(|choice| choice.id == standalone_material));
-        assert!(!material_choices
-            .iter()
-            .any(|choice| choice.id == imported_material));
-        assert!(!material_choices
-            .iter()
-            .any(|choice| choice.id == standalone_texture));
+        assert!(
+            !material_choices
+                .iter()
+                .any(|choice| choice.id == imported_material)
+        );
+        assert!(
+            !material_choices
+                .iter()
+                .any(|choice| choice.id == standalone_texture)
+        );
 
-        let texture_choices = override_choices_for_kind(
-            engine::ImportedSubAssetKind::Texture,
-            &manifest,
-            None,
-        );
+        let texture_choices =
+            override_choices_for_kind(engine::ImportedSubAssetKind::Texture, &manifest, None);
         assert_eq!(texture_choices.len(), 1);
         assert_eq!(texture_choices[0].id, standalone_texture);
     }

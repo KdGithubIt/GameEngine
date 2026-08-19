@@ -1,11 +1,10 @@
 //! Toolkit-independent Animation Set editor state and undoable mutations.
 
 use engine_authoring::{
-    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId,
-    AuthoringPermission, AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef,
-    TypedDocumentAuthoringError,
+    AnimationBinding, AnimationSet, AnimationSetEvent, AssetId, AuthoringPermission,
+    AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef, TypedDocumentAuthoringError,
     TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
-    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
+    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation, replace_file_contents,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -86,24 +85,56 @@ impl AnimationSetEditorState {
     }
 
     /// Inspects the Animation Set through the shared typed-document service.
-    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<AnimationSet>, TypedDocumentAuthoringError> {
+    pub fn structured_inspect(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<TypedDocumentAuthoringSnapshot<AnimationSet>, TypedDocumentAuthoringError> {
         TypedDocumentAuthoringService::new().inspect(&self.document, &self.authoring, permissions)
     }
 
     /// Validates the Animation Set through the shared typed-document service.
-    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
+    pub fn structured_validate(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
         TypedDocumentAuthoringService::new().validate(&self.document, &self.authoring, permissions)
     }
 
     /// Previews a complete Animation Set replacement without mutation.
-    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
-        TypedDocumentAuthoringService::new().preview(&self.document, &self.authoring, permissions, expected_revision, expected_generation, replacement)
+    pub fn structured_preview(
+        &self,
+        permissions: &AuthoringPermissions,
+        expected_revision: u64,
+        expected_generation: u64,
+        replacement: AnimationSet,
+    ) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().preview(
+            &self.document,
+            &self.authoring,
+            permissions,
+            expected_revision,
+            expected_generation,
+            replacement,
+        )
     }
 
     /// Applies a complete Animation Set replacement as one undoable edit.
-    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
+    pub fn structured_apply(
+        &mut self,
+        permissions: &AuthoringPermissions,
+        expected_revision: u64,
+        expected_generation: u64,
+        replacement: AnimationSet,
+    ) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
         let before = self.document.clone();
-        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.document, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
+        let mutation = TypedDocumentAuthoringService::new().apply(
+            &mut self.document,
+            &mut self.authoring,
+            permissions,
+            expected_revision,
+            expected_generation,
+            replacement,
+        )?;
         if mutation.success && !mutation.diff.is_empty() {
             self.push_undo_snapshot(before);
             self.redo.clear();
@@ -407,8 +438,8 @@ impl AnimationSetEditorState {
     }
 
     fn apply_editor_replacement(&mut self, replacement: AnimationSet) -> Result<bool, String> {
-        let permissions = AuthoringPermissions::read_only()
-            .with(AuthoringPermission::ProjectDataWrite);
+        let permissions =
+            AuthoringPermissions::read_only().with(AuthoringPermission::ProjectDataWrite);
         let revision = self.authoring.revision();
         let generation = self.authoring.generation();
         let mutation = TypedDocumentAuthoringService::new()
@@ -584,10 +615,7 @@ mod tests {
         let motion = slot("Dance");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding_source(
-                &motion,
-                Some(MotionSourceRef::native(AssetId::generate())),
-            )
+            .set_binding_source(&motion, Some(MotionSourceRef::native(AssetId::generate())))
             .expect("primary clip must bind");
         let first = AssetId::generate();
         let second = AssetId::generate();
@@ -620,10 +648,7 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding_source(
-                &motion,
-                Some(MotionSourceRef::native(AssetId::generate())),
-            )
+            .set_binding_source(&motion, Some(MotionSourceRef::native(AssetId::generate())))
             .expect("primary clip must bind");
         for _ in 0..2 {
             state.add_event(&motion.id).expect("event must be added");
@@ -652,10 +677,7 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding_source(
-                &motion,
-                Some(MotionSourceRef::native(AssetId::generate())),
-            )
+            .set_binding_source(&motion, Some(MotionSourceRef::native(AssetId::generate())))
             .expect("primary clip must bind");
         state.add_event(&motion.id).expect("event must be added");
         let before = state.document.clone();
@@ -677,18 +699,12 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding_source(
-                &motion,
-                Some(MotionSourceRef::native(AssetId::generate())),
-            )
+            .set_binding_source(&motion, Some(MotionSourceRef::native(AssetId::generate())))
             .expect("primary clip must bind");
         state.add_event(&motion.id).expect("event must be added");
 
         state
-            .set_binding_source(
-                &motion,
-                Some(MotionSourceRef::native(AssetId::generate())),
-            )
+            .set_binding_source(&motion, Some(MotionSourceRef::native(AssetId::generate())))
             .expect("clip must be reassigned");
         assert_eq!(state.document.bindings[&motion.id].events.len(), 1);
 
@@ -718,10 +734,7 @@ mod tests {
             .expect("initial inspect must succeed");
 
         state
-            .set_binding_source(
-                &motion,
-                Some(MotionSourceRef::native(AssetId::generate())),
-            )
+            .set_binding_source(&motion, Some(MotionSourceRef::native(AssetId::generate())))
             .expect("GUI binding edit must commit");
         let edited = state
             .structured_inspect(&read)
@@ -729,15 +742,17 @@ mod tests {
         assert_eq!(edited.generation, baseline.generation);
         assert_eq!(edited.revision, baseline.revision + 1);
 
-        let write = AuthoringPermissions::read_only()
-            .with(AuthoringPermission::ProjectDataWrite);
+        let write = AuthoringPermissions::read_only().with(AuthoringPermission::ProjectDataWrite);
         let stale = state.structured_apply(
             &write,
             baseline.revision,
             baseline.generation,
             baseline.document.clone(),
         );
-        assert!(matches!(stale, Err(TypedDocumentAuthoringError::Stale { .. })));
+        assert!(matches!(
+            stale,
+            Err(TypedDocumentAuthoringError::Stale { .. })
+        ));
 
         assert!(state.undo());
         let undone = state

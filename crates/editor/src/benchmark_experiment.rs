@@ -6,12 +6,12 @@
 
 #![allow(dead_code)]
 
-use crate::agent_benchmark_campaign::CandidateTaskContract;
 use crate::agent_benchmark::{
-    benchmark_task, BenchmarkExecutionIdentity, BenchmarkRecord, BENCHMARK_CORPUS_VERSION,
-    BENCHMARK_HARNESS_VERSION,
+    BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BenchmarkExecutionIdentity,
+    BenchmarkRecord, benchmark_task,
 };
-use crate::managed_local_runtime::{ManagedExecutionEnvironment, MANAGED_BACKEND_ID};
+use crate::agent_benchmark_campaign::CandidateTaskContract;
+use crate::managed_local_runtime::{MANAGED_BACKEND_ID, ManagedExecutionEnvironment};
 use crate::resource_arbitration::{QualityPreference, TelemetryValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,7 +36,9 @@ pub(crate) const ENGINE_COMMIT_HEAD: &str = env!("GAMEENGINE_COMMIT_HEAD");
 pub(crate) enum BenchmarkExecutionOrder {
     #[default]
     ModelTaskRepeat,
-    SeededInterleaved { seed: u64 },
+    SeededInterleaved {
+        seed: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,23 +126,35 @@ impl BenchmarkExperimentSpec {
             return Err("benchmark experiment id must be non-empty".to_owned());
         }
         if !is_full_git_sha(&self.engine_commit_head) {
-            return Err("benchmark experiment requires an exact 40-character GameEngine commit SHA".to_owned());
+            return Err(
+                "benchmark experiment requires an exact 40-character GameEngine commit SHA"
+                    .to_owned(),
+            );
         }
         if self.corpus_version != BENCHMARK_CORPUS_VERSION
             || self.harness_version != BENCHMARK_HARNESS_VERSION
             || self.fixture_version != BENCHMARK_FIXTURE_VERSION
         {
-            return Err("benchmark corpus, harness, and fixture versions must match the current runner".to_owned());
+            return Err(
+                "benchmark corpus, harness, and fixture versions must match the current runner"
+                    .to_owned(),
+            );
         }
         if self.backend_id.trim().is_empty() {
             return Err("benchmark backend id must be non-empty".to_owned());
         }
         if self.backend_id == MANAGED_BACKEND_ID {
             if self.managed_execution_environment.is_none() {
-                return Err("managed benchmark experiments require an exact execution environment".to_owned());
+                return Err(
+                    "managed benchmark experiments require an exact execution environment"
+                        .to_owned(),
+                );
             }
         } else if self.managed_execution_environment.is_some() {
-            return Err("only the GameEngine-managed backend may carry a managed execution environment".to_owned());
+            return Err(
+                "only the GameEngine-managed backend may carry a managed execution environment"
+                    .to_owned(),
+            );
         }
         if self.model_ids.is_empty() {
             return Err("benchmark experiment requires at least one exact model id".to_owned());
@@ -247,13 +261,17 @@ impl BenchmarkExperimentResult {
             || self.fixture_version != spec.fixture_version
             || self.routing_mode != spec.routing_mode
         {
-            return Err("benchmark result identity does not match the frozen experiment".to_owned());
+            return Err(
+                "benchmark result identity does not match the frozen experiment".to_owned(),
+            );
         }
         if self.finished_unix_ms < self.started_unix_ms {
             return Err("benchmark run end precedes its start".to_owned());
         }
         if spec.routing_mode == BenchmarkRoutingMode::SingleModel && self.routed_to_another_model {
-            return Err("single-model benchmark result was contaminated by model routing".to_owned());
+            return Err(
+                "single-model benchmark result was contaminated by model routing".to_owned(),
+            );
         }
         if let Some(record) = self.record.as_ref()
             && (record.identity.model.backend_id != spec.backend_id
@@ -335,11 +353,7 @@ impl BenchmarkFixtureSandbox {
         }
     }
 
-    pub(crate) fn reset_run(
-        &self,
-        experiment_id: &str,
-        ordinal: u64,
-    ) -> Result<PathBuf, String> {
+    pub(crate) fn reset_run(&self, experiment_id: &str, ordinal: u64) -> Result<PathBuf, String> {
         if !self.template_root.is_dir() {
             return Err(format!(
                 "benchmark fixture template `{}` is unavailable",
@@ -401,9 +415,9 @@ pub(crate) fn summarize_experiment(
     }
     for result in results {
         result.validate_against(spec)?;
-        let summary = summaries
-            .get_mut(&result.run.model_id)
-            .ok_or_else(|| "benchmark result references a model outside the experiment".to_owned())?;
+        let summary = summaries.get_mut(&result.run.model_id).ok_or_else(|| {
+            "benchmark result references a model outside the experiment".to_owned()
+        })?;
         match result.outcome {
             BenchmarkRunOutcome::Passed => summary.passed_runs += 1,
             BenchmarkRunOutcome::Failed => summary.failed_runs += 1,
@@ -515,7 +529,10 @@ mod tests {
                 "model-c:q8".to_owned(),
                 "model-d:f16".to_owned(),
             ],
-            BENCHMARK_TASKS.iter().map(|task| task.id.to_owned()).collect(),
+            BENCHMARK_TASKS
+                .iter()
+                .map(|task| task.id.to_owned())
+                .collect(),
             3,
             QualityPreference::Balanced,
             root,
@@ -553,7 +570,10 @@ mod tests {
         fs::write(destination.join("game/src/lib.rs"), "mutated").expect("mutate");
         fs::write(destination.join("generated.txt"), "contamination").expect("generated");
         let reset = sandbox.reset_run("suite", 0).expect("reset again");
-        assert_eq!(fs::read_to_string(reset.join("game/src/lib.rs")).expect("text"), "baseline");
+        assert_eq!(
+            fs::read_to_string(reset.join("game/src/lib.rs")).expect("text"),
+            "baseline"
+        );
         assert!(!reset.join("generated.txt").exists());
     }
 
@@ -603,6 +623,8 @@ mod tests {
             harness_message: None,
             record: None,
         };
-        result.validate_against(&spec).expect("valid unavailable result");
+        result
+            .validate_against(&spec)
+            .expect("valid unavailable result");
     }
 }

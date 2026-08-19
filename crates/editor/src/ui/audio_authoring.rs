@@ -46,7 +46,9 @@ impl Default for AudioAuditionState {
 
 impl AudioAuditionState {
     pub(super) fn poll(&mut self) {
-        let Some(audio) = self.audio.as_mut() else { return; };
+        let Some(audio) = self.audio.as_mut() else {
+            return;
+        };
         let completed = audio.drain_completed_voices();
         if self.voice.is_some_and(|voice| completed.contains(&voice)) {
             self.voice = None;
@@ -99,7 +101,9 @@ impl AudioAuditionState {
                 }
             }
         }
-        let Some(server) = self.asset_server.as_mut() else { return; };
+        let Some(server) = self.asset_server.as_mut() else {
+            return;
+        };
         let handle = match server.load_audio(asset_id, asset_path, &mut self.assets) {
             Ok(handle) => handle,
             Err(error) => {
@@ -111,7 +115,12 @@ impl AudioAuditionState {
             self.status = "Audition clip disappeared from the transient cache".to_owned();
             return;
         };
-        match self.audio.as_mut().expect("audio initialized above").start_voice(asset, gains, looping) {
+        match self
+            .audio
+            .as_mut()
+            .expect("audio initialized above")
+            .start_voice(asset, gains, looping)
+        {
             Ok(voice) => {
                 self.voice = Some(voice);
                 self.active_entity = Some(entity);
@@ -126,7 +135,9 @@ impl AudioAuditionState {
     }
 
     fn update_gains(&mut self, gains: engine::audio::StereoGains) {
-        let (Some(audio), Some(voice)) = (self.audio.as_ref(), self.voice) else { return; };
+        let (Some(audio), Some(voice)) = (self.audio.as_ref(), self.voice) else {
+            return;
+        };
         if let Err(error) = audio.update_voice(voice, gains) {
             self.status = format!("Audition update failed: {error}");
         }
@@ -159,17 +170,35 @@ pub(super) fn show_audio_component_extras(
         let mut action = None;
         control_row(ui, |ui| {
             ui.label("Listener");
-            if ui.selectable_label(audition.listener_source == AuditionListenerSource::GameListener, "Game Listener").clicked() {
+            if ui
+                .selectable_label(
+                    audition.listener_source == AuditionListenerSource::GameListener,
+                    "Game Listener",
+                )
+                .clicked()
+            {
                 action = Some(AudioInspectorAction::UseGameListener);
             }
-            if ui.selectable_label(audition.listener_source == AuditionListenerSource::SceneView, "Scene View").clicked() {
+            if ui
+                .selectable_label(
+                    audition.listener_source == AuditionListenerSource::SceneView,
+                    "Scene View",
+                )
+                .clicked()
+            {
                 action = Some(AudioInspectorAction::UseSceneViewListener);
             }
         });
         control_row(ui, |ui| {
-            if ui.button("▶ Play").clicked() { action = Some(AudioInspectorAction::Play); }
-            if ui.button("■ Stop").clicked() { action = Some(AudioInspectorAction::Stop); }
-            if ui.button("↻ Restart").clicked() { action = Some(AudioInspectorAction::Restart); }
+            if ui.button("▶ Play").clicked() {
+                action = Some(AudioInspectorAction::Play);
+            }
+            if ui.button("■ Stop").clicked() {
+                action = Some(AudioInspectorAction::Stop);
+            }
+            if ui.button("↻ Restart").clicked() {
+                action = Some(AudioInspectorAction::Restart);
+            }
             ui.weak(&audition.status);
         });
         ui.small("Audition is transient and uses the production spatial evaluator and managed voice backend.");
@@ -188,7 +217,9 @@ pub(super) fn show_audio_component_extras(
 
 impl EditorApp {
     pub(super) fn update_audio_audition(&mut self) {
-        let Some(active_entity) = self.audio_audition.active_entity() else { return; };
+        let Some(active_entity) = self.audio_audition.active_entity() else {
+            return;
+        };
         let snapshot = self.session.scene().and_then(|scene| {
             let component = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
             let value = scene.entity(&active_entity)?.components.get(&component)?;
@@ -200,14 +231,19 @@ impl EditorApp {
         });
         let Some((emitter, emitter_pose, game_listener)) = snapshot else {
             self.audio_audition.stop();
-            self.audio_audition.status = "Audition stopped because the emitter is no longer available".to_owned();
+            self.audio_audition.status =
+                "Audition stopped because the emitter is no longer available".to_owned();
             return;
         };
         let listener = match self.audio_audition.listener_source {
             AuditionListenerSource::GameListener => game_listener,
             AuditionListenerSource::SceneView => Some(self.scene_view.editor_audio_listener_pose()),
         };
-        self.audio_audition.update_gains(audition_spatial_gains(listener, emitter_pose, emitter.settings));
+        self.audio_audition.update_gains(audition_spatial_gains(
+            listener,
+            emitter_pose,
+            emitter.settings,
+        ));
     }
 
     pub(super) fn handle_audio_inspector_action(
@@ -217,22 +253,55 @@ impl EditorApp {
         action: AudioInspectorAction,
     ) {
         match action {
-            AudioInspectorAction::Stop => { self.audio_audition.stop(); return; }
-            AudioInspectorAction::UseGameListener => { self.audio_audition.listener_source = AuditionListenerSource::GameListener; return; }
-            AudioInspectorAction::UseSceneViewListener => { self.audio_audition.listener_source = AuditionListenerSource::SceneView; return; }
+            AudioInspectorAction::Stop => {
+                self.audio_audition.stop();
+                return;
+            }
+            AudioInspectorAction::UseGameListener => {
+                self.audio_audition.listener_source = AuditionListenerSource::GameListener;
+                return;
+            }
+            AudioInspectorAction::UseSceneViewListener => {
+                self.audio_audition.listener_source = AuditionListenerSource::SceneView;
+                return;
+            }
             AudioInspectorAction::Play | AudioInspectorAction::Restart => {}
         }
-        let Some(emitter) = parse_emitter(value) else { self.audio_audition.status = "Emitter fields are incomplete".to_owned(); return; };
-        let Some(scene) = self.session.scene() else { self.audio_audition.status = "Open a scene before auditioning audio".to_owned(); return; };
-        let Some(emitter_pose) = SceneView::authoring_audio_emitter_pose(scene, selected) else { self.audio_audition.status = "The emitter has no resolved world transform".to_owned(); return; };
+        let Some(emitter) = parse_emitter(value) else {
+            self.audio_audition.status = "Emitter fields are incomplete".to_owned();
+            return;
+        };
+        let Some(scene) = self.session.scene() else {
+            self.audio_audition.status = "Open a scene before auditioning audio".to_owned();
+            return;
+        };
+        let Some(emitter_pose) = SceneView::authoring_audio_emitter_pose(scene, selected) else {
+            self.audio_audition.status = "The emitter has no resolved world transform".to_owned();
+            return;
+        };
         let listener = match self.audio_audition.listener_source {
             AuditionListenerSource::SceneView => Some(self.scene_view.editor_audio_listener_pose()),
-            AuditionListenerSource::GameListener => active_game_listener(scene).and_then(|id| SceneView::authoring_audio_listener_pose(scene, &id)),
+            AuditionListenerSource::GameListener => active_game_listener(scene)
+                .and_then(|id| SceneView::authoring_audio_listener_pose(scene, &id)),
         };
         let gains = audition_spatial_gains(listener, emitter_pose, emitter.settings);
-        let Some(project) = self.project_root.as_ref() else { self.audio_audition.status = "Open a project before auditioning audio".to_owned(); return; };
-        let Some(entry) = self.asset_manifest.get(&emitter.clip) else { self.audio_audition.status = "Emitter clip is not registered in the asset manifest".to_owned(); return; };
-        self.audio_audition.play(selected.clone(), &project.assets_root(), emitter.clip, &entry.path, gains, emitter.looping);
+        let Some(project) = self.project_root.as_ref() else {
+            self.audio_audition.status = "Open a project before auditioning audio".to_owned();
+            return;
+        };
+        let Some(entry) = self.asset_manifest.get(&emitter.clip) else {
+            self.audio_audition.status =
+                "Emitter clip is not registered in the asset manifest".to_owned();
+            return;
+        };
+        self.audio_audition.play(
+            selected.clone(),
+            &project.assets_root(),
+            emitter.clip,
+            &entry.path,
+            gains,
+            emitter.looping,
+        );
     }
 
     #[cfg(feature = "visual-validation")]
@@ -248,8 +317,7 @@ impl EditorApp {
     #[cfg(feature = "visual-validation")]
     pub fn prepare_spatial_audio_listener_visual_validation(&mut self) {
         self.prepare_spatial_audio_visual_validation_with_scroll(None);
-        let emitter_type =
-            ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+        let emitter_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
         self.preferences
             .component_card_open
             .insert(emitter_type.as_str().to_owned(), false);
@@ -264,9 +332,24 @@ impl EditorApp {
         let transform_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
         let emitter_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
         let listener_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_LISTENER_COMPONENT);
-        let Some(transform) = registry.get(&transform_type).map(|definition| definition.schema.default_value()) else { return; };
-        let Some(mut emitter) = registry.get(&emitter_type).map(|definition| definition.schema.default_value()) else { return; };
-        let Some(listener) = registry.get(&listener_type).map(|definition| definition.schema.default_value()) else { return; };
+        let Some(transform) = registry
+            .get(&transform_type)
+            .map(|definition| definition.schema.default_value())
+        else {
+            return;
+        };
+        let Some(mut emitter) = registry
+            .get(&emitter_type)
+            .map(|definition| definition.schema.default_value())
+        else {
+            return;
+        };
+        let Some(listener) = registry
+            .get(&listener_type)
+            .map(|definition| definition.schema.default_value())
+        else {
+            return;
+        };
         // Keep the task-specific visual capture focused on the audio Inspector rather than
         // spending the runner's constrained desktop height on the utility dock or Transform.
         self.bottom_panel_open = false;
@@ -280,7 +363,9 @@ impl EditorApp {
         self.preferences
             .component_card_open
             .insert(listener_type.as_str().to_owned(), true);
-        let Value::Object(fields) = &mut emitter else { return; };
+        let Value::Object(fields) = &mut emitter else {
+            return;
+        };
         // The visual-validation fixture must not fabricate an unresolved asset reference.
         // Attenuation/gizmos are spatial-only; audition remains visible but stopped until a real clip is selected.
         fields.insert("spatial_blend".to_owned(), Value::F64(1.0));
@@ -288,11 +373,24 @@ impl EditorApp {
         fields.insert("max_distance".to_owned(), Value::F64(6.0));
         fields.insert("rolloff".to_owned(), Value::String("linear".to_owned()));
         fields.insert("looping".to_owned(), Value::Bool(true));
-        let Ok(entity) = self.session.create_scene_entity("Spatial Audio Preview") else { return; };
-        if self.session.add_scene_component(entity.clone(), transform_type, transform).is_err()
-            || self.session.add_scene_component(entity.clone(), emitter_type, emitter).is_err()
-            || self.session.add_scene_component(entity.clone(), listener_type, listener).is_err()
-        { return; }
+        let Ok(entity) = self.session.create_scene_entity("Spatial Audio Preview") else {
+            return;
+        };
+        if self
+            .session
+            .add_scene_component(entity.clone(), transform_type, transform)
+            .is_err()
+            || self
+                .session
+                .add_scene_component(entity.clone(), emitter_type, emitter)
+                .is_err()
+            || self
+                .session
+                .add_scene_component(entity.clone(), listener_type, listener)
+                .is_err()
+        {
+            return;
+        }
         self.select_single_entity(Some(entity.clone()));
         if let Some(scene) = self.session.scene() {
             let _ = self.scene_view.focus_entity(scene, &entity);
@@ -309,9 +407,13 @@ fn audition_spatial_gains(
 }
 
 fn parse_spatial_settings(value: &Value) -> Option<engine::audio::AudioVoiceSpatialSettings> {
-    let Value::Object(fields) = value else { return None; };
+    let Value::Object(fields) = value else {
+        return None;
+    };
     let rolloff = match fields.get("rolloff") {
-        Some(Value::String(value)) if value == "inverse" => engine::audio::AudioRolloffMode::Inverse,
+        Some(Value::String(value)) if value == "inverse" => {
+            engine::audio::AudioRolloffMode::Inverse
+        }
         _ => engine::audio::AudioRolloffMode::Linear,
     };
     Some(engine::audio::AudioVoiceSpatialSettings {
@@ -324,8 +426,12 @@ fn parse_spatial_settings(value: &Value) -> Option<engine::audio::AudioVoiceSpat
 }
 
 fn parse_emitter(value: &Value) -> Option<EmitterPreview> {
-    let Value::Object(fields) = value else { return None; };
-    let Value::AssetRef(clip) = fields.get("clip")? else { return None; };
+    let Value::Object(fields) = value else {
+        return None;
+    };
+    let Value::AssetRef(clip) = fields.get("clip")? else {
+        return None;
+    };
     Some(EmitterPreview {
         clip: clip.clone(),
         settings: parse_spatial_settings(value)?,
@@ -335,11 +441,19 @@ fn parse_emitter(value: &Value) -> Option<EmitterPreview> {
 
 fn active_game_listener(scene: &AuthoringScene) -> Option<EntityId> {
     let component = ComponentTypeId::new(engine::scene_bridge::AUDIO_LISTENER_COMPONENT);
-    scene.entities().filter_map(|(id, entity)| {
-        let Value::Object(fields) = entity.components.get(&component)? else { return None; };
-        if !matches!(fields.get("enabled"), Some(Value::Bool(true))) { return None; }
-        Some((integer(fields.get("priority"), 0), id.clone()))
-    }).max_by(|(lp, li), (rp, ri)| lp.cmp(rp).then_with(|| ri.as_str().cmp(li.as_str()))).map(|(_, id)| id)
+    scene
+        .entities()
+        .filter_map(|(id, entity)| {
+            let Value::Object(fields) = entity.components.get(&component)? else {
+                return None;
+            };
+            if !matches!(fields.get("enabled"), Some(Value::Bool(true))) {
+                return None;
+            }
+            Some((integer(fields.get("priority"), 0), id.clone()))
+        })
+        .max_by(|(lp, li), (rp, ri)| lp.cmp(rp).then_with(|| ri.as_str().cmp(li.as_str())))
+        .map(|(_, id)| id)
 }
 
 fn draw_attenuation_preview(ui: &mut egui::Ui, settings: engine::audio::AudioVoiceSpatialSettings) {
@@ -347,28 +461,58 @@ fn draw_attenuation_preview(ui: &mut egui::Ui, settings: engine::audio::AudioVoi
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 72.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let max_distance = settings.max_distance.max(settings.min_distance).max(1.0);
-    let listener = engine::audio::AudioListenerPose { position: [0.0; 3], right: [1.0, 0.0, 0.0] };
+    let listener = engine::audio::AudioListenerPose {
+        position: [0.0; 3],
+        right: [1.0, 0.0, 0.0],
+    };
     let mut previous = None;
     for index in 0..=48 {
         let t = index as f32 / 48.0;
         let distance = max_distance * 1.2 * t;
-        let emitter = engine::audio::AudioEmitterPose { position: [0.0, 0.0, -distance] };
-        let gains = audition_spatial_gains(Some(listener), emitter, engine::audio::AudioVoiceSpatialSettings { volume: 1.0, spatial_blend: 1.0, ..settings });
-        let gain = (gains.left * gains.left + gains.right * gains.right).sqrt().clamp(0.0, 1.0);
-        let point = egui::pos2(rect.left() + rect.width() * t, rect.bottom() - rect.height() * gain);
+        let emitter = engine::audio::AudioEmitterPose {
+            position: [0.0, 0.0, -distance],
+        };
+        let gains = audition_spatial_gains(
+            Some(listener),
+            emitter,
+            engine::audio::AudioVoiceSpatialSettings {
+                volume: 1.0,
+                spatial_blend: 1.0,
+                ..settings
+            },
+        );
+        let gain = (gains.left * gains.left + gains.right * gains.right)
+            .sqrt()
+            .clamp(0.0, 1.0);
+        let point = egui::pos2(
+            rect.left() + rect.width() * t,
+            rect.bottom() - rect.height() * gain,
+        );
         if let Some(previous) = previous {
-            painter.line_segment([previous, point], egui::Stroke::new(1.5_f32, ui.visuals().text_color()));
+            painter.line_segment(
+                [previous, point],
+                egui::Stroke::new(1.5_f32, ui.visuals().text_color()),
+            );
         }
         previous = Some(point);
     }
 }
 
 fn number(value: Option<&Value>, default: f32) -> f32 {
-    match value { Some(Value::F64(value)) => *value as f32, Some(Value::I64(value)) => *value as f32, Some(Value::U64(value)) => *value as f32, _ => default }
+    match value {
+        Some(Value::F64(value)) => *value as f32,
+        Some(Value::I64(value)) => *value as f32,
+        Some(Value::U64(value)) => *value as f32,
+        _ => default,
+    }
 }
 
 fn integer(value: Option<&Value>, default: i64) -> i64 {
-    match value { Some(Value::I64(value)) => *value, Some(Value::U64(value)) => i64::try_from(*value).unwrap_or(i64::MAX), _ => default }
+    match value {
+        Some(Value::I64(value)) => *value,
+        Some(Value::U64(value)) => i64::try_from(*value).unwrap_or(i64::MAX),
+        _ => default,
+    }
 }
 
 #[cfg(test)]
@@ -377,10 +521,24 @@ mod tests {
 
     #[test]
     fn audition_and_runtime_use_identical_spatial_result() {
-        let listener = engine::audio::AudioListenerPose { position: [1.0, 0.0, 0.0], right: [1.0, 0.0, 0.0] };
-        let emitter = engine::audio::AudioEmitterPose { position: [-2.0, 0.0, 1.0] };
-        let settings = engine::audio::AudioVoiceSpatialSettings { volume: 0.75, spatial_blend: 0.8, min_distance: 1.0, max_distance: 12.0, rolloff: engine::audio::AudioRolloffMode::Inverse };
-        assert_eq!(audition_spatial_gains(Some(listener), emitter, settings), engine::audio::spatial_voice_gains(Some(listener), emitter, settings));
+        let listener = engine::audio::AudioListenerPose {
+            position: [1.0, 0.0, 0.0],
+            right: [1.0, 0.0, 0.0],
+        };
+        let emitter = engine::audio::AudioEmitterPose {
+            position: [-2.0, 0.0, 1.0],
+        };
+        let settings = engine::audio::AudioVoiceSpatialSettings {
+            volume: 0.75,
+            spatial_blend: 0.8,
+            min_distance: 1.0,
+            max_distance: 12.0,
+            rolloff: engine::audio::AudioRolloffMode::Inverse,
+        };
+        assert_eq!(
+            audition_spatial_gains(Some(listener), emitter, settings),
+            engine::audio::spatial_voice_gains(Some(listener), emitter, settings)
+        );
     }
 
     #[test]
@@ -390,10 +548,18 @@ mod tests {
         let high_a = EntityId::generate();
         let high_b = EntityId::generate();
         let low = EntityId::generate();
-        let expected = if high_a.as_str() < high_b.as_str() { high_a.clone() } else { high_b.clone() };
+        let expected = if high_a.as_str() < high_b.as_str() {
+            high_a.clone()
+        } else {
+            high_b.clone()
+        };
         let mut transaction = engine_authoring::Transaction::begin(&scene);
         for (id, priority) in [(high_a, 7_i64), (high_b, 7_i64), (low, 3_i64)] {
-            transaction.apply(AuthoringCommand::CreateEntity { id: id.clone(), name: "listener".to_owned(), parent: None });
+            transaction.apply(AuthoringCommand::CreateEntity {
+                id: id.clone(),
+                name: "listener".to_owned(),
+                parent: None,
+            });
             transaction.apply(AuthoringCommand::AddComponent {
                 entity: id,
                 component_type: listener_type.clone(),
@@ -403,7 +569,9 @@ mod tests {
                 ])),
             });
         }
-        transaction.commit(&mut scene).expect("listener fixture must commit");
+        transaction
+            .commit(&mut scene)
+            .expect("listener fixture must commit");
         assert_eq!(active_game_listener(&scene), Some(expected));
     }
 
@@ -414,7 +582,9 @@ mod tests {
         let scene = AuthoringScene::new();
         std::fs::write(
             &path,
-            scene.to_canonical_json().expect("empty scene fixture serializes"),
+            scene
+                .to_canonical_json()
+                .expect("empty scene fixture serializes"),
         )
         .expect("empty scene fixture writes");
         let mut session = EditorSession::empty_behavior_tree();

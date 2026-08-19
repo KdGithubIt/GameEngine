@@ -49,10 +49,12 @@ pub enum HumanoidError {
 impl fmt::Display for HumanoidError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SkeletonMismatch => formatter.write_str("humanoid profile targets another skeleton"),
-            Self::SkeletonIdentityMismatch => formatter.write_str(
-                "humanoid profile is stale for the current skeleton identity",
-            ),
+            Self::SkeletonMismatch => {
+                formatter.write_str("humanoid profile targets another skeleton")
+            }
+            Self::SkeletonIdentityMismatch => {
+                formatter.write_str("humanoid profile is stale for the current skeleton identity")
+            }
             Self::MissingRequired(bone) => {
                 write!(formatter, "missing required humanoid semantic {bone:?}")
             }
@@ -264,7 +266,10 @@ fn push_candidate(
 }
 
 fn preferred_candidate(candidates: &[HumanoidCandidate]) -> Option<HumanoidCandidate> {
-    let best_priority = candidates.iter().map(|candidate| candidate.priority).min()?;
+    let best_priority = candidates
+        .iter()
+        .map(|candidate| candidate.priority)
+        .min()?;
     let mut preferred = candidates
         .iter()
         .copied()
@@ -288,9 +293,9 @@ fn prune_candidates_by_hierarchy(
             };
 
             let has_compatible_pair = ancestors.iter().any(|ancestor| {
-                descendants.iter().any(|descendant| {
-                    is_ancestor(skeleton, ancestor.bone, descendant.bone)
-                })
+                descendants
+                    .iter()
+                    .any(|descendant| is_ancestor(skeleton, ancestor.bone, descendant.bone))
             });
             if !has_compatible_pair {
                 continue;
@@ -300,18 +305,18 @@ fn prune_candidates_by_hierarchy(
                 .iter()
                 .copied()
                 .filter(|ancestor| {
-                    descendants.iter().any(|descendant| {
-                        is_ancestor(skeleton, ancestor.bone, descendant.bone)
-                    })
+                    descendants
+                        .iter()
+                        .any(|descendant| is_ancestor(skeleton, ancestor.bone, descendant.bone))
                 })
                 .collect::<Vec<_>>();
             let filtered_descendants = descendants
                 .iter()
                 .copied()
                 .filter(|descendant| {
-                    ancestors.iter().any(|ancestor| {
-                        is_ancestor(skeleton, ancestor.bone, descendant.bone)
-                    })
+                    ancestors
+                        .iter()
+                        .any(|ancestor| is_ancestor(skeleton, ancestor.bone, descendant.bone))
                 })
                 .collect::<Vec<_>>();
 
@@ -738,7 +743,7 @@ fn normalize_name_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef};
+    use crate::skeleton_asset::{BoneDef, compute_skeleton_identity};
     use engine_authoring::id::AssetId;
     use glam::{Quat, Vec3};
 

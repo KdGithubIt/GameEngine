@@ -4,7 +4,9 @@
 //! This service centralizes permission checks, stale-base rejection, preview
 //! diffs, validation, and atomic presentation commits for structured adapters.
 
-use super::{GraphView, GraphViewChange, GraphViewCommand, GraphViewTransaction, GraphViewTransactionError};
+use super::{
+    GraphView, GraphViewChange, GraphViewCommand, GraphViewTransaction, GraphViewTransactionError,
+};
 use crate::access::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
 use crate::diagnostic::Diagnostic;
 use crate::graph::Graph;
@@ -181,7 +183,13 @@ impl GraphViewAuthoringService {
     ) -> Result<GraphViewAuthoringMutation, GraphViewAuthoringError> {
         permissions.require(AuthoringPermission::Preview)?;
         ensure_current(view, expected_revision, expected_generation)?;
-        evaluate(graph, view, expected_revision, expected_generation, commands)
+        evaluate(
+            graph,
+            view,
+            expected_revision,
+            expected_generation,
+            commands,
+        )
     }
 
     /// Applies one atomic GraphView command batch to the live presentation document.
@@ -233,7 +241,7 @@ impl GraphViewAuthoringService {
                     diagnostics,
                     diff: committed_diff,
                 })
-            },
+            }
             Err(GraphViewTransactionError::ValidationFailed { diagnostics }) => {
                 Ok(GraphViewAuthoringMutation {
                     success: false,
@@ -255,7 +263,7 @@ impl GraphViewAuthoringService {
                 expected_generation: expected_identity,
                 actual_revision,
                 actual_generation: actual_identity,
-            })
+            }),
         }
     }
 }
@@ -298,7 +306,7 @@ fn evaluate(
                 diagnostics,
                 diff,
             })
-        },
+        }
         Err(GraphViewTransactionError::ValidationFailed { diagnostics }) => {
             Ok(GraphViewAuthoringMutation {
                 success: false,
@@ -320,7 +328,7 @@ fn evaluate(
             expected_generation: expected_identity,
             actual_revision,
             actual_generation: actual_identity,
-        })
+        }),
     }
 }
 

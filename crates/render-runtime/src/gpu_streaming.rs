@@ -94,12 +94,10 @@ impl GpuUploadFrame {
         self.report.queued_uploads = self.report.queued_uploads.saturating_add(1);
         self.report.queued_bytes = self.report.queued_bytes.saturating_add(bytes);
         let count_available = self.report.uploaded_uploads < self.budget.max_uploads;
-        let bytes_available = self
-            .report
-            .uploaded_bytes
-            .saturating_add(bytes)
-            <= self.budget.max_bytes;
-        let first_oversized_upload = self.report.uploaded_uploads == 0 && self.budget.max_uploads > 0;
+        let bytes_available =
+            self.report.uploaded_bytes.saturating_add(bytes) <= self.budget.max_bytes;
+        let first_oversized_upload =
+            self.report.uploaded_uploads == 0 && self.budget.max_uploads > 0;
         if count_available && (bytes_available || first_oversized_upload) {
             self.report.uploaded_uploads = self.report.uploaded_uploads.saturating_add(1);
             self.report.uploaded_bytes = self.report.uploaded_bytes.saturating_add(bytes);

@@ -16,10 +16,10 @@ use crate::scene_bridge::{
     BUILTIN_WHITE_MATERIAL_ASSET_ID, SKINNED_MESH_RENDERER_COMPONENT, SKINNED_MODEL_COMPONENT,
     STATIC_MESH_RENDERER_COMPONENT, TRANSFORM_COMPONENT,
 };
+use engine_authoring::AuthoringEntity;
 use engine_authoring::id::{AssetId, ComponentTypeId, EntityId};
 use engine_authoring::prefab::PrefabAsset;
 use engine_authoring::value::Value;
-use engine_authoring::AuthoringEntity;
 use glam::{EulerRot, Quat, Vec3};
 use std::collections::BTreeMap;
 

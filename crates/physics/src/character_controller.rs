@@ -6,7 +6,7 @@ use engine_ecs::Entity;
 use engine_rig::transform::{GlobalTransform, Transform};
 use glam::Vec3;
 
-use crate::collision::{should_collide, world_shapes_overlap, Collider, CollisionLayers};
+use crate::collision::{Collider, CollisionLayers, should_collide, world_shapes_overlap};
 
 /// Default number of push-out resolve passes per fixed step.
 const DEFAULT_MAX_RESOLVE_ITERATIONS: u32 = 3;

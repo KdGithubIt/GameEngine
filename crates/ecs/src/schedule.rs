@@ -1,5 +1,5 @@
 use crate::error::{ScheduleError, SystemBuildError};
-use crate::system::{exclusive_system, IntoSystem, System};
+use crate::system::{IntoSystem, System, exclusive_system};
 use crate::system_descriptor::{
     ScheduleConfiguration, ScheduleDiagnostic, ScheduleEditError, ScheduleEntryInfo,
     SystemDescriptor, SystemId, SystemRegistrationError,
@@ -453,9 +453,9 @@ impl Default for Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SystemOrigin;
     use crate::commands::Commands;
     use crate::resource::{Res, ResMut};
-    use crate::SystemOrigin;
 
     fn descriptor(id: &str) -> SystemDescriptor {
         SystemDescriptor::new(id, id, SystemOrigin::Engine).unwrap()

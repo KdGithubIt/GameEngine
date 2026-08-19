@@ -57,7 +57,12 @@ impl GameCommand {
         clip: AssetId,
         initial_frame: u32,
     ) -> Self {
-        sprite_animation_command(target, "sprite_select_clip", Some(clip), Some(initial_frame))
+        sprite_animation_command(
+            target,
+            "sprite_select_clip",
+            Some(clip),
+            Some(initial_frame),
+        )
     }
 }
 
@@ -67,15 +72,19 @@ fn sprite_animation_command(
     clip: Option<AssetId>,
     initial_frame: Option<u32>,
 ) -> GameCommand {
-    let mut fields = BTreeMap::from([(
-        "operation".to_owned(),
-        Value::String(operation.to_owned()),
-    )]);
+    let mut fields =
+        BTreeMap::from([("operation".to_owned(), Value::String(operation.to_owned()))]);
     if let Some(clip) = clip {
-        fields.insert("clip_asset".to_owned(), Value::String(clip.as_str().to_owned()));
+        fields.insert(
+            "clip_asset".to_owned(),
+            Value::String(clip.as_str().to_owned()),
+        );
     }
     if let Some(initial_frame) = initial_frame {
-        fields.insert("initial_frame".to_owned(), Value::U64(u64::from(initial_frame)));
+        fields.insert(
+            "initial_frame".to_owned(),
+            Value::U64(u64::from(initial_frame)),
+        );
     }
     GameCommand {
         family: GameCommandFamily::Animation,
@@ -92,10 +101,7 @@ fn animation_parameter_command(
     value: Option<Value>,
 ) -> GameCommand {
     let mut fields = BTreeMap::from([
-        (
-            "operation".to_owned(),
-            Value::String(operation.to_owned()),
-        ),
+        ("operation".to_owned(), Value::String(operation.to_owned())),
         ("name".to_owned(), Value::String(name.into())),
     ]);
     if let Some(value) = value {
@@ -159,6 +165,10 @@ impl Commands {
         clip: AssetId,
         initial_frame: u32,
     ) {
-        self.push(GameCommand::select_sprite_animation(target, clip, initial_frame));
+        self.push(GameCommand::select_sprite_animation(
+            target,
+            clip,
+            initial_frame,
+        ));
     }
 }

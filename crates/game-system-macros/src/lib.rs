@@ -6,7 +6,7 @@ mod regular;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::Parser;
-use syn::{parse_macro_input, Expr, ItemFn, Lit, Meta, Token};
+use syn::{Expr, ItemFn, Lit, Meta, Token, parse_macro_input};
 
 /// Registers a query-scoped project-local Rust system.
 ///
@@ -266,7 +266,9 @@ mod tests {
             ),
         );
         assert!(output.contains("< Time as engine :: game_api :: GameSystemParam > :: declare"));
-        assert!(output.contains("< Commands as engine :: game_api :: GameSystemParam > :: declare"));
+        assert!(
+            output.contains("< Commands as engine :: game_api :: GameSystemParam > :: declare")
+        );
         assert!(!output.contains("__IrohaEachQuery"));
         assert!(!output.contains("__IrohaQuerySpec_tick_0"));
     }

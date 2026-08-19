@@ -457,9 +457,8 @@ pub const fn filtered_entity_ref(
     description: &'static str,
     required: &'static [&'static str],
 ) -> FieldDef {
-    entity_ref(name, display_name, description).with_control(InspectorFieldControl::EntityRef(
-        required,
-    ))
+    entity_ref(name, display_name, description)
+        .with_control(InspectorFieldControl::EntityRef(required))
 }
 
 /// Declares a required asset reference filtered to one category.

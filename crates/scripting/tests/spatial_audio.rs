@@ -5,7 +5,10 @@ use engine_scripting::game_io::{
 
 #[test]
 fn spatial_sound_effect_request_preserves_deferred_target_and_policy() {
-    let target = GameEntityHandle { id: 17, generation: 4 };
+    let target = GameEntityHandle {
+        id: 17,
+        generation: 4,
+    };
     let command = GameCommand::play_spatial_sound_effect(
         target,
         "audio.effect.test",
@@ -20,8 +23,16 @@ fn spatial_sound_effect_request_preserves_deferred_target_and_policy() {
     );
 
     assert_eq!(command.target, Some(target));
-    let Value::Object(fields) = command.payload else { panic!("audio payload must be an object"); };
-    assert_eq!(fields.get("operation"), Some(&Value::String("play_spatial_se".to_owned())));
-    assert_eq!(fields.get("rolloff"), Some(&Value::String("inverse".to_owned())));
+    let Value::Object(fields) = command.payload else {
+        panic!("audio payload must be an object");
+    };
+    assert_eq!(
+        fields.get("operation"),
+        Some(&Value::String("play_spatial_se".to_owned()))
+    );
+    assert_eq!(
+        fields.get("rolloff"),
+        Some(&Value::String("inverse".to_owned()))
+    );
     assert_eq!(fields.get("looping"), Some(&Value::Bool(true)));
 }

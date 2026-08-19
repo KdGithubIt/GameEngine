@@ -1829,10 +1829,12 @@ mod tests {
                 PortRef::new(NodeId::generate(), schemas.input.clone()),
             ),
         );
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.missing_endpoint_node"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.missing_endpoint_node")
+        );
     }
 
     #[test]
@@ -1849,10 +1851,12 @@ mod tests {
             ),
         );
 
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.unknown_node_type"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.unknown_node_type")
+        );
     }
 
     #[test]
@@ -1867,10 +1871,12 @@ mod tests {
                 PortRef::new(second, PortId::generate()),
             ),
         );
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.missing_endpoint_port"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.missing_endpoint_port")
+        );
     }
 
     #[test]
@@ -1882,10 +1888,12 @@ mod tests {
         group.nodes.insert(NodeId::generate());
         graph.groups.insert(group_id, group);
 
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.group_missing_node"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.group_missing_node")
+        );
     }
 
     #[test]
@@ -1900,10 +1908,12 @@ mod tests {
                 PortRef::new(second, schemas.output.clone()),
             ),
         );
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.invalid_endpoint_direction"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.invalid_endpoint_direction")
+        );
     }
 
     #[test]
@@ -1915,10 +1925,12 @@ mod tests {
         let edge_b = Edge::new(EdgeId::generate(), from, to);
         graph.edges.insert(edge_a.id.clone(), edge_a);
         graph.edges.insert(edge_b.id.clone(), edge_b);
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.duplicate_edge"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.duplicate_edge")
+        );
     }
 
     #[test]
@@ -1944,10 +1956,12 @@ mod tests {
                 PortRef::new(second, schemas.input.clone()),
             ),
         );
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.port_arity_violation"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.port_arity_violation")
+        );
     }
 
     #[test]
@@ -1971,12 +1985,14 @@ mod tests {
             .expect("delete node command must commit");
         assert!(!graph.nodes.contains_key(&first));
         assert!(graph.edges.is_empty());
-        assert!(!graph
-            .groups
-            .get(&group_id)
-            .expect("group must remain")
-            .nodes
-            .contains(&first));
+        assert!(
+            !graph
+                .groups
+                .get(&group_id)
+                .expect("group must remain")
+                .nodes
+                .contains(&first)
+        );
     }
 
     #[test]
@@ -2140,10 +2156,12 @@ mod tests {
             .nodes
             .insert(NodeId::generate(), node(NodeId::generate()));
 
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.node_id_mismatch"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.node_id_mismatch")
+        );
     }
 
     #[test]
@@ -2158,10 +2176,12 @@ mod tests {
             ),
         );
 
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.edge_id_mismatch"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.edge_id_mismatch")
+        );
     }
 
     #[test]
@@ -2173,10 +2193,12 @@ mod tests {
             Group::new(GroupId::generate(), "group"),
         );
 
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.group_id_mismatch"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.group_id_mismatch")
+        );
     }
 
     #[test]
@@ -2197,10 +2219,12 @@ mod tests {
         port.id = PortId::generate();
         schema.ports.insert(key, port);
 
-        assert!(graph
-            .validate(&schemas)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.port_schema_id_mismatch"));
+        assert!(
+            graph
+                .validate(&schemas)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.port_schema_id_mismatch")
+        );
     }
 
     #[test]

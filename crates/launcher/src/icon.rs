@@ -83,12 +83,7 @@ fn quad_contains(quad: &[egui::Vec2; 4], point: egui::Vec2) -> bool {
 }
 
 /// Returns whether `point` lies inside or on the edge of triangle `a b c`.
-fn triangle_contains(
-    a: egui::Vec2,
-    b: egui::Vec2,
-    c: egui::Vec2,
-    point: egui::Vec2,
-) -> bool {
+fn triangle_contains(a: egui::Vec2, b: egui::Vec2, c: egui::Vec2, point: egui::Vec2) -> bool {
     let first = edge_side(a, b, point);
     let second = edge_side(b, c, point);
     let third = edge_side(c, a, point);

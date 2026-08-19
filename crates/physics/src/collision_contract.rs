@@ -193,7 +193,11 @@ impl PushOut {
         } else {
             (dz, Vec3::Z)
         };
-        let sign = if a_minus_b.dot(axis) >= 0.0 { 1.0 } else { -1.0 };
+        let sign = if a_minus_b.dot(axis) >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
         Self {
             vector: axis * depth * sign,
         }
@@ -345,10 +349,7 @@ impl CollisionEvents {
 
     /// Completes transitions and stores the shape snapshot for the next step.
     #[doc(hidden)]
-    pub fn finish_detection(
-        &mut self,
-        shapes: impl IntoIterator<Item = (Entity, WorldShape)>,
-    ) {
+    pub fn finish_detection(&mut self, shapes: impl IntoIterator<Item = (Entity, WorldShape)>) {
         let mut current_pairs = BTreeMap::new();
         for event in &self.events {
             let (pair, reversed) = CollisionPair::new(event.entity_a, event.entity_b);

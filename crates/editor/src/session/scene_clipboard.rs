@@ -162,12 +162,10 @@ impl EditorSession {
                 .expect("every copied entity receives a generated ID")
                 .clone();
             let parent = source.parent.as_ref().and_then(|parent| {
-                id_map.get(parent).cloned().or_else(|| {
-                    scene
-                        .entity(parent)
-                        .is_some()
-                        .then(|| parent.clone())
-                })
+                id_map
+                    .get(parent)
+                    .cloned()
+                    .or_else(|| scene.entity(parent).is_some().then(|| parent.clone()))
             });
             commands.push(AuthoringCommand::CreateEntity {
                 id: new_id.clone(),
@@ -219,10 +217,7 @@ fn scene_entity_depth(scene: &AuthoringScene, entity: &EntityId) -> usize {
     .count()
 }
 
-fn copied_entity_depth(
-    copied: &BTreeMap<EntityId, &AuthoringEntity>,
-    entity: &EntityId,
-) -> usize {
+fn copied_entity_depth(copied: &BTreeMap<EntityId, &AuthoringEntity>, entity: &EntityId) -> usize {
     std::iter::successors(
         copied.get(entity).and_then(|item| item.parent.clone()),
         |parent| copied.get(parent).and_then(|item| item.parent.clone()),
@@ -242,12 +237,7 @@ fn remap_copied_entity_refs(value: &Value, id_map: &BTreeMap<EntityId, EntityId>
         Value::Object(fields) => Value::Object(
             fields
                 .iter()
-                .map(|(name, value)| {
-                    (
-                        name.clone(),
-                        remap_copied_entity_refs(value, id_map),
-                    )
-                })
+                .map(|(name, value)| (name.clone(), remap_copied_entity_refs(value, id_map)))
                 .collect(),
         ),
         Value::EntityRef(entity) => Value::EntityRef(
@@ -330,9 +320,11 @@ mod tests {
             Some(duplicated_parent)
         );
         assert!(session.undo());
-        assert!(duplicated
-            .iter()
-            .all(|id| session.scene_entity(id).is_none()));
+        assert!(
+            duplicated
+                .iter()
+                .all(|id| session.scene_entity(id).is_none())
+        );
         assert!(session.scene_entity(&parent).is_some());
         assert!(session.scene_entity(&child).is_some());
     }
@@ -384,8 +376,10 @@ mod tests {
             )]))
         );
         assert!(session.undo(), "multi-paste must be one undo step");
-        assert!(pasted
-            .iter()
-            .all(|entity| session.scene_entity(entity).is_none()));
+        assert!(
+            pasted
+                .iter()
+                .all(|entity| session.scene_entity(entity).is_none())
+        );
     }
 }

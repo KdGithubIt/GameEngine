@@ -64,8 +64,13 @@ pub enum Native2dIdError {
 impl fmt::Display for Native2dIdError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WrongPrefix(value) => write!(formatter, "Native 2D ID `{value}` has the wrong prefix"),
-            Self::InvalidUlid(value) => write!(formatter, "Native 2D ID `{value}` has an invalid ULID suffix"),
+            Self::WrongPrefix(value) => {
+                write!(formatter, "Native 2D ID `{value}` has the wrong prefix")
+            }
+            Self::InvalidUlid(value) => write!(
+                formatter,
+                "Native 2D ID `{value}` has an invalid ULID suffix"
+            ),
         }
     }
 }
@@ -173,7 +178,10 @@ impl SpriteAtlasDocument {
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if self.schema_version != SPRITE_ATLAS_SCHEMA_VERSION {
-            errors.push(format!("unsupported Sprite Atlas schema version {}", self.schema_version));
+            errors.push(format!(
+                "unsupported Sprite Atlas schema version {}",
+                self.schema_version
+            ));
         }
         let mut ids = BTreeSet::new();
         for region in &self.regions {
@@ -184,15 +192,28 @@ impl SpriteAtlasDocument {
                 errors.push(format!("sprite `{}` has an empty name", region.id.as_str()));
             }
             if region.rect.width == 0 || region.rect.height == 0 {
-                errors.push(format!("sprite `{}` has an empty pixel rect", region.id.as_str()));
+                errors.push(format!(
+                    "sprite `{}` has an empty pixel rect",
+                    region.id.as_str()
+                ));
             }
-            if region.pivot.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
-                errors.push(format!("sprite `{}` pivot must be finite and normalized", region.id.as_str()));
+            if region
+                .pivot
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            {
+                errors.push(format!(
+                    "sprite `{}` pivot must be finite and normalized",
+                    region.id.as_str()
+                ));
             }
             if let PixelsPerUnit::Override(value) = region.pixels_per_unit
                 && (!value.is_finite() || value <= 0.0)
             {
-                errors.push(format!("sprite `{}` pixels_per_unit must be finite and positive", region.id.as_str()));
+                errors.push(format!(
+                    "sprite `{}` pixels_per_unit must be finite and positive",
+                    region.id.as_str()
+                ));
             }
         }
         errors
@@ -273,23 +294,35 @@ impl SpriteAnimationDocument {
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if self.schema_version != SPRITE_ANIMATION_SCHEMA_VERSION {
-            errors.push(format!("unsupported Sprite Animation schema version {}", self.schema_version));
+            errors.push(format!(
+                "unsupported Sprite Animation schema version {}",
+                self.schema_version
+            ));
         }
         if self.ticks_per_second == 0 {
             errors.push("Sprite Animation ticks_per_second must be positive".to_owned());
         }
         if !self.default_speed.is_finite() || self.default_speed < 0.0 {
-            errors.push("Sprite Animation default_speed must be finite and non-negative".to_owned());
+            errors
+                .push("Sprite Animation default_speed must be finite and non-negative".to_owned());
         }
         if self.frames.is_empty() {
             errors.push("Sprite Animation must contain at least one frame".to_owned());
         }
         for (index, frame) in self.frames.iter().enumerate() {
             if frame.duration_ticks == 0 {
-                errors.push(format!("Sprite Animation frame {index} duration_ticks must be positive"));
+                errors.push(format!(
+                    "Sprite Animation frame {index} duration_ticks must be positive"
+                ));
             }
-            if frame.event.as_ref().is_some_and(|event| event.trim().is_empty()) {
-                errors.push(format!("Sprite Animation frame {index} event name is empty"));
+            if frame
+                .event
+                .as_ref()
+                .is_some_and(|event| event.trim().is_empty())
+            {
+                errors.push(format!(
+                    "Sprite Animation frame {index} event name is empty"
+                ));
             }
         }
         errors
@@ -400,7 +433,10 @@ impl TileSetDocument {
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if self.schema_version != TILE_SET_SCHEMA_VERSION {
-            errors.push(format!("unsupported Tile Set schema version {}", self.schema_version));
+            errors.push(format!(
+                "unsupported Tile Set schema version {}",
+                self.schema_version
+            ));
         }
         let mut ids = BTreeSet::new();
         for tile in &self.tiles {
@@ -416,17 +452,29 @@ impl TileSetDocument {
                     || !material.restitution.is_finite()
                     || !(0.0..=1.0).contains(&material.restitution))
             {
-                errors.push(format!("tile `{}` has invalid collision material values", tile.id.as_str()));
+                errors.push(format!(
+                    "tile `{}` has invalid collision material values",
+                    tile.id.as_str()
+                ));
             }
             for shape in &tile.collision {
                 let valid = match shape {
-                    TileCollisionShape::Box { half_extents } => half_extents.iter().all(|value| value.is_finite() && *value > 0.0),
+                    TileCollisionShape::Box { half_extents } => half_extents
+                        .iter()
+                        .all(|value| value.is_finite() && *value > 0.0),
                     TileCollisionShape::Circle { radius } => radius.is_finite() && *radius > 0.0,
-                    TileCollisionShape::Polygon { points } => points.len() >= 3
-                        && points.iter().all(|point| point.iter().all(|value| value.is_finite())),
+                    TileCollisionShape::Polygon { points } => {
+                        points.len() >= 3
+                            && points
+                                .iter()
+                                .all(|point| point.iter().all(|value| value.is_finite()))
+                    }
                 };
                 if !valid {
-                    errors.push(format!("tile `{}` has invalid collision geometry", tile.id.as_str()));
+                    errors.push(format!(
+                        "tile `{}` has invalid collision geometry",
+                        tile.id.as_str()
+                    ));
                 }
             }
         }
@@ -473,18 +521,24 @@ pub struct TileChunk {
 impl TileChunk {
     /// Returns the tile assigned to one local cell.
     pub fn get(&self, cell: TileCell) -> Option<&TileId> {
-        self.cells.iter().find(|entry| entry.cell == cell).map(|entry| &entry.tile)
+        self.cells
+            .iter()
+            .find(|entry| entry.cell == cell)
+            .map(|entry| &entry.tile)
     }
 
     /// Assigns or clears one local cell while retaining deterministic ordering.
     pub fn set(&mut self, cell: TileCell, tile: Option<TileId>) {
         match (self.cells.iter().position(|entry| entry.cell == cell), tile) {
             (Some(index), Some(tile)) => self.cells[index].tile = tile,
-            (Some(index), None) => { self.cells.remove(index); },
+            (Some(index), None) => {
+                self.cells.remove(index);
+            }
             (None, Some(tile)) => self.cells.push(TileCellEntry { cell, tile }),
             (None, None) => {}
         }
-        self.cells.sort_by_key(|entry| (entry.cell.y, entry.cell.x, entry.tile.as_str().to_owned()));
+        self.cells
+            .sort_by_key(|entry| (entry.cell.y, entry.cell.x, entry.tile.as_str().to_owned()));
     }
 }
 
@@ -530,9 +584,13 @@ impl TileMapDocument {
     pub fn to_canonical_json(&self) -> Result<String, serde_json::Error> {
         let mut copy = self.clone();
         for layer in &mut copy.layers {
-            layer.chunks.sort_by_key(|chunk| (chunk.coord.y, chunk.coord.x));
+            layer
+                .chunks
+                .sort_by_key(|chunk| (chunk.coord.y, chunk.coord.x));
             for chunk in &mut layer.chunks {
-                chunk.cells.sort_by_key(|entry| (entry.cell.y, entry.cell.x, entry.tile.as_str().to_owned()));
+                chunk.cells.sort_by_key(|entry| {
+                    (entry.cell.y, entry.cell.x, entry.tile.as_str().to_owned())
+                });
             }
         }
         let mut json = serde_json::to_string_pretty(&copy)?;
@@ -544,8 +602,14 @@ impl TileMapDocument {
     pub fn split_cell(&self, cell: TileCell) -> (TileChunkCoord, TileCell) {
         let size = i32::from(self.chunk_size.max(1));
         (
-            TileChunkCoord { x: cell.x.div_euclid(size), y: cell.y.div_euclid(size) },
-            TileCell { x: cell.x.rem_euclid(size), y: cell.y.rem_euclid(size) },
+            TileChunkCoord {
+                x: cell.x.div_euclid(size),
+                y: cell.y.div_euclid(size),
+            },
+            TileCell {
+                x: cell.x.rem_euclid(size),
+                y: cell.y.rem_euclid(size),
+            },
         )
     }
 
@@ -565,7 +629,10 @@ impl TileMapDocument {
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if self.schema_version != TILE_MAP_SCHEMA_VERSION {
-            errors.push(format!("unsupported Tile Map schema version {}", self.schema_version));
+            errors.push(format!(
+                "unsupported Tile Map schema version {}",
+                self.schema_version
+            ));
         }
         if self.chunk_size == 0 {
             errors.push("Tile Map chunk_size must be positive".to_owned());
@@ -577,20 +644,46 @@ impl TileMapDocument {
                 errors.push(format!("duplicate TileLayerId `{}`", layer.id.as_str()));
             }
             if layer.name.trim().is_empty() {
-                errors.push(format!("tile layer `{}` has an empty name", layer.id.as_str()));
+                errors.push(format!(
+                    "tile layer `{}` has an empty name",
+                    layer.id.as_str()
+                ));
             }
             let mut chunk_coords = BTreeSet::new();
             for chunk in &layer.chunks {
                 if !chunk_coords.insert(chunk.coord) {
-                    errors.push(format!("tile layer `{}` has duplicate chunk {},{}", layer.id.as_str(), chunk.coord.x, chunk.coord.y));
+                    errors.push(format!(
+                        "tile layer `{}` has duplicate chunk {},{}",
+                        layer.id.as_str(),
+                        chunk.coord.x,
+                        chunk.coord.y
+                    ));
                 }
                 let mut cells = BTreeSet::new();
                 for entry in &chunk.cells {
-                    if entry.cell.x < 0 || entry.cell.y < 0 || entry.cell.x >= size || entry.cell.y >= size {
-                        errors.push(format!("tile layer `{}` chunk {},{} contains out-of-range local cell {},{}", layer.id.as_str(), chunk.coord.x, chunk.coord.y, entry.cell.x, entry.cell.y));
+                    if entry.cell.x < 0
+                        || entry.cell.y < 0
+                        || entry.cell.x >= size
+                        || entry.cell.y >= size
+                    {
+                        errors.push(format!(
+                            "tile layer `{}` chunk {},{} contains out-of-range local cell {},{}",
+                            layer.id.as_str(),
+                            chunk.coord.x,
+                            chunk.coord.y,
+                            entry.cell.x,
+                            entry.cell.y
+                        ));
                     }
                     if !cells.insert(entry.cell) {
-                        errors.push(format!("tile layer `{}` chunk {},{} contains duplicate local cell {},{}", layer.id.as_str(), chunk.coord.x, chunk.coord.y, entry.cell.x, entry.cell.y));
+                        errors.push(format!(
+                            "tile layer `{}` chunk {},{} contains duplicate local cell {},{}",
+                            layer.id.as_str(),
+                            chunk.coord.x,
+                            chunk.coord.y,
+                            entry.cell.x,
+                            entry.cell.y
+                        ));
                     }
                 }
             }
@@ -612,7 +705,12 @@ mod tests {
             id,
             name: name.to_owned(),
             source_texture: texture.clone(),
-            rect: PixelRect { x: 0, y: 0, width: 16, height: 16 },
+            rect: PixelRect {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 16,
+            },
             pivot: [0.5, 0.5],
             pixels_per_unit: PixelsPerUnit::ProjectDefault,
             filtering: None,

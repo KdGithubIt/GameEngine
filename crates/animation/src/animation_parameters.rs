@@ -216,9 +216,10 @@ impl AnimationParameters {
     ) -> Result<(), AnimationParameterError> {
         let name = validated_name(name)?;
         if let Some(stored) = self.values.get(&name)
-            && parameter_kind(stored) != requested {
-                return Err(type_mismatch(&name, stored, requested));
-            }
+            && parameter_kind(stored) != requested
+        {
+            return Err(type_mismatch(&name, stored, requested));
+        }
         self.values.insert(name, value);
         Ok(())
     }
@@ -712,12 +713,16 @@ mod tests {
         let mut parameters = AnimationParameters::new();
         parameters.trigger("attack").expect("trigger must be valid");
 
-        assert!(parameters
-            .consume_trigger("attack")
-            .expect("trigger must be readable"));
-        assert!(!parameters
-            .consume_trigger("attack")
-            .expect("consumed trigger remains valid"));
+        assert!(
+            parameters
+                .consume_trigger("attack")
+                .expect("trigger must be readable")
+        );
+        assert!(
+            !parameters
+                .consume_trigger("attack")
+                .expect("consumed trigger remains valid")
+        );
     }
 
     #[test]
@@ -777,9 +782,11 @@ mod tests {
             .expect("defaults must instantiate");
 
         assert_eq!(parameters.float("speed").expect("speed is float"), 0.0);
-        assert!(loaded
-            .build_blend("locomotion")
-            .expect("blend must build")
-            .is_some());
+        assert!(
+            loaded
+                .build_blend("locomotion")
+                .expect("blend must build")
+                .is_some()
+        );
     }
 }

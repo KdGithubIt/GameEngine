@@ -424,7 +424,8 @@ impl PoseLayer {
             }
             Some(weight) => {
                 if channels.contains(PoseChannels::TRANSLATION) {
-                    destination.translation = destination.translation.lerp(source.translation, weight);
+                    destination.translation =
+                        destination.translation.lerp(source.translation, weight);
                 }
                 if channels.contains(PoseChannels::ROTATION) {
                     destination.rotation = destination.rotation.slerp(source.rotation, weight);
@@ -562,10 +563,7 @@ impl RigPose {
     /// Returns whether the current discontinuity is an animation clock seek.
     #[doc(hidden)]
     pub fn is_animation_seek(&self) -> bool {
-        matches!(
-            self.discontinuity,
-            Some(PoseDiscontinuity::AnimationSeek)
-        )
+        matches!(self.discontinuity, Some(PoseDiscontinuity::AnimationSeek))
     }
 
     /// Returns the skeleton asset defining pose-buffer indices.
@@ -729,10 +727,12 @@ impl RigPose {
             .unwrap_or_default();
 
         if stage.includes(PoseStage::Animation) {
-            self.animation_layer.apply_joint_to(joint_index, &mut result);
+            self.animation_layer
+                .apply_joint_to(joint_index, &mut result);
         }
         if stage.includes(PoseStage::Procedural) {
-            self.procedural_layer.apply_joint_to(joint_index, &mut result);
+            self.procedural_layer
+                .apply_joint_to(joint_index, &mut result);
         }
         if stage.includes(PoseStage::Physics) {
             self.physics_layer.apply_joint_to(joint_index, &mut result);
@@ -793,7 +793,7 @@ pub fn publish_final_rig_pose_system(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef, BoneId};
+    use crate::skeleton_asset::{BoneDef, BoneId, compute_skeleton_identity};
 
     fn test_skeleton() -> SkeletonAsset {
         let bones = vec![
@@ -854,12 +854,14 @@ mod tests {
         let skeleton = test_skeleton();
         let mut pose = RigPose::from_skeleton(&skeleton);
 
-        assert!(pose
-            .animation_layer_mut()
-            .write_translation(1, Vec3::new(0.0, 4.0, 0.0)));
-        assert!(pose
-            .physics_layer_mut()
-            .write_rotation(1, Quat::from_rotation_z(0.5)));
+        assert!(
+            pose.animation_layer_mut()
+                .write_translation(1, Vec3::new(0.0, 4.0, 0.0))
+        );
+        assert!(
+            pose.physics_layer_mut()
+                .write_rotation(1, Quat::from_rotation_z(0.5))
+        );
 
         pose.compose();
         let first = pose.final_pose().clone();
@@ -876,18 +878,19 @@ mod tests {
         let procedural_rotation = Quat::from_rotation_y(0.5);
         let physics_rotation = Quat::from_rotation_z(0.75);
 
-        assert!(pose
-            .animation_layer_mut()
-            .write_translation(1, Vec3::new(4.0, 5.0, 6.0)));
-        assert!(pose
-            .animation_layer_mut()
-            .write_rotation(1, animation_rotation));
-        assert!(pose
-            .procedural_layer_mut()
-            .write_rotation(1, procedural_rotation));
-        assert!(pose
-            .physics_layer_mut()
-            .write_rotation(1, physics_rotation));
+        assert!(
+            pose.animation_layer_mut()
+                .write_translation(1, Vec3::new(4.0, 5.0, 6.0))
+        );
+        assert!(
+            pose.animation_layer_mut()
+                .write_rotation(1, animation_rotation)
+        );
+        assert!(
+            pose.procedural_layer_mut()
+                .write_rotation(1, procedural_rotation)
+        );
+        assert!(pose.physics_layer_mut().write_rotation(1, physics_rotation));
 
         pose.compose();
 
@@ -906,15 +909,12 @@ mod tests {
         let mut pose = RigPose::from_skeleton(&skeleton);
         let physics_rotation = Quat::from_rotation_y(1.0);
 
-        assert!(pose
-            .animation_layer_mut()
-            .write_translation(1, Vec3::new(0.0, 3.0, 0.0)));
-        assert!(pose
-            .animation_layer_mut()
-            .write_scale(1, Vec3::splat(1.5)));
-        assert!(pose
-            .physics_layer_mut()
-            .write_rotation(1, physics_rotation));
+        assert!(
+            pose.animation_layer_mut()
+                .write_translation(1, Vec3::new(0.0, 3.0, 0.0))
+        );
+        assert!(pose.animation_layer_mut().write_scale(1, Vec3::splat(1.5)));
+        assert!(pose.physics_layer_mut().write_rotation(1, physics_rotation));
 
         pose.compose();
 
@@ -990,11 +990,11 @@ mod tests {
         let skeleton = test_skeleton();
         let mut pose = RigPose::from_skeleton(&skeleton);
 
-        pose.animation_layer_mut()
-            .set_blend(PoseBlend::Blend(0.25));
-        assert!(pose
-            .animation_layer_mut()
-            .write_translation(1, Vec3::new(0.0, 5.0, 0.0)));
+        pose.animation_layer_mut().set_blend(PoseBlend::Blend(0.25));
+        assert!(
+            pose.animation_layer_mut()
+                .write_translation(1, Vec3::new(0.0, 5.0, 0.0))
+        );
 
         pose.compose();
 
@@ -1010,15 +1010,15 @@ mod tests {
         let skeleton = test_skeleton();
         let mut pose = RigPose::from_skeleton(&skeleton);
 
-        assert!(pose
-            .animation_layer_mut()
-            .write_translation(1, Vec3::Y));
-        assert!(pose
-            .procedural_layer_mut()
-            .write_rotation(1, Quat::from_rotation_x(0.5)));
-        assert!(pose
-            .physics_layer_mut()
-            .write_rotation(1, Quat::from_rotation_z(0.5)));
+        assert!(pose.animation_layer_mut().write_translation(1, Vec3::Y));
+        assert!(
+            pose.procedural_layer_mut()
+                .write_rotation(1, Quat::from_rotation_x(0.5))
+        );
+        assert!(
+            pose.physics_layer_mut()
+                .write_rotation(1, Quat::from_rotation_z(0.5))
+        );
 
         pose.clear_transient_layers();
 
@@ -1030,10 +1030,7 @@ mod tests {
             pose.procedural_layer().channels(1),
             Some(PoseChannels::NONE)
         );
-        assert_eq!(
-            pose.physics_layer().channels(1),
-            Some(PoseChannels::NONE)
-        );
+        assert_eq!(pose.physics_layer().channels(1), Some(PoseChannels::NONE));
     }
 
     #[test]
@@ -1053,12 +1050,14 @@ mod tests {
         let skeleton = test_skeleton();
         let mut pose = RigPose::from_skeleton(&skeleton);
 
-        assert!(pose
-            .animation_layer_mut()
-            .write_translation(1, Vec3::new(0.0, 2.0, 0.0)));
-        assert!(pose
-            .procedural_layer_mut()
-            .write_translation(1, Vec3::new(0.0, 4.0, 0.0)));
+        assert!(
+            pose.animation_layer_mut()
+                .write_translation(1, Vec3::new(0.0, 2.0, 0.0))
+        );
+        assert!(
+            pose.procedural_layer_mut()
+                .write_translation(1, Vec3::new(0.0, 4.0, 0.0))
+        );
 
         let animation_world = pose
             .evaluate_world(PoseStage::Animation, Mat4::IDENTITY)
@@ -1067,14 +1066,8 @@ mod tests {
             .evaluate_world(PoseStage::Procedural, Mat4::IDENTITY)
             .to_vec();
 
-        assert_eq!(
-            translation(animation_world[1]),
-            Vec3::new(1.0, 4.0, 3.0)
-        );
-        assert_eq!(
-            translation(procedural_world[1]),
-            Vec3::new(1.0, 6.0, 3.0)
-        );
+        assert_eq!(translation(animation_world[1]), Vec3::new(1.0, 4.0, 3.0));
+        assert_eq!(translation(procedural_world[1]), Vec3::new(1.0, 6.0, 3.0));
     }
 
     #[test]

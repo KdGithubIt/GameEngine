@@ -6,9 +6,9 @@
 //! not acquire mutation permissions or participate in the write-capable
 //! [`crate::agent_host::AgentRun`] state machine.
 
-use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};
+use crate::hosted_model_backend::{HostedBackendError, HostedModelConfig, generate_hosted};
 use crate::managed_local_runtime::{
-    ManagedLocalModelConfig, ManagedLocalRuntime, MANAGED_BACKEND_ID,
+    MANAGED_BACKEND_ID, ManagedLocalModelConfig, ManagedLocalRuntime,
 };
 use crate::resource_arbitration::{
     CapabilityAvailability, ModelResourceCapabilities, ModelResourceOperation,
@@ -81,7 +81,10 @@ impl fmt::Display for NativeAgentError {
                 write!(formatter, "local model backend is unavailable: {message}")
             }
             Self::HttpStatus(status, message) => {
-                write!(formatter, "local model backend returned HTTP {status}: {message}")
+                write!(
+                    formatter,
+                    "local model backend returned HTTP {status}: {message}"
+                )
             }
             Self::InvalidHttpResponse(message) => write!(
                 formatter,
@@ -94,14 +97,20 @@ impl fmt::Display for NativeAgentError {
             Self::EmptyResponse => write!(formatter, "local model returned an empty answer"),
             Self::Interrupted => write!(formatter, "native model inference was interrupted"),
             Self::WorkerDisconnected => {
-                write!(formatter, "native question worker disconnected unexpectedly")
+                write!(
+                    formatter,
+                    "native question worker disconnected unexpectedly"
+                )
             }
             Self::ResourceTransitionUnconfirmed(message) => write!(
                 formatter,
                 "local model resource transition was not confirmed: {message}"
             ),
             Self::ResourceWorkerDisconnected => {
-                write!(formatter, "native model resource worker disconnected unexpectedly")
+                write!(
+                    formatter,
+                    "native model resource worker disconnected unexpectedly"
+                )
             }
             Self::Hosted(error) => write!(formatter, "{error}"),
             Self::UnsupportedCapability(capability) => {
@@ -480,9 +489,7 @@ impl ModelResourceTask {
         Ok(Self { result })
     }
 
-    pub(crate) fn poll(
-        &self,
-    ) -> Option<Result<ModelResourceTransition, NativeAgentError>> {
+    pub(crate) fn poll(&self) -> Option<Result<ModelResourceTransition, NativeAgentError>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -565,9 +572,7 @@ fn execute_model_resource_operation_with_backend(
     let started = Instant::now();
     let backend_load_latency = match operation {
         ModelResourceOperation::Observe => None,
-        ModelResourceOperation::Release
-            if before.resident == TelemetryValue::Measured(false) =>
-        {
+        ModelResourceOperation::Release if before.resident == TelemetryValue::Measured(false) => {
             None
         }
         ModelResourceOperation::ReduceGpuResidency
@@ -752,38 +757,33 @@ impl NativeModelTask {
                             "image input for the managed llama.cpp adapter".to_owned(),
                         ))
                     }
-                    NativeModelConfig::Managed(config) => generate_managed(
-                        config,
-                        &prompt,
-                        &worker_interrupted,
-                        &worker_stream,
-                    )
-                    .and_then(|response| {
-                        if response.text.is_empty() {
-                            Err(NativeAgentError::EmptyResponse)
-                        } else {
-                            Ok(response.text)
-                        }
-                    }),
+                    NativeModelConfig::Managed(config) => {
+                        generate_managed(config, &prompt, &worker_interrupted, &worker_stream)
+                            .and_then(|response| {
+                                if response.text.is_empty() {
+                                    Err(NativeAgentError::EmptyResponse)
+                                } else {
+                                    Ok(response.text)
+                                }
+                            })
+                    }
                     NativeModelConfig::Hosted(_) if !images.is_empty() => {
                         Err(NativeAgentError::UnsupportedCapability(
                             "image input for the configured hosted adapter".to_owned(),
                         ))
                     }
-                    NativeModelConfig::Hosted(config) => generate_hosted(
-                        config,
-                        &prompt,
-                        &worker_interrupted,
-                    )
-                    .map_err(NativeAgentError::from)
-                    .and_then(|response| {
-                        let text = response.text.trim().to_owned();
-                        if text.is_empty() {
-                            Err(NativeAgentError::EmptyResponse)
-                        } else {
-                            Ok(text)
-                        }
-                    }),
+                    NativeModelConfig::Hosted(config) => {
+                        generate_hosted(config, &prompt, &worker_interrupted)
+                            .map_err(NativeAgentError::from)
+                            .and_then(|response| {
+                                let text = response.text.trim().to_owned();
+                                if text.is_empty() {
+                                    Err(NativeAgentError::EmptyResponse)
+                                } else {
+                                    Ok(text)
+                                }
+                            })
+                    }
                 };
                 let _ = sender.send(result);
             })?;
@@ -847,7 +847,9 @@ impl LocalHttpEndpoint {
     }
 
     fn connect(&self) -> Result<TcpStream, NativeAgentError> {
-        let connect_host = self.host.trim_matches(|character| matches!(character, '[' | ']'));
+        let connect_host = self
+            .host
+            .trim_matches(|character| matches!(character, '[' | ']'));
         let addresses = (connect_host, self.port)
             .to_socket_addrs()
             .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?
@@ -908,9 +910,9 @@ fn parse_authority(authority: &str) -> Result<(String, u16), NativeAgentError> {
     let first = split.next();
     match first {
         Some(host) if !host.contains(':') => {
-            let port = last
-                .parse::<u16>()
-                .map_err(|_| NativeAgentError::InvalidEndpoint("invalid endpoint port".to_owned()))?;
+            let port = last.parse::<u16>().map_err(|_| {
+                NativeAgentError::InvalidEndpoint("invalid endpoint port".to_owned())
+            })?;
             Ok((host.to_owned(), port))
         }
         Some(_) => Err(NativeAgentError::InvalidEndpoint(
@@ -966,15 +968,11 @@ fn discover_installed_models(
 ) -> Result<InstalledModelInventory, NativeAgentError> {
     let endpoint = LocalHttpEndpoint::parse(endpoint_value)?;
     let tags: LocalTagsResponse = request_local_json(&endpoint, "GET", "/api/tags", None)?;
-    let backend_version = request_local_json::<LocalVersionResponse>(
-        &endpoint,
-        "GET",
-        "/api/version",
-        None,
-    )
-    .ok()
-    .map(|response| response.version)
-    .filter(|version| !version.trim().is_empty());
+    let backend_version =
+        request_local_json::<LocalVersionResponse>(&endpoint, "GET", "/api/version", None)
+            .ok()
+            .map(|response| response.version)
+            .filter(|version| !version.trim().is_empty());
     let mut models = tags
         .models
         .into_iter()
@@ -991,7 +989,10 @@ fn discover_installed_models(
                 .details
                 .quantization_level
                 .filter(|value| !value.trim().is_empty()),
-            family: model.details.family.filter(|value| !value.trim().is_empty()),
+            family: model
+                .details
+                .family
+                .filter(|value| !value.trim().is_empty()),
         })
         .collect::<Vec<_>>();
     models.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1034,7 +1035,9 @@ fn answer_question(
                 response_tokens: response.eval_count,
                 backend_duration_ms: response.total_duration.map(|nanos| nanos / 1_000_000),
                 load_latency_ms: response.load_duration.map(|nanos| nanos / 1_000_000),
-                prompt_eval_duration_ms: response.prompt_eval_duration.map(|nanos| nanos / 1_000_000),
+                prompt_eval_duration_ms: response
+                    .prompt_eval_duration
+                    .map(|nanos| nanos / 1_000_000),
                 generation_duration_ms: response.eval_duration.map(|nanos| nanos / 1_000_000),
                 generation_tokens_per_second_milli: generation_throughput_milli(
                     response.eval_count,
@@ -1117,9 +1120,7 @@ fn generation_throughput_milli(tokens: Option<u64>, duration_nanos: Option<u64>)
     if duration_nanos == 0 {
         return None;
     }
-    let scaled = u128::from(tokens)
-        .saturating_mul(1_000_000_000_000)
-        / u128::from(duration_nanos);
+    let scaled = u128::from(tokens).saturating_mul(1_000_000_000_000) / u128::from(duration_nanos);
     Some(scaled.min(u128::from(u64::MAX)) as u64)
 }
 
@@ -1195,10 +1196,7 @@ fn request_ollama_residency(
     let (keep_alive, options) = match request {
         BackendResidencyRequest::Release => (0, None),
         BackendResidencyRequest::Reload => (-1, None),
-        BackendResidencyRequest::CpuOnly => (
-            -1,
-            Some(ResourceGenerateOptions { num_gpu: 0 }),
-        ),
+        BackendResidencyRequest::CpuOnly => (-1, Some(ResourceGenerateOptions { num_gpu: 0 })),
     };
     let body = serde_json::to_vec(&ResourceGenerateRequest {
         model,
@@ -1314,8 +1312,8 @@ fn generate_managed(
     }
     let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)
         .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
-    let load_latency_ms = (!managed_endpoint.reused_process)
-        .then(|| duration_ms(startup_started.elapsed()));
+    let load_latency_ms =
+        (!managed_endpoint.reused_process).then(|| duration_ms(startup_started.elapsed()));
     if interrupted.load(Ordering::Acquire) {
         return Err(NativeAgentError::Interrupted);
     }
@@ -1549,13 +1547,9 @@ fn parse_http_response(bytes: &[u8]) -> Result<ParsedHttpResponse, NativeAgentEr
     let status = status_line
         .split_whitespace()
         .nth(1)
-        .ok_or_else(|| {
-            NativeAgentError::InvalidHttpResponse("status code is missing".to_owned())
-        })?
+        .ok_or_else(|| NativeAgentError::InvalidHttpResponse("status code is missing".to_owned()))?
         .parse::<u16>()
-        .map_err(|_| {
-            NativeAgentError::InvalidHttpResponse("status code is invalid".to_owned())
-        })?;
+        .map_err(|_| NativeAgentError::InvalidHttpResponse("status code is invalid".to_owned()))?;
     let mut content_length = None;
     let mut chunked = false;
     for line in lines {
@@ -1600,13 +1594,11 @@ fn decode_chunked(mut bytes: &[u8]) -> Result<Vec<u8>, NativeAgentError> {
         let size_text = std::str::from_utf8(&bytes[..line_end]).map_err(|_| {
             NativeAgentError::InvalidHttpResponse("chunk size is not UTF-8".to_owned())
         })?;
-        let size = usize::from_str_radix(
-            size_text.split(';').next().unwrap_or_default().trim(),
-            16,
-        )
-        .map_err(|_| {
-            NativeAgentError::InvalidHttpResponse("chunk size is invalid".to_owned())
-        })?;
+        let size =
+            usize::from_str_radix(size_text.split(';').next().unwrap_or_default().trim(), 16)
+                .map_err(|_| {
+                    NativeAgentError::InvalidHttpResponse("chunk size is invalid".to_owned())
+                })?;
         bytes = &bytes[line_end + 2..];
         if size == 0 {
             return Ok(output);
@@ -1625,7 +1617,9 @@ fn decode_chunked(mut bytes: &[u8]) -> Result<Vec<u8>, NativeAgentError> {
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[derive(Debug, Clone)]
@@ -1718,7 +1712,10 @@ fn scan_path(
                 break;
             }
             let name = entry.file_name();
-            if matches!(name.to_str(), Some(".git" | "target" | "node_modules" | ".gameengine")) {
+            if matches!(
+                name.to_str(),
+                Some(".git" | "target" | "node_modules" | ".gameengine")
+            ) {
                 continue;
             }
             let child = relative.join(name);
@@ -1760,8 +1757,14 @@ fn scan_path(
 }
 
 fn is_retrieval_text_file(path: &Path) -> bool {
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-    if matches!(file_name, "Cargo.toml" | "Cargo.lock" | "project.json" | "AGENTS.md") {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if matches!(
+        file_name,
+        "Cargo.toml" | "Cargo.lock" | "project.json" | "AGENTS.md"
+    ) {
         return true;
     }
     matches!(
@@ -1875,7 +1878,12 @@ fn build_prompt(conversation: &[QuestionMessage], evidence: &[EvidenceChunk]) ->
         }
     }
     prompt.push_str("\nConversation:\n");
-    for message in conversation.iter().rev().take(MAX_CONVERSATION_MESSAGES).rev() {
+    for message in conversation
+        .iter()
+        .rev()
+        .take(MAX_CONVERSATION_MESSAGES)
+        .rev()
+    {
         prompt.push_str(message.role.label());
         prompt.push_str(": ");
         prompt.push_str(&truncate_text(
@@ -1910,7 +1918,9 @@ fn discover_engine_root() -> Option<PathBuf> {
     for start in starts {
         for ancestor in start.ancestors() {
             if ancestor.join("AGENTS.md").is_file()
-                && ancestor.join("docs/AI_FRIENDLY_AUTHORING_SPEC.md").is_file()
+                && ancestor
+                    .join("docs/AI_FRIENDLY_AUTHORING_SPEC.md")
+                    .is_file()
                 && ancestor.join("crates/editor/Cargo.toml").is_file()
             {
                 return Some(ancestor.to_path_buf());
@@ -1944,7 +1954,7 @@ mod tests {
                     }
                 }
                 let request = String::from_utf8_lossy(&request);
-                let body = if request.starts_with("GET /api/tags " ) {
+                let body = if request.starts_with("GET /api/tags ") {
                     r#"{"models":[{"name":"test-model:q4","digest":"sha256:test","size":42,"details":{"family":"test","parameter_size":"1B","quantization_level":"Q4_K_M"}}]}"#
                 } else {
                     r#"{"version":"1.2.3"}"#
@@ -2023,12 +2033,17 @@ mod tests {
         )
         .expect("unrelated source");
 
-        let evidence = retrieve_evidence("PlayerHealth current", None, &project)
-            .expect("retrieval evidence");
+        let evidence =
+            retrieve_evidence("PlayerHealth current", None, &project).expect("retrieval evidence");
         assert!(!evidence.is_empty());
         assert_eq!(evidence[0].source.kind, SourceKind::ProjectFile);
         assert_eq!(evidence[0].source.path, "game/src/player.rs");
-        assert!(!evidence[0].source.path.contains(project.to_string_lossy().as_ref()));
+        assert!(
+            !evidence[0]
+                .source
+                .path
+                .contains(project.to_string_lossy().as_ref())
+        );
         let _ = fs::remove_dir_all(project);
     }
 

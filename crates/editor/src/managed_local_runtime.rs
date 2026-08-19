@@ -307,14 +307,12 @@ impl ManagedAcquisitionPlan {
     pub(crate) fn review(&self) -> ManagedAcquisitionReview {
         ManagedAcquisitionReview {
             candidate_count: self.candidates.len(),
-            total_transfer_bytes: self
-                .candidates
-                .iter()
-                .fold(0_u64, |total, candidate| total.saturating_add(candidate.transfer_bytes)),
-            total_storage_bytes: self
-                .candidates
-                .iter()
-                .fold(0_u64, |total, candidate| total.saturating_add(candidate.storage_bytes)),
+            total_transfer_bytes: self.candidates.iter().fold(0_u64, |total, candidate| {
+                total.saturating_add(candidate.transfer_bytes)
+            }),
+            total_storage_bytes: self.candidates.iter().fold(0_u64, |total, candidate| {
+                total.saturating_add(candidate.storage_bytes)
+            }),
         }
     }
 
@@ -424,9 +422,7 @@ impl ManagedSetupTask {
         Ok(Self { result })
     }
 
-    pub(crate) fn poll(
-        &self,
-    ) -> Option<Result<ManagedSetupResult, ManagedLocalRuntimeError>> {
+    pub(crate) fn poll(&self) -> Option<Result<ManagedSetupResult, ManagedLocalRuntimeError>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -543,16 +539,18 @@ impl ManagedLocalRuntime {
         if environment == ManagedExecutionEnvironment::Wsl2Linux {
             match wsl_status() {
                 Ok(WslStatus::Unavailable(message)) => {
-                    return ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(message)
+                    return ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(message);
                 }
-                Ok(WslStatus::Available { managed_distribution: false }) => {
-                    return ManagedSetupStatus::WslDistributionMissing
-                }
-                Ok(WslStatus::Available { managed_distribution: true }) => {}
+                Ok(WslStatus::Available {
+                    managed_distribution: false,
+                }) => return ManagedSetupStatus::WslDistributionMissing,
+                Ok(WslStatus::Available {
+                    managed_distribution: true,
+                }) => {}
                 Err(error) => {
                     return ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
                         error.to_string(),
-                    )
+                    );
                 }
             }
         }
@@ -611,8 +609,12 @@ impl ManagedLocalRuntime {
                     ),
                 ));
             }
-            WslStatus::Available { managed_distribution: true } => return Ok(()),
-            WslStatus::Available { managed_distribution: false } => {}
+            WslStatus::Available {
+                managed_distribution: true,
+            } => return Ok(()),
+            WslStatus::Available {
+                managed_distribution: false,
+            } => {}
         }
         let output = Command::new("wsl.exe")
             .args([
@@ -645,7 +647,9 @@ impl ManagedLocalRuntime {
             ));
         }
         match wsl_status()? {
-            WslStatus::Available { managed_distribution: true } => Ok(()),
+            WslStatus::Available {
+                managed_distribution: true,
+            } => Ok(()),
             _ => Err(ManagedLocalRuntimeError::new(
                 ManagedDiagnosticLayer::WslDistributionProvisioning,
                 "WSL provisioning returned success but the dedicated GameEngine distribution is not registered",
@@ -672,8 +676,12 @@ impl ManagedLocalRuntime {
         }
         if environment == ManagedExecutionEnvironment::Wsl2Linux {
             match wsl_status()? {
-                WslStatus::Available { managed_distribution: true } => {}
-                WslStatus::Available { managed_distribution: false } => {
+                WslStatus::Available {
+                    managed_distribution: true,
+                } => {}
+                WslStatus::Available {
+                    managed_distribution: false,
+                } => {
                     return Err(ManagedLocalRuntimeError::new(
                         ManagedDiagnosticLayer::WslDistributionProvisioning,
                         "the dedicated GameEngine-LocalAI WSL distribution is not provisioned",
@@ -688,10 +696,7 @@ impl ManagedLocalRuntime {
             }
         }
 
-        let environment_root = self
-            .root
-            .join("runtime")
-            .join(environment.storage_key());
+        let environment_root = self.root.join("runtime").join(environment.storage_key());
         fs::create_dir_all(&environment_root).map_err(runtime_io)?;
         let final_root = environment_root.join(PINNED_LLAMA_CPP_TAG);
         let staging_root = environment_root.join(format!("{}.staging", PINNED_LLAMA_CPP_TAG));
@@ -887,7 +892,9 @@ impl ManagedLocalRuntime {
             *existing = registration.clone();
         } else {
             registry.models.push(registration.clone());
-            registry.models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
+            registry
+                .models
+                .sort_by(|left, right| left.model_id.cmp(&right.model_id));
         }
         write_json(&self.model_registry_path(), &registry).map_err(model_io)?;
         Ok(registration)
@@ -933,7 +940,9 @@ impl ManagedLocalRuntime {
         let (additional_storage_bytes, described_config) = if model_id.trim().is_empty() {
             (
                 Ok(0),
-                Err("Register or select a managed GGUF model before starting inference.".to_owned()),
+                Err(
+                    "Register or select a managed GGUF model before starting inference.".to_owned(),
+                ),
             )
         } else {
             (
@@ -964,8 +973,12 @@ impl ManagedLocalRuntime {
             return Ok(model.source_path);
         }
         match wsl_status()? {
-            WslStatus::Available { managed_distribution: true } => {}
-            WslStatus::Available { managed_distribution: false } => {
+            WslStatus::Available {
+                managed_distribution: true,
+            } => {}
+            WslStatus::Available {
+                managed_distribution: false,
+            } => {
                 return Err(ManagedLocalRuntimeError::new(
                     ManagedDiagnosticLayer::WslDistributionProvisioning,
                     "the dedicated GameEngine-LocalAI WSL distribution is not provisioned",
@@ -1009,11 +1022,7 @@ impl ManagedLocalRuntime {
             return Err(error);
         }
         wsl_shell(
-            &format!(
-                "mv -f {} {}",
-                shell_quote(&staging),
-                shell_quote(&target)
-            ),
+            &format!("mv -f {} {}", shell_quote(&staging), shell_quote(&target)),
             ManagedDiagnosticLayer::ModelTransferOrIntegrity,
         )?;
         verify_wsl_sha256(&target, &model.content_sha256)?;
@@ -1040,14 +1049,15 @@ impl ManagedLocalRuntime {
         integrity: ManagedIntegrityCheck,
     ) -> Result<ManagedLocalModelConfig, ManagedLocalRuntimeError> {
         let enforced = integrity == ManagedIntegrityCheck::Enforced;
-        let installation = self
-            .active_installation(environment)?
-            .ok_or_else(|| {
-                ManagedLocalRuntimeError::new(
-                    ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-                    format!("{} managed llama.cpp runtime is not installed", environment.label()),
-                )
-            })?;
+        let installation = self.active_installation(environment)?.ok_or_else(|| {
+            ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                format!(
+                    "{} managed llama.cpp runtime is not installed",
+                    environment.label()
+                ),
+            )
+        })?;
         if enforced {
             self.verify_retained_runtime_artifact(&installation)?;
         }
@@ -1250,10 +1260,7 @@ impl ManagedLocalRuntime {
                 ));
             }
         }
-        let runtime_root = self
-            .root
-            .join("runtime")
-            .join(environment.storage_key());
+        let runtime_root = self.root.join("runtime").join(environment.storage_key());
         match fs::remove_dir_all(runtime_root) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -1329,8 +1336,12 @@ impl ManagedLocalRuntime {
         port: u16,
     ) -> Result<u32, ManagedLocalRuntimeError> {
         match wsl_status()? {
-            WslStatus::Available { managed_distribution: true } => {}
-            WslStatus::Available { managed_distribution: false } => {
+            WslStatus::Available {
+                managed_distribution: true,
+            } => {}
+            WslStatus::Available {
+                managed_distribution: false,
+            } => {
                 return Err(ManagedLocalRuntimeError::new(
                     ManagedDiagnosticLayer::WslDistributionProvisioning,
                     "the dedicated managed WSL distribution disappeared before runtime launch",
@@ -1349,10 +1360,7 @@ impl ManagedLocalRuntime {
             port,
             config.environment,
         );
-        let output = wsl_shell(
-            &command,
-            ManagedDiagnosticLayer::ManagedProcessStartup,
-        )?;
+        let output = wsl_shell(&command, ManagedDiagnosticLayer::ManagedProcessStartup)?;
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .find_map(|line| line.trim().parse::<u32>().ok())
@@ -1388,13 +1396,12 @@ impl ManagedLocalRuntime {
             &installation.artifact_sha256,
             ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
         )?;
-        let manifest = fs::read_to_string(&installation.retained_artifact_path)
-            .map_err(runtime_io)?;
-        let environment_marker = format!(
-            "environment={}",
-            installation.environment.benchmark_id()
-        );
-        if !manifest.lines().any(|line| line == "format=gameengine-managed-runtime-v2")
+        let manifest =
+            fs::read_to_string(&installation.retained_artifact_path).map_err(runtime_io)?;
+        let environment_marker = format!("environment={}", installation.environment.benchmark_id());
+        if !manifest
+            .lines()
+            .any(|line| line == "format=gameengine-managed-runtime-v2")
             || !manifest
                 .lines()
                 .any(|line| line == format!("tag={PINNED_LLAMA_CPP_TAG}"))
@@ -1412,15 +1419,16 @@ impl ManagedLocalRuntime {
 
         match installation.environment {
             ManagedExecutionEnvironment::WindowsNative => {
-                let retained_root = installation
-                    .retained_artifact_path
-                    .parent()
-                    .ok_or_else(|| {
-                        ManagedLocalRuntimeError::new(
-                            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-                            "managed Windows CUDA manifest has no runtime directory",
-                        )
-                    })?;
+                let retained_root =
+                    installation
+                        .retained_artifact_path
+                        .parent()
+                        .ok_or_else(|| {
+                            ManagedLocalRuntimeError::new(
+                                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                                "managed Windows CUDA manifest has no runtime directory",
+                            )
+                        })?;
                 for asset_name in windows_cuda_asset_names() {
                     let marker = format!("asset={asset_name} sha256=");
                     let expected_sha256 = manifest
@@ -1899,12 +1907,13 @@ fn fetch_release_asset(name: &str) -> Result<GithubReleaseAsset, ManagedLocalRun
         "$r | ConvertTo-Json -Depth 8 -Compress"
     );
     let output = powershell_output(script, &[RELEASE_METADATA_URL])?;
-    let metadata: GithubReleaseMetadata = serde_json::from_slice(&output.stdout).map_err(|error| {
-        ManagedLocalRuntimeError::new(
-            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-            format!("could not parse official llama.cpp release metadata: {error}"),
-        )
-    })?;
+    let metadata: GithubReleaseMetadata =
+        serde_json::from_slice(&output.stdout).map_err(|error| {
+            ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                format!("could not parse official llama.cpp release metadata: {error}"),
+            )
+        })?;
     if metadata.tag_name != PINNED_LLAMA_CPP_TAG {
         return Err(ManagedLocalRuntimeError::new(
             ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
@@ -1965,7 +1974,7 @@ fn powershell_output(
         }
         argument_prelude.push_str(&format!("$env:GAMEENGINE_MANAGED_ARG_{index}"));
     }
-    argument_prelude.push_str("); " );
+    argument_prelude.push_str("); ");
     argument_prelude.push_str(script);
     let mut command = Command::new("powershell.exe");
     command.args([
@@ -1986,7 +1995,10 @@ fn powershell_output(
     if !output.status.success() {
         return Err(ManagedLocalRuntimeError::new(
             ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-            format!("managed setup command failed: {}", command_output_text(&output)),
+            format!(
+                "managed setup command failed: {}",
+                command_output_text(&output)
+            ),
         ));
     }
     Ok(output)
@@ -2008,7 +2020,10 @@ fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> 
     if !output.status.success() {
         return Err(ManagedLocalRuntimeError::new(
             ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-            format!("SHA-256 calculation failed: {}", command_output_text(&output)),
+            format!(
+                "SHA-256 calculation failed: {}",
+                command_output_text(&output)
+            ),
         ));
     }
     let output_text = decode_windows_command_text(&output.stdout);
@@ -2036,9 +2051,8 @@ fn verify_file_sha256(
             "expected SHA-256 digest is malformed",
         ));
     }
-    let actual = sha256_via_platform(path).map_err(|error| {
-        ManagedLocalRuntimeError::new(layer, error.to_string())
-    })?;
+    let actual = sha256_via_platform(path)
+        .map_err(|error| ManagedLocalRuntimeError::new(layer, error.to_string()))?;
     if !actual.eq_ignore_ascii_case(expected) {
         return Err(ManagedLocalRuntimeError::new(
             layer,
@@ -2119,7 +2133,10 @@ fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRu
     if !output.status.success() {
         return Err(ManagedLocalRuntimeError::new(
             ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-            format!("managed WSL transfer failed: {}", command_output_text(&output)),
+            format!(
+                "managed WSL transfer failed: {}",
+                command_output_text(&output)
+            ),
         ));
     }
     Ok(())
@@ -2175,10 +2192,16 @@ fn wsl_shell(
         ));
     };
     stdin.write_all(command.as_bytes()).map_err(|error| {
-        ManagedLocalRuntimeError::new(layer, format!("could not stream managed WSL script: {error}"))
+        ManagedLocalRuntimeError::new(
+            layer,
+            format!("could not stream managed WSL script: {error}"),
+        )
     })?;
     stdin.write_all(b"\n").map_err(|error| {
-        ManagedLocalRuntimeError::new(layer, format!("could not terminate managed WSL script: {error}"))
+        ManagedLocalRuntimeError::new(
+            layer,
+            format!("could not terminate managed WSL script: {error}"),
+        )
     })?;
     drop(stdin);
     let output = child.wait_with_output().map_err(|error| {
@@ -2187,7 +2210,10 @@ fn wsl_shell(
     if !output.status.success() {
         return Err(ManagedLocalRuntimeError::new(
             layer,
-            format!("managed WSL command failed: {}", command_output_text(&output)),
+            format!(
+                "managed WSL command failed: {}",
+                command_output_text(&output)
+            ),
         ));
     }
     Ok(output)
@@ -2199,12 +2225,15 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
             "WSL2 is available only on Windows".to_owned(),
         ));
     }
-    let status = Command::new("wsl.exe").arg("--status").output().map_err(|error| {
-        ManagedLocalRuntimeError::new(
-            ManagedDiagnosticLayer::OperatingSystemPrerequisite,
-            format!("could not query WSL2 status: {error}"),
-        )
-    })?;
+    let status = Command::new("wsl.exe")
+        .arg("--status")
+        .output()
+        .map_err(|error| {
+            ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::OperatingSystemPrerequisite,
+                format!("could not query WSL2 status: {error}"),
+            )
+        })?;
     if !status.status.success() {
         return Ok(classify_wsl_status(
             false,
@@ -2237,7 +2266,13 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
 fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRuntimeError> {
     let status = match state.environment {
         ManagedExecutionEnvironment::WindowsNative => Command::new("tasklist.exe")
-            .args(["/FI", &format!("PID eq {}", state.process_id), "/FO", "CSV", "/NH"])
+            .args([
+                "/FI",
+                &format!("PID eq {}", state.process_id),
+                "/FO",
+                "CSV",
+                "/NH",
+            ])
             .output(),
         ManagedExecutionEnvironment::Wsl2Linux => managed_wsl_command()
             .arg("kill")
@@ -2392,7 +2427,10 @@ fn decode_windows_command_text(bytes: &[u8]) -> String {
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect::<Vec<_>>();
         let candidate = String::from_utf16_lossy(&utf16);
-        if candidate.chars().any(|character| character.is_ascii_alphanumeric()) {
+        if candidate
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
+        {
             return candidate;
         }
     }
@@ -2454,9 +2492,8 @@ mod tests {
                 source: "https://example.invalid/model-a.gguf".to_owned(),
                 representation: "Q4_K_M".to_owned(),
                 license: Some("test-license".to_owned()),
-                expected_sha256:
-                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                        .to_owned(),
+                expected_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_owned(),
                 transfer_bytes: 10,
                 storage_bytes: 12,
             }],
@@ -2518,9 +2555,7 @@ mod tests {
         assert_eq!(registration.quantization.as_deref(), Some("Q4_K_M"));
         assert_eq!(
             registration.exact_representation(),
-            Some(
-                "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:2,Q6_K:1"
-            )
+            Some("gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:2,Q6_K:1")
         );
         assert!(registration.model_id.starts_with("gguf:"));
         let _ = fs::remove_dir_all(root);
@@ -2547,14 +2582,8 @@ mod tests {
             );
         }
         for registration in registrations.iter().skip(1) {
-            assert_eq!(
-                registration.content_sha256,
-                registrations[0].content_sha256
-            );
-            assert_eq!(
-                registration.representation,
-                registrations[0].representation
-            );
+            assert_eq!(registration.content_sha256, registrations[0].content_sha256);
+            assert_eq!(registration.representation, registrations[0].representation);
         }
         assert!(registrations[2].has_exact_representation_identity());
         let _ = fs::remove_dir_all(root);
@@ -2618,10 +2647,10 @@ mod tests {
         // While the continuation is unsatisfied, setup stays blocked and the
         // marker survives, independently of the host WSL state.
         assert_eq!(
-            manager.setup_status_with_continuation(
-                ManagedExecutionEnvironment::WindowsNative,
-                || false
-            ),
+            manager
+                .setup_status_with_continuation(ManagedExecutionEnvironment::WindowsNative, || {
+                    false
+                }),
             ManagedSetupStatus::RestartRequired
         );
         assert!(marker.is_file());
@@ -2629,10 +2658,10 @@ mod tests {
         // Once the continuation is satisfied the marker is consumed and setup
         // resumes the ordinary installation probe.
         assert_ne!(
-            manager.setup_status_with_continuation(
-                ManagedExecutionEnvironment::WindowsNative,
-                || true
-            ),
+            manager
+                .setup_status_with_continuation(ManagedExecutionEnvironment::WindowsNative, || {
+                    true
+                }),
             ManagedSetupStatus::RestartRequired
         );
         assert!(!marker.exists());
@@ -2640,7 +2669,9 @@ mod tests {
         manager.mark_restart_required().expect("mark restart again");
         manager.clear_restart_required().expect("clear restart");
         assert!(!marker.exists());
-        manager.clear_restart_required().expect("clear is idempotent");
+        manager
+            .clear_restart_required()
+            .expect("clear is idempotent");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2661,16 +2692,16 @@ mod tests {
                 "cudart-llama-bin-win-cuda-12.4-x64.zip",
             ]
         );
-        assert_eq!(WINDOWS_CUDA_MANIFEST, "llama-b10336-win-cuda-12.4-manifest.txt");
+        assert_eq!(
+            WINDOWS_CUDA_MANIFEST,
+            "llama-b10336-win-cuda-12.4-manifest.txt"
+        );
         assert_eq!(
             WSL_CUDA_MANIFEST,
             "llama-b10336-wsl-cuda-12.4-source-manifest.txt"
         );
         assert_eq!(WSL_CUDA_COMPILER_PACKAGE, "cuda-compiler-12-4");
-        assert_eq!(
-            WSL_CUDA_LIBRARIES_DEV_PACKAGE,
-            "cuda-libraries-dev-12-4"
-        );
+        assert_eq!(WSL_CUDA_LIBRARIES_DEV_PACKAGE, "cuda-libraries-dev-12-4");
         assert_eq!(STATE_SCHEMA_VERSION, 2);
         assert_eq!(MANAGED_WSL_DISTRIBUTION, "GameEngine-LocalAI");
         assert_eq!(MANAGED_WSL_BASE_DISTRIBUTION, "Ubuntu-22.04");
@@ -2695,9 +2726,7 @@ mod tests {
         assert!(wsl_manifest.contains("environment=wsl2_linux"));
         assert!(wsl_manifest.contains("backend=cuda"));
         assert!(wsl_manifest.contains("cuda_compiler_package=cuda-compiler-12-4"));
-        assert!(wsl_manifest.contains(
-            "cuda_libraries_dev_package=cuda-libraries-dev-12-4"
-        ));
+        assert!(wsl_manifest.contains("cuda_libraries_dev_package=cuda-libraries-dev-12-4"));
         assert!(wsl_manifest.contains("source_revision=f401bb1deadbeef"));
     }
 
@@ -2790,7 +2819,11 @@ mod tests {
                 "1024".to_owned(),
             ]
         );
-        assert!(!arguments.iter().any(|argument| argument == "--n-gpu-layers"));
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument == "--n-gpu-layers")
+        );
     }
 
     #[test]
@@ -2830,9 +2863,7 @@ mod tests {
         );
         assert_eq!(
             manager.log_path(ManagedExecutionEnvironment::Wsl2Linux),
-            PathBuf::from(
-                "/var/lib/gameengine/local-ai/logs/llama-server-wsl2_linux.log"
-            )
+            PathBuf::from("/var/lib/gameengine/local-ai/logs/llama-server-wsl2_linux.log")
         );
     }
 
@@ -2927,13 +2958,15 @@ mod tests {
 
         // The enforced form hashes the retained artifact, so the deliberately
         // mismatched digest must fail it.
-        assert!(manager
-            .configuration_for(
-                &registration.model_id,
-                ManagedExecutionEnvironment::WindowsNative,
-                ManagedIntegrityCheck::Enforced,
-            )
-            .is_err());
+        assert!(
+            manager
+                .configuration_for(
+                    &registration.model_id,
+                    ManagedExecutionEnvironment::WindowsNative,
+                    ManagedIntegrityCheck::Enforced,
+                )
+                .is_err()
+        );
         let described = manager
             .configuration_for(
                 &registration.model_id,
@@ -2963,13 +2996,15 @@ mod tests {
         fs::write(&model_source, b"tampered").expect("tamper the registered source");
 
         assert!(manager.verify_registered_model(&registration).is_err());
-        assert!(manager
-            .configuration_for(
-                &registration.model_id,
-                ManagedExecutionEnvironment::WindowsNative,
-                ManagedIntegrityCheck::Skipped,
-            )
-            .is_ok());
+        assert!(
+            manager
+                .configuration_for(
+                    &registration.model_id,
+                    ManagedExecutionEnvironment::WindowsNative,
+                    ManagedIntegrityCheck::Skipped,
+                )
+                .is_ok()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2996,7 +3031,11 @@ mod tests {
         };
         write_json(&environment_root.join("active.json"), &installation).expect("active pointer");
         let before = fs::read(environment_root.join("active.json")).expect("before active");
-        assert!(manager.verify_retained_runtime_artifact(&installation).is_err());
+        assert!(
+            manager
+                .verify_retained_runtime_artifact(&installation)
+                .is_err()
+        );
         let after = fs::read(environment_root.join("active.json")).expect("after active");
         assert_eq!(before, after);
         let _ = fs::remove_dir_all(root);

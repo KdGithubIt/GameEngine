@@ -50,7 +50,11 @@ impl EditorApp {
         });
     }
 
-    pub(in crate::ui) fn begin_folder_mutation(&mut self, source: PathBuf, kind: AssetMutationKind) {
+    pub(in crate::ui) fn begin_folder_mutation(
+        &mut self,
+        source: PathBuf,
+        kind: AssetMutationKind,
+    ) {
         self.pending_asset_mutation = Some(PendingAssetMutation {
             destination: source.to_string_lossy().into_owned(),
             source,
@@ -336,7 +340,6 @@ impl EditorApp {
                 )),
         }
     }
-
 }
 
 #[derive(Clone, Copy)]

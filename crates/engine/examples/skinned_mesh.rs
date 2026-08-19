@@ -7,11 +7,11 @@
 
 use engine::animation::{AnimChannel, AnimProperty, AnimationClip, Animator, Keyframe};
 use engine::camera::default_camera_transform;
-use engine::skeleton_asset::{compute_skeleton_identity, BoneDef, BoneId, SkeletonAsset};
-use engine::skinning::{spawn_rig, JointPalette, SkinnedMesh};
+use engine::skeleton_asset::{BoneDef, BoneId, SkeletonAsset, compute_skeleton_identity};
+use engine::skinning::{JointPalette, SkinnedMesh, spawn_rig};
 use engine::{
-    animation_system, foot_ik_system, publish_final_rig_pose_system, App, Assets, Camera3D,
-    GlobalTransform, Handle, Material, Mesh, SkinningVertexData, Transform, Vertex,
+    App, Assets, Camera3D, GlobalTransform, Handle, Material, Mesh, SkinningVertexData, Transform,
+    Vertex, animation_system, foot_ik_system, publish_final_rig_pose_system,
 };
 use engine_authoring::id::AssetId;
 use glam::{Mat4, Quat, Vec3};

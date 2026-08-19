@@ -113,7 +113,9 @@ pub struct CompiledTileMap {
 impl CompiledTileMap {
     /// Resolves one compiled chunk by stable layer and spatial coordinate.
     pub fn chunk(&self, layer: &TileLayerId, coord: TileChunkCoord) -> Option<&CompiledTileChunk> {
-        self.chunks.iter().find(|chunk| &chunk.layer == layer && chunk.coord == coord)
+        self.chunks
+            .iter()
+            .find(|chunk| &chunk.layer == layer && chunk.coord == coord)
     }
 }
 
@@ -131,9 +133,21 @@ pub enum Native2dCompileError {
 impl fmt::Display for Native2dCompileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidDocument(errors) => write!(formatter, "invalid Native 2D document: {}", errors.join("; ")),
-            Self::MissingSourceTexture(asset) => write!(formatter, "Sprite Atlas source texture `{}` is unresolved", asset.as_str()),
-            Self::MissingTile(tile) => write!(formatter, "Tile Map references missing TileId `{}`", tile.as_str()),
+            Self::InvalidDocument(errors) => write!(
+                formatter,
+                "invalid Native 2D document: {}",
+                errors.join("; ")
+            ),
+            Self::MissingSourceTexture(asset) => write!(
+                formatter,
+                "Sprite Atlas source texture `{}` is unresolved",
+                asset.as_str()
+            ),
+            Self::MissingTile(tile) => write!(
+                formatter,
+                "Tile Map references missing TileId `{}`",
+                tile.as_str()
+            ),
         }
     }
 }
@@ -153,8 +167,9 @@ pub fn compile_sprite_atlas(
     }
     let mut regions = BTreeMap::new();
     for region in &document.regions {
-        let source_texture = resolve_texture(&region.source_texture)
-            .ok_or_else(|| Native2dCompileError::MissingSourceTexture(region.source_texture.clone()))?;
+        let source_texture = resolve_texture(&region.source_texture).ok_or_else(|| {
+            Native2dCompileError::MissingSourceTexture(region.source_texture.clone())
+        })?;
         let pixels_per_unit = match region.pixels_per_unit {
             PixelsPerUnit::ProjectDefault => default_pixels_per_unit,
             PixelsPerUnit::Override(value) => value,
@@ -169,7 +184,12 @@ pub fn compile_sprite_atlas(
             CompiledSpriteRegion {
                 id: region.id.clone(),
                 source_texture,
-                rect: [region.rect.x, region.rect.y, region.rect.width, region.rect.height],
+                rect: [
+                    region.rect.x,
+                    region.rect.y,
+                    region.rect.width,
+                    region.rect.height,
+                ],
                 pivot: region.pivot,
                 pixels_per_unit,
                 filtering: region.filtering.unwrap_or(default_filtering),
@@ -181,7 +201,9 @@ pub fn compile_sprite_atlas(
 }
 
 /// Compiles one Tile Set into stable backend-neutral entries.
-pub fn compile_tile_set(document: &TileSetDocument) -> Result<CompiledTileSet, Native2dCompileError> {
+pub fn compile_tile_set(
+    document: &TileSetDocument,
+) -> Result<CompiledTileSet, Native2dCompileError> {
     let errors = document.validate();
     if !errors.is_empty() {
         return Err(Native2dCompileError::InvalidDocument(errors));
@@ -245,8 +267,18 @@ pub fn compile_tile_map(
             });
         }
     }
-    chunks.sort_by_key(|chunk| (chunk.layer.as_str().to_owned(), chunk.coord.y, chunk.coord.x));
-    Ok(CompiledTileMap { chunk_size: document.chunk_size, layers, chunks })
+    chunks.sort_by_key(|chunk| {
+        (
+            chunk.layer.as_str().to_owned(),
+            chunk.coord.y,
+            chunk.coord.x,
+        )
+    });
+    Ok(CompiledTileMap {
+        chunk_size: document.chunk_size,
+        layers,
+        chunks,
+    })
 }
 
 /// Validates logical SpriteRefs in a Tile Set through a caller-owned atlas resolver.
@@ -257,7 +289,11 @@ pub fn validate_tile_set_sprite_refs(
     let mut errors = document.validate();
     for tile in &document.tiles {
         if !sprite_exists(&tile.sprite) {
-            errors.push(format!("tile `{}` references unresolved sprite `{}`", tile.id.as_str(), tile.sprite.sprite.as_str()));
+            errors.push(format!(
+                "tile `{}` references unresolved sprite `{}`",
+                tile.id.as_str(),
+                tile.sprite.sprite.as_str()
+            ));
         }
     }
     errors
@@ -267,14 +303,17 @@ pub fn validate_tile_set_sprite_refs(
 mod tests {
     use super::*;
     use engine_authoring::{
-        PixelRect, SpriteRegion, TileCell, TileCellEntry, TileChunk, TileMapLayer,
-        TILE_MAP_SCHEMA_VERSION, TILE_SET_SCHEMA_VERSION,
+        PixelRect, SpriteRegion, TILE_MAP_SCHEMA_VERSION, TILE_SET_SCHEMA_VERSION, TileCell,
+        TileCellEntry, TileChunk, TileMapLayer,
     };
 
     #[test]
     fn tile_compile_keeps_stable_layer_identity_instead_of_vector_index() {
         let tile = TileId::generate();
-        let sprite = SpriteRef { atlas: AssetId::generate(), sprite: SpriteId::generate() };
+        let sprite = SpriteRef {
+            atlas: AssetId::generate(),
+            sprite: SpriteId::generate(),
+        };
         let set = compile_tile_set(&TileSetDocument {
             schema_version: TILE_SET_SCHEMA_VERSION,
             tiles: vec![engine_authoring::TileDefinition {
@@ -287,7 +326,8 @@ mod tests {
                 tags: Vec::new(),
                 custom_values: BTreeMap::new(),
             }],
-        }).unwrap();
+        })
+        .unwrap();
         let layer_id = TileLayerId::generate();
         let map = TileMapDocument {
             schema_version: TILE_MAP_SCHEMA_VERSION,
@@ -302,7 +342,10 @@ mod tests {
                 order_in_layer: 0,
                 chunks: vec![TileChunk {
                     coord: TileChunkCoord { x: 2, y: -1 },
-                    cells: vec![TileCellEntry { cell: TileCell { x: 3, y: 4 }, tile }],
+                    cells: vec![TileCellEntry {
+                        cell: TileCell { x: 3, y: 4 },
+                        tile,
+                    }],
                 }],
             }],
         };
@@ -320,7 +363,12 @@ mod tests {
                 id: id.clone(),
                 name: "hero".to_owned(),
                 source_texture: texture.clone(),
-                rect: PixelRect { x: 0, y: 0, width: 16, height: 16 },
+                rect: PixelRect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 16,
+                },
                 pivot: [0.5, 0.5],
                 pixels_per_unit: PixelsPerUnit::ProjectDefault,
                 filtering: None,
@@ -331,7 +379,8 @@ mod tests {
         let runtime = store.add(()).id();
         let compiled = compile_sprite_atlas(&document, 100.0, SpriteFiltering::Nearest, |asset| {
             (asset == &texture).then_some(runtime)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(compiled.region(&id).unwrap().source_texture, runtime);
     }
 }

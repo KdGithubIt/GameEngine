@@ -5,19 +5,19 @@
 //! sends only owned progress/result records back for main-thread persistence.
 
 use engine::{
+    ImportedSubAsset, SkeletonRecord,
     asset::HumanoidProfile,
     humanoid_import::{
         build_humanoid_import_catalog, build_humanoid_motion_variant, humanoid_imported_sub_assets,
     },
-    ImportedSubAsset, SkeletonRecord,
 };
 use engine_authoring::prefab::PrefabAsset;
 use engine_authoring::{AssetId, Diagnostic};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 use std::thread;
 
 /// Coarse import stage shown in the editor status UI.
@@ -632,13 +632,7 @@ impl AssetImportManager {
                         .into_iter()
                         .next()
                     {
-                        send_failed(
-                            &sender,
-                            project_path,
-                            source_id,
-                            source_path,
-                            stale.message,
-                        );
+                        send_failed(&sender, project_path, source_id, source_path, stale.message);
                         return;
                     }
                     progress(0.35 + target_fraction * 0.55, "Retargeting baked motion");
@@ -835,22 +829,20 @@ impl AssetImportManager {
                 }
             }
             let source_dependencies = engine::motion_source_dependencies_for_models(&model_paths);
-            let source_stamp = match engine::SourceStamp::capture(
-                &source_path,
-                &source_dependencies,
-            ) {
-                Ok(stamp) => stamp,
-                Err(error) => {
-                    send_failed(
-                        &sender,
-                        project_path,
-                        source_id,
-                        source_path,
-                        error.to_string(),
-                    );
-                    return;
-                }
-            };
+            let source_stamp =
+                match engine::SourceStamp::capture(&source_path, &source_dependencies) {
+                    Ok(stamp) => stamp,
+                    Err(error) => {
+                        send_failed(
+                            &sender,
+                            project_path,
+                            source_id,
+                            source_path,
+                            error.to_string(),
+                        );
+                        return;
+                    }
+                };
             progress(0.95, "Publishing import result");
             let _ = sender.send(WorkerMessage::Complete(Box::new(AssetImportResult {
                 project_path,

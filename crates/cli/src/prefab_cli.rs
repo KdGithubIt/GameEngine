@@ -1,9 +1,9 @@
-use super::{asset_cli, scene_cli, to_json, CliError, CliRunResult};
+use super::{CliError, CliRunResult, asset_cli, scene_cli, to_json};
 use engine_assets::prefab::{PrefabAssetError, PrefabAssetService};
 use engine_authoring::{
-    replace_file_contents, AuthoringPermission, AuthoringPermissions, EntityId,
-    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationRequest,
-    SceneAuthoringService, SceneSaveError, StableId,
+    AuthoringPermission, AuthoringPermissions, EntityId, PrefabAuthoringError,
+    PrefabAuthoringService, PrefabInstantiationRequest, SceneAuthoringService, SceneSaveError,
+    StableId, replace_file_contents,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -25,16 +25,9 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
         [domain, command, project, scene, root, destination]
             if domain == "prefab" && command == "create" =>
         {
-            Some(prefab_create(
-                Path::new(project),
-                scene,
-                root,
-                destination,
-            ))
+            Some(prefab_create(Path::new(project), scene, root, destination))
         }
-        [domain, command, project, scene, source]
-            if domain == "prefab" && command == "preview" =>
-        {
+        [domain, command, project, scene, source] if domain == "prefab" && command == "preview" => {
             Some(prefab_mutate(
                 Path::new(project),
                 scene,
@@ -57,13 +50,7 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
         [domain, command, project, scene, source]
             if domain == "prefab" && command == "instantiate" =>
         {
-            Some(prefab_mutate(
-                Path::new(project),
-                scene,
-                source,
-                None,
-                true,
-            ))
+            Some(prefab_mutate(Path::new(project), scene, source, None, true))
         }
         [domain, command, project, scene, source, parent]
             if domain == "prefab" && command == "instantiate" =>
@@ -145,19 +132,9 @@ fn prefab_mutate(
     let request = PrefabInstantiationRequest::new(loaded.source, parent, revision, generation);
     let service = PrefabAuthoringService::new();
     let result = if persist {
-        service.apply_instantiation(
-            &mut context.session,
-            &permissions,
-            &loaded.prefab,
-            request,
-        )
+        service.apply_instantiation(&mut context.session, &permissions, &loaded.prefab, request)
     } else {
-        service.preview_instantiation(
-            &context.session,
-            &permissions,
-            &loaded.prefab,
-            request,
-        )
+        service.preview_instantiation(&context.session, &permissions, &loaded.prefab, request)
     };
     let output = match result {
         Ok(output) => output,
@@ -209,9 +186,8 @@ fn service_error(code: &'static str, message: String) -> CliRunResult {
         success: false,
         error: ServiceErrorBody { code, message },
     };
-    let json = serde_json::to_string_pretty(&output).unwrap_or_else(|_| {
-        "{\"success\":false,\"error\":{\"code\":\"internal_error\"}}".into()
-    });
+    let json = serde_json::to_string_pretty(&output)
+        .unwrap_or_else(|_| "{\"success\":false,\"error\":{\"code\":\"internal_error\"}}".into());
     CliRunResult::diagnostics(json, true)
 }
 

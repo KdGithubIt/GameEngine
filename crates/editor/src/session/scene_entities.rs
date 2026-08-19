@@ -4,8 +4,8 @@
 //! whole hierarchy is removed inside one transaction and one undo step;
 //! deleting a parent ahead of its children would fail validation instead.
 
-use super::errors::EditorSessionError;
 use super::EditorSession;
+use super::errors::EditorSessionError;
 use engine_authoring::{AuthoringCommand, ComponentTypeId, EntityId, Value};
 
 impl EditorSession {
@@ -295,7 +295,10 @@ impl EditorSession {
         ]));
         let renderer_value = Value::Object(BTreeMap::from([
             ("atlas".into(), Value::AssetRef(sprite.atlas)),
-            ("sprite_id".into(), Value::String(sprite.sprite.as_str().to_owned())),
+            (
+                "sprite_id".into(),
+                Value::String(sprite.sprite.as_str().to_owned()),
+            ),
             ("tint_r".into(), Value::F64(1.0)),
             ("tint_g".into(), Value::F64(1.0)),
             ("tint_b".into(), Value::F64(1.0)),
@@ -527,9 +530,11 @@ mod tests {
                 .and_then(|item| item.parent.clone()),
             Some(first.clone())
         );
-        assert!(session
-            .set_scene_entity_parent(first.clone(), Some(second.clone()))
-            .is_err());
+        assert!(
+            session
+                .set_scene_entity_parent(first.clone(), Some(second.clone()))
+                .is_err()
+        );
         assert!(session.undo());
         assert_eq!(
             session

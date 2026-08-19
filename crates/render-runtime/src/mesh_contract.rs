@@ -334,12 +334,60 @@ impl Mesh {
         let mut vertices = Vec::with_capacity(24);
         let mut indices = Vec::with_capacity(36);
         let faces = [
-            ([1.0, 0.0, 0.0], [[0.5, 0.5, 0.5], [0.5, -0.5, 0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5]]),
-            ([-1.0, 0.0, 0.0], [[-0.5, 0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [-0.5, 0.5, 0.5]]),
-            ([0.0, 1.0, 0.0], [[-0.5, 0.5, -0.5], [-0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5]]),
-            ([0.0, -1.0, 0.0], [[-0.5, -0.5, 0.5], [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5]]),
-            ([0.0, 0.0, 1.0], [[-0.5, 0.5, 0.5], [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5]]),
-            ([0.0, 0.0, -1.0], [[0.5, 0.5, -0.5], [0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5]]),
+            (
+                [1.0, 0.0, 0.0],
+                [
+                    [0.5, 0.5, 0.5],
+                    [0.5, -0.5, 0.5],
+                    [0.5, -0.5, -0.5],
+                    [0.5, 0.5, -0.5],
+                ],
+            ),
+            (
+                [-1.0, 0.0, 0.0],
+                [
+                    [-0.5, 0.5, -0.5],
+                    [-0.5, -0.5, -0.5],
+                    [-0.5, -0.5, 0.5],
+                    [-0.5, 0.5, 0.5],
+                ],
+            ),
+            (
+                [0.0, 1.0, 0.0],
+                [
+                    [-0.5, 0.5, -0.5],
+                    [-0.5, 0.5, 0.5],
+                    [0.5, 0.5, 0.5],
+                    [0.5, 0.5, -0.5],
+                ],
+            ),
+            (
+                [0.0, -1.0, 0.0],
+                [
+                    [-0.5, -0.5, 0.5],
+                    [-0.5, -0.5, -0.5],
+                    [0.5, -0.5, -0.5],
+                    [0.5, -0.5, 0.5],
+                ],
+            ),
+            (
+                [0.0, 0.0, 1.0],
+                [
+                    [-0.5, 0.5, 0.5],
+                    [-0.5, -0.5, 0.5],
+                    [0.5, -0.5, 0.5],
+                    [0.5, 0.5, 0.5],
+                ],
+            ),
+            (
+                [0.0, 0.0, -1.0],
+                [
+                    [0.5, 0.5, -0.5],
+                    [0.5, -0.5, -0.5],
+                    [-0.5, -0.5, -0.5],
+                    [-0.5, 0.5, -0.5],
+                ],
+            ),
         ];
 
         for (normal, positions) in faces {
@@ -374,10 +422,38 @@ impl Mesh {
         let normal = [0.0, 1.0, 0.0];
         Self {
             vertices: vec![
-                Vertex { position: [-half_width, 0.0, -half_depth], normal, color: [1.0; 3], uv: [0.0, 0.0], outline_scale: 1.0, additional_uv: [0.0; 2] },
-                Vertex { position: [-half_width, 0.0, half_depth], normal, color: [1.0; 3], uv: [0.0, 1.0], outline_scale: 1.0, additional_uv: [0.0; 2] },
-                Vertex { position: [half_width, 0.0, half_depth], normal, color: [1.0; 3], uv: [1.0, 1.0], outline_scale: 1.0, additional_uv: [0.0; 2] },
-                Vertex { position: [half_width, 0.0, -half_depth], normal, color: [1.0; 3], uv: [1.0, 0.0], outline_scale: 1.0, additional_uv: [0.0; 2] },
+                Vertex {
+                    position: [-half_width, 0.0, -half_depth],
+                    normal,
+                    color: [1.0; 3],
+                    uv: [0.0, 0.0],
+                    outline_scale: 1.0,
+                    additional_uv: [0.0; 2],
+                },
+                Vertex {
+                    position: [-half_width, 0.0, half_depth],
+                    normal,
+                    color: [1.0; 3],
+                    uv: [0.0, 1.0],
+                    outline_scale: 1.0,
+                    additional_uv: [0.0; 2],
+                },
+                Vertex {
+                    position: [half_width, 0.0, half_depth],
+                    normal,
+                    color: [1.0; 3],
+                    uv: [1.0, 1.0],
+                    outline_scale: 1.0,
+                    additional_uv: [0.0; 2],
+                },
+                Vertex {
+                    position: [half_width, 0.0, -half_depth],
+                    normal,
+                    color: [1.0; 3],
+                    uv: [1.0, 0.0],
+                    outline_scale: 1.0,
+                    additional_uv: [0.0; 2],
+                },
             ],
             indices: Some(vec![0, 1, 2, 0, 2, 3]),
             skinning: None,

@@ -320,9 +320,10 @@ impl RuntimeEventTimeline {
             return;
         };
         if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err() {
-                return;
-            }
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return;
+        }
         if std::fs::write(path, json).is_ok() {
             self.last_persisted_revision = self.revision;
         }

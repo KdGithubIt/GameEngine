@@ -200,9 +200,11 @@ mod validate_scene_tests {
 
         let diagnostics = validate_scene(&scene);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.no_active_camera"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.no_active_camera")
+        );
     }
 
     #[test]
@@ -212,9 +214,11 @@ mod validate_scene_tests {
 
         let diagnostics = validate_scene(&scene);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.no_active_camera"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.no_active_camera")
+        );
     }
 
     #[test]
@@ -225,9 +229,11 @@ mod validate_scene_tests {
 
         let diagnostics = validate_scene(&scene);
 
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.camera_priority_tie"));
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.camera_priority_tie")
+        );
     }
 
     #[test]
@@ -239,9 +245,11 @@ mod validate_scene_tests {
 
         let diagnostics = validate_scene(&scene);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.camera_priority_tie"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.camera_priority_tie")
+        );
     }
 
     #[test]
@@ -260,9 +268,11 @@ mod validate_scene_tests {
 
         let diagnostics = validate_scene(&scene);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.no_active_camera"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.no_active_camera")
+        );
     }
 
     #[test]
@@ -275,9 +285,11 @@ mod validate_scene_tests {
         scene.insert_entity(entity);
 
         let diagnostics = validate_scene(&scene);
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.material_without_mesh"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.material_without_mesh")
+        );
     }
 
     #[test]
@@ -293,9 +305,11 @@ mod validate_scene_tests {
         scene.insert_entity(entity);
 
         let diagnostics = validate_scene(&scene);
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.material_without_mesh"));
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.material_without_mesh")
+        );
     }
 
     #[test]
@@ -313,9 +327,11 @@ mod validate_scene_tests {
         scene.insert_entity(entity);
 
         let diagnostics = validate_scene(&scene);
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "validation.material_without_mesh"));
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "validation.material_without_mesh")
+        );
     }
 }
 

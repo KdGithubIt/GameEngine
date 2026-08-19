@@ -4,11 +4,11 @@
 //! Opening a document restores that sidecar when it is newer than the file it
 //! shadows; a normal save removes it again.
 
-use super::errors::{EditorLoadError, EditorPersistError};
 use super::EditorSession;
-use crate::document::{derive_view_path, CurrentDocument};
+use super::errors::{EditorLoadError, EditorPersistError};
+use crate::document::{CurrentDocument, derive_view_path};
 use engine_authoring::{
-    replace_file_contents, AuthoringSession, Diagnostic, Graph, GraphView, UiDocument,
+    AuthoringSession, Diagnostic, Graph, GraphView, UiDocument, replace_file_contents,
 };
 use std::path::{Path, PathBuf};
 
@@ -511,9 +511,11 @@ mod tests {
         assert!(
             engine_authoring::find_ui_node(reopened.ui_document().unwrap(), "recovered").is_some()
         );
-        assert!(reopened
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "editor.recovery_restored"));
+        assert!(
+            reopened
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "editor.recovery_restored")
+        );
     }
 }

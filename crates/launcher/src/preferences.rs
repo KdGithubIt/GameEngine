@@ -37,7 +37,9 @@ impl fmt::Display for LauncherPreferencesLoadError {
                 formatter.write_str("Launcher application-data directory is unavailable")
             }
             Self::Io(error) => write!(formatter, "could not read Launcher preferences: {error}"),
-            Self::Json(error) => write!(formatter, "could not decode Launcher preferences: {error}"),
+            Self::Json(error) => {
+                write!(formatter, "could not decode Launcher preferences: {error}")
+            }
         }
     }
 }
@@ -56,16 +58,14 @@ impl LauncherPreferences {
     }
 
     /// Loads preferences from an explicit file path used by focused tests.
-    pub(crate) fn load_checked_from(
-        path: &Path,
-    ) -> Result<Self, LauncherPreferencesLoadError> {
+    pub(crate) fn load_checked_from(path: &Path) -> Result<Self, LauncherPreferencesLoadError> {
         let data = match fs::read(path) {
             Ok(data) => data,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(LauncherPreferencesLoadError::Io(error)),
         };
-        let mut preferences = serde_json::from_slice::<Self>(&data)
-            .map_err(LauncherPreferencesLoadError::Json)?;
+        let mut preferences =
+            serde_json::from_slice::<Self>(&data).map_err(LauncherPreferencesLoadError::Json)?;
         preferences.recent_projects.retain(|path| path.is_dir());
         if preferences
             .new_project_parent

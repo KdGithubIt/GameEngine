@@ -5,8 +5,8 @@
 //! host ECS world or live component references across the module boundary.
 
 use crate::game_api::LocalTransformView;
-use crate::game_io::GameEntityHandle;
 use crate::game_contracts::GameComponent;
+use crate::game_io::GameEntityHandle;
 use engine_authoring::value::Value;
 use glam::{Quat, Vec3};
 use std::collections::BTreeMap;

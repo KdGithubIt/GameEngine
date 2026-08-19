@@ -259,7 +259,7 @@ fn detect_intervals_for_bone(
 mod tests {
     use super::*;
     use crate::animation::{AnimChannel, AnimProperty, Keyframe};
-    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef};
+    use crate::skeleton_asset::{BoneDef, compute_skeleton_identity};
     use engine_authoring::id::AssetId;
     use glam::Quat;
 

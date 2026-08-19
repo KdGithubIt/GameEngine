@@ -10,9 +10,9 @@
 //! scripted, it survives a model that never answers, and it never mixes a
 //! human-driven Editor session into measured evidence.
 
-use crate::benchmark_comparison::{compare_experiment, BenchmarkExperimentComparison};
+use crate::benchmark_comparison::{BenchmarkExperimentComparison, compare_experiment};
 use crate::benchmark_experiment::{
-    BenchmarkExperimentSpec, BenchmarkExperimentStore, BENCHMARK_FIXTURE_REPOSITORY_PATH,
+    BENCHMARK_FIXTURE_REPOSITORY_PATH, BenchmarkExperimentSpec, BenchmarkExperimentStore,
     ENGINE_COMMIT_HEAD,
 };
 use crate::benchmark_process::{BenchmarkCoordinatorState, BenchmarkExperimentCoordinator};
@@ -254,8 +254,8 @@ fn format_mean(mean_milli: Option<u64>) -> String {
 }
 
 fn read_spec(path: &Path) -> Result<BenchmarkExperimentSpec, String> {
-    let bytes = fs::read(path)
-        .map_err(|error| format!("could not read `{}`: {error}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|error| format!("could not read `{}`: {error}", path.display()))?;
     let spec = serde_json::from_slice::<BenchmarkExperimentSpec>(&bytes)
         .map_err(|error| format!("could not parse `{}`: {error}", path.display()))?;
     spec.validate()?;

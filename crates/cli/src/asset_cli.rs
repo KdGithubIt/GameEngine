@@ -1,9 +1,7 @@
-use super::{input_error_json, to_json, CliError, CliRunResult};
+use super::{CliError, CliRunResult, input_error_json, to_json};
 use engine_assets::asset::AssetManifest;
 use engine_assets::catalog::{AssetCatalogError, AssetCatalogService};
-use engine_authoring::{
-    AssetId, AuthoringPermissions, ProjectRoot, StableId,
-};
+use engine_authoring::{AssetId, AuthoringPermissions, ProjectRoot, StableId};
 use std::fs;
 use std::path::Path;
 
@@ -67,9 +65,8 @@ fn asset_inspect(project_path: &Path, asset_id: &str) -> Result<CliRunResult, Cl
 pub(super) fn load_catalog(
     project_path: &Path,
 ) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
-    let project = ProjectRoot::open(project_path).map_err(|error| {
-        input_error("project_error", project_path, &error.to_string())
-    })?;
+    let project = ProjectRoot::open(project_path)
+        .map_err(|error| input_error("project_error", project_path, &error.to_string()))?;
     let manifest_path = project.path().join("asset_manifest.json");
     let json = match fs::read_to_string(&manifest_path) {
         Ok(json) => json,
@@ -77,11 +74,7 @@ pub(super) fn load_catalog(
             return Ok((project, AssetManifest::default()));
         }
         Err(error) => {
-            return Err(input_error(
-                "io_error",
-                &manifest_path,
-                &error.to_string(),
-            ));
+            return Err(input_error("io_error", &manifest_path, &error.to_string()));
         }
     };
     let manifest = AssetManifest::from_json(&json).map_err(|error| {
@@ -102,7 +95,7 @@ fn input_error(kind: &'static str, path: &Path, message: &str) -> CliRunResult {
 mod tests {
     use super::*;
     use engine_assets::asset::{ImportSettings, ManifestEntry};
-    use engine_authoring::{ProjectConfig, PROJECT_SCHEMA_VERSION};
+    use engine_authoring::{PROJECT_SCHEMA_VERSION, ProjectConfig};
     use serde_json::Value;
     use std::path::PathBuf;
 
@@ -127,8 +120,7 @@ mod tests {
         let json = manifest
             .to_canonical_json()
             .expect("manifest fixture serialization");
-        fs::write(root.path().join("asset_manifest.json"), json)
-            .expect("manifest fixture write");
+        fs::write(root.path().join("asset_manifest.json"), json).expect("manifest fixture write");
     }
 
     #[test]
@@ -146,12 +138,7 @@ mod tests {
         );
         write_manifest(&root, &manifest);
         let direct = AssetCatalogService::new()
-            .search(
-                &root,
-                &manifest,
-                &AuthoringPermissions::read_only(),
-                "hero",
-            )
+            .search(&root, &manifest, &AuthoringPermissions::read_only(), "hero")
             .expect("direct catalog query");
 
         let output = crate::run_cli([
@@ -189,12 +176,8 @@ mod tests {
     #[test]
     fn missing_manifest_is_an_empty_catalog() {
         let (path, _root) = project();
-        let output = crate::run_cli([
-            "asset",
-            "search",
-            path.to_str().expect("UTF-8 test path"),
-        ])
-        .expect("missing manifest must behave as empty catalog");
+        let output = crate::run_cli(["asset", "search", path.to_str().expect("UTF-8 test path")])
+            .expect("missing manifest must behave as empty catalog");
         let output: Value = serde_json::from_str(&output).expect("catalog JSON");
 
         assert_eq!(output["assets"].as_array().map(Vec::len), Some(0));

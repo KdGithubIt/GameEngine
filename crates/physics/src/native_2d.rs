@@ -548,10 +548,7 @@ impl PhysicsWorld2d {
         }
     }
 
-    fn transition_events(
-        &mut self,
-        current: BTreeMap<(u64, u64), bool>,
-    ) -> Vec<ContactEvent2d> {
+    fn transition_events(&mut self, current: BTreeMap<(u64, u64), bool>) -> Vec<ContactEvent2d> {
         let mut events = Vec::new();
         for (&(a, b), &sensor) in &current {
             events.push(ContactEvent2d {
@@ -730,10 +727,7 @@ fn bounds(entry: &BodyEntry2d) -> (Vec2, Vec2) {
 }
 
 fn aabb_overlap(a_min: Vec2, a_max: Vec2, b_min: Vec2, b_max: Vec2) -> bool {
-    a_min.x <= b_max.x
-        && a_max.x >= b_min.x
-        && a_min.y <= b_max.y
-        && a_max.y >= b_min.y
+    a_min.x <= b_max.x && a_max.x >= b_min.x && a_min.y <= b_max.y && a_max.y >= b_min.y
 }
 
 fn contact_manifold(a: &BodyEntry2d, b: &BodyEntry2d) -> Option<(Vec2, f32)> {
@@ -801,10 +795,14 @@ fn apply_pair_correction(
     if total <= f32::EPSILON {
         return;
     }
-    if a_inverse > 0.0 && let Some(entry) = bodies.get_mut(&a_id) {
+    if a_inverse > 0.0
+        && let Some(entry) = bodies.get_mut(&a_id)
+    {
         entry.pose.translation -= correction * (a_inverse / total);
     }
-    if b_inverse > 0.0 && let Some(entry) = bodies.get_mut(&b_id) {
+    if b_inverse > 0.0
+        && let Some(entry) = bodies.get_mut(&b_id)
+    {
         entry.pose.translation += correction * (b_inverse / total);
     }
 }
@@ -830,10 +828,14 @@ fn resolve_solid_contact(
     }
 
     let correction = normal * penetration.max(0.0);
-    if a_inverse > 0.0 && let Some(entry) = bodies.get_mut(&a_id) {
+    if a_inverse > 0.0
+        && let Some(entry) = bodies.get_mut(&a_id)
+    {
         entry.pose.translation -= correction * (a_inverse / inverse_sum);
     }
-    if b_inverse > 0.0 && let Some(entry) = bodies.get_mut(&b_id) {
+    if b_inverse > 0.0
+        && let Some(entry) = bodies.get_mut(&b_id)
+    {
         entry.pose.translation += correction * (b_inverse / inverse_sum);
     }
 
@@ -844,7 +846,11 @@ fn resolve_solid_contact(
     if normal_speed >= 0.0 {
         return;
     }
-    let restitution = a.collider.restitution.min(b.collider.restitution).clamp(0.0, 1.0);
+    let restitution = a
+        .collider
+        .restitution
+        .min(b.collider.restitution)
+        .clamp(0.0, 1.0);
     let normal_impulse = -(1.0 + restitution) * normal_speed / inverse_sum;
     let mut a_result = a_velocity - normal * normal_impulse * a_inverse;
     let mut b_result = b_velocity + normal * normal_impulse * b_inverse;
@@ -852,15 +858,19 @@ fn resolve_solid_contact(
     let tangent = Vec2::new(-normal.y, normal.x);
     let tangent_speed = (b_result - a_result).dot(tangent);
     let friction = (a.collider.friction.max(0.0) * b.collider.friction.max(0.0)).sqrt();
-    let tangent_impulse = (-tangent_speed / inverse_sum)
-        .clamp(-normal_impulse * friction, normal_impulse * friction);
+    let tangent_impulse =
+        (-tangent_speed / inverse_sum).clamp(-normal_impulse * friction, normal_impulse * friction);
     a_result -= tangent * tangent_impulse * a_inverse;
     b_result += tangent * tangent_impulse * b_inverse;
 
-    if a_inverse > 0.0 && let Some(entry) = bodies.get_mut(&a_id) {
+    if a_inverse > 0.0
+        && let Some(entry) = bodies.get_mut(&a_id)
+    {
         entry.body.velocity = a_result.to_array();
     }
-    if b_inverse > 0.0 && let Some(entry) = bodies.get_mut(&b_id) {
+    if b_inverse > 0.0
+        && let Some(entry) = bodies.get_mut(&b_id)
+    {
         entry.body.velocity = b_result.to_array();
     }
 }
@@ -898,7 +908,8 @@ fn resolve_solid_contact_with_static(
     let tangent = Vec2::new(-normal.y, normal.x);
     let tangent_speed = (-result).dot(tangent);
     let friction = (body.collider.friction.max(0.0) * fixed.collider.friction.max(0.0)).sqrt();
-    let tangent_impulse = (-tangent_speed).clamp(-normal_impulse * friction, normal_impulse * friction);
+    let tangent_impulse =
+        (-tangent_speed).clamp(-normal_impulse * friction, normal_impulse * friction);
     result -= tangent * tangent_impulse;
 
     if let Some(entry) = bodies.get_mut(&body_id) {
@@ -906,13 +917,7 @@ fn resolve_solid_contact_with_static(
     }
 }
 
-fn ray_aabb(
-    origin: Vec2,
-    direction: Vec2,
-    min: Vec2,
-    max: Vec2,
-    max_distance: f32,
-) -> Option<f32> {
+fn ray_aabb(origin: Vec2, direction: Vec2, min: Vec2, max: Vec2, max_distance: f32) -> Option<f32> {
     let mut enter = 0.0_f32;
     let mut exit = max_distance;
     for axis in 0..2 {
@@ -1010,8 +1015,8 @@ impl CharacterController2d {
         self.ground_normal = Vec2::Y;
         self.hit_wall = false;
         self.hit_ceiling = false;
-        let half_extents = (self.half_extents - Vec2::splat(self.skin.max(0.0)))
-            .max(Vec2::splat(0.001));
+        let half_extents =
+            (self.half_extents - Vec2::splat(self.skin.max(0.0))).max(Vec2::splat(0.001));
         let mut position = start;
 
         let target_x = position + Vec2::new(delta.x, 0.0);
@@ -1179,7 +1184,11 @@ mod tests {
         falling.body.velocity = [0.0, -1.0];
         world.upsert(falling);
         let events = world.step(1.0 / 60.0, Vec2::ZERO);
-        assert!(events.iter().any(|event| event.phase == ContactPhase2d::Enter));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.phase == ContactPhase2d::Enter)
+        );
         assert!(world.body(2).unwrap().pose.translation.y >= 0.99);
     }
 
@@ -1194,9 +1203,10 @@ mod tests {
         assert!(enter.iter().any(|event| event.sensor));
         world.body_mut(2).unwrap().pose.translation = Vec2::new(5.0, 0.0);
         let exit = world.step(1.0 / 60.0, Vec2::ZERO);
-        assert!(exit.iter().any(|event| {
-            event.phase == ContactPhase2d::Exit && event.sensor
-        }));
+        assert!(
+            exit.iter()
+                .any(|event| { event.phase == ContactPhase2d::Exit && event.sensor })
+        );
     }
 
     #[test]
@@ -1247,15 +1257,20 @@ mod tests {
             .ray_cast(Vec2::new(-2.0, 0.0), Vec2::X, 5.0, u32::MAX)
             .expect("static chunk must be queryable");
         assert_eq!(hit.entity, 9);
-        assert_eq!(world.overlap_box(Vec2::ZERO, Vec2::splat(0.25), u32::MAX), vec![9]);
+        assert_eq!(
+            world.overlap_box(Vec2::ZERO, Vec2::splat(0.25), u32::MAX),
+            vec![9]
+        );
 
         let mut falling = box_body(2, RigidBodyMode2d::Dynamic, Vec2::new(0.0, 0.75));
         falling.body.velocity = [0.0, -1.0];
         world.upsert(falling);
         let events = world.step(1.0 / 60.0, Vec2::ZERO);
-        assert!(events.iter().any(|event| {
-            event.a == 2 && event.b == 9 && event.phase == ContactPhase2d::Enter
-        }));
+        assert!(
+            events.iter().any(|event| {
+                event.a == 2 && event.b == 9 && event.phase == ContactPhase2d::Enter
+            })
+        );
         assert!(world.body(2).unwrap().pose.translation.y >= 0.99);
     }
 }

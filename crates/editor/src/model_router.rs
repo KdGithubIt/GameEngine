@@ -5,8 +5,8 @@
 //! preserves successful completion and improves the configured objective.
 
 use crate::agent_benchmark::{
-    comparison_equivalence, BenchmarkRecord, BenchmarkTaskKind, ComparisonEquivalence,
-    BENCHMARK_TASKS,
+    BENCHMARK_TASKS, BenchmarkRecord, BenchmarkTaskKind, ComparisonEquivalence,
+    comparison_equivalence,
 };
 use crate::native_agent::NativeModelConfig;
 use crate::resource_arbitration::TelemetryValue;
@@ -115,19 +115,33 @@ impl ModelRouteDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ModelRoutingError {
-    CapabilityUnavailable { workload: RoutingWorkload, capability: &'static str },
-    UserDecisionRequired { workload: RoutingWorkload, backend_id: String, model_id: String },
+    CapabilityUnavailable {
+        workload: RoutingWorkload,
+        capability: &'static str,
+    },
+    UserDecisionRequired {
+        workload: RoutingWorkload,
+        backend_id: String,
+        model_id: String,
+    },
 }
 
 impl fmt::Display for ModelRoutingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CapabilityUnavailable { workload, capability } => write!(
+            Self::CapabilityUnavailable {
+                workload,
+                capability,
+            } => write!(
                 formatter,
                 "no benchmark-qualified model declares required {capability} capability for {}",
                 workload.label()
             ),
-            Self::UserDecisionRequired { workload, backend_id, model_id } => write!(
+            Self::UserDecisionRequired {
+                workload,
+                backend_id,
+                model_id,
+            } => write!(
                 formatter,
                 "routing {} to remote backend `{backend_id}` model `{model_id}` requires an explicit user decision because processing posture/cost class would change",
                 workload.label()
@@ -149,9 +163,7 @@ impl ModelRoutingPolicy {
         let mut image_verified = BTreeSet::new();
 
         for record in records {
-            if record.identity.task_id == "visual_evaluation_v1"
-                && record_success(record)
-            {
+            if record.identity.task_id == "visual_evaluation_v1" && record_success(record) {
                 image_verified.insert(ModelKey {
                     backend_id: record.identity.model.backend_id.clone(),
                     model_id: record.identity.model.model_id.clone(),
@@ -185,7 +197,11 @@ impl ModelRoutingPolicy {
             }
         }
 
-        Self { primary, specialists, image_verified }
+        Self {
+            primary,
+            specialists,
+            image_verified,
+        }
     }
 
     pub(crate) fn adopted_specialist_count(&self) -> usize {
@@ -241,7 +257,11 @@ impl ModelRoutingPolicy {
 
         Err(ModelRoutingError::CapabilityUnavailable {
             workload,
-            capability: if requires_image { "image input" } else { "requested" },
+            capability: if requires_image {
+                "image input"
+            } else {
+                "requested"
+            },
         })
     }
 
@@ -317,14 +337,19 @@ fn best_comparable_improvement(
                 _ => 0,
             };
             let latency_improves = match (baseline_elapsed, specialist_elapsed) {
-                (Some(left), Some(right)) if left > 0 => right.saturating_mul(100)
-                    <= left.saturating_mul(100 - MIN_LATENCY_IMPROVEMENT_PERCENT),
+                (Some(left), Some(right)) if left > 0 => {
+                    right.saturating_mul(100)
+                        <= left.saturating_mul(100 - MIN_LATENCY_IMPROVEMENT_PERCENT)
+                }
                 _ => false,
             };
             if !success_gain && !latency_improves {
                 continue;
             }
-            let rank = ImprovementRank { success_gain, latency_gain_ms };
+            let rank = ImprovementRank {
+                success_gain,
+                latency_gain_ms,
+            };
             if best.as_ref().is_none_or(|(_, current)| rank > *current) {
                 best = Some((
                     RoutingSpecialist {
@@ -343,8 +368,13 @@ fn best_comparable_improvement(
 }
 
 fn record_success(record: &BenchmarkRecord) -> bool {
-    matches!(record.metrics.completion_success, TelemetryValue::Measured(true))
-        && !matches!(record.metrics.acceptance_success, TelemetryValue::Measured(false))
+    matches!(
+        record.metrics.completion_success,
+        TelemetryValue::Measured(true)
+    ) && !matches!(
+        record.metrics.acceptance_success,
+        TelemetryValue::Measured(false)
+    )
 }
 
 fn has_oom_regression(baseline: &BenchmarkRecord, candidate: &BenchmarkRecord) -> bool {
@@ -369,11 +399,11 @@ fn measured_u64(value: &TelemetryValue<u64>) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::agent_benchmark::{
+        BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BENCHMARK_SCHEMA_VERSION,
         BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics, BenchmarkModelIdentity,
-        BenchmarkToolBudget, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION,
-        BENCHMARK_SCHEMA_VERSION,
+        BenchmarkToolBudget,
     };
-    use crate::native_agent::{LocalModelConfig, DEFAULT_LOCAL_MODEL_ENDPOINT};
+    use crate::native_agent::{DEFAULT_LOCAL_MODEL_ENDPOINT, LocalModelConfig};
     use crate::resource_arbitration::{InferenceWorkload, QualityPreference};
 
     fn local(model: &str) -> NativeModelConfig {
@@ -491,11 +521,7 @@ mod tests {
             measured_record("primary", 2, 1_000, true),
             measured_record("specialist", 2, 900, true),
         ];
-        let policy = ModelRoutingPolicy::derive(
-            primary,
-            vec![specialist],
-            &records,
-        );
+        let policy = ModelRoutingPolicy::derive(primary, vec![specialist], &records);
 
         let decision = policy
             .select(RoutingWorkload::CodeImplementation, false)
@@ -503,7 +529,11 @@ mod tests {
         assert_eq!(decision.config.model_id(), "specialist");
         assert!(decision.context_handoff);
         assert!(!decision.fallback);
-        assert!(decision.audit_summary().contains(MODEL_ROUTER_POLICY_VERSION));
+        assert!(
+            decision
+                .audit_summary()
+                .contains(MODEL_ROUTER_POLICY_VERSION)
+        );
     }
 
     #[test]
@@ -514,11 +544,7 @@ mod tests {
             measured_record("primary", 2, 1_000, true),
             measured_record("specialist", 2, 960, true),
         ];
-        let policy = ModelRoutingPolicy::derive(
-            primary,
-            vec![specialist],
-            &records,
-        );
+        let policy = ModelRoutingPolicy::derive(primary, vec![specialist], &records);
 
         let decision = policy
             .select(RoutingWorkload::CodeImplementation, false)
@@ -535,11 +561,7 @@ mod tests {
         let baseline = measured_record("primary", 2, 1_000, true);
         let mut regressed = measured_record("specialist", 2, 800, true);
         regressed.metrics.oom_failures = TelemetryValue::Measured(1);
-        let policy = ModelRoutingPolicy::derive(
-            primary,
-            vec![specialist],
-            &[baseline, regressed],
-        );
+        let policy = ModelRoutingPolicy::derive(primary, vec![specialist], &[baseline, regressed]);
 
         let decision = policy
             .select(RoutingWorkload::CodeImplementation, false)
@@ -577,19 +599,18 @@ mod tests {
             measured_record("primary", 2, 1_000, true),
             measured_record("specialist", 2, 900, true),
         ];
-        let policy = ModelRoutingPolicy::derive(
-            primary.clone(),
-            vec![specialist.clone()],
-            &records,
-        );
+        let policy =
+            ModelRoutingPolicy::derive(primary.clone(), vec![specialist.clone()], &records);
         let fallback = policy
             .fallback(&specialist, RoutingWorkload::CodeImplementation, false)
             .expect("specialist fallback");
         assert_eq!(fallback.config.model_id(), "primary");
         assert!(fallback.context_handoff);
         assert!(fallback.fallback);
-        assert!(policy
-            .fallback(&primary, RoutingWorkload::CodeImplementation, false)
-            .is_none());
+        assert!(
+            policy
+                .fallback(&primary, RoutingWorkload::CodeImplementation, false)
+                .is_none()
+        );
     }
 }

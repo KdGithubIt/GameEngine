@@ -442,12 +442,13 @@ mod tests {
         )
         .unwrap();
 
-        assert!(app
-            .schedule
-            .system_accesses()
-            .next()
-            .expect("bridge access must exist")
-            .is_exclusive_world());
+        assert!(
+            app.schedule
+                .system_accesses()
+                .next()
+                .expect("bridge access must exist")
+                .is_exclusive_world()
+        );
         app.update().unwrap();
         assert_eq!(app.world().get_resource::<u32>(), Some(&17));
     }

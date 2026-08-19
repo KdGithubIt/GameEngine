@@ -702,18 +702,24 @@ mod tests {
         assert_eq!(report.kept_count(), 1);
         assert_eq!(report.added_count(), 1);
         assert_eq!(report.retired_count(), 1);
-        assert!(report
-            .rows
-            .iter()
-            .any(|row| row.name == "root" && row.status == SkeletonBoneStatus::Kept));
-        assert!(report
-            .rows
-            .iter()
-            .any(|row| row.name == "new_tip" && row.status == SkeletonBoneStatus::Added));
-        assert!(report
-            .rows
-            .iter()
-            .any(|row| row.name == "old_tip" && row.status == SkeletonBoneStatus::Retired));
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.name == "root" && row.status == SkeletonBoneStatus::Kept)
+        );
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.name == "new_tip" && row.status == SkeletonBoneStatus::Added)
+        );
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.name == "old_tip" && row.status == SkeletonBoneStatus::Retired)
+        );
     }
 
     #[test]

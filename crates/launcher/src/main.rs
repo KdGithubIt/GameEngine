@@ -8,15 +8,15 @@ mod theme;
 mod visual_capture;
 
 use eframe::egui;
-use native_2d_template::ProjectTemplate;
 use engine_launcher::LauncherPreferences;
 #[cfg(test)]
 use engine_launcher::MAX_RECENT_PROJECTS;
 use engine_project_lifecycle::{
+    CURRENT_ENGINE_ASSOCIATION, EditorLaunchOutcome, LauncherRequest, LauncherSession,
     acquire_launcher, create_standard_project, editor_is_ready, editor_owner_metadata,
-    inspect_project, launch_or_activate_editor, request_editor_close, EditorLaunchOutcome,
-    LauncherRequest, LauncherSession, CURRENT_ENGINE_ASSOCIATION,
+    inspect_project, launch_or_activate_editor, request_editor_close,
 };
+use native_2d_template::ProjectTemplate;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -186,7 +186,10 @@ impl RecentProjectList {
                 .zip(paths)
                 .all(|(entry, path)| &entry.path == path);
         if is_aged || !matches_paths {
-            self.entries = paths.iter().map(|path| RecentProject::resolve(path)).collect();
+            self.entries = paths
+                .iter()
+                .map(|path| RecentProject::resolve(path))
+                .collect();
             self.resolved_at = Some(Instant::now());
         }
     }
@@ -297,7 +300,10 @@ impl LauncherApp {
         match created {
             Ok(path) => {
                 self.preferences.push_recent(&path);
-                self.status = Some(StatusMessage::success(format!("Created {}", path.display())));
+                self.status = Some(StatusMessage::success(format!(
+                    "Created {}",
+                    path.display()
+                )));
                 self.open_project(path);
             }
             Err(error) => {
@@ -352,7 +358,8 @@ impl LauncherApp {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.add_space(28.0);
-                let (mark, _) = ui.allocate_exact_size(egui::vec2(62.0, 62.0), egui::Sense::hover());
+                let (mark, _) =
+                    ui.allocate_exact_size(egui::vec2(62.0, 62.0), egui::Sense::hover());
                 theme::paint_engine_mark(ui.painter(), mark.center(), 28.0);
                 ui.add_space(20.0);
                 ui.vertical(|ui| {
@@ -377,11 +384,9 @@ impl LauncherApp {
                     });
                     ui.add_space(2.0);
                     ui.label(
-                        egui::RichText::new(
-                            "Open a project in the Editor, or scaffold a new one.",
-                        )
-                        .small()
-                        .color(theme::TEXT_MUTED),
+                        egui::RichText::new("Open a project in the Editor, or scaffold a new one.")
+                            .small()
+                            .color(theme::TEXT_MUTED),
                     );
                 });
             },
@@ -458,16 +463,13 @@ impl LauncherApp {
     fn recent_column(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             theme::section_caption(ui, "Recent projects");
-            ui.with_layout(
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{}", self.recent.entries.len()))
-                            .small()
-                            .color(theme::TEXT_MUTED),
-                    );
-                },
-            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}", self.recent.entries.len()))
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                );
+            });
         });
         theme::section_rule(ui);
 
@@ -520,24 +522,21 @@ impl LauncherApp {
                             .strong()
                             .color(theme::ACCENT_TEXT),
                     );
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            if ui.button("Cancel").clicked() {
-                                self.switch_from = None;
-                                self.pending_switch = None;
-                            }
-                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} stays open until the new project is ready.",
-                                    source.display()
-                                ))
-                                .small()
-                                .color(theme::TEXT_MUTED),
-                            );
-                        },
-                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.switch_from = None;
+                            self.pending_switch = None;
+                        }
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} stays open until the new project is ready.",
+                                source.display()
+                            ))
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                        );
+                    });
                 });
             });
         ui.add_space(8.0);
@@ -577,20 +576,17 @@ impl LauncherApp {
             }
 
             if let Some(pending) = &self.pending_switch {
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Waiting for {}…",
-                                display_name(&pending.target)
-                            ))
-                            .small()
-                            .color(theme::TEXT_MUTED),
-                        );
-                    },
-                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Waiting for {}…",
+                            display_name(&pending.target)
+                        ))
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                    );
+                });
             }
         });
     }
@@ -738,33 +734,28 @@ fn recent_project_row(ui: &mut egui::Ui, index: usize, project: &RecentProject) 
                                 .color(theme::TEXT_MUTED),
                         );
                     });
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            ui.add_space(ROW_PADDING.x - 6.0);
-                            let forget = ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("×")
-                                            .size(17.0)
-                                            .color(theme::TEXT_MUTED),
-                                    )
-                                    .frame(false)
-                                    .min_size(egui::vec2(22.0, 22.0)),
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(ROW_PADDING.x - 6.0);
+                        let forget = ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("×").size(17.0).color(theme::TEXT_MUTED),
                                 )
-                                .on_hover_text("Remove from recent projects");
-                            if forget.clicked() {
-                                action = RowAction::Forget;
-                            }
-                            if let Some(badge) = project.availability.badge() {
-                                ui.label(
-                                    egui::RichText::new(badge)
-                                        .small()
-                                        .color(project.availability.color()),
-                                );
-                            }
-                        },
-                    );
+                                .frame(false)
+                                .min_size(egui::vec2(22.0, 22.0)),
+                            )
+                            .on_hover_text("Remove from recent projects");
+                        if forget.clicked() {
+                            action = RowAction::Forget;
+                        }
+                        if let Some(badge) = project.availability.badge() {
+                            ui.label(
+                                egui::RichText::new(badge)
+                                    .small()
+                                    .color(project.availability.color()),
+                            );
+                        }
+                    });
                 });
                 ui.add_space(ROW_PADDING.y);
                 ui.painter()

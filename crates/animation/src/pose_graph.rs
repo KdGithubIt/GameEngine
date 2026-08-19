@@ -7,7 +7,7 @@
 use glam::{Quat, Vec3};
 use hashbrown::{HashMap, HashSet};
 
-use crate::animation::{lerp_channel, lerp_morph_channel, AnimProperty, AnimationClip};
+use crate::animation::{AnimProperty, AnimationClip, lerp_channel, lerp_morph_channel};
 use crate::rig_pose::{PoseBlend, PoseChannels, PoseLayer};
 use crate::skeleton_asset::BoneId;
 
@@ -67,12 +67,7 @@ impl BoneMask {
     /// skeleton ends the chain rather than indexing out of range, matching
     /// the non-panicking hierarchy policy used elsewhere in the pose runtime.
     #[must_use]
-    pub fn from_subtree(
-        parents: &[Option<usize>],
-        root: usize,
-        inside: f32,
-        outside: f32,
-    ) -> Self {
+    pub fn from_subtree(parents: &[Option<usize>], root: usize, inside: f32, outside: f32) -> Self {
         let mut weights = vec![outside; parents.len()];
         for index in 0..parents.len() {
             let in_subtree = index == root
@@ -242,9 +237,7 @@ impl PoseGraphOutput {
                         .write_translation(index, Vec3::new(value[0], value[1], value[2]));
                 }
                 (Some(index), _, AnimProperty::Rotation) => {
-                    output
-                        .joints
-                        .write_rotation(index, Quat::from_array(value));
+                    output.joints.write_rotation(index, Quat::from_array(value));
                 }
                 (Some(index), _, AnimProperty::Scale) => {
                     output
@@ -265,14 +258,12 @@ impl PoseGraphOutput {
                 (None, Some(_), _) => {}
             }
         }
-        output.morph_weights.extend(
-            clip.morph_channels
-                .iter()
-                .filter_map(|channel| {
-                    lerp_morph_channel(channel, time)
-                        .map(|weight| (channel.target_name.clone(), weight))
-                }),
-        );
+        output
+            .morph_weights
+            .extend(clip.morph_channels.iter().filter_map(|channel| {
+                lerp_morph_channel(channel, time)
+                    .map(|weight| (channel.target_name.clone(), weight))
+            }));
     }
 
     /// Blends two evaluated outputs without consulting runtime state.
@@ -433,13 +424,16 @@ impl PoseGraphOutput {
             let joint_weight = weight * mask.map_or(1.0, |mask| mask.weight(index));
             if let Some(base_value) = active_translation(&base.joints, index) {
                 let added = active_translation(&delta.joints, index)
-                    .map_or(base_value, |delta_value| base_value + delta_value * joint_weight);
+                    .map_or(base_value, |delta_value| {
+                        base_value + delta_value * joint_weight
+                    });
                 self.joints.write_translation(index, added);
             }
             if let Some(base_value) = active_rotation(&base.joints, index) {
-                let added = active_rotation(&delta.joints, index).map_or(base_value, |delta_value| {
-                    (base_value * Quat::IDENTITY.slerp(delta_value, joint_weight)).normalize()
-                });
+                let added =
+                    active_rotation(&delta.joints, index).map_or(base_value, |delta_value| {
+                        (base_value * Quat::IDENTITY.slerp(delta_value, joint_weight)).normalize()
+                    });
                 self.joints.write_rotation(index, added);
             }
             if let Some(base_value) = active_scale(&base.joints, index) {
@@ -463,10 +457,9 @@ impl PoseGraphOutput {
                 })
             }),
             scale: base.entity.scale.map(|base_value| {
-                delta
-                    .entity
-                    .scale
-                    .map_or(base_value, |delta_value| base_value * Vec3::ONE.lerp(delta_value, weight))
+                delta.entity.scale.map_or(base_value, |delta_value| {
+                    base_value * Vec3::ONE.lerp(delta_value, weight)
+                })
             }),
         };
         for name in morph_names(base, delta) {
@@ -657,13 +650,11 @@ mod tests {
     fn a_bone_mask_scales_the_blend_weight_per_joint() {
         let source = joint_pose(2, 0, Transform::from_translation(Vec3::ZERO));
         let mut target = joint_pose(2, 0, Transform::from_translation(Vec3::new(0.0, 4.0, 0.0)));
-        target
-            .joints
-            .set_transform(
-                1,
-                Transform::from_translation(Vec3::new(0.0, 4.0, 0.0)),
-                PoseChannels::ALL,
-            );
+        target.joints.set_transform(
+            1,
+            Transform::from_translation(Vec3::new(0.0, 4.0, 0.0)),
+            PoseChannels::ALL,
+        );
         let mut masked_source = source.clone();
         masked_source.joints.set_transform(
             1,
@@ -724,7 +715,12 @@ mod tests {
         applied.apply_additive_into(&reference, &delta, 1.0, None);
 
         let result = applied.joints.transform(0).expect("joint must be driven");
-        assert!(result.translation.distance(pose.joints.transform(0).unwrap().translation) < 1.0e-5);
+        assert!(
+            result
+                .translation
+                .distance(pose.joints.transform(0).unwrap().translation)
+                < 1.0e-5
+        );
         assert!(result.rotation.angle_between(Quat::from_rotation_z(0.75)) < 1.0e-4);
         assert!((result.scale.x - 4.0).abs() < 1.0e-5);
     }

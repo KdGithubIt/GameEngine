@@ -7,7 +7,7 @@
 
 use serde_json::Value as JsonValue;
 
-use crate::load::{load_scene_from_json, SceneLoadError};
+use crate::load::{SceneLoadError, load_scene_from_json};
 use crate::scene::{AuthoringScene, SCENE_SCHEMA_VERSION};
 
 /// Completes a partial scene document and returns its serialized text.

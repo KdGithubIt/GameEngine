@@ -3,35 +3,35 @@ use std::fmt;
 use std::sync::{Arc, Weak};
 
 use crate::camera::{Camera3D, ViewportSize};
-use crate::game_camera::PreparedCamera;
-use crate::native_2d::{
-    cull_tile_chunks, sort_and_batch_sprites, Camera2d, Camera2dDiagnostic, Native2dRenderMetrics,
-    ResolvedSpriteRegion2d, ResolvedTileMap2d, SpriteInstance2d, TileChunkBounds2d, TileMap2d,
-    ViewRect2d,
-};
 use crate::debug_draw::{DebugLine, DebugLines};
 use crate::environment::EnvironmentGpuState;
+use crate::game_camera::PreparedCamera;
+use crate::gpu_streaming::{GpuUploadBudget, GpuUploadFrame, GpuUploadReport};
 use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
 use crate::lod::InstanceStats;
 use crate::material::{
     AlphaMode, CullMode, Material, MaterialSlots, ShadingModel, SphereBlendMode,
     SphereCoordinateSource,
 };
-use crate::gpu_streaming::{GpuUploadBudget, GpuUploadFrame, GpuUploadReport};
 use crate::material::{DecodedTexture, GpuTextureEncoding, SharedGpuTextureCache, Texture};
 use crate::mesh::{
     GpuMesh, GpuMeshCache, InstanceData, Mesh, MeshValidationError, TangentVertexData, Vertex,
 };
+use crate::native_2d::{
+    Camera2d, Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, ResolvedTileMap2d,
+    SpriteInstance2d, TileChunkBounds2d, TileMap2d, ViewRect2d, cull_tile_chunks,
+    sort_and_batch_sprites,
+};
 use crate::postprocess::{PostProcessSettings, ToneMapOperator};
 use crate::render_limits::{MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS};
 use crate::shadow::{
-    cascade_view_projections, EnvironmentLighting, ShadowSettings, SHADOW_CASCADE_COUNT,
+    EnvironmentLighting, SHADOW_CASCADE_COUNT, ShadowSettings, cascade_view_projections,
 };
+use crate::transform::{GlobalTransform, Parent};
 use engine_authoring::{
     PixelsPerUnit, Project2dSettings, SpriteBlendMode, SpriteFiltering, SpriteRenderer2d,
 };
-use engine_rig::skinning::{JointPalette, SkinnedMesh, MAX_JOINTS};
-use crate::transform::{GlobalTransform, Parent};
+use engine_rig::skinning::{JointPalette, MAX_JOINTS, SkinnedMesh};
 
 /// Vertical reference resolution used to normalize projected outline widths.
 const OUTLINE_REFERENCE_HEIGHT: u32 = 1024;
@@ -146,12 +146,7 @@ impl PointLightUniform {
         }
         Some(Self {
             position_range: [position.x, position.y, position.z, light.range],
-            color_intensity: [
-                light.color.x,
-                light.color.y,
-                light.color.z,
-                light.intensity,
-            ],
+            color_intensity: [light.color.x, light.color.y, light.color.z, light.intensity],
         })
     }
 }
@@ -196,12 +191,7 @@ impl SpotLightUniform {
                 direction.z,
                 light.outer_angle_radians.cos(),
             ],
-            color_intensity: [
-                light.color.x,
-                light.color.y,
-                light.color.z,
-                light.intensity,
-            ],
+            color_intensity: [light.color.x, light.color.y, light.color.z, light.intensity],
             params: [light.inner_angle_radians.cos(), 0.0, 0.0, 0.0],
         })
     }
@@ -642,8 +632,8 @@ struct MaterialUniformData {
 
 impl MaterialUniformData {
     fn from_material(material: &Material) -> Self {
-        let has_ramp = material.toon.ramp_texture.is_some()
-            || material.toon.pending_ramp_texture.is_some();
+        let has_ramp =
+            material.toon.ramp_texture.is_some() || material.toon.pending_ramp_texture.is_some();
         let has_sphere = material.toon.sphere_texture.is_some()
             || material.toon.pending_sphere_texture.is_some();
         Self {
@@ -687,14 +677,13 @@ impl MaterialUniformData {
                 material.outline.color[0],
                 material.outline.color[1],
                 material.outline.color[2],
-                if material.outline.enabled { material.outline.width } else { 0.0 },
+                if material.outline.enabled {
+                    material.outline.width
+                } else {
+                    0.0
+                },
             ],
-            pbr_params: [
-                material.normal_scale,
-                material.occlusion_strength,
-                0.0,
-                0.0,
-            ],
+            pbr_params: [material.normal_scale, material.occlusion_strength, 0.0, 0.0],
         }
     }
 
@@ -738,11 +727,7 @@ impl OutlineInstanceData {
     };
 
     /// Copies the shared transform and alpha data and appends its group ID.
-    fn from_instance(
-        instance: InstanceData,
-        outline_group: u32,
-        outline_material: u32,
-    ) -> Self {
+    fn from_instance(instance: InstanceData, outline_group: u32, outline_material: u32) -> Self {
         Self {
             model: instance.model,
             color: instance.color,
@@ -919,8 +904,7 @@ impl OutlineTargets {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: OUTLINE_STYLE_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let style_view = style_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -932,8 +916,7 @@ impl OutlineTargets {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: OUTLINE_GROUP_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let group_view = group_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1016,11 +999,7 @@ struct MainPassColorTarget {
 }
 
 impl MainPassColorTarget {
-    fn new(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        size: [u32; 2],
-    ) -> Self {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, size: [u32; 2]) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Main pass MSAA color"),
             size: wgpu::Extent3d {
@@ -1145,9 +1124,7 @@ impl SpriteRenderState {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Native 2D sprite shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/native_2d_sprite.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/native_2d_sprite.wgsl").into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Native 2D sprite pipeline layout"),
@@ -1535,8 +1512,7 @@ impl WorldRenderer {
                 width as f32 / pixels_per_unit,
                 height as f32 / pixels_per_unit,
             );
-            let entity_key =
-                (u64::from(entity.generation()) << 32) | u64::from(entity.id());
+            let entity_key = (u64::from(entity.generation()) << 32) | u64::from(entity.id());
             let texture_key = Arc::as_ptr(&region.texture) as usize as u64;
             let material_key = native_2d_material_key(&renderer);
             let sampler_key = sprite_sampler_index(filtering) as u64;
@@ -1550,10 +1526,7 @@ impl WorldRenderer {
                 material_key,
                 sampler_key,
                 position: translation.truncate(),
-                size: glam::Vec2::new(
-                    base_size.x * scale.x.abs(),
-                    base_size.y * scale.y.abs(),
-                ),
+                size: glam::Vec2::new(base_size.x * scale.x.abs(), base_size.y * scale.y.abs()),
                 pivot: glam::Vec2::from_array(region.pivot),
                 rotation_radians,
                 uv_rect,
@@ -1567,12 +1540,7 @@ impl WorldRenderer {
                 PreparedSpriteGpu {
                     instance: SpriteGpuInstance {
                         model: model.to_cols_array_2d(),
-                        size_pivot: [
-                            base_size.x,
-                            base_size.y,
-                            region.pivot[0],
-                            region.pivot[1],
-                        ],
+                        size_pivot: [base_size.x, base_size.y, region.pivot[0], region.pivot[1]],
                         uv_rect,
                         tint: renderer.tint,
                     },
@@ -1584,10 +1552,8 @@ impl WorldRenderer {
         }
         let standalone_sprite_count = logical.iter().filter(|sprite| sprite.visible).count();
 
-        type TileMapQuery<'w> = engine_ecs::Query<
-            'w,
-            (&'w TileMap2d, &'w ResolvedTileMap2d, &'w GlobalTransform),
-        >;
+        type TileMapQuery<'w> =
+            engine_ecs::Query<'w, (&'w TileMap2d, &'w ResolvedTileMap2d, &'w GlobalTransform)>;
         let tile_maps = TileMapQuery::new(world)
             .iter()
             .map(|(entity, (tile_map, resolved, global))| {
@@ -1642,9 +1608,11 @@ impl WorldRenderer {
             };
             visible_tile_chunks += visible.len();
             let chunk_size = i64::from(resolved.document.chunk_size.max(1));
-            for chunk in resolved.chunks.iter().filter(|chunk| {
-                visible.contains(&(chunk.layer.clone(), chunk.coord))
-            }) {
+            for chunk in resolved
+                .chunks
+                .iter()
+                .filter(|chunk| visible.contains(&(chunk.layer.clone(), chunk.coord)))
+            {
                 let layer_rank = settings
                     .sorting_layers
                     .iter()
@@ -1923,7 +1891,8 @@ impl WorldRenderer {
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        let camera = crate::game_camera::active_camera(world).map_err(RenderFrameError::Camera2d)?;
+        let camera =
+            crate::game_camera::active_camera(world).map_err(RenderFrameError::Camera2d)?;
         self.render_to_view_with_prepared_camera(
             world, camera, device, queue, color_view, depth_view,
         )
@@ -1942,7 +1911,10 @@ impl WorldRenderer {
     ) -> Result<(), RenderFrameError> {
         self.render_to_view_with_prepared_camera(
             world,
-            Some(PreparedCamera::three_d(camera.clone(), camera_transform.clone())),
+            Some(PreparedCamera::three_d(
+                camera.clone(),
+                camera_transform.clone(),
+            )),
             device,
             queue,
             color_view,
@@ -1965,7 +1937,12 @@ impl WorldRenderer {
         let camera = PreparedCamera::two_d(*camera, camera_transform.clone(), viewport)
             .map_err(RenderFrameError::Camera2d)?;
         self.render_to_view_with_prepared_camera(
-            world, Some(camera), device, queue, color_view, depth_view,
+            world,
+            Some(camera),
+            device,
+            queue,
+            color_view,
+            depth_view,
         )
     }
 
@@ -1986,12 +1963,14 @@ impl WorldRenderer {
 
         let (vp, view, camera_position, viewport_aspect) = camera
             .as_ref()
-            .map(|camera| (
-                camera.view_projection,
-                camera.view,
-                camera.position,
-                camera.viewport_aspect,
-            ))
+            .map(|camera| {
+                (
+                    camera.view_projection,
+                    camera.view,
+                    camera.position,
+                    camera.viewport_aspect,
+                )
+            })
             .unwrap_or((
                 glam::Mat4::IDENTITY,
                 glam::Mat4::IDENTITY,
@@ -2015,8 +1994,7 @@ impl WorldRenderer {
             .cloned()
             .unwrap_or_default();
         let skybox = Self::environment_texture(world, environment.skybox);
-        let diffuse_irradiance =
-            Self::environment_texture(world, environment.diffuse_irradiance);
+        let diffuse_irradiance = Self::environment_texture(world, environment.diffuse_irradiance);
         self.render.update_environment(
             device,
             queue,
@@ -2068,11 +2046,12 @@ impl WorldRenderer {
 
         let batches = self.collect_batches(world, device, queue, camera_position);
         let skinned_draws = self.collect_skinned_draws(world, device, queue, camera_position);
-        let outlines_enabled = batches.iter().any(|batch| {
-            batch.pipeline_key.outline_enabled && !batch.instances.is_empty()
-        }) || skinned_draws
+        let outlines_enabled = batches
             .iter()
-            .any(|draw| draw.pipeline_key.outline_enabled);
+            .any(|batch| batch.pipeline_key.outline_enabled && !batch.instances.is_empty())
+            || skinned_draws
+                .iter()
+                .any(|draw| draw.pipeline_key.outline_enabled);
 
         if outlines_enabled {
             let viewport_size = world
@@ -2125,10 +2104,8 @@ impl WorldRenderer {
                     .render
                     .make_instance_buffer(device, bytemuck::bytes_of(&draw.instance));
                 let outline_instance_buffer = outlines_enabled.then(|| {
-                    self.render.make_instance_buffer(
-                        device,
-                        bytemuck::bytes_of(&draw.outline_instance),
-                    )
+                    self.render
+                        .make_instance_buffer(device, bytemuck::bytes_of(&draw.outline_instance))
                 });
                 let palette_buffer = RenderState::make_uniform_buffer(
                     device,
@@ -2159,15 +2136,19 @@ impl WorldRenderer {
             .enumerate()
             .filter(|(_, batch)| batch.pipeline_key.alpha_mode == AlphaMode::Blend)
             .flat_map(|(batch_index, batch)| {
-                batch.instances.iter().enumerate().map(move |(instance_index, instance)| {
-                    (
-                        BlendDraw::StaticInstance {
-                            batch: batch_index,
-                            instance: instance_index as u32,
-                        },
-                        instance_distance_squared(instance, camera_position),
-                    )
-                })
+                batch
+                    .instances
+                    .iter()
+                    .enumerate()
+                    .map(move |(instance_index, instance)| {
+                        (
+                            BlendDraw::StaticInstance {
+                                batch: batch_index,
+                                instance: instance_index as u32,
+                            },
+                            instance_distance_squared(instance, camera_position),
+                        )
+                    })
             })
             .chain(
                 skinned_draws
@@ -2236,9 +2217,7 @@ impl WorldRenderer {
 
                 // A selected skinned primitive may have no skin attributes.
                 // It still uses the material-aware static shadow path.
-                for (draw, resources) in
-                    skinned_draws.iter().zip(skinned_resources.iter())
-                {
+                for (draw, resources) in skinned_draws.iter().zip(skinned_resources.iter()) {
                     if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_some() {
                         continue;
                     }
@@ -2345,8 +2324,7 @@ impl WorldRenderer {
                     .expect("enabled outline rendering must create mask instance buffers");
                 if draw.gpu_mesh.skinning_buffer.is_some() {
                     pass.set_pipeline(
-                        &self.render.outline_mask_skinned_pipelines
-                            [draw.pipeline_key.cull_index()],
+                        &self.render.outline_mask_skinned_pipelines[draw.pipeline_key.cull_index()],
                     );
                     pass.set_bind_group(1, draw.texture_bind_group.as_ref(), &[]);
                     pass.set_bind_group(2, &resources.palette_bind_group, &[]);
@@ -2453,9 +2431,7 @@ impl WorldRenderer {
                 // A selected glTF primitive may legitimately have no skin
                 // attributes. It keeps the selected material pipeline while
                 // degrading to a static draw.
-                for (draw, resources) in
-                    skinned_draws.iter().zip(skinned_resources.iter())
-                {
+                for (draw, resources) in skinned_draws.iter().zip(skinned_resources.iter()) {
                     if draw.gpu_mesh.skinning_buffer.is_some()
                         || (draw.pipeline_key.alpha_mode == AlphaMode::Blend) != blend_phase
                     {
@@ -2474,9 +2450,7 @@ impl WorldRenderer {
                     );
                 }
 
-                for (draw, resources) in
-                    skinned_draws.iter().zip(skinned_resources.iter())
-                {
+                for (draw, resources) in skinned_draws.iter().zip(skinned_resources.iter()) {
                     if draw.gpu_mesh.skinning_buffer.is_none()
                         || (draw.pipeline_key.alpha_mode == AlphaMode::Blend) != blend_phase
                     {
@@ -2871,9 +2845,10 @@ impl WorldRenderer {
                         .render_particles()
                         .into_iter()
                         .filter_map(|particle| {
-                            bindings.get(&particle.module).cloned().map(|binding| {
-                                (entity, particle, binding)
-                            })
+                            bindings
+                                .get(&particle.module)
+                                .cloned()
+                                .map(|binding| (entity, particle, binding))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -3009,18 +2984,15 @@ impl WorldRenderer {
                     &texture_bind_group,
                     material.outline.internal_boundary_strength,
                 );
-                batch.outline_instances.extend(
-                    instances
-                        .iter()
-                        .copied()
-                        .map(|instance| {
-                            OutlineInstanceData::from_instance(
-                                instance,
-                                outline_group,
-                                outline_material,
-                            )
-                        }),
-                );
+                batch
+                    .outline_instances
+                    .extend(instances.iter().copied().map(|instance| {
+                        OutlineInstanceData::from_instance(
+                            instance,
+                            outline_group,
+                            outline_material,
+                        )
+                    }));
                 batch.instances.extend(instances);
             }
         }
@@ -3791,67 +3763,67 @@ impl RenderState {
             label: Some("Skinned outline mask shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/outline_skinned.wgsl").into()),
         });
-        let outline_skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Skinned outline mask pipeline layout"),
-            bind_group_layouts: &[
-                Some(&camera_bgl),
-                Some(&texture_bind_group_layout),
-                Some(&joint_palette_bgl),
-            ],
-            immediate_size: 0,
-        });
+        let outline_skinned_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Skinned outline mask pipeline layout"),
+                bind_group_layouts: &[
+                    Some(&camera_bgl),
+                    Some(&texture_bind_group_layout),
+                    Some(&joint_palette_bgl),
+                ],
+                immediate_size: 0,
+            });
         let cull_modes = [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None];
-        let make_outline_mask_pipeline = |
-            label: &str,
-            shader: &wgpu::ShaderModule,
-            layout: &wgpu::PipelineLayout,
-            buffers: &[wgpu::VertexBufferLayout<'_>],
-            cull_mode: Option<wgpu::Face>,
-        | {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_main"),
-                    buffers,
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[
-                        Some(wgpu::ColorTargetState {
-                            format: OUTLINE_STYLE_FORMAT,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        }),
-                        Some(wgpu::ColorTargetState {
-                            format: OUTLINE_GROUP_FORMAT,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        }),
-                    ],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let make_outline_mask_pipeline =
+            |label: &str,
+             shader: &wgpu::ShaderModule,
+             layout: &wgpu::PipelineLayout,
+             buffers: &[wgpu::VertexBufferLayout<'_>],
+             cull_mode: Option<wgpu::Face>| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module: shader,
+                        entry_point: Some("vs_main"),
+                        buffers,
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[
+                            Some(wgpu::ColorTargetState {
+                                format: OUTLINE_STYLE_FORMAT,
+                                blend: None,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            }),
+                            Some(wgpu::ColorTargetState {
+                                format: OUTLINE_GROUP_FORMAT,
+                                blend: None,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            }),
+                        ],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
         let outline_mask_pipelines = std::array::from_fn(|cull_index| {
             make_outline_mask_pipeline(
                 "Outline mask pipeline",
@@ -3901,13 +3873,10 @@ impl RenderState {
                     },
                 ],
             });
-        let outline_composite_shader =
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Outline composite shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("shaders/outline_composite.wgsl").into(),
-                ),
-            });
+        let outline_composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Outline composite shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/outline_composite.wgsl").into()),
+        });
         let outline_composite_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Outline composite pipeline layout"),
@@ -4135,10 +4104,7 @@ impl RenderState {
         });
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Sky pipeline layout"),
-            bind_group_layouts: &[
-                Some(&sky_bgl),
-                Some(environment.sky_bind_group_layout()),
-            ],
+            bind_group_layouts: &[Some(&sky_bgl), Some(environment.sky_bind_group_layout())],
             immediate_size: 0,
         });
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -4322,7 +4288,9 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
-                    resource: wgpu::BindingResource::TextureView(&resources.metallic_roughness.view),
+                    resource: wgpu::BindingResource::TextureView(
+                        &resources.metallic_roughness.view,
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 8,
@@ -4353,8 +4321,7 @@ impl RenderState {
         point_lights: &[PointLightUniform],
         spot_lights: &[SpotLightUniform],
     ) {
-        let uniform =
-            LightUniform::from_resources(ambient, directional, point_lights, spot_lights);
+        let uniform = LightUniform::from_resources(ambient, directional, point_lights, spot_lights);
         queue.write_buffer(&self.light_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
@@ -4408,12 +4375,7 @@ impl RenderState {
                 if enabled { 1.0 } else { 0.0 },
                 1.0 / settings.resolution.max(1) as f32,
             ],
-            cascade_depths: [
-                cascade_blend_depths[0],
-                cascade_blend_depths[1],
-                0.0,
-                0.0,
-            ],
+            cascade_depths: [cascade_blend_depths[0], cascade_blend_depths[1], 0.0, 0.0],
         };
         queue.write_buffer(&self.shadow_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -4518,10 +4480,8 @@ pub(crate) fn upload_pending_meshes(
             let query = Query::<(&Mesh, Option<&GpuMesh>)>::new(world);
             for (entity, (mesh, gpu_mesh)) in &query {
                 if gpu_mesh.is_none()
-                    && upload_frame.request_mesh(
-                        mesh as *const Mesh as usize,
-                        estimated_mesh_bytes(mesh),
-                    )
+                    && upload_frame
+                        .request_mesh(mesh as *const Mesh as usize, estimated_mesh_bytes(mesh))
                 {
                     let gm = GpuMesh::upload(device, mesh)
                         .map_err(|source| RenderPreparationError::Mesh { entity, source })?;
@@ -4579,10 +4539,9 @@ pub(crate) fn upload_pending_meshes(
                         uploaded.push((*id, gpu_mesh));
                         continue;
                     }
-                    if !upload_frame.request_mesh(
-                        mesh as *const Mesh as usize,
-                        estimated_mesh_bytes(mesh),
-                    ) {
+                    if !upload_frame
+                        .request_mesh(mesh as *const Mesh as usize, estimated_mesh_bytes(mesh))
+                    {
                         continue;
                     }
                     match GpuMesh::upload(device, mesh) {
@@ -4860,8 +4819,7 @@ impl ToneMapPass {
         swapchain_view: &wgpu::TextureView,
         settings: &PostProcessSettings,
     ) {
-        let uniform_data =
-            PostProcessUniformData::from_settings(settings, self.output_srgb_encode);
+        let uniform_data = PostProcessUniformData::from_settings(settings, self.output_srgb_encode);
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform_data));
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -4898,9 +4856,18 @@ mod tests {
 
     #[test]
     fn blended_draws_sort_globally_by_instance_depth() {
-        let far_static = BlendDraw::StaticInstance { batch: 0, instance: 0 };
-        let near_static = BlendDraw::StaticInstance { batch: 0, instance: 1 };
-        let middle_static = BlendDraw::StaticInstance { batch: 1, instance: 0 };
+        let far_static = BlendDraw::StaticInstance {
+            batch: 0,
+            instance: 0,
+        };
+        let near_static = BlendDraw::StaticInstance {
+            batch: 0,
+            instance: 1,
+        };
+        let middle_static = BlendDraw::StaticInstance {
+            batch: 1,
+            instance: 0,
+        };
         let middle_skinned = BlendDraw::Skinned(0);
         let mut draws = vec![
             (near_static, 1.0),
@@ -5107,9 +5074,8 @@ mod tests {
 
     #[test]
     fn local_light_uniforms_follow_global_transform_contract() {
-        let transform = GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-            1.0, 2.0, 3.0,
-        )));
+        let transform =
+            GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0)));
         let point = PointLightUniform::from_component(&PointLight::default(), &transform)
             .expect("default point light must upload");
         assert_eq!(point.position_range[..3], [1.0, 2.0, 3.0]);
@@ -5283,18 +5249,10 @@ mod tests {
 
     fn rgb_sum_at(rgba8: &[u8], width: u32, x: u32, y: u32) -> u32 {
         let offset = ((y * width + x) * 4) as usize;
-        u32::from(rgba8[offset])
-            + u32::from(rgba8[offset + 1])
-            + u32::from(rgba8[offset + 2])
+        u32::from(rgba8[offset]) + u32::from(rgba8[offset + 1]) + u32::from(rgba8[offset + 2])
     }
 
-    fn peak_rgb_sum(
-        rgba8: &[u8],
-        width: u32,
-        height: u32,
-        start_x: u32,
-        end_x: u32,
-    ) -> u32 {
+    fn peak_rgb_sum(rgba8: &[u8], width: u32, height: u32, start_x: u32, end_x: u32) -> u32 {
         let mut peak = 0;
         for y in 0..height {
             for x in start_x..end_x {
@@ -5393,9 +5351,7 @@ mod tests {
             world
                 .add_component(
                     surface,
-                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-                        x, 0.0, 0.0,
-                    ))),
+                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(x, 0.0, 0.0))),
                 )
                 .expect("reference transform must insert");
             world
@@ -5439,9 +5395,7 @@ mod tests {
         world
             .add_component(
                 spot,
-                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-                    0.7, 0.0, 1.0,
-                ))),
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(0.7, 0.0, 1.0))),
             )
             .expect("spot transform must insert");
 
@@ -5572,9 +5526,7 @@ mod tests {
             world
                 .add_component(
                     surface,
-                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-                        x, 0.0, 0.0,
-                    ))),
+                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(x, 0.0, 0.0))),
                 )
                 .expect("ToonLit reference transform must insert");
             world
@@ -5618,9 +5570,7 @@ mod tests {
         world
             .add_component(
                 spot,
-                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-                    0.7, 0.0, 1.0,
-                ))),
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(0.7, 0.0, 1.0))),
             )
             .expect("ToonLit spot transform must insert");
 
@@ -5771,10 +5721,7 @@ mod tests {
             )
             .expect("reference transform must insert");
         world
-            .add_component(
-                unoccluded,
-                material(occlusion("reference_ao_full", 255)),
-            )
+            .add_component(unoccluded, material(occlusion("reference_ao_full", 255)))
             .expect("reference material must insert");
 
         let occluded = world.spawn().expect("reference entity must spawn");
@@ -5784,9 +5731,7 @@ mod tests {
         world
             .add_component(
                 occluded,
-                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
-                    0.7, 0.0, 0.0,
-                ))),
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(0.7, 0.0, 0.0))),
             )
             .expect("reference transform must insert");
         world

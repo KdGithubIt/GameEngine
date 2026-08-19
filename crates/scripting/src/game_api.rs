@@ -5,6 +5,7 @@
 //! parameters so ordinary game logic never has to inspect maps, field names,
 //! array offsets, or [`engine_authoring::Value`] variants.
 
+use crate::game_contracts::{GameComponent, GameField, GameResource};
 use crate::game_io::{
     EngineViewKind, GameAccessMode, GameBehaviorStatus, GameClock, GameCommand, GameCommandFamily,
     GameComponentAccess, GameEngineViewAccess, GameEntityHandle, GameEventEmission,
@@ -12,7 +13,6 @@ use crate::game_io::{
     GameQueryAccess, GameQueryRow, GameResourceAccess, GameResourcePatch, GameSpatialAudioOptions,
     GameSystemAccess,
 };
-use crate::game_contracts::{GameComponent, GameField, GameResource};
 use engine_authoring::{AssetId, ComponentTypeId, EntityId, StableId, Value};
 use glam::{Quat, Vec2, Vec3};
 use std::cell::RefCell;
@@ -1092,7 +1092,11 @@ impl EngineView for VfxStateView {
             value => return Err(format!("unknown VFX playback state `{value}`")),
         };
         let seed_override = optional_unsigned(field(fields, "seed_override")?)?
-            .map(|value| value.try_into().map_err(|_| "VFX seed override is outside u32".to_owned()))
+            .map(|value| {
+                value
+                    .try_into()
+                    .map_err(|_| "VFX seed override is outside u32".to_owned())
+            })
             .transpose()?;
         Ok(Self {
             state,
@@ -1927,7 +1931,10 @@ impl Commands {
     }
     /// Sets persistent fixed-step velocity for CharacterController2D.
     pub fn set_character_motion_2d(&mut self, target: GameEntityHandle, velocity: Vec2) {
-        self.push(GameCommand::set_character_motion_2d(target, velocity.to_array()));
+        self.push(GameCommand::set_character_motion_2d(
+            target,
+            velocity.to_array(),
+        ));
     }
     /// Requests a bounded one-way platform drop-through interval for CharacterController2D.
     pub fn drop_through_2d(&mut self, target: GameEntityHandle, seconds: f32) {
@@ -2100,7 +2107,9 @@ impl Commands {
         asset_id: impl Into<String>,
         options: GameSpatialAudioOptions,
     ) {
-        self.push(GameCommand::play_spatial_sound_effect(target, asset_id, options));
+        self.push(GameCommand::play_spatial_sound_effect(
+            target, asset_id, options,
+        ));
     }
     /// Replaces background music.
     pub fn play_background_music(&mut self, asset_id: impl Into<String>) {
@@ -2560,9 +2569,11 @@ mod tests {
         assert_eq!(access.input_actions, [Jump::NAME]);
         assert_eq!(access.event_streams, [GameEventStream::Collision]);
         assert!(access.command_families.contains(&GameCommandFamily::Scene));
-        assert!(access
-            .command_families
-            .contains(&GameCommandFamily::Character2d));
+        assert!(
+            access
+                .command_families
+                .contains(&GameCommandFamily::Character2d)
+        );
     }
 
     #[test]
@@ -2606,7 +2617,10 @@ mod tests {
         };
         let output = TypedOutput::new();
         let mut commands = Commands::fetch(&input, output.clone()).unwrap();
-        let target = GameEntityHandle { id: 7, generation: 2 };
+        let target = GameEntityHandle {
+            id: 7,
+            generation: 2,
+        };
         commands.set_character_motion_2d(target, Vec2::new(4.0, 5.0));
         commands.drop_through_2d(target, 0.2);
         drop(commands);
@@ -2639,8 +2653,20 @@ mod tests {
         .unwrap();
         assert_eq!(Collision2dEvent::STREAM, GameEventStream::Collision2d);
         assert_eq!(event.phase, CollisionEventPhase::Enter);
-        assert_eq!(event.entity_a, GameEntityHandle { id: 3, generation: 4 });
-        assert_eq!(event.entity_b, GameEntityHandle { id: 7, generation: 2 });
+        assert_eq!(
+            event.entity_a,
+            GameEntityHandle {
+                id: 3,
+                generation: 4
+            }
+        );
+        assert_eq!(
+            event.entity_b,
+            GameEntityHandle {
+                id: 7,
+                generation: 2
+            }
+        );
         assert!(event.sensor);
     }
 }

@@ -191,9 +191,7 @@ impl TemporalHistory {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Temporal output copy shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/temporal_copy.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/temporal_copy.wgsl").into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Temporal output copy pipeline layout"),
@@ -273,11 +271,8 @@ impl TemporalHistory {
             .targets
             .as_ref()
             .expect("temporal target creation must succeed for a valid device");
-        let history_usable = camera_history_usable(
-            self.previous_camera,
-            camera,
-            targets.history_valid,
-        );
+        let history_usable =
+            camera_history_usable(self.previous_camera, camera, targets.history_valid);
         let current_view_projection = camera
             .map(|sample| sample.view_projection)
             .unwrap_or(Mat4::IDENTITY);
@@ -436,15 +431,24 @@ mod tests {
     fn temporal_camera_switch_invalidates_accumulation_without_heuristics() {
         let matrix = Mat4::IDENTITY;
         let first = Some(TemporalCameraSample::new(
-            TemporalCameraSource::WorldEntity { id: 1, generation: 0 },
+            TemporalCameraSource::WorldEntity {
+                id: 1,
+                generation: 0,
+            },
             matrix,
         ));
         let same = Some(TemporalCameraSample::new(
-            TemporalCameraSource::WorldEntity { id: 1, generation: 0 },
+            TemporalCameraSource::WorldEntity {
+                id: 1,
+                generation: 0,
+            },
             matrix,
         ));
         let switched = Some(TemporalCameraSample::new(
-            TemporalCameraSource::WorldEntity { id: 2, generation: 0 },
+            TemporalCameraSource::WorldEntity {
+                id: 2,
+                generation: 0,
+            },
             matrix,
         ));
 

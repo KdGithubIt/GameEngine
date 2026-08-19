@@ -158,22 +158,20 @@ impl EditorApp {
                         ));
                 }
             }
-        } else if revert_requested
-            && let Some(project) = &self.project_root {
-                match ProjectSettings::load(project.path()) {
-                    Ok(settings) => {
-                        self.project_layers = settings.layers.clone();
-                        *panel = ProjectSettingsPanel::new(settings);
-                    }
-                    Err(error) => {
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::error(
-                                "editor.project_settings_reload_failed",
-                                error.to_string(),
-                            ))
-                    }
+        } else if revert_requested && let Some(project) = &self.project_root {
+            match ProjectSettings::load(project.path()) {
+                Ok(settings) => {
+                    self.project_layers = settings.layers.clone();
+                    *panel = ProjectSettingsPanel::new(settings);
                 }
+                Err(error) => self
+                    .session
+                    .push_diagnostic(engine_authoring::Diagnostic::error(
+                        "editor.project_settings_reload_failed",
+                        error.to_string(),
+                    )),
             }
+        }
     }
 
     /// Draws application-level commands that are independent of the selected
@@ -1108,9 +1106,9 @@ impl EditorApp {
                     if diagnostic.code == engine::SKELETON_REBIND_DIAGNOSTIC
                         && let Some(engine_authoring::DiagnosticTarget::Asset { id }) =
                             &diagnostic.target
-                        {
-                            self.show_skeleton_bind_report = Some(id.as_str().to_owned());
-                        }
+                    {
+                        self.show_skeleton_bind_report = Some(id.as_str().to_owned());
+                    }
                     self.navigate_to_diagnostic_target(diagnostic.target);
                 }
             }
@@ -1367,10 +1365,11 @@ impl EditorApp {
                 Ok(id) => {
                     self.new_motion_slot_name.clear();
                     if let Ok(slots) = self.session.motion_slots()
-                        && let Some(slot) = slots.into_iter().find(|slot| slot.id == id) {
-                            self.motion_slot_name_buffers
-                                .insert(slot.id, slot.display_name);
-                        }
+                        && let Some(slot) = slots.into_iter().find(|slot| slot.id == id)
+                    {
+                        self.motion_slot_name_buffers
+                            .insert(slot.id, slot.display_name);
+                    }
                 }
                 Err(error) => self.apply_ui_result::<(), _>(Err(error)),
             },
@@ -1619,12 +1618,14 @@ impl EditorApp {
             self.gizmo_mode = GizmoMode::Rotate;
         } else if !ctrl && s_pressed && in_scene {
             self.gizmo_mode = GizmoMode::Scale;
-        } else if !ctrl && f_pressed && in_scene
+        } else if !ctrl
+            && f_pressed
+            && in_scene
             && let (Some(scene), Some(entity)) =
                 (self.session.scene(), self.selected_entity.as_ref())
-            {
-                self.scene_view.focus_entity(scene, entity);
-            }
+        {
+            self.scene_view.focus_entity(scene, entity);
+        }
     }
 
     pub(super) fn show_editor_preferences_window(&mut self, context: &egui::Context) {
@@ -1809,8 +1810,7 @@ pub(super) fn show_main_toolbar_content<R>(
     ui: &mut egui::Ui,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
-    let content_width =
-        (ui.available_width() - AUTHORING_TOOLS_LAUNCHER_RESERVED_WIDTH).max(0.0);
+    let content_width = (ui.available_width() - AUTHORING_TOOLS_LAUNCHER_RESERVED_WIDTH).max(0.0);
     let content_height = ui.available_height();
 
     ui.allocate_ui_with_layout(
@@ -1836,9 +1836,7 @@ pub(super) fn show_toolbar_document_tab_strip(
         .max_width(available_size.x)
         .max_height(available_size.y)
         .auto_shrink([false, true])
-        .scroll_bar_visibility(
-            egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden,
-        )
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, add_contents);
 }
 

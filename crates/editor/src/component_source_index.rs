@@ -1,8 +1,8 @@
 //! Project Rust component discovery by persisted sidecar identity.
 
 use engine_authoring::{
-    component_metadata_path, load_component_metadata, ComponentMetadataError, Diagnostic,
-    DiagnosticTarget,
+    ComponentMetadataError, Diagnostic, DiagnosticTarget, component_metadata_path,
+    load_component_metadata,
 };
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -284,7 +284,7 @@ fn source_target(path: &Path, line: usize) -> DiagnosticTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_authoring::{write_component_metadata, ComponentMetadata};
+    use engine_authoring::{ComponentMetadata, write_component_metadata};
 
     fn write_component(root: &Path, name: &str, source: &str, id: &str) -> PathBuf {
         let path = root.join(name);
@@ -337,10 +337,12 @@ mod tests {
         let index = ComponentSourceIndex::build(directory.path());
         assert!(index.resolve(id).is_none());
         assert!(index.is_ambiguous(id));
-        assert!(index
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "editor.component_source.duplicate_id"));
+        assert!(
+            index
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "editor.component_source.duplicate_id")
+        );
     }
 
     #[test]

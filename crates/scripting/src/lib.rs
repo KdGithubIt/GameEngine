@@ -5,10 +5,10 @@
 #[doc(hidden)]
 pub mod animation_commands;
 
-/// Rust gameplay field, component, resource, and schedule contracts.
-pub mod game_contracts;
 /// Host-independent typed gameplay system API.
 pub mod game_api;
+/// Rust gameplay field, component, resource, and schedule contracts.
+pub mod game_contracts;
 /// Host-independent typed gameplay convenience helpers.
 pub mod game_convenience;
 /// Per-entity parameters used by `#[game_system(each)]` callbacks.

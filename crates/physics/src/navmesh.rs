@@ -862,7 +862,10 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip() {
-        let path = std::env::temp_dir().join(format!("engine_navmesh_roundtrip_{}.bin", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "engine_navmesh_roundtrip_{}.bin",
+            std::process::id()
+        ));
         let nm = flat_mesh(4, 4);
         save_navmesh(&nm, &path).expect("save must succeed");
         let loaded = load_navmesh(&path).expect("load must succeed");
@@ -874,7 +877,8 @@ mod tests {
 
     #[test]
     fn load_rejects_mismatched_cell_count() {
-        let path = std::env::temp_dir().join(format!("engine_navmesh_bad_{}.bin", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("engine_navmesh_bad_{}.bin", std::process::id()));
         let json = r#"{"origin_x":0,"origin_z":0,"cols":3,"rows":3,"cell_size":1.0,"walkable":[true,false]}"#;
         std::fs::write(&path, json).unwrap();
         let err = load_navmesh(&path).expect_err("must reject mismatched cell count");

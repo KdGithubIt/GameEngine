@@ -120,7 +120,9 @@ impl EditorSession {
         };
         let order = self.next_child_order(&parent);
         let edge_id = EdgeId::generate();
-        let edge = service.domain().child_edge(edge_id.clone(), parent, child, order);
+        let edge = service
+            .domain()
+            .child_edge(edge_id.clone(), parent, child, order);
         self.push_undo_checkpoint();
         self.apply_graph_command(GraphCommand::AddEdge { edge })?;
         Ok(edge_id)
@@ -175,11 +177,13 @@ mod tests {
             .expect("add node should apply structurally");
 
         assert!(session.graph().nodes.contains_key(&node));
-        assert!(session
-            .graph_view()
-            .expect("view exists")
-            .nodes
-            .contains_key(&node));
+        assert!(
+            session
+                .graph_view()
+                .expect("view exists")
+                .nodes
+                .contains_key(&node)
+        );
     }
 
     #[test]

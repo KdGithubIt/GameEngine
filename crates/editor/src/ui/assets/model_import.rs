@@ -4,9 +4,9 @@
 //! result, including the motions that must be re-baked when the model they
 //! are paired with is imported again.
 
-use crate::ui::*;
 use super::instantiate::write_generated_prefab;
 use super::manifest::{normalize_manifest_path, save_asset_manifest};
+use crate::ui::*;
 
 fn import_catalog_is_current(
     project_path: &Path,
@@ -36,10 +36,8 @@ fn import_catalog_is_current(
     }
 
     // A motion source draws nothing, so it never generates a placement prefab.
-    let needs_prefab = !engine::asset_path_matches_kind(
-        engine::AssetKind::MotionSource,
-        Path::new(&entry.path),
-    );
+    let needs_prefab =
+        !engine::asset_path_matches_kind(engine::AssetKind::MotionSource, Path::new(&entry.path));
     !needs_prefab
         || entry
             .import_settings
@@ -83,18 +81,20 @@ impl EditorApp {
                     return;
                 }
                 Ok(engine::VmdContentKind::Empty) => {
-                    self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                        "vmd.empty_motion",
-                        format!("`{}` contains no animation keys", relative_path.display()),
-                    ));
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::error(
+                            "vmd.empty_motion",
+                            format!("`{}` contains no animation keys", relative_path.display()),
+                        ));
                     return;
                 }
                 Ok(engine::VmdContentKind::Model | engine::VmdContentKind::Mixed) => {}
                 Err(error) => {
-                    self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                        "vmd.motion_invalid",
-                        format!("could not inspect `{}`: {error}", relative_path.display()),
-                    ));
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::error(
+                            "vmd.motion_invalid",
+                            format!("could not inspect `{}`: {error}", relative_path.display()),
+                        ));
                     return;
                 }
             }
@@ -130,9 +130,10 @@ impl EditorApp {
                     // unpaired for the author to choose in Import Settings,
                     // since a wrong guess bakes a plausible-looking but wrong
                     // clip.
-                    import_settings.motion_model_sources = sole_pmx_model_source(&self.asset_manifest)
-                        .map(|id| vec![id.as_str().to_owned()])
-                        .unwrap_or_default();
+                    import_settings.motion_model_sources =
+                        sole_pmx_model_source(&self.asset_manifest)
+                            .map(|id| vec![id.as_str().to_owned()])
+                            .unwrap_or_default();
                 }
                 let mut manifest = self.asset_manifest.clone();
                 manifest.insert(
@@ -233,19 +234,21 @@ impl EditorApp {
                     return;
                 }
                 Ok(engine::VmdContentKind::Empty) => {
-                    self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                        "vmd.empty_motion",
-                        format!("`{}` contains no animation keys", source_path.display()),
-                    ));
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::error(
+                            "vmd.empty_motion",
+                            format!("`{}` contains no animation keys", source_path.display()),
+                        ));
                     self.start_next_model_import();
                     return;
                 }
                 Ok(engine::VmdContentKind::Model | engine::VmdContentKind::Mixed) => {}
                 Err(error) => {
-                    self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                        "vmd.motion_invalid",
-                        format!("could not inspect `{}`: {error}", source_path.display()),
-                    ));
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::error(
+                            "vmd.motion_invalid",
+                            format!("could not inspect `{}`: {error}", source_path.display()),
+                        ));
                     self.start_next_model_import();
                     return;
                 }
@@ -269,23 +272,20 @@ impl EditorApp {
             let original_model_is_configured = self
                 .asset_manifest
                 .get(&asset_id)
-                .is_some_and(|entry| {
-                    entry
-                        .import_settings
-                        .motion_original_model_source
-                        .is_some()
-                });
-            let original_model = self.original_motion_model(&asset_id).map(
-                |(model_source_id, model_relative)| crate::asset_import::MotionImportTarget {
-                    contact_bones: self
-                        .asset_manifest
-                        .get(&model_source_id)
-                        .map(|entry| entry.import_settings.contact_bones.clone())
-                        .unwrap_or_default(),
-                    model_source_id,
-                    model_path: project.assets_root().join(model_relative),
-                },
-            );
+                .is_some_and(|entry| entry.import_settings.motion_original_model_source.is_some());
+            let original_model =
+                self.original_motion_model(&asset_id)
+                    .map(|(model_source_id, model_relative)| {
+                        crate::asset_import::MotionImportTarget {
+                            contact_bones: self
+                                .asset_manifest
+                                .get(&model_source_id)
+                                .map(|entry| entry.import_settings.contact_bones.clone())
+                                .unwrap_or_default(),
+                            model_source_id,
+                            model_path: project.assets_root().join(model_relative),
+                        }
+                    });
             if original_model_is_configured && original_model.is_none() {
                 self.session
                     .push_diagnostic(engine_authoring::Diagnostic::error(
@@ -301,12 +301,7 @@ impl EditorApp {
             let humanoid_source_is_configured = self
                 .asset_manifest
                 .get(&asset_id)
-                .is_some_and(|entry| {
-                    entry
-                        .import_settings
-                        .motion_humanoid_source_model
-                        .is_some()
-                });
+                .is_some_and(|entry| entry.import_settings.motion_humanoid_source_model.is_some());
             let humanoid_source = self.motion_humanoid_source(&asset_id);
             if humanoid_source_is_configured && humanoid_source.is_none() {
                 self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
@@ -317,10 +312,8 @@ impl EditorApp {
                     ),
                 ));
             }
-            let retarget_maps = engine::load_registered_retarget_maps(
-                &project.assets_root(),
-                &self.asset_manifest,
-            );
+            let retarget_maps =
+                engine::load_registered_retarget_maps(&project.assets_root(), &self.asset_manifest);
             self.asset_import
                 .start_vmd(crate::asset_import::MotionImportJob {
                     project_path: project.path().to_path_buf(),
@@ -385,9 +378,9 @@ impl EditorApp {
         };
         let mut resolved = Vec::new();
         for paired in entry.import_settings.resolved_motion_model_sources() {
-            let Ok(model_id) = engine_authoring::AssetId::from_stable_id(
-                engine_authoring::StableId::new(paired),
-            ) else {
+            let Ok(model_id) =
+                engine_authoring::AssetId::from_stable_id(engine_authoring::StableId::new(paired))
+            else {
                 continue;
             };
             let Some(model_entry) = self.asset_manifest.get(&model_id) else {
@@ -415,10 +408,9 @@ impl EditorApp {
             .import_settings
             .motion_original_model_source
             .as_deref()?;
-        let model_id = engine_authoring::AssetId::from_stable_id(
-            engine_authoring::StableId::new(original),
-        )
-        .ok()?;
+        let model_id =
+            engine_authoring::AssetId::from_stable_id(engine_authoring::StableId::new(original))
+                .ok()?;
         let entry = self.asset_manifest.get(&model_id)?;
         Some((model_id, entry.path.clone()))
     }
@@ -447,10 +439,9 @@ impl EditorApp {
         if !associated {
             return None;
         }
-        let model_id = engine_authoring::AssetId::from_stable_id(
-            engine_authoring::StableId::new(configured),
-        )
-        .ok()?;
+        let model_id =
+            engine_authoring::AssetId::from_stable_id(engine_authoring::StableId::new(configured))
+                .ok()?;
         let model_entry = self.asset_manifest.get(&model_id)?;
         let profile = model_entry
             .import_settings
@@ -553,18 +544,20 @@ impl EditorApp {
                     return;
                 }
                 Ok(engine::VmdContentKind::Empty) => {
-                    self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                        "vmd.empty_motion",
-                        "this VMD contains no animation keys",
-                    ));
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::error(
+                            "vmd.empty_motion",
+                            "this VMD contains no animation keys",
+                        ));
                     return;
                 }
                 Ok(engine::VmdContentKind::Model | engine::VmdContentKind::Mixed) => {}
                 Err(error) => {
-                    self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                        "vmd.motion_invalid",
-                        format!("could not inspect VMD: {error}"),
-                    ));
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::error(
+                            "vmd.motion_invalid",
+                            format!("could not inspect VMD: {error}"),
+                        ));
                     return;
                 }
             }
@@ -1071,8 +1064,7 @@ mod tests {
         let assets_root = root.join("assets");
         std::fs::create_dir_all(&assets_root).expect("test assets directory must be created");
         let source_path = assets_root.join("model.glb");
-        std::fs::write(&source_path, b"generation-one")
-            .expect("test model source must be written");
+        std::fs::write(&source_path, b"generation-one").expect("test model source must be written");
         let generated_prefab = root.join("generated/model.prefab.json");
         std::fs::create_dir_all(
             generated_prefab
@@ -1080,8 +1072,7 @@ mod tests {
                 .expect("generated prefab must have a parent"),
         )
         .expect("generated prefab directory must be created");
-        std::fs::write(&generated_prefab, b"{}")
-            .expect("generated prefab must be written");
+        std::fs::write(&generated_prefab, b"{}").expect("generated prefab must be written");
 
         let import_settings = engine::ImportSettings {
             source_fingerprint: Some("accepted-generation".to_owned()),

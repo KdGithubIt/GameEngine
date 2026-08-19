@@ -9,11 +9,10 @@
 use crate::behavior_tree_legacy as legacy;
 use crate::diagnostic::{Diagnostic, DiagnosticTarget};
 use crate::graph::{
-    Edge, Graph, GraphCommand, GraphKind, GraphSchemaRegistry, Node, NodeSchema,
-    NodeTypeId,
+    Edge, Graph, GraphCommand, GraphKind, GraphSchemaRegistry, Node, NodeSchema, NodeTypeId,
 };
 use crate::graph_domain::{
-    apply_graph_commands_with_domain, validate_graph_with_domain, GraphDomain,
+    GraphDomain, apply_graph_commands_with_domain, validate_graph_with_domain,
 };
 use crate::graph_view::{GraphView, LayoutPolicyId};
 use crate::id::{EdgeId, NodeId};
@@ -227,7 +226,11 @@ impl BehaviorTreeDomain {
     /// Creates a typed Inverter decorator node.
     #[must_use]
     pub fn inverter_node(&self, id: NodeId) -> Node {
-        Node::new(id, self.inverter_type.clone(), Value::Object(BTreeMap::new()))
+        Node::new(
+            id,
+            self.inverter_type.clone(),
+            Value::Object(BTreeMap::new()),
+        )
     }
 
     /// Creates a typed Wait decorator node.
@@ -417,9 +420,11 @@ impl BehaviorTreeAuthoringService {
         } else if node_type == self.domain.wait_type() {
             self.domain.wait_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
         } else if node_type == self.domain.timeout_type() {
-            self.domain.timeout_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
+            self.domain
+                .timeout_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
         } else if node_type == self.domain.cooldown_type() {
-            self.domain.cooldown_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
+            self.domain
+                .cooldown_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
         } else {
             Node::new(id, node_type.clone(), Value::Object(BTreeMap::new()))
         }
@@ -642,7 +647,12 @@ fn validate_stateful_decorator_properties(
         };
         let duration = duration_value(node);
         let valid = duration.is_some_and(|value| {
-            value.is_finite() && if require_positive { value > 0.0 } else { value >= 0.0 }
+            value.is_finite()
+                && if require_positive {
+                    value > 0.0
+                } else {
+                    value >= 0.0
+                }
         });
         if valid {
             continue;
@@ -693,7 +703,8 @@ mod tests {
         assert_eq!(
             schemas
                 .iter()
-                .find(|schema| schema.node_type.as_str() == service.domain().condition_type().as_str())
+                .find(|schema| schema.node_type.as_str()
+                    == service.domain().condition_type().as_str())
                 .expect("condition schema")
                 .category,
             "Behavior Tree/Condition"
@@ -741,7 +752,9 @@ mod tests {
         let root = NodeId::generate();
         let wait = NodeId::generate();
         let action = NodeId::generate();
-        graph.nodes.insert(root.clone(), domain.root_node(root.clone()));
+        graph
+            .nodes
+            .insert(root.clone(), domain.root_node(root.clone()));
         graph
             .nodes
             .insert(wait.clone(), domain.wait_node(wait.clone(), 0.5));
@@ -770,7 +783,9 @@ mod tests {
             domain.graph_kind().clone(),
             "invalid_timeout",
         );
-        graph.nodes.insert(root.clone(), domain.root_node(root.clone()));
+        graph
+            .nodes
+            .insert(root.clone(), domain.root_node(root.clone()));
         graph
             .nodes
             .insert(timeout.clone(), domain.timeout_node(timeout.clone(), 0.0));
@@ -782,8 +797,12 @@ mod tests {
         let action_edge = domain.child_edge(EdgeId::generate(), timeout, action, 0);
         graph.edges.insert(action_edge.id.clone(), action_edge);
 
-        assert!(validate_graph_with_domain(&graph, &domain).iter().any(|diagnostic| {
-            diagnostic.code == "behavior_tree.invalid_decorator_parameter"
-        }));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic.code == "behavior_tree.invalid_decorator_parameter"
+                })
+        );
     }
 }

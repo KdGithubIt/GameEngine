@@ -23,17 +23,18 @@ impl EditorApp {
             match action {
                 GraphCanvasAction::NodeClicked { node } => {
                     if let Some(source) = self.pending_connect_source.take()
-                        && source != node {
-                            match self.session.connect_nodes(source, node.clone()) {
-                                Ok(edge) => {
-                                    let result = self.session.select_edge(Some(edge));
-                                    self.apply_ui_result(result);
-                                    self.sync_property_buffer();
-                                    continue;
-                                }
-                                Err(error) => self.apply_ui_result::<(), _>(Err(error)),
+                        && source != node
+                    {
+                        match self.session.connect_nodes(source, node.clone()) {
+                            Ok(edge) => {
+                                let result = self.session.select_edge(Some(edge));
+                                self.apply_ui_result(result);
+                                self.sync_property_buffer();
+                                continue;
                             }
+                            Err(error) => self.apply_ui_result::<(), _>(Err(error)),
                         }
+                    }
                     let result = self.session.select_node(Some(node));
                     self.apply_ui_result(result);
                     self.sync_property_buffer();
@@ -152,10 +153,12 @@ impl EditorApp {
             ] {
                 ui.selectable_value(&mut self.scene_view.mode, mode, mode.label())
                     .on_hover_text(match mode {
-                        crate::scene_view::native_2d_mode::SceneViewMode::ThreeD =>
-                            "Perspective 3D Scene View",
-                        crate::scene_view::native_2d_mode::SceneViewMode::TwoD =>
-                            "Orthographic XY Native 2D Scene View",
+                        crate::scene_view::native_2d_mode::SceneViewMode::ThreeD => {
+                            "Perspective 3D Scene View"
+                        }
+                        crate::scene_view::native_2d_mode::SceneViewMode::TwoD => {
+                            "Orthographic XY Native 2D Scene View"
+                        }
                     });
             }
             ui.separator();
@@ -302,10 +305,11 @@ impl EditorApp {
                         .id
                         .clone()
                 });
-            match self
-                .session
-                .create_entity_from_sprite_ref(payload.sprite.clone(), sorting_layer, None)
-            {
+            match self.session.create_entity_from_sprite_ref(
+                payload.sprite.clone(),
+                sorting_layer,
+                None,
+            ) {
                 Ok(entity) => {
                     let target = self.scene_view.camera.target;
                     let _ = self.session.set_scene_entity_positions(
@@ -448,9 +452,9 @@ impl EditorApp {
                 .clicked()
                 && let (Some(scene), Some(entity)) =
                     (self.session.scene(), self.selected_entity.as_ref())
-                {
-                    self.scene_view.focus_entity(scene, entity);
-                }
+            {
+                self.scene_view.focus_entity(scene, entity);
+            }
             if ui
                 .button("Reset Camera")
                 .on_hover_text("Restore the default Scene View camera")
@@ -464,17 +468,19 @@ impl EditorApp {
                 .on_hover_text("Move the selected camera entity to the current editor viewpoint")
                 .on_disabled_hover_text("Select an entity with a Camera component")
                 .clicked()
-                && let Some(entity) = selected_camera.clone() {
-                    self.align_camera_entity_to_view(entity);
-                }
+                && let Some(entity) = selected_camera.clone()
+            {
+                self.align_camera_entity_to_view(entity);
+            }
             if ui
                 .add_enabled(enabled, egui::Button::new("Align View to Camera"))
                 .on_hover_text("Move the editor viewpoint to the selected camera entity")
                 .on_disabled_hover_text("Select an entity with a Camera component")
                 .clicked()
-                && let Some(entity) = selected_camera {
-                    self.align_view_to_camera_entity(&entity);
-                }
+                && let Some(entity) = selected_camera
+            {
+                self.align_view_to_camera_entity(&entity);
+            }
         });
     }
 
@@ -725,22 +731,24 @@ impl EditorApp {
     }
 
     fn apply_audio_distance_gizmo_edit(&mut self, edit: AudioDistanceGizmoEdit) {
-        let Some(entity) = self.selected_entity.clone() else { return; };
+        let Some(entity) = self.selected_entity.clone() else {
+            return;
+        };
         let component_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
         let Some(Value::Object(mut fields)) = self
             .session
             .scene_entity(&entity)
             .and_then(|item| item.components.get(&component_type).cloned())
-        else { return; };
+        else {
+            return;
+        };
         fields.insert(
             edit.field.field_name().to_owned(),
             Value::F64(f64::from(edit.distance)),
         );
-        let result = self.session.set_scene_component_value(
-            entity,
-            component_type,
-            Value::Object(fields),
-        );
+        let result =
+            self.session
+                .set_scene_component_value(entity, component_type, Value::Object(fields));
         self.apply_ui_result(result);
         self.refresh_scene_problems();
     }

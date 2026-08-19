@@ -8,10 +8,10 @@
 
 #![warn(missing_docs)]
 
-/// Imported secondary-motion rigid-body rig data.
-pub mod rigid_body_rig;
 /// Layered local-space rig poses and deterministic world-space evaluation.
 pub mod rig_pose;
+/// Imported secondary-motion rigid-body rig data.
+pub mod rigid_body_rig;
 /// Stable skeleton assets and bone identity.
 pub mod skeleton_asset;
 /// Skin binding, rig spawning, and joint palette computation.

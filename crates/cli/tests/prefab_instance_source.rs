@@ -6,8 +6,8 @@
 //! machine's canonicalized absolute path directly inside `*.scene.json`.
 
 use engine_authoring::{
-    replace_file_contents, AuthoringEntity, AuthoringScene, EntityId, PrefabAsset, ProjectConfig,
-    ProjectRoot, PROJECT_SCHEMA_VERSION,
+    AuthoringEntity, AuthoringScene, EntityId, PROJECT_SCHEMA_VERSION, PrefabAsset, ProjectConfig,
+    ProjectRoot, replace_file_contents,
 };
 use engine_cli::run_cli_with_status;
 use std::fs;

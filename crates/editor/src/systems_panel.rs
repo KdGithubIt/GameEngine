@@ -2,9 +2,9 @@
 
 use eframe::egui;
 use engine::ecs::{ScheduleDiagnostic, ScheduleEntryInfo, SystemId, SystemOrigin};
-use engine::{register_runtime_systems, App};
+use engine::{App, register_runtime_systems};
 use engine_authoring::project_settings::{
-    ProjectSystemSchedule, SystemScheduleSettings, SystemSettings, SYSTEM_SETTINGS_SCHEMA_VERSION,
+    ProjectSystemSchedule, SYSTEM_SETTINGS_SCHEMA_VERSION, SystemScheduleSettings, SystemSettings,
 };
 use engine_authoring::{ProjectRoot, ProjectSettings};
 use std::path::PathBuf;
@@ -89,11 +89,12 @@ impl SystemsPanel {
             return;
         }
         if let Some(module) = game_module
-            && let Err(error) = app.try_register_game_module_systems(module) {
-                self.diagnostics
-                    .push(format!("Could not add Game systems: {error}"));
-                self.is_read_only = true;
-            }
+            && let Err(error) = app.try_register_game_module_systems(module)
+        {
+            self.diagnostics
+                .push(format!("Could not add Game systems: {error}"));
+            self.is_read_only = true;
+        }
         match app.apply_system_settings(&self.settings.system_settings) {
             Ok(report) => {
                 self.diagnostics.extend(
@@ -312,9 +313,10 @@ pub fn show_systems_panel(panel: &mut SystemsPanel, ui: &mut egui::Ui) {
         if ui
             .add_enabled(!panel.is_read_only, egui::Button::new("Reset to Default"))
             .clicked()
-            && let Err(error) = panel.reset_current_schedule() {
-                panel.diagnostics.push(error);
-            }
+            && let Err(error) = panel.reset_current_schedule()
+        {
+            panel.diagnostics.push(error);
+        }
     });
     if let Some(issue) = &panel.game_module_issue {
         ui.colored_label(
@@ -350,9 +352,10 @@ pub fn show_systems_panel(panel: &mut SystemsPanel, ui: &mut egui::Ui) {
                             egui::Checkbox::without_text(&mut enabled),
                         )
                         .changed()
-                        && let Err(error) = panel.set_enabled(&id, enabled) {
-                            panel.diagnostics.push(error);
-                        }
+                        && let Err(error) = panel.set_enabled(&id, enabled)
+                    {
+                        panel.diagnostics.push(error);
+                    }
                     let origin = match info.descriptor.origin() {
                         SystemOrigin::Engine => "Engine",
                         SystemOrigin::Game => "Game",
@@ -367,18 +370,20 @@ pub fn show_systems_panel(panel: &mut SystemsPanel, ui: &mut egui::Ui) {
                             egui::Button::new("↑"),
                         )
                         .clicked()
-                        && let Err(error) = panel.move_by(&id, -1) {
-                            panel.diagnostics.push(error);
-                        }
+                        && let Err(error) = panel.move_by(&id, -1)
+                    {
+                        panel.diagnostics.push(error);
+                    }
                     if ui
                         .add_enabled(
                             !panel.is_read_only && info.order + 1 < count,
                             egui::Button::new("↓"),
                         )
                         .clicked()
-                        && let Err(error) = panel.move_by(&id, 1) {
-                            panel.diagnostics.push(error);
-                        }
+                        && let Err(error) = panel.move_by(&id, 1)
+                    {
+                        panel.diagnostics.push(error);
+                    }
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(72.0);
@@ -573,11 +578,13 @@ mod tests {
         panel.set_enabled(&id, false).unwrap();
         assert_eq!(panel.save_state, SystemsSaveState::Saved);
         let saved = ProjectSettings::load(project.path()).unwrap();
-        assert!(saved
-            .system_settings
-            .update
-            .disabled
-            .contains(&id.as_str().to_owned()));
+        assert!(
+            saved
+                .system_settings
+                .update
+                .disabled
+                .contains(&id.as_str().to_owned())
+        );
 
         panel.reset_current_schedule().unwrap();
         let saved = ProjectSettings::load(project.path()).unwrap();

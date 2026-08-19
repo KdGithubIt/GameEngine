@@ -18,7 +18,7 @@
 
 use crate::animation::{AnimChannel, AnimProperty, AnimationClip, Keyframe};
 use crate::asset::{
-    imported_sub_asset_id, ImportedSubAssetKind, SkeletonBoneRecord, SkeletonRecord,
+    ImportedSubAssetKind, SkeletonBoneRecord, SkeletonRecord, imported_sub_asset_id,
 };
 use crate::mesh::{Mesh, SkinningVertexData, Submesh, Vertex};
 use crate::model_ir::{IrAnimProperty, IrMeshData, ModelDocument, SkeletonScope};
@@ -26,11 +26,11 @@ use crate::morph::{MaterialMorphOffset, MaterialMorphOperation, MorphAsset};
 use crate::rigid_body_rig::{
     JointDef, RigidBodyDef, RigidBodyMode, RigidBodyShape, SecondaryMotionRigAsset,
 };
-use crate::skeleton_asset::{compute_skeleton_identity, BoneDef, BoneId, SkeletonAsset};
+use crate::skeleton_asset::{BoneDef, BoneId, SkeletonAsset, compute_skeleton_identity};
 use crate::skinning::SkeletonNodeDesc;
+use engine_authoring::MaterialAsset;
 use engine_authoring::diagnostic::Diagnostic;
 use engine_authoring::id::AssetId;
-use engine_authoring::MaterialAsset;
 use glam::Mat4;
 use hashbrown::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -748,11 +748,12 @@ pub fn build_import_result_with_contact_bones(
     let mut mesh_skin_bindings: HashMap<usize, usize> = HashMap::new();
     for node in &document.nodes {
         if let (Some(mesh_source), Some(skin_source)) = (node.mesh, node.skin)
-            && let Some(&skin_position) = skin_position_by_source.get(&skin_source) {
-                mesh_skin_bindings
-                    .entry(mesh_source)
-                    .or_insert(skin_position);
-            }
+            && let Some(&skin_position) = skin_position_by_source.get(&skin_source)
+        {
+            mesh_skin_bindings
+                .entry(mesh_source)
+                .or_insert(skin_position);
+        }
     }
 
     let node_bindings: Vec<GltfNodeBinding> = document
@@ -1701,8 +1702,8 @@ fn resolve_skeleton_ids(
 mod tests {
     use super::*;
     use crate::model_ir::{
-        IrAnimProperty, IrClip, IrClipChannel, IrKeyframe, IrMaterial, IrMesh, IrMeshData,
-        IrNode, IrSkin, IrTexture, IrVertex,
+        IrAnimProperty, IrClip, IrClipChannel, IrKeyframe, IrMaterial, IrMesh, IrMeshData, IrNode,
+        IrSkin, IrTexture, IrVertex,
     };
     use engine_authoring::{LinearRgba, MaterialAlphaMode, MaterialCullMode, MaterialShadingModel};
     use glam::{Quat, Vec3};
@@ -1896,8 +1897,18 @@ mod tests {
             cull_mode: MaterialCullMode::Back,
             shading_model: MaterialShadingModel::StandardLit,
             toon_ramp_texture: None,
-            toon_shadow_color: LinearRgba { r: 0.55, g: 0.55, b: 0.62, a: 1.0 },
-            toon_ambient_color: LinearRgba { r: 0.2, g: 0.2, b: 0.2, a: 1.0 },
+            toon_shadow_color: LinearRgba {
+                r: 0.55,
+                g: 0.55,
+                b: 0.62,
+                a: 1.0,
+            },
+            toon_ambient_color: LinearRgba {
+                r: 0.2,
+                g: 0.2,
+                b: 0.2,
+                a: 1.0,
+            },
             toon_specular_color: LinearRgba::WHITE,
             toon_specular_power: 16.0,
             sphere_texture: None,

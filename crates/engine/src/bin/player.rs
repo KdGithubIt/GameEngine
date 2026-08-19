@@ -31,7 +31,7 @@ mod desktop {
     use std::sync::Arc;
 
     use engine::scene_bridge::spawn_from_authoring_scene;
-    use engine::{register_runtime_systems, AssetManifest, AssetServer, Camera3D, GlobalTransform};
+    use engine::{AssetManifest, AssetServer, Camera3D, GlobalTransform, register_runtime_systems};
     use engine_authoring::{ProjectRoot, ProjectSettings};
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {

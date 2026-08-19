@@ -99,7 +99,10 @@ impl AnimationMotionRoute {
             Self::Native => "Native: source skeleton matches target".to_owned(),
             Self::Retarget { map } => format!("Native mismatch -> Retarget Map `{}`", map.as_str()),
             Self::Humanoid { motion } => {
-                format!("Native mismatch -> no Retarget Map -> Humanoid `{}`", motion.as_str())
+                format!(
+                    "Native mismatch -> no Retarget Map -> Humanoid `{}`",
+                    motion.as_str()
+                )
             }
             Self::Failed { reason } => {
                 format!("Native -> Retarget -> Humanoid -> Failed: {reason}")

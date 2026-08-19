@@ -327,7 +327,12 @@ fn validate_game_camera_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
     let Some(highest) = enabled.iter().map(|(_, _, priority)| *priority).max() else {
         return Vec::new();
     };
-    if enabled.iter().filter(|(_, _, priority)| *priority == highest).count() <= 1 {
+    if enabled
+        .iter()
+        .filter(|(_, _, priority)| *priority == highest)
+        .count()
+        <= 1
+    {
         return Vec::new();
     }
     enabled
@@ -368,7 +373,12 @@ fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
 
     let highest = enabled.iter().map(|(_, priority)| *priority).max();
     let tied_highest = highest
-        .map(|priority| enabled.iter().filter(|(_, value)| *value == priority).count())
+        .map(|priority| {
+            enabled
+                .iter()
+                .filter(|(_, value)| *value == priority)
+                .count()
+        })
         .unwrap_or(0);
     if tied_highest > 1 {
         for (entity_id, priority) in &enabled {
@@ -779,17 +789,18 @@ fn validate_builtin_component_assets_impl(
                 component_type: component_type.clone(),
             };
             if let InspectorHint::AssetRef { kind } = definition.inspector
-                && let Value::AssetRef(asset) = value {
-                    validate_component_asset(
-                        asset,
-                        kind,
-                        manifest,
-                        asset_root,
-                        &target,
-                        &mut diagnostics,
-                        overlay,
-                    );
-                }
+                && let Value::AssetRef(asset) = value
+            {
+                validate_component_asset(
+                    asset,
+                    kind,
+                    manifest,
+                    asset_root,
+                    &target,
+                    &mut diagnostics,
+                    overlay,
+                );
+            }
             let (InspectorHint::Fields { fields: hints }, Value::Object(fields)) =
                 (definition.inspector, value)
             else {
@@ -800,17 +811,18 @@ fn validate_builtin_component_assets_impl(
                     if let Some(Value::Array(levels)) = fields.get(hint.name) {
                         for level in levels {
                             if let Value::Object(level) = level
-                                && let Some(Value::AssetRef(asset)) = level.get("mesh") {
-                                    validate_component_asset(
-                                        asset,
-                                        AssetKind::Mesh,
-                                        manifest,
-                                        asset_root,
-                                        &target,
-                                        &mut diagnostics,
-                                        overlay,
-                                    );
-                                }
+                                && let Some(Value::AssetRef(asset)) = level.get("mesh")
+                            {
+                                validate_component_asset(
+                                    asset,
+                                    AssetKind::Mesh,
+                                    manifest,
+                                    asset_root,
+                                    &target,
+                                    &mut diagnostics,
+                                    overlay,
+                                );
+                            }
                         }
                     }
                     continue;
@@ -913,7 +925,10 @@ fn read_authoring_text(
     overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
 ) -> Result<String, String> {
     if let Some(snapshot) = overlay.and_then(|overlay| overlay.get(path)) {
-        return snapshot.contents().map(str::to_owned).map_err(str::to_owned);
+        return snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(str::to_owned);
     }
     std::fs::read_to_string(path).map_err(|error| error.to_string())
 }
@@ -969,14 +984,15 @@ fn validate_animation_controller_bindings(
 
     let graph_path = asset_root.join(&graph_entry.path);
     let graph = if let Some(snapshot) = overlay.and_then(|overlay| overlay.get(&graph_path)) {
-        snapshot
-            .contents()
-            .map_err(str::to_owned)
-            .and_then(|json| crate::anim_graph::load_animation_graph_json(json).map_err(|error| error.to_string()))
+        snapshot.contents().map_err(str::to_owned).and_then(|json| {
+            crate::anim_graph::load_animation_graph_json(json).map_err(|error| error.to_string())
+        })
     } else {
         crate::anim_graph::load_animation_graph(&graph_path).map_err(|error| error.to_string())
     };
-    let Ok(graph) = graph else { return; };
+    let Ok(graph) = graph else {
+        return;
+    };
     for state in &graph.states {
         let Some(slot) = &state.motion_slot else {
             continue;
@@ -1172,10 +1188,9 @@ fn validate_animation_set_dependencies(
     diagnostics: &mut Vec<Diagnostic>,
     overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
 ) {
-    let animation_set = read_authoring_text(animation_set_path, overlay)
-        .and_then(|json| {
-            engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string())
-        });
+    let animation_set = read_authoring_text(animation_set_path, overlay).and_then(|json| {
+        engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string())
+    });
     let animation_set = match animation_set {
         Ok(animation_set) => animation_set,
         Err(error) => {
@@ -1346,8 +1361,7 @@ fn validate_motion_source(
                 return;
             }
             Ok(
-                crate::vmd_import::VmdContentKind::Model
-                | crate::vmd_import::VmdContentKind::Mixed,
+                crate::vmd_import::VmdContentKind::Model | crate::vmd_import::VmdContentKind::Mixed,
             ) => {}
             Err(error) => {
                 diagnostics.push(
@@ -1474,10 +1488,9 @@ fn validate_material_dependencies(
     diagnostics: &mut Vec<Diagnostic>,
     overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
 ) {
-    let material = read_authoring_text(material_path, overlay)
-        .and_then(|json| {
-            engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
-        });
+    let material = read_authoring_text(material_path, overlay).and_then(|json| {
+        engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
+    });
     let material = match material {
         Ok(material) => material,
         Err(error) => {
@@ -1503,10 +1516,7 @@ fn validate_material_dependencies(
             "metallic_roughness_texture",
             material.metallic_roughness_texture.as_ref(),
         ),
-        (
-            "occlusion_texture",
-            material.occlusion_texture.as_ref(),
-        ),
+        ("occlusion_texture", material.occlusion_texture.as_ref()),
         ("emissive_texture", material.emissive_texture.as_ref()),
     ] {
         let Some(texture_id) = texture_id else {

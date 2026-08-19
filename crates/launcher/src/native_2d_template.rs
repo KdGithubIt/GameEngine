@@ -4,7 +4,7 @@
 //! project scaffold remains authoritative; this module builds the 2D proving
 //! content in a sibling staging project and publishes it with one final rename.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,7 +35,9 @@ impl ProjectTemplate {
     pub fn description(self) -> &'static str {
         match self {
             Self::Empty => "Empty scene and standard project scaffold.",
-            Self::Native2d => "Camera2D, sprites, animation, tiles, 2D bodies and one-way collision.",
+            Self::Native2d => {
+                "Camera2D, sprites, animation, tiles, 2D bodies and one-way collision."
+            }
         }
     }
 }
@@ -44,7 +46,10 @@ impl ProjectTemplate {
 /// partially-authored final directory.
 pub fn create_native_2d_project(final_path: &Path, name: &str) -> Result<PathBuf, String> {
     if final_path.exists() {
-        return Err(format!("destination already exists: {}", final_path.display()));
+        return Err(format!(
+            "destination already exists: {}",
+            final_path.display()
+        ));
     }
     let parent = final_path
         .parent()
@@ -59,7 +64,10 @@ pub fn create_native_2d_project(final_path: &Path, name: &str) -> Result<PathBuf
         name.replace(['/', '\\'], "_")
     ));
     if staging.exists() {
-        return Err(format!("temporary project path already exists: {}", staging.display()));
+        return Err(format!(
+            "temporary project path already exists: {}",
+            staging.display()
+        ));
     }
 
     let result = (|| -> Result<PathBuf, String> {
@@ -90,7 +98,9 @@ fn write_proving_content(root: &Path) -> Result<(), String> {
         .map_err(|error| format!("could not create Native 2D asset directory: {error}"))?;
 
     fs::write(
-        root.join("assets").join("textures").join("native_2d_proving.bmp"),
+        root.join("assets")
+            .join("textures")
+            .join("native_2d_proving.bmp"),
         proving_texture_bmp(),
     )
     .map_err(|error| format!("could not write proving texture: {error}"))?;
@@ -383,7 +393,10 @@ mod tests {
         assert_eq!(u32::from_le_bytes(bmp[18..22].try_into().unwrap()), 64);
         assert_eq!(u32::from_le_bytes(bmp[22..26].try_into().unwrap()), 32);
         assert_eq!(u16::from_le_bytes(bmp[28..30].try_into().unwrap()), 24);
-        assert_eq!(bmp.len(), u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize);
+        assert_eq!(
+            bmp.len(),
+            u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize
+        );
     }
 
     #[test]

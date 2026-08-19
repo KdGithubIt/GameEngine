@@ -38,11 +38,11 @@ pub mod access;
 pub mod animation_graph;
 pub mod animation_set;
 // The stateful wrapper delegates only part of this compatibility surface.
+#[path = "behavior_tree_stateful.rs"]
+pub mod behavior_tree;
 #[allow(dead_code)]
 #[path = "behavior_tree.rs"]
 mod behavior_tree_legacy;
-#[path = "behavior_tree_stateful.rs"]
-pub mod behavior_tree;
 pub mod capability;
 pub mod command;
 pub mod component_metadata;
@@ -82,17 +82,15 @@ pub mod validation;
 pub mod value;
 pub mod vfx;
 
-pub use access::{
-    AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
-};
+pub use access::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
 pub use animation_graph::{
+    ANIMATION_STATE_PLAYBACK_MODE_PROPERTY, AnimState, AnimTransition, AnimationGraphDomain,
+    AnimationStatePlaybackMode, CompiledAnimGraph, MOTION_SLOTS_ANNOTATION, MotionSlot,
     animation_graph_motion_slots, compile_animation_graph, motion_slots_annotation_value,
-    AnimState, AnimTransition, AnimationGraphDomain, AnimationStatePlaybackMode, CompiledAnimGraph,
-    MotionSlot, ANIMATION_STATE_PLAYBACK_MODE_PROPERTY, MOTION_SLOTS_ANNOTATION,
 };
 pub use animation_set::{
-    AnimationBinding, AnimationSet, AnimationSetError, AnimationSetEvent, MotionSourceRef,
-    ANIMATION_SET_FILE_SUFFIX, ANIMATION_SET_SCHEMA_VERSION,
+    ANIMATION_SET_FILE_SUFFIX, ANIMATION_SET_SCHEMA_VERSION, AnimationBinding, AnimationSet,
+    AnimationSetError, AnimationSetEvent, MotionSourceRef,
 };
 pub use behavior_tree::{
     BehaviorTreeApply, BehaviorTreeAuthoringService, BehaviorTreeCompilation, BehaviorTreeDomain,
@@ -108,17 +106,17 @@ pub use capability::{
 };
 pub use command::{AuthoringCommand, Change, CommandResult, PropertyPath, PropertyPathSegment};
 pub use component_metadata::{
+    COMPONENT_METADATA_SCHEMA_VERSION, ComponentMetadata, ComponentMetadataError,
     component_metadata_path, load_component_metadata, validate_project_component_id,
-    write_component_metadata, ComponentMetadata, ComponentMetadataError,
-    COMPONENT_METADATA_SCHEMA_VERSION,
+    write_component_metadata,
 };
 pub use diagnostic::{Diagnostic, DiagnosticTarget, Severity};
 pub use entity::AuthoringEntity;
 pub use explicit_game_fields::{create_rust_script, create_rust_script_in};
 pub use game_project::{
-    create_rhai_script_in, duplicate_rust_component, initialize_game_project, move_rust_script,
-    refresh_game_module_indexes, rust_declarations, GameProjectError, RustDeclaration,
-    RustDeclarationKind, RustScriptKind, RustScriptSchedule, RECOMMENDED_RUST_SCRIPT_FOLDERS,
+    GameProjectError, RECOMMENDED_RUST_SCRIPT_FOLDERS, RustDeclaration, RustDeclarationKind,
+    RustScriptKind, RustScriptSchedule, create_rhai_script_in, duplicate_rust_component,
+    initialize_game_project, move_rust_script, refresh_game_module_indexes, rust_declarations,
 };
 pub use graph::authoring_service::{
     GraphAuthoringError, GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
@@ -131,8 +129,8 @@ pub use graph::{
     Node, NodeSchema, NodeTypeId, PortArity, PortDirection, PortRef, PortSchema, PortValueTypeId,
 };
 pub use graph_domain::{
-    apply_graph_commands_with_domain, validate_graph_with_domain, GraphCommandApplication,
-    GraphDomain, TestGraphDomain,
+    GraphCommandApplication, GraphDomain, TestGraphDomain, apply_graph_commands_with_domain,
+    validate_graph_with_domain,
 };
 pub use graph_routing::{AuthoringGraphDomain, UnsupportedGraphKind};
 pub use graph_view::authoring_service::{
@@ -148,39 +146,40 @@ pub use id::{
     AssetId, ComponentTypeId, ComponentTypeIdError, EdgeId, EntityId, GraphId, GroupId, IdError,
     MotionSlotId, NodeId, PortId, ProjectId, StableId,
 };
-pub use load::{load_scene_from_json, SceneLoadError};
+pub use load::{SceneLoadError, load_scene_from_json};
 pub use material_asset::{
-    LinearRgba, MaterialAlphaMode, MaterialAsset, MaterialAssetError, MaterialCullMode,
-    MaterialOutline, MaterialShadingModel, MaterialSphereBlendMode,
-    MaterialSphereCoordinateSource, ToonLitProperties, MATERIAL_SCHEMA_VERSION,
+    LinearRgba, MATERIAL_SCHEMA_VERSION, MaterialAlphaMode, MaterialAsset, MaterialAssetError,
+    MaterialCullMode, MaterialOutline, MaterialShadingModel, MaterialSphereBlendMode,
+    MaterialSphereCoordinateSource, ToonLitProperties,
 };
 pub use native_2d::{
     PixelPreviewPolicy, Project2dSettings, SortingLayer, SortingLayerId, SortingLayerIdError,
     SpriteFiltering,
 };
 pub use native_2d_assets::{
-    Native2dIdError, PixelRect, PixelsPerUnit, SpriteAnimationDocument, SpriteAnimationFrame,
-    SpriteAnimator2d, SpriteAtlasDocument, SpriteBlendMode, SpriteId, SpriteRef, SpriteRegion,
-    SpriteRenderer2d, TileCell, TileCellEntry, TileChunk, TileChunkCoord, TileCollisionMaterial,
-    TileCollisionShape, TileDefinition, TileId, TileLayerId, TileMapDocument, TileMapLayer,
-    TileSetDocument, SPRITE_ANIMATION_SCHEMA_VERSION, SPRITE_ATLAS_SCHEMA_VERSION,
-    TILE_MAP_SCHEMA_VERSION, TILE_SET_SCHEMA_VERSION,
+    Native2dIdError, PixelRect, PixelsPerUnit, SPRITE_ANIMATION_SCHEMA_VERSION,
+    SPRITE_ATLAS_SCHEMA_VERSION, SpriteAnimationDocument, SpriteAnimationFrame, SpriteAnimator2d,
+    SpriteAtlasDocument, SpriteBlendMode, SpriteId, SpriteRef, SpriteRegion, SpriteRenderer2d,
+    TILE_MAP_SCHEMA_VERSION, TILE_SET_SCHEMA_VERSION, TileCell, TileCellEntry, TileChunk,
+    TileChunkCoord, TileCollisionMaterial, TileCollisionShape, TileDefinition, TileId, TileLayerId,
+    TileMapDocument, TileMapLayer, TileSetDocument,
 };
 pub use native_2d_services::{
-    Native2dAuthoringError, SpriteAtlasAuthoringService, TileMapAuthoringService,
-    TileMapChunkKey, TileMapGestureCommit, TileRect, TileStamp,
+    Native2dAuthoringError, SpriteAtlasAuthoringService, TileMapAuthoringService, TileMapChunkKey,
+    TileMapGestureCommit, TileRect, TileStamp,
 };
-pub use persist::{replace_file_contents, PersistError, PersistOperation};
-pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
+pub use persist::{PersistError, PersistOperation, replace_file_contents};
+pub use prefab::{PREFAB_SCHEMA_VERSION, PrefabAsset, PrefabError, PrefabInstantiation};
 pub use prefab_authoring::{
-    prefab_instance_marker, prefab_instance_source, PrefabAuthoringError, PrefabAuthoringService,
-    PrefabInstanceSource, PrefabInstantiationMutation, PrefabInstantiationRequest,
-    PrefabSourceError, PrefabSourcePath, PREFAB_INSTANCE_COMPONENT, PREFAB_INSTANCE_SOURCE_FIELD,
+    PREFAB_INSTANCE_COMPONENT, PREFAB_INSTANCE_SOURCE_FIELD, PrefabAuthoringError,
+    PrefabAuthoringService, PrefabInstanceSource, PrefabInstantiationMutation,
+    PrefabInstantiationRequest, PrefabSourceError, PrefabSourcePath, prefab_instance_marker,
+    prefab_instance_source,
 };
-pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
+pub use project::{PROJECT_SCHEMA_VERSION, ProjectConfig, ProjectError, ProjectRoot};
 pub use project_settings::{
-    AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings, ProjectSettingsError,
-    PROJECT_SETTINGS_SCHEMA_VERSION,
+    AxisBinding, InputAction, KeyAxisBinding, Layer, PROJECT_SETTINGS_SCHEMA_VERSION,
+    ProjectSettings, ProjectSettingsError,
 };
 pub use scene::{AuthoringScene, SceneSaveError};
 pub use scene_authoring::{
@@ -199,28 +198,28 @@ pub use ui::authoring_service::{
     UiAuthoringSnapshot, UiAuthoringValidation,
 };
 pub use ui::{
-    UiAnchor, UiDocument, UiDocumentError, UiElementConstraints, UiLayout, UiNode, UiNodeKind,
-    UiNumber, UiScaleMatch, UiScalePolicy, UiString, UI_SCHEMA_VERSION,
+    UI_SCHEMA_VERSION, UiAnchor, UiDocument, UiDocumentError, UiElementConstraints, UiLayout,
+    UiNode, UiNodeKind, UiNumber, UiScaleMatch, UiScalePolicy, UiString,
 };
 pub use ui_contract::{
     UiAuthoringContract, UiBindingDeclaration, UiBindingKind, UiContractError, UiEventDeclaration,
     UiFocusDirection, UiFocusLink,
 };
-pub use ui_contract_runtime::{UiContractDocumentError, UiFocusNavigator, UI_CONTRACT_FILE_SUFFIX};
+pub use ui_contract_runtime::{UI_CONTRACT_FILE_SUFFIX, UiContractDocumentError, UiFocusNavigator};
 pub use ui_edit::{
-    find_ui_node, UiDocumentChange, UiDocumentCommand, UiDocumentCommandResult,
-    UiDocumentCommitError, UiDocumentEditError, UiDocumentTransaction,
+    UiDocumentChange, UiDocumentCommand, UiDocumentCommandResult, UiDocumentCommitError,
+    UiDocumentEditError, UiDocumentTransaction, find_ui_node,
 };
 pub use validation::{
     validate_asset_manifest, validate_scene, validate_scene_asset_refs, validate_start_scene,
 };
 pub use value::Value;
 pub use vfx::{
-    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxApply, VfxAttributeLayout,
-    VfxAuthoringService, VfxCapabilityRequirements, VfxCommand, VfxCompilation, VfxCurve,
-    VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId, VfxDiagnostic, VfxDiagnosticSeverity,
-    VfxDocumentError, VfxEffect, VfxEmitter, VfxEmitterId, VfxGradient, VfxGradientKey,
-    VfxGradientKeyId, VfxIdError, VfxModule, VfxModuleId, VfxModuleOperation, VfxModuleSchema,
-    VfxPhase, VfxRandomChannel, VfxScalarValue, VfxSchemaCatalog, VfxShape, VfxTemplate,
-    VfxTextureSheet, VfxValidation, VfxVectorValue, VFX_FILE_SUFFIX, VFX_SCHEMA_VERSION,
+    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VFX_FILE_SUFFIX,
+    VFX_SCHEMA_VERSION, VfxApply, VfxAttributeLayout, VfxAuthoringService,
+    VfxCapabilityRequirements, VfxCommand, VfxCompilation, VfxCurve, VfxCurveInterpolation,
+    VfxCurveKey, VfxCurveKeyId, VfxDiagnostic, VfxDiagnosticSeverity, VfxDocumentError, VfxEffect,
+    VfxEmitter, VfxEmitterId, VfxGradient, VfxGradientKey, VfxGradientKeyId, VfxIdError, VfxModule,
+    VfxModuleId, VfxModuleOperation, VfxModuleSchema, VfxPhase, VfxRandomChannel, VfxScalarValue,
+    VfxSchemaCatalog, VfxShape, VfxTemplate, VfxTextureSheet, VfxValidation, VfxVectorValue,
 };

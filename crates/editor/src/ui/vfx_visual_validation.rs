@@ -1,6 +1,6 @@
 use super::EditorApp;
 use engine_authoring::{
-    replace_file_contents, AssetId, ComponentTypeId, Value, VfxAuthoringService, VfxTemplate,
+    AssetId, ComponentTypeId, Value, VfxAuthoringService, VfxTemplate, replace_file_contents,
 };
 use std::collections::BTreeMap;
 
@@ -49,7 +49,10 @@ impl EditorApp {
         };
         fields.insert("effect".to_owned(), Value::AssetRef(effect_asset));
         fields.insert("looping".to_owned(), Value::Bool(true));
-        fields.insert("parameter_overrides".to_owned(), Value::Object(BTreeMap::new()));
+        fields.insert(
+            "parameter_overrides".to_owned(),
+            Value::Object(BTreeMap::new()),
+        );
 
         let entity = self
             .session

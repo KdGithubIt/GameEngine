@@ -4,10 +4,10 @@
 //! Windows-native versus WSL2 evidence cannot be mistaken for model-only evidence.
 
 use crate::agent_benchmark::{
-    benchmark_task, BenchmarkModelIdentity, BenchmarkTaskKind, BenchmarkToolBudget,
+    BenchmarkModelIdentity, BenchmarkTaskKind, BenchmarkToolBudget, benchmark_task,
 };
-use crate::native_agent::BASELINE_HARNESS_VERSION;
 use crate::managed_local_runtime::ManagedExecutionEnvironment;
+use crate::native_agent::BASELINE_HARNESS_VERSION;
 use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
 use crate::resource_arbitration::{InferenceWorkload, TelemetryValue};
 use serde::{Deserialize, Serialize};
@@ -84,8 +84,8 @@ pub(crate) enum CampaignTaskHarness {
 }
 
 pub(crate) fn campaign_task_harness(task_id: &str) -> Result<CampaignTaskHarness, String> {
-    let task = benchmark_task(task_id)
-        .ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+    let task =
+        benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     Ok(match task.kind {
         BenchmarkTaskKind::ReadQuestion => CampaignTaskHarness::NativeReadQuestion,
         BenchmarkTaskKind::ProjectInspection
@@ -99,8 +99,8 @@ pub(crate) fn campaign_task_harness(task_id: &str) -> Result<CampaignTaskHarness
 }
 
 pub(crate) fn campaign_task_workload(task_id: &str) -> Result<InferenceWorkload, String> {
-    let task = benchmark_task(task_id)
-        .ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+    let task =
+        benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     Ok(match task.kind {
         BenchmarkTaskKind::ReadQuestion | BenchmarkTaskKind::ProjectInspection => {
             InferenceWorkload::InteractiveReasoning
@@ -115,8 +115,8 @@ pub(crate) fn campaign_task_workload(task_id: &str) -> Result<InferenceWorkload,
 }
 
 fn task_tool_budget(task_id: &str) -> Result<BenchmarkToolBudget, String> {
-    let task = benchmark_task(task_id)
-        .ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+    let task =
+        benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     if campaign_task_harness(task_id)? == CampaignTaskHarness::NativeReadQuestion {
         return Ok(BenchmarkToolBudget {
             max_model_turns: 1,
@@ -132,7 +132,10 @@ fn task_tool_budget(task_id: &str) -> Result<BenchmarkToolBudget, String> {
             vec!["code_workspace_apply".to_owned()]
         }
         BenchmarkTaskKind::RuntimeInteraction => {
-            vec!["runtime_launch".to_owned(), "runtime_input_control".to_owned()]
+            vec![
+                "runtime_launch".to_owned(),
+                "runtime_input_control".to_owned(),
+            ]
         }
         BenchmarkTaskKind::VisualEvaluation => vec![
             "runtime_launch".to_owned(),
@@ -250,12 +253,9 @@ impl CampaignFixtureIdentity {
     /// # Errors
     ///
     /// Returns an error when `task_id` is not one of the seven ADR 0142 tasks.
-    pub(crate) fn host_only_evaluation(
-        &self,
-        task_id: &str,
-    ) -> Result<HostOnlyEvaluation, String> {
-        let task = benchmark_task(task_id)
-            .ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+    pub(crate) fn host_only_evaluation(&self, task_id: &str) -> Result<HostOnlyEvaluation, String> {
+        let task =
+            benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
         let expected_marker = self.host_seed.rotate_right(29) ^ stable_hash(task.id.as_bytes());
         Ok(HostOnlyEvaluation {
             task_id: task.id.to_owned(),
@@ -273,8 +273,8 @@ impl CampaignFixtureIdentity {
         &self,
         task_id: &str,
     ) -> Result<CandidateTaskContract, String> {
-        let task = benchmark_task(task_id)
-            .ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+        let task =
+            benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
         let marker_hash = self.host_seed.rotate_left(17) ^ stable_hash(task_id.as_bytes());
         Ok(CandidateTaskContract {
             task_id: task.id.to_owned(),
@@ -390,8 +390,10 @@ mod tests {
         };
         let representation = CampaignRepresentation::from_model(&model);
         assert!(representation.exact());
-        assert!(!serde_json::to_string(&representation)
-            .expect("representation JSON")
-            .contains("windows-runtime"));
+        assert!(
+            !serde_json::to_string(&representation)
+                .expect("representation JSON")
+                .contains("windows-runtime")
+        );
     }
 }

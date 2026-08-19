@@ -131,13 +131,13 @@ impl Project2dSettings {
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if !self.default_pixels_per_unit.is_finite() || self.default_pixels_per_unit <= 0.0 {
-            errors.push(
-                "native_2d.default_pixels_per_unit must be finite and positive".to_owned(),
-            );
+            errors.push("native_2d.default_pixels_per_unit must be finite and positive".to_owned());
         }
-        if self.gravity.iter().any(|value| {
-            !value.is_finite() || value.abs() > f64::from(f32::MAX)
-        }) {
+        if self
+            .gravity
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > f64::from(f32::MAX))
+        {
             errors.push("native_2d.gravity must fit finite f32 runtime values".to_owned());
         }
         if self.sorting_layers.is_empty() {
@@ -175,10 +175,12 @@ mod tests {
         let settings = Project2dSettings::default();
         assert_eq!(settings.gravity, [0.0, -9.81]);
         assert_eq!(settings.sorting_layers.len(), 1);
-        assert!(settings.sorting_layers[0]
-            .id
-            .as_str()
-            .starts_with("sorting_layer_"));
+        assert!(
+            settings.sorting_layers[0]
+                .id
+                .as_str()
+                .starts_with("sorting_layer_")
+        );
         assert!(settings.validate().is_empty());
     }
 

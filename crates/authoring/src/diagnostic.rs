@@ -199,11 +199,7 @@ impl Diagnostic {
     }
 
     /// Attaches one domain-owned structured evidence value.
-    pub fn with_context_value(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
+    pub fn with_context_value(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.context.insert(key.into(), value.into());
         self
     }

@@ -1,6 +1,6 @@
 //! Offscreen Scene View panel with editor camera, grid, and entity picking.
 
-use crate::gizmo::{apply_rotate_delta, apply_scale_delta, transform_component_type, GizmoAxis};
+use crate::gizmo::{GizmoAxis, apply_rotate_delta, apply_scale_delta, transform_component_type};
 use crate::preview_residency::{
     PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,
 };
@@ -9,15 +9,15 @@ use crate::view_resolution::render_target_size_in_pixels;
 use eframe::{egui, egui_wgpu, wgpu};
 use engine::glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
 use engine::{
-    Camera3D, DebugLines, GlobalTransform, Transform, ViewportSize, PREVIEW_COLOR_FORMAT,
-    PREVIEW_DEPTH_FORMAT, PREVIEW_MSAA_SAMPLE_COUNT, PREVIEW_RENDER_FORMAT,
+    Camera3D, DebugLines, GlobalTransform, PREVIEW_COLOR_FORMAT, PREVIEW_DEPTH_FORMAT,
+    PREVIEW_MSAA_SAMPLE_COUNT, PREVIEW_RENDER_FORMAT, Transform, ViewportSize,
 };
 use engine_authoring::{
     AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId, Diagnostic, EntityId, ProjectRoot,
     Transaction, UiDocument, Value,
 };
 use std::collections::BTreeMap;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 pub(crate) mod native_2d_mode;
@@ -1130,15 +1130,16 @@ impl SceneView {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let completed = self.renderer_warmup.as_ref().and_then(|receiver| {
-                match receiver.try_recv() {
-                    Ok(result) => Some(result),
-                    Err(mpsc::TryRecvError::Empty) => None,
-                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(
-                        "preview renderer warm-up worker disconnected".to_owned(),
-                    )),
-                }
-            });
+            let completed =
+                self.renderer_warmup
+                    .as_ref()
+                    .and_then(|receiver| match receiver.try_recv() {
+                        Ok(result) => Some(result),
+                        Err(mpsc::TryRecvError::Empty) => None,
+                        Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                            "preview renderer warm-up worker disconnected".to_owned(),
+                        )),
+                    });
             if let Some(result) = completed {
                 self.renderer_warmup = None;
                 match result {
@@ -1184,8 +1185,7 @@ impl SceneView {
                         })
                         .map_err(|error| error.to_string());
                         let _ = sender.send(result);
-                    })
-                {
+                    }) {
                     Ok(_worker) => self.renderer_warmup = Some(receiver),
                     Err(error) => {
                         self.renderer_failure_device = Some(device_identity);
@@ -1225,10 +1225,7 @@ impl SceneView {
     ///
     /// Persistent preview state, imported data, meshes, textures, and pipelines
     /// remain resident so normal inference focus does not defeat ADR 0072/0104.
-    pub(crate) fn release_transient_resources(
-        &mut self,
-        render_state: &egui_wgpu::RenderState,
-    ) {
+    pub(crate) fn release_transient_resources(&mut self, render_state: &egui_wgpu::RenderState) {
         self.release(render_state);
         self.last_view = None;
     }
@@ -1237,10 +1234,7 @@ impl SceneView {
     ///
     /// Project CPU residency and immutable renderer pipelines remain available;
     /// the project resource broker separately evicts shared mesh/texture uploads.
-    pub(crate) fn release_recreatable_resources(
-        &mut self,
-        render_state: &egui_wgpu::RenderState,
-    ) {
+    pub(crate) fn release_recreatable_resources(&mut self, render_state: &egui_wgpu::RenderState) {
         self.release_transient_resources(render_state);
         self.preview = None;
         if let Some(renderer) = &mut self.renderer {
@@ -1423,11 +1417,18 @@ impl SceneView {
                     response.interact_pointer_pos(),
                     selected_entity,
                     selected_center,
-                    selected_entity.and_then(|entity| audio_emitter_distances(interaction_scene, entity)),
+                    selected_entity
+                        .and_then(|entity| audio_emitter_distances(interaction_scene, entity)),
                 ) {
                     let direction = audio_distance_handle_direction(&self.camera);
                     if let Some(field) = hit_test_audio_distance_handle(
-                        pos, center, min_distance, max_distance, direction, vp, rect,
+                        pos,
+                        center,
+                        min_distance,
+                        max_distance,
+                        direction,
+                        vp,
+                        rect,
                     ) {
                         let base_distance = match field {
                             AudioDistanceField::Min => min_distance,
@@ -1486,9 +1487,7 @@ impl SceneView {
             && response.dragged_by(egui::PointerButton::Primary)
         {
             let screen_delta = response.ctx.input(|input| input.pointer.delta());
-            let delta = screen_delta_to_world(
-                screen_delta, drag.direction, drag.center, vp, rect,
-            );
+            let delta = screen_delta_to_world(screen_delta, drag.direction, drag.center, vp, rect);
             if delta.is_finite() {
                 drag.accumulated_delta += delta;
             }
@@ -1502,48 +1501,45 @@ impl SceneView {
 
         let mut gizmo_edit = None;
         if let Some(drag) = &mut self.gizmo_drag
-            && response.dragged_by(egui::PointerButton::Primary) {
-                let screen_delta = response.ctx.input(|input| input.pointer.delta());
-                let delta = match drag.mode {
-                    GizmoMode::Translate => screen_delta_to_world(
+            && response.dragged_by(egui::PointerButton::Primary)
+        {
+            let screen_delta = response.ctx.input(|input| input.pointer.delta());
+            let delta = match drag.mode {
+                GizmoMode::Translate => {
+                    screen_delta_to_world(screen_delta, drag.axis_dir, drag.origin_center, vp, rect)
+                }
+                GizmoMode::Rotate => {
+                    screen_delta_along_axis(
                         screen_delta,
                         drag.axis_dir,
                         drag.origin_center,
                         vp,
                         rect,
-                    ),
-                    GizmoMode::Rotate => {
-                        screen_delta_along_axis(
-                            screen_delta,
-                            drag.axis_dir,
-                            drag.origin_center,
-                            vp,
-                            rect,
-                        ) * 0.5
-                    }
-                    GizmoMode::Scale => {
-                        screen_delta_along_axis(
-                            screen_delta,
-                            drag.axis_dir,
-                            drag.origin_center,
-                            vp,
-                            rect,
-                        ) * 0.01
-                    }
-                };
-                if delta.is_finite() {
-                    drag.accumulated_delta += delta;
+                    ) * 0.5
                 }
-                let modifiers = response.ctx.input(|input| input.modifiers);
-                drag.effective_delta = if modifiers.ctrl || modifiers.command {
-                    crate::gizmo::snap_delta(
-                        drag.accumulated_delta,
-                        snap_increment(drag.mode, modifiers.shift),
-                    )
-                } else {
-                    drag.accumulated_delta
-                };
+                GizmoMode::Scale => {
+                    screen_delta_along_axis(
+                        screen_delta,
+                        drag.axis_dir,
+                        drag.origin_center,
+                        vp,
+                        rect,
+                    ) * 0.01
+                }
+            };
+            if delta.is_finite() {
+                drag.accumulated_delta += delta;
             }
+            let modifiers = response.ctx.input(|input| input.modifiers);
+            drag.effective_delta = if modifiers.ctrl || modifiers.command {
+                crate::gizmo::snap_delta(
+                    drag.accumulated_delta,
+                    snap_increment(drag.mode, modifiers.shift),
+                )
+            } else {
+                drag.accumulated_delta
+            };
+        }
 
         let primary_down =
             ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
@@ -1559,16 +1555,17 @@ impl SceneView {
         let mut completed_gizmo_preview = None;
         if !primary_down
             && let Some(drag) = self.gizmo_drag.take()
-                && drag.effective_delta.abs() > f32::EPSILON {
-                    completed_gizmo_preview =
-                        selected_entity.and_then(|entity| gizmo_component_preview(entity, &drag));
-                    gizmo_edit = Some(GizmoEdit {
-                        mode: drag.mode,
-                        axis: drag.axis,
-                        delta: drag.effective_delta,
-                        axis_direction: drag.axis_dir.to_array(),
-                    });
-                }
+            && drag.effective_delta.abs() > f32::EPSILON
+        {
+            completed_gizmo_preview =
+                selected_entity.and_then(|entity| gizmo_component_preview(entity, &drag));
+            gizmo_edit = Some(GizmoEdit {
+                mode: drag.mode,
+                axis: drag.axis,
+                delta: drag.effective_delta,
+                axis_direction: drag.axis_dir.to_array(),
+            });
+        }
 
         // Marquee selection: a primary drag that starts on empty space (no
         // gizmo handle) selects every entity whose projected center falls in
@@ -1649,9 +1646,10 @@ impl SceneView {
         let mut picked_ui_node = None;
         let mut ui_draw_regions = Vec::new();
         if response.clicked()
-            && let Some(pos) = response.interact_pointer_pos() {
-                picked_entity = self.pick(pos, rect, size);
-            }
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            picked_entity = self.pick(pos, rect, size);
+        }
 
         let manifest_hash = match self.manifest_hash_cache {
             Some((revision, hash)) if revision == manifest.revision() => hash,
@@ -1679,7 +1677,10 @@ impl SceneView {
             .is_some_and(|preview| preview.component_type != transform_component_type());
         let reuse = !non_transform_preview
             && !self.waiting_for_residency
-            && self.preview.as_ref().is_some_and(|preview| preview.key == key);
+            && self
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.key == key);
 
         if !reuse {
             let assets_root = project_root.map(ProjectRoot::assets_root);
@@ -1815,8 +1816,7 @@ impl SceneView {
             despawn_camera_entities(app.world_mut());
             let cam_transform = self.camera.to_transform();
             let camera_2d = planar_2d.then(|| native_2d_mode::camera(&self.camera));
-            let camera_2d_transform =
-                planar_2d.then(|| native_2d_mode::transform(&self.camera));
+            let camera_2d_transform = planar_2d.then(|| native_2d_mode::transform(&self.camera));
             if !planar_2d {
                 update_editor_camera(app.world_mut(), cam_transform, aspect);
             }
@@ -1895,10 +1895,8 @@ impl SceneView {
                         })
                     })
                 {
-                    status.runtime_issue = Some(format!(
-                        "[{}] {}",
-                        diagnostic.code, diagnostic.message
-                    ));
+                    status.runtime_issue =
+                        Some(format!("[{}] {}", diagnostic.code, diagnostic.message));
                 }
                 self.animation_preview_status = animation_status;
             }
@@ -1931,45 +1929,51 @@ impl SceneView {
                 }
                 draw_navigation_authoring_gizmos(dl, render_scene);
                 if let Some(sel_id) = selected_entity
-                    && let Some(info) = self.entity_pick_info.iter().find(|e| &e.id == sel_id) {
-                        dl.aabb(info.center, info.half, Vec3::new(1.0, 1.0, 0.0));
-                        let len = gizmo_axis_length(info.center, vp, rect);
-                        let hovered =
-                            self.gizmo_drag.as_ref().map(|drag| drag.axis).or_else(|| {
-                                response.hover_pos().and_then(|pos| {
-                                    hit_test_gizmo_axis(
-                                        pos,
-                                        info.center,
-                                        vp,
-                                        rect,
-                                        gizmo_mode,
-                                        len,
-                                        &axis_dirs,
-                                    )
-                                    .filter(|axis| {
-                                        !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
-                                    })
-                                })
-                            });
-                        draw_gizmo(dl, info.center, gizmo_mode, len, hovered, &axis_dirs);
-                        if self.show_lod_debug {
-                            for distance in lod_distances(render_scene, sel_id) {
-                                draw_distance_ring(dl, info.center, distance);
-                            }
-                        }
-                        if let Some((min_distance, max_distance)) = audio_emitter_display_distances(
-                            render_scene,
-                            sel_id,
-                            self.audio_distance_drag.as_ref(),
-                        ) {
-                            draw_audio_distance_shell(
-                                dl, info.center, min_distance, Vec3::new(0.15, 0.85, 1.0),
-                            );
-                            draw_audio_distance_shell(
-                                dl, info.center, max_distance, Vec3::new(0.2, 0.45, 1.0),
-                            );
+                    && let Some(info) = self.entity_pick_info.iter().find(|e| &e.id == sel_id)
+                {
+                    dl.aabb(info.center, info.half, Vec3::new(1.0, 1.0, 0.0));
+                    let len = gizmo_axis_length(info.center, vp, rect);
+                    let hovered = self.gizmo_drag.as_ref().map(|drag| drag.axis).or_else(|| {
+                        response.hover_pos().and_then(|pos| {
+                            hit_test_gizmo_axis(
+                                pos,
+                                info.center,
+                                vp,
+                                rect,
+                                gizmo_mode,
+                                len,
+                                &axis_dirs,
+                            )
+                            .filter(|axis| {
+                                !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
+                            })
+                        })
+                    });
+                    draw_gizmo(dl, info.center, gizmo_mode, len, hovered, &axis_dirs);
+                    if self.show_lod_debug {
+                        for distance in lod_distances(render_scene, sel_id) {
+                            draw_distance_ring(dl, info.center, distance);
                         }
                     }
+                    if let Some((min_distance, max_distance)) = audio_emitter_display_distances(
+                        render_scene,
+                        sel_id,
+                        self.audio_distance_drag.as_ref(),
+                    ) {
+                        draw_audio_distance_shell(
+                            dl,
+                            info.center,
+                            min_distance,
+                            Vec3::new(0.15, 0.85, 1.0),
+                        );
+                        draw_audio_distance_shell(
+                            dl,
+                            info.center,
+                            max_distance,
+                            Vec3::new(0.2, 0.45, 1.0),
+                        );
+                    }
+                }
                 if let Some(path) = navigation_test_path {
                     for segment in path.windows(2) {
                         dl.line(segment[0], segment[1], Vec3::new(0.2, 1.0, 0.85));
@@ -2137,13 +2141,14 @@ impl SceneView {
                 // the editor's widget layer or emits gameplay events.
                 if self.ui_selection_enabled
                     && let Some(position) = ui_selection_click_position(ui.ctx(), game_frame)
-                        && let Some(region) = frontmost_ui_region(&ui_draw_regions, position) {
-                            let selection = region.selection.clone();
-                            self.selected_ui_node = Some(selection.clone());
-                            picked_ui_node = Some(selection);
-                            picked_entity = None;
-                            placement_position = None;
-                        }
+                    && let Some(region) = frontmost_ui_region(&ui_draw_regions, position)
+                {
+                    let selection = region.selection.clone();
+                    self.selected_ui_node = Some(selection.clone());
+                    picked_ui_node = Some(selection);
+                    picked_entity = None;
+                    placement_position = None;
+                }
 
                 // An empty UI-selection click deliberately falls through to
                 // the previously computed 3D pick. Selecting 3D clears the UI
@@ -2175,24 +2180,24 @@ impl SceneView {
 
             if self.show_lod_debug
                 && let Some(sel_id) = selected_entity
-                    && let Some(info) = self.entity_pick_info.iter().find(|info| &info.id == sel_id)
-                    {
-                        let distances = lod_distances(render_scene, sel_id);
-                        if !distances.is_empty() {
-                            let camera_distance = self.camera.eye().distance(info.center);
-                            let active = distances
-                                .iter()
-                                .position(|threshold| camera_distance < *threshold)
-                                .unwrap_or(distances.len() - 1);
-                            ui.painter().text(
-                                rect.left_top() + egui::vec2(8.0, 8.0),
-                                egui::Align2::LEFT_TOP,
-                                format!("LOD {active}  |  camera {camera_distance:.1} m"),
-                                egui::TextStyle::Monospace.resolve(ui.style()),
-                                egui::Color32::YELLOW,
-                            );
-                        }
-                    }
+                && let Some(info) = self.entity_pick_info.iter().find(|info| &info.id == sel_id)
+            {
+                let distances = lod_distances(render_scene, sel_id);
+                if !distances.is_empty() {
+                    let camera_distance = self.camera.eye().distance(info.center);
+                    let active = distances
+                        .iter()
+                        .position(|threshold| camera_distance < *threshold)
+                        .unwrap_or(distances.len() - 1);
+                    ui.painter().text(
+                        rect.left_top() + egui::vec2(8.0, 8.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("LOD {active}  |  camera {camera_distance:.1} m"),
+                        egui::TextStyle::Monospace.resolve(ui.style()),
+                        egui::Color32::YELLOW,
+                    );
+                }
+            }
             if let Some(debug) = particle_debug {
                 ui.painter().text(
                     rect.left_bottom() + egui::vec2(8.0, -8.0),
@@ -2228,11 +2233,8 @@ impl SceneView {
                 );
             }
         } else if self.waiting_for_residency {
-            ui.painter().rect_filled(
-                rect,
-                0.0,
-                egui::Color32::from_black_alpha(72),
-            );
+            ui.painter()
+                .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(72));
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -2241,11 +2243,8 @@ impl SceneView {
                 egui::Color32::WHITE,
             );
         } else if gpu_upload_pending {
-            ui.painter().rect_filled(
-                rect,
-                0.0,
-                egui::Color32::from_black_alpha(48),
-            );
+            ui.painter()
+                .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(48));
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -2345,39 +2344,32 @@ impl SceneView {
             render_state.device.limits().max_texture_dimension_2d,
         );
         let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
-        let (rect, response) = ui.allocate_exact_size(
-            available,
-            egui::Sense::click_and_drag(),
-        );
+        let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
         // Apply orbit/fly input before constructing both the render camera and
         // the picking ray so the image and interaction use one camera pose.
         self.camera.handle_input(&response);
         let camera = Camera3D::new(60.0, aspect, 0.1, 1000.0);
         let camera_transform = self.camera.to_transform();
 
-        let texture = match runtime.render_scene_view(
-            render_state,
-            size,
-            &camera,
-            &camera_transform,
-        ) {
-            Ok(texture) => texture,
-            Err(error) => {
-                ui.painter()
-                    .rect_filled(rect, 0.0, egui::Color32::from_rgb(31, 34, 39));
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    format!("Play Scene View failed: {error}"),
-                    egui::TextStyle::Body.resolve(ui.style()),
-                    egui::Color32::LIGHT_RED,
-                );
-                return PlaySceneViewOutput {
-                    picked_entity: None,
-                    render_error: Some(error.to_string()),
-                };
-            }
-        };
+        let texture =
+            match runtime.render_scene_view(render_state, size, &camera, &camera_transform) {
+                Ok(texture) => texture,
+                Err(error) => {
+                    ui.painter()
+                        .rect_filled(rect, 0.0, egui::Color32::from_rgb(31, 34, 39));
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("Play Scene View failed: {error}"),
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        egui::Color32::LIGHT_RED,
+                    );
+                    return PlaySceneViewOutput {
+                        picked_entity: None,
+                        render_error: Some(error.to_string()),
+                    };
+                }
+            };
         ui.painter().image(
             texture,
             rect,
@@ -2389,11 +2381,7 @@ impl SceneView {
             .then(|| response.interact_pointer_pos())
             .flatten()
             .and_then(|position| {
-                let ray = screen_ray(
-                    position,
-                    response.rect,
-                    self.camera.view_projection(aspect),
-                )?;
+                let ray = screen_ray(position, response.rect, self.camera.view_projection(aspect))?;
                 pick_runtime_bounds(ray, runtime.scene_view_pick_info())
             });
 
@@ -2434,10 +2422,10 @@ impl SceneView {
                 ray_dir,
                 info.center - info.half,
                 info.center + info.half,
-            )
-                && best.as_ref().is_none_or(|(bt, _)| t < *bt) {
-                    best = Some((t, info.id.clone()));
-                }
+            ) && best.as_ref().is_none_or(|(bt, _)| t < *bt)
+            {
+                best = Some((t, info.id.clone()));
+            }
         }
         best.map(|(_, id)| id)
     }
@@ -2503,15 +2491,11 @@ mod viewport_coordinate_tests {
     }
 }
 
-fn pick_runtime_bounds(
-    ray: (Vec3, Vec3),
-    bounds: Vec<(EntityId, Vec3, Vec3)>,
-) -> Option<EntityId> {
+fn pick_runtime_bounds(ray: (Vec3, Vec3), bounds: Vec<(EntityId, Vec3, Vec3)>) -> Option<EntityId> {
     bounds
         .into_iter()
         .filter_map(|(entity, center, half)| {
-            ray_aabb(ray.0, ray.1, center - half, center + half)
-                .map(|distance| (distance, entity))
+            ray_aabb(ray.0, ray.1, center - half, center + half).map(|distance| (distance, entity))
         })
         .min_by(|left, right| {
             left.0
@@ -2747,10 +2731,9 @@ fn simulate_particle_preview(world: &mut engine::ecs::World, elapsed_seconds: f3
     }
     let mut players = engine::Query::<(&mut engine::VfxPlayer, &GlobalTransform)>::new(world);
     for (_, (player, transform)) in players.iter_mut() {
-        player.instance_mut().seek_preview(
-            elapsed_seconds,
-            transform.matrix().col(3).truncate(),
-        );
+        player
+            .instance_mut()
+            .seek_preview(elapsed_seconds, transform.matrix().col(3).truncate());
     }
 }
 
@@ -2855,28 +2838,15 @@ fn sample_requested_animation_preview(
             let mut cursor = *sampled_elapsed;
             if cursor < trigger_seconds {
                 let source_end = elapsed_seconds.min(trigger_seconds);
-                run_animation_preview_interval(
-                    app,
-                    source_end - cursor,
-                    fixed_step_remainder,
-                );
+                run_animation_preview_interval(app, source_end - cursor, fixed_step_remainder);
                 cursor = source_end;
             }
             if elapsed_seconds >= trigger_seconds {
                 if !*transition_started {
-                    select_preview_clip(
-                        app.world_mut(),
-                        target,
-                        to_clip,
-                        fade_duration.max(0.0),
-                    );
+                    select_preview_clip(app.world_mut(), target, to_clip, fade_duration.max(0.0));
                     *transition_started = true;
                 }
-                run_animation_preview_interval(
-                    app,
-                    elapsed_seconds - cursor,
-                    fixed_step_remainder,
-                );
+                run_animation_preview_interval(app, elapsed_seconds - cursor, fixed_step_remainder);
             }
             if elapsed_seconds < trigger_seconds {
                 *transition_started = false;
@@ -2973,11 +2943,7 @@ fn run_animation_preview_step(app: &mut engine::App, delta_seconds: f32) {
 }
 
 /// Accumulates render time and advances only complete runtime-sized steps.
-fn run_animation_preview_interval(
-    app: &mut engine::App,
-    delta_seconds: f32,
-    remainder: &mut f32,
-) {
+fn run_animation_preview_interval(app: &mut engine::App, delta_seconds: f32, remainder: &mut f32) {
     *remainder += delta_seconds.max(0.0);
     while *remainder + f32::EPSILON >= ANIMATION_PREVIEW_FIXED_STEP_SECONDS {
         run_animation_preview_step(app, ANIMATION_PREVIEW_FIXED_STEP_SECONDS);
@@ -3127,10 +3093,9 @@ fn apply_live_ui_document(world: &mut engine::ecs::World, open: Option<(&AssetId
         let stale = world
             .get_component::<engine::UiDocumentRef>(entity)
             .is_some_and(|placed| &placed.asset == asset && placed.document != *document);
-        if stale
-            && let Some(placed) = world.get_component_mut::<engine::UiDocumentRef>(entity) {
-                placed.document = document.clone();
-            }
+        if stale && let Some(placed) = world.get_component_mut::<engine::UiDocumentRef>(entity) {
+            placed.document = document.clone();
+        }
     }
 }
 
@@ -3176,9 +3141,10 @@ fn current_transform_override_ids(
     }
     if gizmo_active
         && let Some(id) = selected_entity
-            && !ids.contains(id) {
-                ids.push(id.clone());
-            }
+        && !ids.contains(id)
+    {
+        ids.push(id.clone());
+    }
     ids
 }
 
@@ -3292,33 +3258,31 @@ fn selected_particle_debug(
         &engine::VfxPlayer,
         &GlobalTransform,
     )>::new(world);
-    query
-        .iter()
-        .find_map(|(_, (identity, player, transform))| {
-            (&identity.authoring_id == selected).then(|| {
-                let instance = player.instance();
-                let bounds = instance
-                    .emitters()
-                    .iter()
-                    .filter_map(|emitter| emitter.live_bounds())
-                    .fold(None::<(Vec3, Vec3)>, |combined, (min, max)| {
-                        Some(match combined {
-                            None => (min, max),
-                            Some((current_min, current_max)) => {
-                                (current_min.min(min), current_max.max(max))
-                            }
-                        })
-                    });
-                ParticleDebugSnapshot {
-                    live: instance.stats().live_particles,
-                    maximum: instance.effect().max_particles as usize,
-                    spawn_rate: None,
-                    bounds,
-                    origin: transform.matrix().col(3).truncate(),
-                    direction: Vec3::Y,
-                }
-            })
+    query.iter().find_map(|(_, (identity, player, transform))| {
+        (&identity.authoring_id == selected).then(|| {
+            let instance = player.instance();
+            let bounds = instance
+                .emitters()
+                .iter()
+                .filter_map(|emitter| emitter.live_bounds())
+                .fold(None::<(Vec3, Vec3)>, |combined, (min, max)| {
+                    Some(match combined {
+                        None => (min, max),
+                        Some((current_min, current_max)) => {
+                            (current_min.min(min), current_max.max(max))
+                        }
+                    })
+                });
+            ParticleDebugSnapshot {
+                live: instance.stats().live_particles,
+                maximum: instance.effect().max_particles as usize,
+                spawn_rate: None,
+                bounds,
+                origin: transform.matrix().col(3).truncate(),
+                direction: Vec3::Y,
+            }
         })
+    })
 }
 
 fn despawn_camera_entities(world: &mut engine::ecs::World) {
@@ -3519,7 +3483,8 @@ fn lod_distances(scene: &AuthoringScene, entity: &EntityId) -> Vec<f32> {
 
 fn draw_navigation_authoring_gizmos(lines: &mut DebugLines, scene: &AuthoringScene) {
     let link_type = ComponentTypeId::new(engine::navigation_bake::NAVIGATION_LINK_COMPONENT);
-    let modifier_type = ComponentTypeId::new(engine::navigation_bake::NAVIGATION_MODIFIER_COMPONENT);
+    let modifier_type =
+        ComponentTypeId::new(engine::navigation_bake::NAVIGATION_MODIFIER_COMPONENT);
     let link_color = Vec3::new(1.0, 0.65, 0.15);
     let modifier_color = Vec3::new(0.75, 0.35, 1.0);
 
@@ -3538,9 +3503,21 @@ fn draw_navigation_authoring_gizmos(lines: &mut DebugLines, scene: &AuthoringSce
             lines.line(start, end, link_color);
             for point in [start, end] {
                 let marker = 0.18;
-                lines.line(point - Vec3::X * marker, point + Vec3::X * marker, link_color);
-                lines.line(point - Vec3::Y * marker, point + Vec3::Y * marker, link_color);
-                lines.line(point - Vec3::Z * marker, point + Vec3::Z * marker, link_color);
+                lines.line(
+                    point - Vec3::X * marker,
+                    point + Vec3::X * marker,
+                    link_color,
+                );
+                lines.line(
+                    point - Vec3::Y * marker,
+                    point + Vec3::Y * marker,
+                    link_color,
+                );
+                lines.line(
+                    point - Vec3::Z * marker,
+                    point + Vec3::Z * marker,
+                    link_color,
+                );
             }
         }
 
@@ -3581,8 +3558,10 @@ fn audio_emitter_distances(scene: &AuthoringScene, entity: &EntityId) -> Option<
     };
     let min_distance = obj_f64_or(fields, "min_distance", 1.0) as f32;
     let max_distance = obj_f64_or(fields, "max_distance", 20.0) as f32;
-    (min_distance.is_finite() && max_distance.is_finite())
-        .then_some((min_distance.max(0.0), max_distance.max(min_distance).max(0.0)))
+    (min_distance.is_finite() && max_distance.is_finite()).then_some((
+        min_distance.max(0.0),
+        max_distance.max(min_distance).max(0.0),
+    ))
 }
 
 fn audio_emitter_display_distances(
@@ -3619,7 +3598,11 @@ fn clamp_audio_distance(
     min_distance: f32,
     max_distance: f32,
 ) -> f32 {
-    let candidate = if candidate.is_finite() { candidate.max(0.0) } else { 0.0 };
+    let candidate = if candidate.is_finite() {
+        candidate.max(0.0)
+    } else {
+        0.0
+    };
     match field {
         AudioDistanceField::Min => candidate.min(max_distance.max(0.0)),
         AudioDistanceField::Max => candidate.max(min_distance.max(0.0)),
@@ -3636,15 +3619,18 @@ fn hit_test_audio_distance_handle(
     rect: egui::Rect,
 ) -> Option<AudioDistanceField> {
     const HANDLE_RADIUS: f32 = 12.0;
-    [(AudioDistanceField::Min, min_distance), (AudioDistanceField::Max, max_distance)]
-        .into_iter()
-        .map(|(field, distance)| {
-            let tip = world_to_screen(center + direction * distance, vp, rect);
-            ((pointer - tip).length(), field)
-        })
-        .filter(|(distance, _)| *distance <= HANDLE_RADIUS)
-        .min_by(|(left, _), (right, _)| left.total_cmp(right))
-        .map(|(_, field)| field)
+    [
+        (AudioDistanceField::Min, min_distance),
+        (AudioDistanceField::Max, max_distance),
+    ]
+    .into_iter()
+    .map(|(field, distance)| {
+        let tip = world_to_screen(center + direction * distance, vp, rect);
+        ((pointer - tip).length(), field)
+    })
+    .filter(|(distance, _)| *distance <= HANDLE_RADIUS)
+    .min_by(|(left, _), (right, _)| left.total_cmp(right))
+    .map(|(_, field)| field)
 }
 
 fn draw_audio_distance_shell(lines: &mut DebugLines, center: Vec3, radius: f32, color: Vec3) {
@@ -3660,9 +3646,17 @@ fn draw_audio_listener_orientation(lines: &mut DebugLines, info: &EntityPickInfo
     let right = info.world.x_axis.truncate().normalize_or_zero();
     let forward = -info.world.z_axis.truncate().normalize_or_zero();
     let right = if right == Vec3::ZERO { Vec3::X } else { right };
-    let forward = if forward == Vec3::ZERO { Vec3::NEG_Z } else { forward };
+    let forward = if forward == Vec3::ZERO {
+        Vec3::NEG_Z
+    } else {
+        forward
+    };
     let color = Vec3::new(0.35, 0.9, 1.0);
-    lines.line(info.center - right * 0.55, info.center + right * 0.55, color);
+    lines.line(
+        info.center - right * 0.55,
+        info.center + right * 0.55,
+        color,
+    );
     let tip = info.center + forward * 0.9;
     lines.line(info.center, tip, color);
     draw_arrow_tip(lines, tip, forward, 0.18, color);
@@ -3679,8 +3673,18 @@ fn draw_audio_distance_handles(
     let (min_distance, max_distance) = distances;
     let (vp, rect) = view;
     for (field, distance, label, color) in [
-        (AudioDistanceField::Min, min_distance, "min", egui::Color32::from_rgb(90, 220, 255)),
-        (AudioDistanceField::Max, max_distance, "max", egui::Color32::from_rgb(70, 145, 255)),
+        (
+            AudioDistanceField::Min,
+            min_distance,
+            "min",
+            egui::Color32::from_rgb(90, 220, 255),
+        ),
+        (
+            AudioDistanceField::Max,
+            max_distance,
+            "max",
+            egui::Color32::from_rgb(70, 145, 255),
+        ),
     ] {
         let tip = world_to_screen(center + direction * distance, vp, rect);
         let radius = if active == Some(field) { 7.0 } else { 5.0 };
@@ -3826,8 +3830,8 @@ fn draw_entity_icon(dl: &mut DebugLines, info: &EntityPickInfo, icon: EntityIcon
 /// View frustum for the selected camera entity so framing can be judged
 /// without pressing Play.
 fn draw_camera_frustum(dl: &mut DebugLines, info: &EntityPickInfo, scene: &AuthoringScene) {
-    use engine_authoring::id::ComponentTypeId;
     use engine_authoring::Value;
+    use engine_authoring::id::ComponentTypeId;
     let camera_type = ComponentTypeId::new(engine::scene_bridge::CAMERA_COMPONENT);
     let fields = scene
         .entity(&info.id)
@@ -3988,15 +3992,17 @@ fn gizmo_axis_directions(
     selected: Option<&EntityId>,
     pick_info: &[EntityPickInfo],
 ) -> [(GizmoAxis, Vec3); 3] {
-    if space == GizmoSpace::Local && mode != GizmoMode::Rotate
-        && let Some(info) = selected.and_then(|sel| pick_info.iter().find(|e| &e.id == sel)) {
-            let x = info.world.x_axis.truncate().normalize_or_zero();
-            let y = info.world.y_axis.truncate().normalize_or_zero();
-            let z = info.world.z_axis.truncate().normalize_or_zero();
-            if x != Vec3::ZERO && y != Vec3::ZERO && z != Vec3::ZERO {
-                return [(GizmoAxis::X, x), (GizmoAxis::Y, y), (GizmoAxis::Z, z)];
-            }
+    if space == GizmoSpace::Local
+        && mode != GizmoMode::Rotate
+        && let Some(info) = selected.and_then(|sel| pick_info.iter().find(|e| &e.id == sel))
+    {
+        let x = info.world.x_axis.truncate().normalize_or_zero();
+        let y = info.world.y_axis.truncate().normalize_or_zero();
+        let z = info.world.z_axis.truncate().normalize_or_zero();
+        if x != Vec3::ZERO && y != Vec3::ZERO && z != Vec3::ZERO {
+            return [(GizmoAxis::X, x), (GizmoAxis::Y, y), (GizmoAxis::Z, z)];
         }
+    }
     GIZMO_AXES
 }
 
@@ -4221,9 +4227,18 @@ mod tests {
 
     #[test]
     fn audio_distance_gizmo_preserves_an_ordered_non_negative_range() {
-        assert_eq!(clamp_audio_distance(AudioDistanceField::Min, 12.0, 1.0, 10.0), 10.0);
-        assert_eq!(clamp_audio_distance(AudioDistanceField::Min, -2.0, 1.0, 10.0), 0.0);
-        assert_eq!(clamp_audio_distance(AudioDistanceField::Max, 0.25, 1.0, 10.0), 1.0);
+        assert_eq!(
+            clamp_audio_distance(AudioDistanceField::Min, 12.0, 1.0, 10.0),
+            10.0
+        );
+        assert_eq!(
+            clamp_audio_distance(AudioDistanceField::Min, -2.0, 1.0, 10.0),
+            0.0
+        );
+        assert_eq!(
+            clamp_audio_distance(AudioDistanceField::Max, 0.25, 1.0, 10.0),
+            1.0
+        );
     }
 
     #[test]
@@ -4600,8 +4615,12 @@ mod tests {
             .import_settings
             .material_remaps
             .insert(
-                engine_authoring::id::AssetId::generate().as_str().to_owned(),
-                engine_authoring::id::AssetId::generate().as_str().to_owned(),
+                engine_authoring::id::AssetId::generate()
+                    .as_str()
+                    .to_owned(),
+                engine_authoring::id::AssetId::generate()
+                    .as_str()
+                    .to_owned(),
             );
         assert_ne!(
             manifest_content_hash(&base),
@@ -4616,8 +4635,12 @@ mod tests {
             .import_settings
             .texture_remaps
             .insert(
-                engine_authoring::id::AssetId::generate().as_str().to_owned(),
-                engine_authoring::id::AssetId::generate().as_str().to_owned(),
+                engine_authoring::id::AssetId::generate()
+                    .as_str()
+                    .to_owned(),
+                engine_authoring::id::AssetId::generate()
+                    .as_str()
+                    .to_owned(),
             );
         assert_ne!(
             manifest_content_hash(&base),
@@ -4753,10 +4776,7 @@ mod tests {
             .get_resource::<engine::FixedTime>()
             .expect("App must provide FixedTime");
         assert_eq!(fixed_time.step_count, 3);
-        assert_eq!(
-            fixed_time.fixed_delta,
-            ANIMATION_PREVIEW_FIXED_STEP_SECONDS
-        );
+        assert_eq!(fixed_time.fixed_delta, ANIMATION_PREVIEW_FIXED_STEP_SECONDS);
         assert!(remainder.abs() <= f32::EPSILON);
     }
 
@@ -4788,10 +4808,7 @@ mod tests {
             .get_resource::<engine::FixedTime>()
             .expect("App must provide FixedTime");
         assert_eq!(fixed_time.step_count, 1);
-        assert_eq!(
-            fixed_time.fixed_delta,
-            ANIMATION_PREVIEW_FIXED_STEP_SECONDS
-        );
+        assert_eq!(fixed_time.fixed_delta, ANIMATION_PREVIEW_FIXED_STEP_SECONDS);
         assert!(remainder.abs() <= f32::EPSILON);
     }
 

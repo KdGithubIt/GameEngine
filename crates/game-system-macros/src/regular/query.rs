@@ -1,4 +1,4 @@
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use std::collections::{BTreeMap, BTreeSet};
 use syn::{GenericArgument, Ident, PathArguments, Type, TypePath};
 
@@ -633,7 +633,7 @@ fn query_arguments(ty: &Type) -> syn::Result<Option<Vec<Type>>> {
                 return Err(syn::Error::new_spanned(
                     other,
                     "Query accepts type arguments only",
-                ))
+                ));
             }
         }
     }

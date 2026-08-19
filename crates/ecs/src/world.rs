@@ -6,7 +6,7 @@ use crate::query::{Query, QueryData, QueryFilter};
 use crate::storage::Storage;
 use hashbrown::HashMap;
 use std::any::{Any, TypeId};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 /// Owns all runtime entities, components, resources, and deferred commands.

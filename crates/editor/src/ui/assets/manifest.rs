@@ -13,7 +13,6 @@ impl EditorApp {
             .find(|(_, entry)| entry.path == relative)
             .map(|(id, entry)| (id.clone(), entry.path.clone()))
     }
-
 }
 
 fn asset_manifest_path(project_root: &ProjectRoot) -> PathBuf {
@@ -102,7 +101,9 @@ pub(in crate::ui) fn is_importable_source_path(path: &Path) -> bool {
 /// rig bakes a clip that looks plausible and is wrong (ADR 0097 §3's
 /// `vmd.rest_pose_mismatch` is a warning, not a hard stop), so the ambiguous
 /// case belongs to the author.
-pub(in crate::ui) fn sole_pmx_model_source(manifest: &engine::AssetManifest) -> Option<engine_authoring::AssetId> {
+pub(in crate::ui) fn sole_pmx_model_source(
+    manifest: &engine::AssetManifest,
+) -> Option<engine_authoring::AssetId> {
     let mut models = manifest.iter().filter(|(_, entry)| {
         Path::new(&entry.path)
             .extension()
@@ -113,7 +114,10 @@ pub(in crate::ui) fn sole_pmx_model_source(manifest: &engine::AssetManifest) -> 
     models.next().is_none().then(|| id.clone())
 }
 
-pub(in crate::ui) fn unique_asset_name(display_name: &str, manifest: &engine::AssetManifest) -> String {
+pub(in crate::ui) fn unique_asset_name(
+    display_name: &str,
+    manifest: &engine::AssetManifest,
+) -> String {
     let base = asset_name_slug(display_name);
     if !manifest
         .iter()

@@ -1,6 +1,6 @@
 //! Player controller component and system.
 
-use crate::camera::{select_active_game_camera, Camera3D};
+use crate::camera::{Camera3D, select_active_game_camera};
 use crate::character_controller::KinematicCharacterController;
 use crate::game_io::GameInputActionState;
 use crate::input::{GamepadAxis, GamepadAxisState, GamepadButton, Input, KeyCode, MouseButton};
@@ -12,8 +12,7 @@ use glam::{Quat, Vec2, Vec3};
 use std::collections::HashMap;
 
 pub use engine_gameplay::player::{
-    MovePlane, PlayerController, PlayerMarker, PlayerMovementIntent,
-    PlayerMovementIntents,
+    MovePlane, PlayerController, PlayerMarker, PlayerMovementIntent, PlayerMovementIntents,
 };
 
 /// Maps logical action names to [`KeyCode`] values (ADR 0031 / Phase 34).
@@ -752,11 +751,7 @@ fn planar_camera_basis(rotation: Quat) -> (Vec3, Vec3) {
 fn move_towards(current: Vec3, target: Vec3, max_delta: f32) -> Vec3 {
     let delta = target - current;
     if delta.length_squared() <= max_delta * max_delta || max_delta <= 0.0 {
-        if max_delta <= 0.0 {
-            current
-        } else {
-            target
-        }
+        if max_delta <= 0.0 { current } else { target }
     } else {
         current + delta.normalize() * max_delta
     }

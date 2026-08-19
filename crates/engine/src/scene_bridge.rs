@@ -7,29 +7,23 @@
 //! [`AuthoringScene`]: engine_authoring::scene::AuthoringScene
 
 use crate::anim_graph::{
-    load_animation_graph_document, load_animation_graph_document_json, AnimGraphPlayer,
-    AnimationGraphDebugSource, AnimationMotionDebugBinding,
+    AnimGraphPlayer, AnimationGraphDebugSource, AnimationMotionDebugBinding,
+    load_animation_graph_document, load_animation_graph_document_json,
 };
 use crate::animation::{
-    compose_animation_clips, AnimEvent, AnimationClip, Animator, RootMotionMode, RootMotionRequest,
+    AnimEvent, AnimationClip, Animator, RootMotionMode, RootMotionRequest, compose_animation_clips,
 };
 use crate::asset::{
     AssetLoadError, AssetManifest, Assets, Handle, ImportedSubAssetKind, RuntimeAssetId,
 };
-use crate::authoring_overlay::AuthoringDocumentOverlay;
 use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController};
+use crate::authoring_overlay::AuthoringDocumentOverlay;
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
-use crate::native_2d::{
-    compile_tile_map, compile_tile_set, Camera2d, ResolvedSpriteRegion2d, ResolvedTileCell2d,
-    ResolvedTileChunkRender2d, ResolvedTileMap2d, SpriteAnimationClipRegistry2d,
-    SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, TileMap2d,
-    TileMapPhysicsSource2d, ViewportFit2d,
-};
 use crate::character_controller::KinematicCharacterController;
 use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
 use crate::combat::DamageReceiver;
-use crate::components::{builtin_registry, ComponentRegistry, ComponentSpawnError, SpawnContext};
+use crate::components::{ComponentRegistry, ComponentSpawnError, SpawnContext, builtin_registry};
 use crate::foot_ik::FootIk;
 use crate::game_module::{GameModule, GameModuleResource, GameModuleRunError};
 use crate::light::{AmbientLight, DirectionalLight, PointLight, SpotLight};
@@ -39,24 +33,30 @@ use crate::lod::{LodGroup, LodLevel};
 use crate::material::{AlphaMode, CullMode, ShadingModel};
 use crate::material::{DecodedTexture, Material, MaterialSlots};
 use crate::mesh::Mesh;
+use crate::morph::{MorphBaseColor, MorphDirtyVertices, MorphTargets, MorphWeights};
+use crate::native_2d::{
+    Camera2d, ResolvedSpriteRegion2d, ResolvedTileCell2d, ResolvedTileChunkRender2d,
+    ResolvedTileMap2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d, SpriteBlendMode,
+    SpriteRef, SpriteRenderer2d, TileMap2d, TileMapPhysicsSource2d, ViewportFit2d,
+    compile_tile_map, compile_tile_set,
+};
 use crate::navmesh::NavMeshAgent;
 use crate::player::{MovePlane, PlayerController, PlayerMarker};
 use crate::postprocess::{
     BloomSettings, ColorGradingSettings, PostProcessSettings, ToneMapOperator,
 };
-use crate::morph::{MorphBaseColor, MorphDirtyVertices, MorphTargets, MorphWeights};
+use crate::runtime_metadata::RuntimeMetadata;
+use crate::script_api::RuntimeEntityIdentity;
 use crate::secondary_motion::{
     SecondaryMotion, SecondaryMotionRigAsset, SecondaryMotionRigRegistry,
 };
-use crate::runtime_metadata::RuntimeMetadata;
-use crate::script_api::RuntimeEntityIdentity;
 use crate::shadow::{EnvironmentLighting, ShadowSettings};
 use crate::skeleton_asset::{BoneId, SkeletonAsset, SkeletonAssetRegistry};
 use crate::skinning::{
-    spawn_rig, BoneAttachment, JointPalette, RigSpawnError, Skeleton, SkinnedMesh,
+    BoneAttachment, JointPalette, RigSpawnError, Skeleton, SkinnedMesh, spawn_rig,
 };
 use crate::transform::{Children, GlobalTransform, Parent, Transform};
-use crate::ui_document::{load_ui_document, UiDocumentRef};
+use crate::ui_document::{UiDocumentRef, load_ui_document};
 use crate::vfx::{VfxPlayer, VfxRenderBinding, VfxRenderBindings, VfxRestartPolicy};
 use engine_authoring::id::{AssetId, ComponentTypeId, EntityId, StableId};
 use engine_authoring::scene::AuthoringScene;
@@ -65,8 +65,7 @@ use engine_authoring::value::Value;
 use engine_authoring::{
     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
     Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId, TileMapDocument,
-    TileSetDocument, VfxAuthoringService,
-    VfxModuleOperation,
+    TileSetDocument, VfxAuthoringService, VfxModuleOperation,
 };
 use engine_ecs::{Entity, World};
 use glam::{EulerRot, Mat4, Quat, Vec3};
@@ -365,7 +364,9 @@ impl fmt::Display for SceneBridgeError {
                 component_type.as_str(),
                 entity.as_str()
             ),
-            Self::GameModule { source } => write!(formatter, "game module conversion failed: {source}"),
+            Self::GameModule { source } => {
+                write!(formatter, "game module conversion failed: {source}")
+            }
             Self::UnknownAsset { asset } => {
                 write!(
                     formatter,
@@ -465,8 +466,7 @@ pub(crate) struct BridgeAssetState {
     /// Runtime composed clip handle -> cache identity assembled from every
     /// ordered source layer. Cross-skeleton retargeting uses this instead of
     /// pretending a composite belongs to only its primary source.
-    pub(crate) composed_animation_cache_sources:
-        HashMap<RuntimeAssetId, (String, String, AssetId)>,
+    pub(crate) composed_animation_cache_sources: HashMap<RuntimeAssetId, (String, String, AssetId)>,
     pub(crate) audio_handles: HashMap<AssetId, Handle<AudioAsset>>,
     /// Parsed glTF documents shared by mesh, material, skin, and clip loaders
     /// during one atomic scene conversion.
@@ -500,8 +500,7 @@ pub(crate) struct BridgeAssetState {
     ///
     /// Each entry keeps the previous value, if any, so rollback restores the
     /// registry exactly instead of only removing newly inserted IDs.
-    pub(crate) secondary_motion_rig_rollbacks:
-        Vec<(AssetId, Option<SecondaryMotionRigAsset>)>,
+    pub(crate) secondary_motion_rig_rollbacks: Vec<(AssetId, Option<SecondaryMotionRigAsset>)>,
     /// Skeleton entities are runtime-only and must be removed if any later
     /// component makes the otherwise atomic scene conversion fail.
     pub(crate) auxiliary_entities: Vec<Entity>,
@@ -1248,21 +1247,15 @@ fn resolve_cross_skeleton_clip(
         ))
     })?;
 
-    let source_skeleton = resolve_retarget_skeleton_asset(
-        source_skeleton_id,
-        asset_root,
-        manifest,
-        asset_state,
-    );
+    let source_skeleton =
+        resolve_retarget_skeleton_asset(source_skeleton_id, asset_root, manifest, asset_state);
 
     // A cache can retain an older skeleton asset ID after a model reimport.
     // Only use the structural-identity fallback when that old source ID no
     // longer resolves at all. If both skeleton assets still exist, preserve
     // the explicit cross-skeleton path even when their structures happen to
     // be identical, because a registered retarget map may still be required.
-    if source_skeleton.is_none()
-        && clip.skeleton_identity == Some(target_skeleton.identity)
-    {
+    if source_skeleton.is_none() && clip.skeleton_identity == Some(target_skeleton.identity) {
         let mut rebound = clip.clone();
         rebound.skeleton = Some(target_skeleton_id.clone());
         rebound.skeleton_identity = Some(target_skeleton.identity);

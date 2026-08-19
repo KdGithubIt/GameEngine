@@ -6,12 +6,13 @@
 //! graph view afterwards (ADR 0016), which keeps a deletion from stranding a
 //! view that still names the removed node.
 
-use super::{AnimationNodeInsertKind, BehaviorNodeInsertKind, EditorGraphDomain, EditorSession};
 use super::errors::EditorSessionError;
+use super::{AnimationNodeInsertKind, BehaviorNodeInsertKind, EditorGraphDomain, EditorSession};
 use crate::geometry::{fallback_position_for_index, fallback_position_for_node};
 use engine_authoring::{
-    BehaviorTreeAuthoringService, Diagnostic, EdgeId, Graph, GraphCommand, GraphTransaction, GraphView,
-    GraphViewCommand, GraphViewTransaction, NodeId, NodeLayout, NodeTypeId, Selection, Value, Vec2,
+    BehaviorTreeAuthoringService, Diagnostic, EdgeId, Graph, GraphCommand, GraphTransaction,
+    GraphView, GraphViewCommand, GraphViewTransaction, NodeId, NodeLayout, NodeTypeId, Selection,
+    Value, Vec2,
 };
 
 /// Domain-tagged node kind produced by the shared graph canvas.
@@ -613,12 +614,14 @@ mod tests {
             .delete_node(removed)
             .expect("deleting a State must succeed");
 
-        assert!(session
-            .graph_view()
-            .expect("graph view must exist")
-            .selection
-            .edges
-            .is_empty());
+        assert!(
+            session
+                .graph_view()
+                .expect("graph view must exist")
+                .selection
+                .edges
+                .is_empty()
+        );
         session
             .select_node(Some(kept))
             .expect("selection must still commit after a cascaded deletion");
@@ -645,12 +648,14 @@ mod tests {
             .expect("selection should apply");
 
         assert_eq!(session.selected_node(), Some(&node));
-        assert!(session
-            .graph_view()
-            .expect("selection creates or updates view")
-            .selection
-            .nodes
-            .contains(&node));
+        assert!(
+            session
+                .graph_view()
+                .expect("selection creates or updates view")
+                .selection
+                .nodes
+                .contains(&node)
+        );
     }
 
     #[test]
@@ -719,11 +724,13 @@ mod tests {
             layout.position,
             fallback_position_for_node(session.graph(), &second)
         );
-        assert!(!session
-            .graph_view()
-            .expect("view exists")
-            .nodes
-            .contains_key(&first));
+        assert!(
+            !session
+                .graph_view()
+                .expect("view exists")
+                .nodes
+                .contains_key(&first)
+        );
     }
 
     #[test]
@@ -741,15 +748,19 @@ mod tests {
             .apply_incremental_layout()
             .expect("fallback layout should apply through graph view commands");
 
-        assert!(session
-            .graph_view()
-            .expect("view exists")
-            .nodes
-            .contains_key(&node));
-        assert!(session
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "editor.layout_fallback_used"));
+        assert!(
+            session
+                .graph_view()
+                .expect("view exists")
+                .nodes
+                .contains_key(&node)
+        );
+        assert!(
+            session
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "editor.layout_fallback_used")
+        );
     }
 
     #[test]
@@ -764,10 +775,12 @@ mod tests {
             .apply_incremental_layout()
             .expect("empty graph layout should apply");
 
-        assert!(session
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "editor.existing_warning"));
+        assert!(
+            session
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "editor.existing_warning")
+        );
     }
 
     // ── Undo/Redo tests ────────────────────────────────────────────────────

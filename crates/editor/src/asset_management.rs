@@ -7,8 +7,8 @@
 
 use engine::{AssetManifest, ImportSettings, ManifestEntry};
 use engine_authoring::{
-    component_metadata_path, refresh_game_module_indexes, replace_file_contents, AssetId,
-    PersistError, ProjectRoot,
+    AssetId, PersistError, ProjectRoot, component_metadata_path, refresh_game_module_indexes,
+    replace_file_contents,
 };
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -312,19 +312,14 @@ pub fn import_external_asset_files(
     // Track occupied names independently per destination directory. This
     // detects both existing project content and collisions within this batch
     // before any destination directory needs to exist.
-    let mut occupied_by_parent = std::collections::BTreeMap::<
-        PathBuf,
-        std::collections::BTreeSet<String>,
-    >::new();
+    let mut occupied_by_parent =
+        std::collections::BTreeMap::<PathBuf, std::collections::BTreeSet<String>>::new();
     let mut planned_destinations = Vec::new();
 
     for candidate in candidates {
         if !occupied_by_parent.contains_key(&candidate.destination_parent) {
-            let occupied = collect_occupied_import_names(
-                project,
-                manifest,
-                &candidate.destination_parent,
-            )?;
+            let occupied =
+                collect_occupied_import_names(project, manifest, &candidate.destination_parent)?;
             occupied_by_parent.insert(candidate.destination_parent.clone(), occupied);
         }
         let occupied = occupied_by_parent
@@ -346,12 +341,7 @@ pub fn import_external_asset_files(
 
     let destination_parents = planned_destinations
         .iter()
-        .map(|(_, destination)| {
-            destination
-                .parent()
-                .unwrap_or(Path::new(""))
-                .to_path_buf()
-        })
+        .map(|(_, destination)| destination.parent().unwrap_or(Path::new("")).to_path_buf())
         .collect::<std::collections::BTreeSet<_>>();
     let mut created_directories = Vec::new();
 
@@ -359,8 +349,7 @@ pub fn import_external_asset_files(
         if let Err(error) =
             ensure_external_import_directory(project, &parent, &mut created_directories)
         {
-            let rollback_failures =
-                rollback_external_import(project, &[], &created_directories);
+            let rollback_failures = rollback_external_import(project, &[], &created_directories);
             if rollback_failures.is_empty() {
                 return Err(error);
             }
@@ -714,9 +703,7 @@ fn ensure_external_import_directory(
 
     let existing_ancestor = project.assets_root().join(&cursor);
     if !existing_ancestor.is_dir() {
-        return Err(AssetManagementError::DestinationExists(
-            existing_ancestor,
-        ));
+        return Err(AssetManagementError::DestinationExists(existing_ancestor));
     }
     ensure_no_symlink_ancestors(&project.assets_root(), &existing_ancestor)?;
 
@@ -1247,12 +1234,11 @@ fn execute_move_plan(
         applied.push((source.clone(), destination.clone()));
     }
 
-    if touches_rust
-        && let Err(error) = refresh_game_module_indexes(project) {
-            rollback_moves(project, &applied, is_trash)?;
-            let _ = refresh_game_module_indexes(project);
-            return Err(AssetManagementError::ScriptIndex(error.to_string()));
-        }
+    if touches_rust && let Err(error) = refresh_game_module_indexes(project) {
+        rollback_moves(project, &applied, is_trash)?;
+        let _ = refresh_game_module_indexes(project);
+        return Err(AssetManagementError::ScriptIndex(error.to_string()));
+    }
 
     let mut affected = 0;
     let manifest_ids = manifest
@@ -1386,9 +1372,10 @@ fn collect_supported_json_files(
         ]
         .iter()
         .any(|suffix| name.ends_with(suffix))
-            && let Ok(relative) = entry.path().strip_prefix(assets_root) {
-                output.push(relative.to_path_buf());
-            }
+            && let Ok(relative) = entry.path().strip_prefix(assets_root)
+        {
+            output.push(relative.to_path_buf());
+        }
     }
     Ok(())
 }
@@ -1694,7 +1681,7 @@ fn normalize(path: &Path) -> String {
 mod tests {
     use super::*;
     use engine::{ImportSettings, ManifestEntry};
-    use engine_authoring::{AssetId, ProjectConfig, PROJECT_SCHEMA_VERSION};
+    use engine_authoring::{AssetId, PROJECT_SCHEMA_VERSION, ProjectConfig};
 
     fn project() -> (tempfile::TempDir, ProjectRoot) {
         let directory = tempfile::tempdir().unwrap();
@@ -1777,10 +1764,12 @@ mod tests {
             report.registered[0].destination,
             Path::new("characters/player.obj")
         );
-        assert!(project
-            .assets_root()
-            .join("characters/player.obj")
-            .is_file());
+        assert!(
+            project
+                .assets_root()
+                .join("characters/player.obj")
+                .is_file()
+        );
     }
 
     #[test]
@@ -1864,32 +1853,36 @@ mod tests {
         std::fs::write(effects.join("PostAlphaEye.fx"), b"effect").unwrap();
         let mut manifest = AssetManifest::default();
 
-        let report = import_external_asset_files(
-            &project,
-            &mut manifest,
-            &[package],
-            Path::new("meshes"),
-        )
-        .unwrap();
+        let report =
+            import_external_asset_files(&project, &mut manifest, &[package], Path::new("meshes"))
+                .unwrap();
 
         assert_eq!(report.registered.len(), 2);
         assert!(report.failures.is_empty());
-        assert!(project
-            .assets_root()
-            .join("meshes/character_package/character.pmx")
-            .is_file());
-        assert!(project
-            .assets_root()
-            .join("meshes/character_package/textures/face.png")
-            .is_file());
-        assert!(!project
-            .assets_root()
-            .join("meshes/character_package/readme.txt")
-            .exists());
-        assert!(!project
-            .assets_root()
-            .join("meshes/character_package/PostAlphaEye")
-            .exists());
+        assert!(
+            project
+                .assets_root()
+                .join("meshes/character_package/character.pmx")
+                .is_file()
+        );
+        assert!(
+            project
+                .assets_root()
+                .join("meshes/character_package/textures/face.png")
+                .is_file()
+        );
+        assert!(
+            !project
+                .assets_root()
+                .join("meshes/character_package/readme.txt")
+                .exists()
+        );
+        assert!(
+            !project
+                .assets_root()
+                .join("meshes/character_package/PostAlphaEye")
+                .exists()
+        );
 
         let paths = manifest
             .iter()
@@ -1998,9 +1991,7 @@ mod tests {
         std::fs::create_dir_all(project.assets_root().join("graphs")).unwrap();
         std::fs::create_dir_all(project.assets_root().join("organized")).unwrap();
         std::fs::write(
-            project
-                .assets_root()
-                .join("graphs/player.anim.graph.json"),
+            project.assets_root().join("graphs/player.anim.graph.json"),
             b"{}",
         )
         .unwrap();
@@ -2030,18 +2021,24 @@ mod tests {
         )
         .unwrap();
 
-        assert!(project
-            .assets_root()
-            .join("organized/player.anim.graph.json")
-            .is_file());
-        assert!(project
-            .assets_root()
-            .join("organized/player.anim.graph.view.json")
-            .is_file());
-        assert!(!project
-            .assets_root()
-            .join("graphs/player.anim.graph.view.json")
-            .exists());
+        assert!(
+            project
+                .assets_root()
+                .join("organized/player.anim.graph.json")
+                .is_file()
+        );
+        assert!(
+            project
+                .assets_root()
+                .join("organized/player.anim.graph.view.json")
+                .is_file()
+        );
+        assert!(
+            !project
+                .assets_root()
+                .join("graphs/player.anim.graph.view.json")
+                .exists()
+        );
         assert_eq!(
             manifest.get(&id).unwrap().path,
             "organized/player.anim.graph.json"
@@ -2051,11 +2048,7 @@ mod tests {
     #[test]
     fn trashing_a_graph_carries_its_hidden_view_sidecar() {
         let (_directory, project) = project();
-        std::fs::write(
-            project.assets_root().join("enemy.anim.graph.json"),
-            b"{}",
-        )
-        .unwrap();
+        std::fs::write(project.assets_root().join("enemy.anim.graph.json"), b"{}").unwrap();
         std::fs::write(
             project.assets_root().join("enemy.anim.graph.view.json"),
             b"{}",
@@ -2084,10 +2077,12 @@ mod tests {
             moved.source == Path::new("enemy.anim.graph.view.json")
                 && project.path().join(&moved.destination).is_file()
         }));
-        assert!(!project
-            .assets_root()
-            .join("enemy.anim.graph.view.json")
-            .exists());
+        assert!(
+            !project
+                .assets_root()
+                .join("enemy.anim.graph.view.json")
+                .exists()
+        );
         assert!(manifest.get(&id).is_none());
     }
 
@@ -2238,10 +2233,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.manifest_entries, 1);
-        assert!(project
-            .assets_root()
-            .join("organized/coins/coin.png")
-            .is_file());
+        assert!(
+            project
+                .assets_root()
+                .join("organized/coins/coin.png")
+                .is_file()
+        );
         assert_eq!(manifest.get(&id).unwrap().path, "organized/coins/coin.png");
     }
 
@@ -2320,10 +2317,12 @@ mod tests {
         assert!(!source.exists());
         let moved = project.assets_root().join("scripts/rust/player/health.rs");
         assert!(moved.is_file());
-        assert!(project
-            .assets_root()
-            .join("scripts/rust/player/health.rs.meta.json")
-            .is_file());
+        assert!(
+            project
+                .assets_root()
+                .join("scripts/rust/player/health.rs.meta.json")
+                .is_file()
+        );
         assert_eq!(
             engine_authoring::load_component_metadata(&component_metadata_path(&moved))
                 .unwrap()
@@ -2408,10 +2407,12 @@ mod tests {
             error,
             AssetManagementError::ScriptMoveRestricted { .. }
         ));
-        assert!(project
-            .assets_root()
-            .join("scripts/rust/components/health.rs")
-            .is_file());
+        assert!(
+            project
+                .assets_root()
+                .join("scripts/rust/components/health.rs")
+                .is_file()
+        );
     }
 
     #[test]
@@ -2443,10 +2444,12 @@ mod tests {
                 "{destination} must be rejected as a Rust module path"
             );
         }
-        assert!(project
-            .assets_root()
-            .join("scripts/rust/components/health.rs")
-            .is_file());
+        assert!(
+            project
+                .assets_root()
+                .join("scripts/rust/components/health.rs")
+                .is_file()
+        );
     }
 
     #[test]
@@ -2501,10 +2504,12 @@ mod tests {
         assert!(matches!(error, AssetManagementError::ScriptIndex(_)));
         assert!(source.is_file());
         assert!(component_metadata_path(&source).is_file());
-        assert!(!project
-            .assets_root()
-            .join("scripts/rust/player/health.rs")
-            .exists());
+        assert!(
+            !project
+                .assets_root()
+                .join("scripts/rust/player/health.rs")
+                .exists()
+        );
     }
 
     #[test]
@@ -2535,10 +2540,12 @@ mod tests {
         assert!(matches!(error, AssetManagementError::Persist(_)));
         assert!(source.is_file());
         assert!(component_metadata_path(&source).is_file());
-        assert!(!project
-            .assets_root()
-            .join("scripts/rust/player/health.rs")
-            .exists());
+        assert!(
+            !project
+                .assets_root()
+                .join("scripts/rust/player/health.rs")
+                .exists()
+        );
         assert!(module_index(&project).contains("scripts/rust/components/health.rs"));
     }
 
@@ -2564,14 +2571,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(project
-            .assets_root()
-            .join("scripts/rust/enemy/enemies/health.rs")
-            .is_file());
-        assert!(project
-            .assets_root()
-            .join("scripts/rust/enemy/enemies/health.rs.meta.json")
-            .is_file());
+        assert!(
+            project
+                .assets_root()
+                .join("scripts/rust/enemy/enemies/health.rs")
+                .is_file()
+        );
+        assert!(
+            project
+                .assets_root()
+                .join("scripts/rust/enemy/enemies/health.rs.meta.json")
+                .is_file()
+        );
         assert!(module_index(&project).contains("scripts/rust/enemy/enemies/health.rs"));
     }
 

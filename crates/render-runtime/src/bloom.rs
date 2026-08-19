@@ -57,8 +57,7 @@ impl BloomImage {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -409,7 +408,8 @@ impl BloomPass {
             "fs_composite",
             "Bloom composite pipeline",
         );
-        let targets = BloomTargets::new(device, source_view, format, &bgl, &sampler, &uniform_buffer);
+        let targets =
+            BloomTargets::new(device, source_view, format, &bgl, &sampler, &uniform_buffer);
 
         if let Some(error) = error_scope.pop().await {
             return Err(error);
@@ -428,11 +428,7 @@ impl BloomPass {
         })
     }
 
-    pub(crate) fn update_source(
-        &mut self,
-        device: &wgpu::Device,
-        source_view: &wgpu::TextureView,
-    ) {
+    pub(crate) fn update_source(&mut self, device: &wgpu::Device, source_view: &wgpu::TextureView) {
         debug_assert_eq!(source_view.texture().format(), self.format);
         self.targets = BloomTargets::new(
             device,
@@ -545,8 +541,7 @@ mod tests {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());

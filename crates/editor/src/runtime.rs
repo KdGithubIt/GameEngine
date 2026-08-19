@@ -5,26 +5,24 @@
 //! on Stop.
 
 use eframe::{egui, egui_wgpu, wgpu};
-use engine::scene_bridge::{
-    spawn_from_authoring_scene, AuthoringToRuntimeMap, SceneBridgeError,
-};
+use engine::scene_bridge::{AuthoringToRuntimeMap, SceneBridgeError, spawn_from_authoring_scene};
 use engine::{
-    register_runtime_systems, AssetManifest, AssetServer, Camera3D, DebugLines, FixedTime,
-    GlobalTransform, InputCommand, InputSource, SceneLoader, SceneManager, ViewportSize,
-    VirtualInputQueue,
+    AssetManifest, AssetServer, Camera3D, DebugLines, FixedTime, GlobalTransform, InputCommand,
+    InputSource, SceneLoader, SceneManager, ViewportSize, VirtualInputQueue,
+    register_runtime_systems,
 };
 use engine::{InputReplay, ReplayPlayer, ReplayRecorder};
-use engine_authoring::id::{AssetId, EdgeId, EntityId, NodeId};
 use engine_authoring::DiagnosticTarget;
+use engine_authoring::id::{AssetId, EdgeId, EntityId, NodeId};
 use engine_authoring::{
-    load_scene_from_json, AuthoringScene, Diagnostic, ProjectRoot, ProjectSettings,
+    AuthoringScene, Diagnostic, ProjectRoot, ProjectSettings, load_scene_from_json,
 };
 use std::fmt;
 use std::fs;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Instant;
 
 /// Read-only runtime entity row used by the editor debugger.
@@ -197,7 +195,11 @@ impl RuntimePlayState {
         game_module: Option<Arc<engine::game_module::GameModule>>,
     ) -> Result<PlayStart, PlayError> {
         Self::start_from_document_with_game_module_and_overlay(
-            scene, project, document_path, game_module, None,
+            scene,
+            project,
+            document_path,
+            game_module,
+            None,
         )
     }
 
@@ -211,7 +213,9 @@ impl RuntimePlayState {
         overlay: Option<engine::authoring_overlay::AuthoringDocumentOverlay>,
     ) -> Result<PlayStart, PlayError> {
         match document_path.and_then(|path| relative_scene_path(project, path)) {
-            Some(relative) => Self::start_impl(scene, project, Some(&relative), game_module, overlay),
+            Some(relative) => {
+                Self::start_impl(scene, project, Some(&relative), game_module, overlay)
+            }
             None => Self::start_impl(scene, project, None, game_module, overlay),
         }
     }
@@ -518,14 +522,15 @@ impl RuntimePlayState {
             self.human_input_generation = self.human_input_generation.saturating_add(1);
         }
         if source != InputSource::Replay
-            && let Some(recorder) = &mut self.replay_recorder {
-                let tick = self
-                    .app
-                    .world()
-                    .get_resource::<FixedTime>()
-                    .map_or(0, |time| time.step_count);
-                recorder.record(tick, command);
-            }
+            && let Some(recorder) = &mut self.replay_recorder
+        {
+            let tick = self
+                .app
+                .world()
+                .get_resource::<FixedTime>()
+                .map_or(0, |time| time.step_count);
+            recorder.record(tick, command);
+        }
         if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
             queue.push(source, command);
         }
@@ -727,7 +732,10 @@ impl RuntimePlayState {
                 component!(engine::UiDocumentRef, "UiDocument");
                 component!(engine::ParticleEmitter, "ParticleEmitter");
                 component!(engine::Animator, "Animator");
-                component!(engine::behavior_tree::BehaviorTreeRunner, "BehaviorTreeRunner");
+                component!(
+                    engine::behavior_tree::BehaviorTreeRunner,
+                    "BehaviorTreeRunner"
+                );
                 component!(engine::NavMeshAgent, "NavMeshAgent");
                 component!(engine::DamageReceiver, "DamageReceiver");
                 component!(engine::AttackHitbox, "AttackHitbox");
@@ -1027,7 +1035,9 @@ impl RuntimePlayState {
     }
 
     /// Returns live runtime-space picking bounds keyed by authoring entity.
-    pub(crate) fn scene_view_pick_info(&self) -> Vec<(EntityId, engine::glam::Vec3, engine::glam::Vec3)> {
+    pub(crate) fn scene_view_pick_info(
+        &self,
+    ) -> Vec<(EntityId, engine::glam::Vec3, engine::glam::Vec3)> {
         self.entity_map
             .entities()
             .filter_map(|(authoring, runtime)| {
@@ -1206,9 +1216,10 @@ fn collect_animation_debug_snapshot_matching(
                 .and_then(|state| state.motion_slot.as_ref())
                 .and_then(|slot| debug_source.and_then(|source| source.motion_bindings.get(slot)));
             let graph_state = state.map(|state| {
-                state.motion_key().map(str::to_owned).unwrap_or_else(|| {
-                    format!("node {} (no motion)", state.node_id.as_str())
-                })
+                state
+                    .motion_key()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("node {} (no motion)", state.node_id.as_str()))
             });
             let graph_last_transition = transition.map(|transition| {
                 let condition = if transition.condition.is_empty() {
@@ -1236,9 +1247,12 @@ fn collect_animation_debug_snapshot_matching(
                     let value = match value {
                         engine::AnimationParameterValue::Bool(value) => value.to_string(),
                         engine::AnimationParameterValue::Float(value) => format!("{value:.3}"),
-                        engine::AnimationParameterValue::Trigger(pending) => {
-                            if pending { "trigger(pending)" } else { "trigger(idle)" }.to_owned()
+                        engine::AnimationParameterValue::Trigger(pending) => if pending {
+                            "trigger(pending)"
+                        } else {
+                            "trigger(idle)"
                         }
+                        .to_owned(),
                     };
                     (name.to_owned(), value)
                 })
@@ -1289,9 +1303,9 @@ fn collect_animation_debug_snapshot_matching(
                     .filter(|(key, _)| *key == (entity.id(), entity.generation()))
                     .map(|(_, event)| event.clone())
                     .collect(),
-                runtime_error: debug_source
-                    .is_none()
-                    .then(|| "Animation Graph runtime source provenance is unavailable.".to_owned()),
+                runtime_error: debug_source.is_none().then(|| {
+                    "Animation Graph runtime source provenance is unavailable.".to_owned()
+                }),
             }
         })
 }
@@ -1399,10 +1413,7 @@ impl RuntimeGameView {
     }
 
     fn release(self, render_state: &egui_wgpu::RenderState) {
-        render_state
-            .renderer
-            .write()
-            .free_texture(&self.texture_id);
+        render_state.renderer.write().free_texture(&self.texture_id);
     }
 
     fn capture(
@@ -1637,10 +1648,14 @@ impl ReloadError {
     /// Converts this reload error into editor diagnostics for display.
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
         match self {
-            Self::Io { source } => vec![RuntimeDiagnosticKind::ReloadFailed
-                .to_diagnostic(format!("failed to read scene file: {source}"))],
-            Self::JsonParse { message } => vec![RuntimeDiagnosticKind::ReloadFailed
-                .to_diagnostic(format!("scene parse error: {message}"))],
+            Self::Io { source } => vec![
+                RuntimeDiagnosticKind::ReloadFailed
+                    .to_diagnostic(format!("failed to read scene file: {source}")),
+            ],
+            Self::JsonParse { message } => vec![
+                RuntimeDiagnosticKind::ReloadFailed
+                    .to_diagnostic(format!("scene parse error: {message}")),
+            ],
             Self::Play(err) => err.into_diagnostics(),
         }
     }
@@ -1821,15 +1836,21 @@ impl PlayError {
                 diagnostics
             }
             Self::SceneBridge(source) => scene_bridge_error_diagnostics(source),
-            Self::DefaultCamera(source) => vec![RuntimeDiagnosticKind::DefaultCameraFailed
-                .to_diagnostic(format!("failed to insert default runtime camera: {source}"))],
+            Self::DefaultCamera(source) => vec![
+                RuntimeDiagnosticKind::DefaultCameraFailed
+                    .to_diagnostic(format!("failed to insert default runtime camera: {source}")),
+            ],
             Self::SystemRegistration { source } => {
-                vec![RuntimeDiagnosticKind::SystemRegistrationFailed
-                    .to_diagnostic(format!("failed to register runtime system: {source}"))]
+                vec![
+                    RuntimeDiagnosticKind::SystemRegistrationFailed
+                        .to_diagnostic(format!("failed to register runtime system: {source}")),
+                ]
             }
             Self::SystemOrdering(source) => {
-                vec![RuntimeDiagnosticKind::SystemRegistrationFailed
-                    .to_diagnostic(format!("failed to resolve runtime system order: {source}"))]
+                vec![
+                    RuntimeDiagnosticKind::SystemRegistrationFailed
+                        .to_diagnostic(format!("failed to resolve runtime system order: {source}")),
+                ]
             }
         }
     }
@@ -1886,20 +1907,23 @@ fn scene_bridge_error_diagnostics(error: SceneBridgeError) -> Vec<Diagnostic> {
             entity,
             component_type,
             expected,
-        } => vec![RuntimeDiagnosticKind::SceneConversionFailed
-            .to_diagnostic(format!(
-                "component `{}` on entity `{}` must be {expected}",
-                component_type.as_str(),
-                entity.as_str()
-            ))
-            .with_target(DiagnosticTarget::Component {
-                entity,
-                component_type,
-            })],
+        } => vec![
+            RuntimeDiagnosticKind::SceneConversionFailed
+                .to_diagnostic(format!(
+                    "component `{}` on entity `{}` must be {expected}",
+                    component_type.as_str(),
+                    entity.as_str()
+                ))
+                .with_target(DiagnosticTarget::Component {
+                    entity,
+                    component_type,
+                }),
+        ],
         SceneBridgeError::MissingGameComponent {
             entity,
             component_type,
-        } => vec![RuntimeDiagnosticKind::SceneConversionFailed
+        } => {
+            vec![RuntimeDiagnosticKind::SceneConversionFailed
             .to_diagnostic(format!(
                 "game component `{}` is unavailable; build the project game module before Play",
                 component_type.as_str()
@@ -1907,28 +1931,35 @@ fn scene_bridge_error_diagnostics(error: SceneBridgeError) -> Vec<Diagnostic> {
             .with_target(DiagnosticTarget::Component {
                 entity,
                 component_type,
-            })],
+            })]
+        }
         SceneBridgeError::GameModule { source } => {
-            vec![RuntimeDiagnosticKind::SceneConversionFailed
-                .to_diagnostic(format!("game module conversion failed: {source}"))]
+            vec![
+                RuntimeDiagnosticKind::SceneConversionFailed
+                    .to_diagnostic(format!("game module conversion failed: {source}")),
+            ]
         }
         SceneBridgeError::UnknownAsset { asset } => {
-            vec![RuntimeDiagnosticKind::MissingAsset {
-                asset: asset.clone(),
-            }
-            .to_diagnostic(format!(
-                "authoring asset `{}` is not available for runtime preview",
-                asset.as_str()
-            ))]
+            vec![
+                RuntimeDiagnosticKind::MissingAsset {
+                    asset: asset.clone(),
+                }
+                .to_diagnostic(format!(
+                    "authoring asset `{}` is not available for runtime preview",
+                    asset.as_str()
+                )),
+            ]
         }
         SceneBridgeError::AssetLoad { asset, source } => {
-            vec![RuntimeDiagnosticKind::MissingAsset {
-                asset: asset.clone(),
-            }
-            .to_diagnostic(format!(
-                "failed to load asset `{}`: {source}",
-                asset.as_str()
-            ))]
+            vec![
+                RuntimeDiagnosticKind::MissingAsset {
+                    asset: asset.clone(),
+                }
+                .to_diagnostic(format!(
+                    "failed to load asset `{}`: {source}",
+                    asset.as_str()
+                )),
+            ]
         }
         SceneBridgeError::WorldMutation {
             source,
@@ -1942,8 +1973,10 @@ fn scene_bridge_error_diagnostics(error: SceneBridgeError) -> Vec<Diagnostic> {
                     cleanup_errors.len()
                 )
             };
-            vec![RuntimeDiagnosticKind::SceneConversionFailed
-                .to_diagnostic(format!("runtime world mutation failed: {source}{cleanup}"))]
+            vec![
+                RuntimeDiagnosticKind::SceneConversionFailed
+                    .to_diagnostic(format!("runtime world mutation failed: {source}{cleanup}")),
+            ]
         }
     }
 }
@@ -2092,10 +2125,12 @@ mod tests {
             start.state.entity_count() >= scene.entity_count(),
             "default camera may add one runtime entity"
         );
-        assert!(start
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "editor.runtime.no_camera"));
+        assert!(
+            start
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "editor.runtime.no_camera")
+        );
     }
 
     #[test]
@@ -2130,10 +2165,12 @@ mod tests {
         let start = RuntimePlayState::start(&scene, None).expect("play must start");
 
         assert_eq!(start.state.entity_count(), scene.entity_count());
-        assert!(!start
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "editor.runtime.no_camera"));
+        assert!(
+            !start
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "editor.runtime.no_camera")
+        );
     }
 
     #[test]

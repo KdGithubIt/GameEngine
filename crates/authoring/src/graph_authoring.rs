@@ -6,13 +6,11 @@
 //! presentation transactions separate as required by ADR 0016.
 
 use super::{Graph, GraphChange, GraphCommand};
-use crate::access::{
-    AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
-};
+use crate::access::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
 use crate::diagnostic::Diagnostic;
 use crate::graph_domain::{
-    apply_graph_commands_with_domain, validate_graph_with_domain, GraphCommandApplication,
-    GraphDomain,
+    GraphCommandApplication, GraphDomain, apply_graph_commands_with_domain,
+    validate_graph_with_domain,
 };
 use serde::Serialize;
 use std::fmt;
@@ -337,10 +335,9 @@ mod tests {
             .nodes
             .insert(action.clone(), domain.action_node(action.clone(), "act"));
         let edge = EdgeId::generate();
-        graph.edges.insert(
-            edge.clone(),
-            domain.root_to_action_edge(edge, root, action),
-        );
+        graph
+            .edges
+            .insert(edge.clone(), domain.root_to_action_edge(edge, root, action));
         graph
     }
 
@@ -410,10 +407,12 @@ mod tests {
         assert!(!result.success);
         assert!(!graph.nodes.contains_key(&extra_root));
         assert_eq!(graph.revision(), base.revision);
-        assert!(result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.multiple_roots"));
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.multiple_roots")
+        );
     }
 
     #[test]
@@ -446,7 +445,9 @@ mod tests {
         let service = GraphAuthoringService::new();
         let mut graph = valid_graph(&domain);
         let permissions = AuthoringPermissions::read_only();
-        let base = service.inspect(&graph, &permissions).expect("read is allowed");
+        let base = service
+            .inspect(&graph, &permissions)
+            .expect("read is allowed");
 
         let error = service
             .apply(

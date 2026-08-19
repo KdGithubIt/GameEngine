@@ -107,12 +107,7 @@ impl PrefabMcpTools {
             input.expected_generation,
         );
         self.authoring
-            .preview_instantiation(
-                session,
-                permissions,
-                &loaded.prefab,
-                request,
-            )
+            .preview_instantiation(session, permissions, &loaded.prefab, request)
             .map_err(McpToolError::from)
     }
 
@@ -137,12 +132,7 @@ impl PrefabMcpTools {
             input.expected_generation,
         );
         self.authoring
-            .apply_instantiation(
-                session,
-                permissions,
-                &loaded.prefab,
-                request,
-            )
+            .apply_instantiation(session, permissions, &loaded.prefab, request)
             .map_err(McpToolError::from)
     }
 }

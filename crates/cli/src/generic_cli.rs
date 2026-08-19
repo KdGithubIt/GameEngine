@@ -28,9 +28,7 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
                 false,
             ))
         }
-        [domain, command, graph_path, commands_path]
-            if domain == "graph" && command == "apply" =>
-        {
+        [domain, command, graph_path, commands_path] if domain == "graph" && command == "apply" => {
             Some(graph_mutate(
                 Path::new(graph_path),
                 Path::new(commands_path),
@@ -80,20 +78,15 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
             Some(ui_validate(Path::new(path)))
         }
         [domain, command, path, commands_path] if domain == "ui" && command == "preview" => {
-            Some(ui_mutate(
-                Path::new(path),
-                Path::new(commands_path),
-                false,
-            ))
+            Some(ui_mutate(Path::new(path), Path::new(commands_path), false))
         }
         [domain, command, path, commands_path] if domain == "ui" && command == "apply" => {
-            Some(ui_mutate(
-                Path::new(path),
-                Path::new(commands_path),
-                true,
-            ))
+            Some(ui_mutate(Path::new(path), Path::new(commands_path), true))
         }
-        _ if args.first().is_some_and(|value| value == "graph" || value == "ui") => {
+        _ if args
+            .first()
+            .is_some_and(|value| value == "graph" || value == "ui") =>
+        {
             Some(Err(CliError::UnknownCommand {
                 args: args.join(" "),
             }))
@@ -162,7 +155,10 @@ fn graph_mutate(
             .map_err(authoring_error)?;
         replace_file_contents(graph_path, &json).map_err(|source| CliError::Persist { source })?;
     }
-    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
 }
 
 fn graph_view_inspect(graph_path: &Path, view_path: &Path) -> Result<CliRunResult, CliError> {
@@ -225,7 +221,10 @@ fn graph_view_mutate(
         let json = view.to_canonical_json(&graph).map_err(authoring_error)?;
         replace_file_contents(view_path, &json).map_err(|source| CliError::Persist { source })?;
     }
-    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
 }
 
 fn ui_inspect(path: &Path) -> Result<CliRunResult, CliError> {
@@ -275,10 +274,16 @@ fn ui_mutate(path: &Path, commands_path: &Path, persist: bool) -> Result<CliRunR
     .map_err(authoring_error)?;
 
     if persist && output.success && !output.diff.is_empty() {
-        let json = session.document().to_json_string().map_err(CliError::Json)?;
+        let json = session
+            .document()
+            .to_json_string()
+            .map_err(CliError::Json)?;
         replace_file_contents(path, &json).map_err(|source| CliError::Persist { source })?;
     }
-    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
 }
 
 fn read_permissions() -> AuthoringPermissions {

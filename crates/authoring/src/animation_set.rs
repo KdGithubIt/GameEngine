@@ -85,8 +85,7 @@ impl AnimationSet {
             schema_version: u32,
         }
 
-        let version: VersionProbe =
-            serde_json::from_str(json).map_err(AnimationSetError::Json)?;
+        let version: VersionProbe = serde_json::from_str(json).map_err(AnimationSetError::Json)?;
         if version.schema_version != ANIMATION_SET_SCHEMA_VERSION {
             return Err(AnimationSetError::UnsupportedVersion {
                 found: version.schema_version,
@@ -307,7 +306,10 @@ impl fmt::Display for AnimationSetError {
                 "unsupported animation-set schema version {found}; expected {ANIMATION_SET_SCHEMA_VERSION}"
             ),
             Self::BlankBindingName { slot } => {
-                write!(formatter, "animation slot `{slot}` has a blank binding name")
+                write!(
+                    formatter,
+                    "animation slot `{slot}` has a blank binding name"
+                )
             }
             Self::DuplicateBindingName { name } => {
                 write!(formatter, "animation binding name `{name}` is duplicated")
@@ -321,7 +323,10 @@ impl fmt::Display for AnimationSetError {
                 "animation slot `{slot}` event `{event}` has an invalid time"
             ),
             Self::BlankEventName { slot } => {
-                write!(formatter, "animation slot `{slot}` has an event with a blank name")
+                write!(
+                    formatter,
+                    "animation slot `{slot}` has an event with a blank name"
+                )
             }
         }
     }
@@ -425,7 +430,9 @@ mod tests {
                 events: Vec::new(),
             },
         );
-        let json = set.to_canonical_json().expect("schema v3 set must serialize");
+        let json = set
+            .to_canonical_json()
+            .expect("schema v3 set must serialize");
         assert!(json.contains(candidate.as_str()));
         assert!(!json.contains("variant"));
         assert!(!json.contains("auto"));

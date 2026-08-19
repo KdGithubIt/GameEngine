@@ -53,10 +53,11 @@ impl EditorApp {
             && let Some(path) = self.material_editor.active.clone()
             && let Err(error) = self.save_material_document(&path)
         {
-            self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                "editor.material_save_failed",
-                format!("failed to save {}: {error}", path.display()),
-            ));
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.material_save_failed",
+                    format!("failed to save {}: {error}", path.display()),
+                ));
         }
         if !self.show_material_editor {
             self.flush_material_scene_preview_refresh(context);
@@ -201,7 +202,10 @@ impl EditorApp {
     }
 
     /// Persists one Material working copy and advances its saved baseline only on success.
-    pub(in crate::ui) fn save_material_document(&mut self, relative_path: &Path) -> Result<(), String> {
+    pub(in crate::ui) fn save_material_document(
+        &mut self,
+        relative_path: &Path,
+    ) -> Result<(), String> {
         let project = self
             .project_root
             .clone()
@@ -239,7 +243,6 @@ impl EditorApp {
         }
         Ok(())
     }
-
 }
 
 pub(in crate::ui) struct TexturePreview {

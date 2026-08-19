@@ -5,14 +5,14 @@
 //! project authoring session remains authoritative.
 
 use eframe::egui;
-use engine_mcp::{authoring_tool_descriptors, McpToolDescriptor};
-use serde_json::{json, Value};
+use engine_mcp::{McpToolDescriptor, authoring_tool_descriptors};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -62,14 +62,26 @@ pub(crate) enum EditorMcpServerError {
 impl fmt::Display for EditorMcpServerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Bind(error) => write!(formatter, "could not bind Editor MCP loopback endpoint: {error}"),
+            Self::Bind(error) => write!(
+                formatter,
+                "could not bind Editor MCP loopback endpoint: {error}"
+            ),
             Self::Configure(error) => {
-                write!(formatter, "could not configure Editor MCP loopback endpoint: {error}")
+                write!(
+                    formatter,
+                    "could not configure Editor MCP loopback endpoint: {error}"
+                )
             }
             Self::Random(error) => {
-                write!(formatter, "could not create Editor MCP session credential: {error}")
+                write!(
+                    formatter,
+                    "could not create Editor MCP session credential: {error}"
+                )
             }
-            Self::Thread(error) => write!(formatter, "could not start Editor MCP listener thread: {error}"),
+            Self::Thread(error) => write!(
+                formatter,
+                "could not start Editor MCP listener thread: {error}"
+            ),
         }
     }
 }
@@ -101,7 +113,9 @@ impl EditorMcpServer {
         listener
             .set_nonblocking(true)
             .map_err(EditorMcpServerError::Configure)?;
-        let local_addr = listener.local_addr().map_err(EditorMcpServerError::Configure)?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(EditorMcpServerError::Configure)?;
         let endpoint = format!("http://{local_addr}{MCP_PATH}");
         let authorization_token = new_authorization_token()?;
         let worker_token = authorization_token.clone();
@@ -155,13 +169,11 @@ impl Drop for EditorMcpServer {
 
 fn new_authorization_token() -> Result<String, EditorMcpServerError> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| EditorMcpServerError::Random(error.to_string()))?;
+    getrandom::fill(&mut bytes).map_err(|error| EditorMcpServerError::Random(error.to_string()))?;
     let mut token = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;
-        write!(&mut token, "{byte:02x}")
-            .expect("writing hexadecimal text into String cannot fail");
+        write!(&mut token, "{byte:02x}").expect("writing hexadecimal text into String cannot fail");
     }
     Ok(token)
 }
@@ -227,7 +239,11 @@ fn handle_connection(
         Err(HttpReadError::Io(error)) => return Err(error),
     };
 
-    let path = request.path.split('?').next().unwrap_or(request.path.as_str());
+    let path = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or(request.path.as_str());
     if path != MCP_PATH {
         return write_http_response(&mut stream, 404, "text/plain", b"not found");
     }
@@ -324,7 +340,10 @@ fn handle_connection(
     let id = object.get("id").cloned();
 
     if method != "initialize"
-        && request.headers.get("mcp-protocol-version").map(String::as_str)
+        && request
+            .headers
+            .get("mcp-protocol-version")
+            .map(String::as_str)
             != Some(MCP_PROTOCOL_VERSION)
     {
         return write_http_response(
@@ -713,14 +732,12 @@ mod tests {
     #[test]
     fn initialize_and_tools_list_report_current_transport_surface() {
         let (server, _requests) = start();
-        let initialize =
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
         let response = post(&server, initialize, "");
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("\"protocolVersion\":\"2025-11-25\""));
 
-        let list =
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
         let response = post(
             &server,
             list,
@@ -743,11 +760,7 @@ mod tests {
         });
 
         let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project.describe","arguments":{}}}"#;
-        let response = post(
-            &server,
-            call,
-            "MCP-Protocol-Version: 2025-11-25\r\n",
-        );
+        let response = post(&server, call, "MCP-Protocol-Version: 2025-11-25\r\n");
         host.join().expect("host thread");
         assert!(response.contains("\"structuredContent\":{\"project\":\"ok\"}"));
     }

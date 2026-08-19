@@ -66,7 +66,13 @@ pub struct ColorGradingSettings {
 
 impl Default for ColorGradingSettings {
     fn default() -> Self {
-        Self { enabled: false, tint: [1.0; 3], saturation: 1.0, contrast: 1.0, gamma: 1.0 }
+        Self {
+            enabled: false,
+            tint: [1.0; 3],
+            saturation: 1.0,
+            contrast: 1.0,
+            gamma: 1.0,
+        }
     }
 }
 
@@ -100,12 +106,14 @@ impl PostProcessSettings {
         }
         let tinted = mapped * glam::Vec3::from_array(self.color_grading.tint);
         let luminance = tinted.dot(glam::Vec3::new(0.2126, 0.7152, 0.0722));
-        let saturated = glam::Vec3::splat(luminance)
-            .lerp(tinted, self.color_grading.saturation.max(0.0));
+        let saturated =
+            glam::Vec3::splat(luminance).lerp(tinted, self.color_grading.saturation.max(0.0));
         let contrasted = (saturated - glam::Vec3::splat(0.5))
             * self.color_grading.contrast.max(0.0)
             + glam::Vec3::splat(0.5);
-        contrasted.max(glam::Vec3::ZERO).powf(1.0 / self.color_grading.gamma.max(0.001))
+        contrasted
+            .max(glam::Vec3::ZERO)
+            .powf(1.0 / self.color_grading.gamma.max(0.001))
     }
 
     /// Returns a swapchain clear color after applying the configured preview tone mapper.

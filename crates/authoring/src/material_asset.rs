@@ -355,10 +355,7 @@ impl Default for MaterialAsset {
     }
 }
 
-fn validate_non_negative_scalar(
-    field: &'static str,
-    value: f32,
-) -> Result<(), MaterialAssetError> {
+fn validate_non_negative_scalar(field: &'static str, value: f32) -> Result<(), MaterialAssetError> {
     if value.is_finite() && value >= 0.0 {
         Ok(())
     } else {
@@ -369,10 +366,7 @@ fn validate_non_negative_scalar(
     }
 }
 
-fn validate_finite_scalar(
-    field: &'static str,
-    value: f32,
-) -> Result<(), MaterialAssetError> {
+fn validate_finite_scalar(field: &'static str, value: f32) -> Result<(), MaterialAssetError> {
     if value.is_finite() {
         Ok(())
     } else {
@@ -627,8 +621,7 @@ mod tests {
             ..MaterialAsset::default()
         };
         let json = material.to_json().expect("fixture must serialize");
-        let error = MaterialAsset::from_json(&json)
-            .expect_err("out-of-range roughness must fail");
+        let error = MaterialAsset::from_json(&json).expect_err("out-of-range roughness must fail");
 
         assert!(matches!(
             error,

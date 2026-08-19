@@ -144,8 +144,11 @@ pub(crate) fn section_caption(ui: &mut egui::Ui, text: &str) -> egui::Response {
 pub(crate) fn section_rule(ui: &mut egui::Ui) {
     ui.add_space(2.0);
     let rule = ui.available_rect_before_wrap();
-    ui.painter()
-        .hline(rule.x_range(), rule.top(), egui::Stroke::new(1.0_f32, BORDER));
+    ui.painter().hline(
+        rule.x_range(),
+        rule.top(),
+        egui::Stroke::new(1.0_f32, BORDER),
+    );
     ui.add_space(8.0);
 }
 
@@ -163,11 +166,7 @@ pub(crate) fn paint_hero_background(painter: &egui::Painter, rect: egui::Rect) {
     // A short accent run under the mark ties the band to the primary action
     // color without drawing a full-width line across the window.
     let baseline = rect.bottom() - 1.0;
-    painter.hline(
-        rect.x_range(),
-        baseline,
-        egui::Stroke::new(1.0_f32, BORDER),
-    );
+    painter.hline(rect.x_range(), baseline, egui::Stroke::new(1.0_f32, BORDER));
     painter.hline(
         rect.left()..=rect.left() + 148.0,
         baseline,

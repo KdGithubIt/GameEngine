@@ -590,9 +590,8 @@ fn classify_asset_path(
         }
         return None;
     }
-    classify_file_name(name).filter(|(kind, _)| {
-        !matches!(kind, AssetKind::Script | AssetKind::GraphView)
-    })
+    classify_file_name(name)
+        .filter(|(kind, _)| !matches!(kind, AssetKind::Script | AssetKind::GraphView))
 }
 
 /// Classifies one project Rust source by the declarations it contains.
@@ -1078,7 +1077,10 @@ mod tests {
 
         assert!(browser.select_folder_tile(Path::new("characters")));
         assert_eq!(browser.selected_folder(), Path::new(""));
-        assert_eq!(browser.selected_folder_tile(), Some(Path::new("characters")));
+        assert_eq!(
+            browser.selected_folder_tile(),
+            Some(Path::new("characters"))
+        );
         assert_eq!(browser.selected(), None);
         assert_eq!(browser.selected_paths().count(), 0);
     }
@@ -1093,7 +1095,10 @@ mod tests {
         assert!(browser.select_folder_tile(Path::new("characters")));
 
         browser.refresh(dir.path());
-        assert_eq!(browser.selected_folder_tile(), Some(Path::new("characters")));
+        assert_eq!(
+            browser.selected_folder_tile(),
+            Some(Path::new("characters"))
+        );
 
         fs::remove_dir(dir.path().join("characters")).unwrap();
         browser.refresh(dir.path());

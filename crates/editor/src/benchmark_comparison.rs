@@ -20,7 +20,7 @@
 
 #![allow(dead_code)]
 
-use crate::agent_benchmark::{comparison_equivalence, BenchmarkRecord, ComparisonEquivalence};
+use crate::agent_benchmark::{BenchmarkRecord, ComparisonEquivalence, comparison_equivalence};
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkExperimentSpec, BenchmarkRoutingMode,
     BenchmarkRunFailureKind, BenchmarkRunOutcome,
@@ -288,7 +288,7 @@ pub(crate) fn compare_experiment(
     for planned in spec.planned_runs()? {
         let Some(model) = models.get_mut(&planned.model_id) else {
             return Err(
-                "planned benchmark run references a model outside the experiment".to_owned()
+                "planned benchmark run references a model outside the experiment".to_owned(),
             );
         };
         model.planned_runs += 1;
@@ -394,12 +394,12 @@ fn experiment_equivalence(
 mod tests {
     use super::*;
     use crate::agent_benchmark::{
+        BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BENCHMARK_SCHEMA_VERSION,
         BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics, BenchmarkModelIdentity,
-        BenchmarkToolBudget, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION,
-        BENCHMARK_SCHEMA_VERSION, WORKLOAD_POLICY_VERSION,
+        BenchmarkToolBudget, WORKLOAD_POLICY_VERSION,
     };
     use crate::benchmark_experiment::{
-        BenchmarkExperimentSpec, BenchmarkPlannedRun, BENCHMARK_FIXTURE_VERSION,
+        BENCHMARK_FIXTURE_VERSION, BenchmarkExperimentSpec, BenchmarkPlannedRun,
     };
     use crate::resource_arbitration::{InferenceWorkload, QualityPreference};
     use std::path::PathBuf;

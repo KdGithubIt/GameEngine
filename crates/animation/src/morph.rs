@@ -1,7 +1,7 @@
 //! Animation-side morph assets, bindings, and per-entity weights.
 
-use engine_authoring::id::AssetId;
 use engine_authoring::LinearRgba;
+use engine_authoring::id::AssetId;
 use glam::Vec3;
 use std::sync::Arc;
 
@@ -68,7 +68,9 @@ impl MorphTargets {
         let morphs = morphs
             .into_iter()
             .map(|mut morph| {
-                morph.vertex_deltas.retain(|(vertex, _)| *vertex < vertex_count);
+                morph
+                    .vertex_deltas
+                    .retain(|(vertex, _)| *vertex < vertex_count);
                 morph
             })
             .collect::<Vec<_>>();
@@ -104,7 +106,10 @@ impl MorphTargets {
 
     /// Returns the index of a morph named `name`, if bound.
     pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.targets.morphs.iter().position(|morph| morph.name == name)
+        self.targets
+            .morphs
+            .iter()
+            .position(|morph| morph.name == name)
     }
 
     /// Returns the index of a morph with stable ID `id`, if bound.
@@ -204,7 +209,10 @@ mod tests {
     #[test]
     fn working_set_is_deduplicated_and_out_of_range_deltas_are_dropped() {
         let targets = MorphTargets::new(
-            vec![morph("a", &[(1, [1.0; 3]), (99, [1.0; 3])]), morph("b", &[(1, [1.0; 3]), (2, [1.0; 3])])],
+            vec![
+                morph("a", &[(1, [1.0; 3]), (99, [1.0; 3])]),
+                morph("b", &[(1, [1.0; 3]), (2, [1.0; 3])]),
+            ],
             vec![Vec3::ZERO; 3],
         );
         assert_eq!(targets.working_set(), &[1, 2]);

@@ -537,7 +537,8 @@ pub(crate) fn comparison_equivalence(
         differences.push("model_representation");
     }
     if left.identity.model.backend_id != right.identity.model.backend_id
-        || left.identity.model.backend_runtime_version != right.identity.model.backend_runtime_version
+        || left.identity.model.backend_runtime_version
+            != right.identity.model.backend_runtime_version
     {
         differences.push("backend_runtime");
     }
@@ -550,7 +551,10 @@ pub(crate) fn comparison_equivalence(
     if left.identity.quality != right.identity.quality
         || left.identity.workload_policy_version != right.identity.workload_policy_version
         || !matches!(left.identity.observed_workload, TelemetryValue::Measured(_))
-        || !matches!(right.identity.observed_workload, TelemetryValue::Measured(_))
+        || !matches!(
+            right.identity.observed_workload,
+            TelemetryValue::Measured(_)
+        )
         || left.identity.observed_workload != right.identity.observed_workload
     {
         differences.push("quality_or_workload");
@@ -588,7 +592,10 @@ impl BenchmarkStore {
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == std::ffi::OsStr::new("json")))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == std::ffi::OsStr::new("json"))
+            })
             .collect::<Vec<_>>();
         paths.sort();
         let mut records = Vec::new();
@@ -635,22 +642,39 @@ fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
     if !(MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION..=BENCHMARK_SCHEMA_VERSION)
         .contains(&record.schema_version)
     {
-        return Err(format!("unsupported benchmark schema version {}", record.schema_version));
+        return Err(format!(
+            "unsupported benchmark schema version {}",
+            record.schema_version
+        ));
     }
     if record.schema_version == 1 && record.identity.execution.is_some() {
         return Err("benchmark schema v1 cannot carry campaign execution identity".to_owned());
     }
     if record.identity.corpus_version != BENCHMARK_CORPUS_VERSION {
-        return Err(format!("unsupported benchmark corpus `{}`", record.identity.corpus_version));
+        return Err(format!(
+            "unsupported benchmark corpus `{}`",
+            record.identity.corpus_version
+        ));
     }
     let Some(task) = benchmark_task(&record.identity.task_id) else {
-        return Err(format!("unknown benchmark task `{}`", record.identity.task_id));
+        return Err(format!(
+            "unknown benchmark task `{}`",
+            record.identity.task_id
+        ));
     };
-    let expected = task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect::<Vec<_>>();
+    let expected = task
+        .completion_criteria
+        .iter()
+        .map(|criterion| (*criterion).to_owned())
+        .collect::<Vec<_>>();
     if record.identity.completion_criteria != expected {
-        return Err("benchmark completion criteria do not match the versioned corpus task".to_owned());
+        return Err(
+            "benchmark completion criteria do not match the versioned corpus task".to_owned(),
+        );
     }
-    if record.identity.model.backend_id.trim().is_empty() || record.identity.model.model_id.trim().is_empty() {
+    if record.identity.model.backend_id.trim().is_empty()
+        || record.identity.model.model_id.trim().is_empty()
+    {
         return Err("benchmark backend and model identity must be non-empty".to_owned());
     }
     Ok(())
@@ -955,7 +979,8 @@ pub(crate) fn model_identity(
     model_id: &str,
     inventory: Option<&InstalledModelInventory>,
 ) -> BenchmarkModelIdentity {
-    let installed = inventory.and_then(|inventory| inventory.models.iter().find(|model| model.name == model_id));
+    let installed = inventory
+        .and_then(|inventory| inventory.models.iter().find(|model| model.name == model_id));
     BenchmarkModelIdentity {
         backend_id: backend_id.to_owned(),
         model_id: model_id.to_owned(),
@@ -986,9 +1011,13 @@ pub(crate) fn read_question_record(
     workload: InferenceWorkload,
     hardware: &BenchmarkHardwareIdentity,
 ) -> Result<BenchmarkRecord, String> {
-    let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+    let task =
+        benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     if task.kind != BenchmarkTaskKind::ReadQuestion {
-        return Err("the last read-oriented result can only record a read-question benchmark task".to_owned());
+        return Err(
+            "the last read-oriented result can only record a read-question benchmark task"
+                .to_owned(),
+        );
     }
     let provenance_reported = metrics.retrieval_chunks > 0;
     Ok(BenchmarkRecord {
@@ -1011,7 +1040,11 @@ pub(crate) fn read_question_record(
                 permission_budget: vec!["read_only".to_owned()],
                 work_claims: Vec::new(),
             },
-            completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
+            completion_criteria: task
+                .completion_criteria
+                .iter()
+                .map(|criterion| (*criterion).to_owned())
+                .collect(),
             execution: None,
         },
         metrics: BenchmarkMetrics {
@@ -1032,7 +1065,9 @@ pub(crate) fn read_question_record(
             response_tokens: optional_measured(metrics.response_tokens),
             load_latency_ms: optional_measured(metrics.load_latency_ms),
             ttft_ms: optional_measured(metrics.ttft_ms),
-            generation_tokens_per_second_milli: optional_measured(metrics.generation_tokens_per_second_milli),
+            generation_tokens_per_second_milli: optional_measured(
+                metrics.generation_tokens_per_second_milli,
+            ),
             peak_backend_gpu_memory_bytes: TelemetryValue::Unavailable,
             peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
             model_unload_reload_ms: TelemetryValue::Unavailable,
@@ -1063,11 +1098,17 @@ pub(crate) fn agent_run_record(
     run: &AgentRun,
     identity: AgentRunBenchmarkIdentity<'_>,
 ) -> Result<BenchmarkRecord, String> {
-    let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+    let task =
+        benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
     if task.kind == BenchmarkTaskKind::ReadQuestion {
-        return Err("write-capable AgentRun evidence cannot be recorded as a read-question task".to_owned());
+        return Err(
+            "write-capable AgentRun evidence cannot be recorded as a read-question task".to_owned(),
+        );
     }
-    if !matches!(run.state, AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled) {
+    if !matches!(
+        run.state,
+        AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+    ) {
         return Err("benchmark evidence requires a terminal AgentRun".to_owned());
     }
     let policy = HarnessPolicy::default();
@@ -1086,7 +1127,15 @@ pub(crate) fn agent_run_record(
     let failed_tool_calls = run
         .events
         .iter()
-        .filter(|event| matches!(&event.evidence, Some(AgentEventEvidence::ToolAction { success: Some(false), .. })))
+        .filter(|event| {
+            matches!(
+                &event.evidence,
+                Some(AgentEventEvidence::ToolAction {
+                    success: Some(false),
+                    ..
+                })
+            )
+        })
         .count() as u64;
     let play_attempts = run
         .events
@@ -1096,7 +1145,12 @@ pub(crate) fn agent_run_record(
     let frame_attempts = run
         .events
         .iter()
-        .filter(|event| matches!(&event.evidence, Some(AgentEventEvidence::CapturedFrame { .. })))
+        .filter(|event| {
+            matches!(
+                &event.evidence,
+                Some(AgentEventEvidence::CapturedFrame { .. })
+            )
+        })
         .count() as u64;
     let visual_attempts = run
         .events
@@ -1108,7 +1162,9 @@ pub(crate) fn agent_run_record(
         .iter()
         .filter(|event| event.kind == AgentEventKind::UserMessage)
         .count() as u64;
-    let elapsed_ms = run.finished_unix_ms.map(|finished| finished.saturating_sub(run.started_unix_ms));
+    let elapsed_ms = run
+        .finished_unix_ms
+        .map(|finished| finished.saturating_sub(run.started_unix_ms));
     let completion_success = task_completion_success(task, run);
     Ok(BenchmarkRecord {
         schema_version: BENCHMARK_SCHEMA_VERSION,
@@ -1135,11 +1191,17 @@ pub(crate) fn agent_run_record(
                     .filter_map(work_claim_kind_label)
                     .collect(),
             },
-            completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
+            completion_criteria: task
+                .completion_criteria
+                .iter()
+                .map(|criterion| (*criterion).to_owned())
+                .collect(),
             execution: None,
         },
         metrics: BenchmarkMetrics {
-            acceptance_success: TelemetryValue::Measured(run.completion.acceptance_criteria == CompletionStatus::Passed),
+            acceptance_success: TelemetryValue::Measured(
+                run.completion.acceptance_criteria == CompletionStatus::Passed,
+            ),
             completion_success: TelemetryValue::Measured(completion_success),
             model_turns: TelemetryValue::Unavailable,
             tool_calls: TelemetryValue::Measured(tool_calls),
@@ -1166,10 +1228,7 @@ pub(crate) fn agent_run_record(
     })
 }
 
-fn completion_gate_status(
-    report: &CompletionReport,
-    criterion: &str,
-) -> Option<CompletionStatus> {
+fn completion_gate_status(report: &CompletionReport, criterion: &str) -> Option<CompletionStatus> {
     match criterion {
         "acceptance_criteria" => Some(report.acceptance_criteria),
         "authoring_validation" => Some(report.authoring_validation),
@@ -1214,12 +1273,22 @@ fn unix_ms() -> u64 {
 fn safe_file_component(value: &str) -> String {
     let mut output = value
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') { character } else { '-' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     if output.len() > 80 {
         output.truncate(80);
     }
-    if output.is_empty() { "unknown".to_owned() } else { output }
+    if output.is_empty() {
+        "unknown".to_owned()
+    } else {
+        output
+    }
 }
 
 #[cfg(test)]
@@ -1256,7 +1325,11 @@ mod tests {
                 permission_budget: vec!["managed".to_owned()],
                 work_claims: vec!["code_path".to_owned()],
             },
-            completion_criteria: BENCHMARK_TASKS[0].completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
+            completion_criteria: BENCHMARK_TASKS[0]
+                .completion_criteria
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
             execution: None,
         }
     }
@@ -1292,7 +1365,11 @@ mod tests {
     fn record(model: &str, task: BenchmarkTaskDescriptor, elapsed_ms: u64) -> BenchmarkRecord {
         let mut identity = measured_identity(model);
         identity.task_id = task.id.to_owned();
-        identity.completion_criteria = task.completion_criteria.iter().map(|value| (*value).to_owned()).collect();
+        identity.completion_criteria = task
+            .completion_criteria
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
         BenchmarkRecord {
             schema_version: BENCHMARK_SCHEMA_VERSION,
             recorded_unix_ms: 1,
@@ -1301,39 +1378,77 @@ mod tests {
         }
     }
 
-
     #[test]
     fn corpus_covers_required_first_release_workloads() {
         assert_eq!(BENCHMARK_TASKS.len(), 7);
-        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::ReadQuestion));
-        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::ProjectInspection));
-        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::CodeImplementation));
-        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::TypedAuthoringMutation));
-        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::ValidationRepair));
-        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::RuntimeInteraction));
-        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::VisualEvaluation));
+        assert!(
+            BENCHMARK_TASKS
+                .iter()
+                .any(|task| task.kind == BenchmarkTaskKind::ReadQuestion)
+        );
+        assert!(
+            BENCHMARK_TASKS
+                .iter()
+                .any(|task| task.kind == BenchmarkTaskKind::ProjectInspection)
+        );
+        assert!(
+            BENCHMARK_TASKS
+                .iter()
+                .any(|task| task.kind == BenchmarkTaskKind::CodeImplementation)
+        );
+        assert!(
+            BENCHMARK_TASKS
+                .iter()
+                .any(|task| task.kind == BenchmarkTaskKind::TypedAuthoringMutation)
+        );
+        assert!(
+            BENCHMARK_TASKS
+                .iter()
+                .any(|task| task.kind == BenchmarkTaskKind::ValidationRepair)
+        );
+        assert!(
+            BENCHMARK_TASKS
+                .iter()
+                .any(|task| task.kind == BenchmarkTaskKind::RuntimeInteraction)
+        );
+        assert!(
+            BENCHMARK_TASKS
+                .iter()
+                .any(|task| task.kind == BenchmarkTaskKind::VisualEvaluation)
+        );
     }
 
     #[test]
     fn comparison_is_model_only_when_every_harness_dimension_matches() {
         let left = record("model-a", BENCHMARK_TASKS[0], 10);
         let right = record("model-b", BENCHMARK_TASKS[0], 10);
-        assert_eq!(comparison_equivalence(&left, &right), ComparisonEquivalence::EquivalentModelComparison);
+        assert_eq!(
+            comparison_equivalence(&left, &right),
+            ComparisonEquivalence::EquivalentModelComparison
+        );
         let mut changed = right.clone();
         changed.identity.hardware.platform = "different".to_owned();
-        assert!(matches!(comparison_equivalence(&left, &changed), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"hardware")));
+        assert!(
+            matches!(comparison_equivalence(&left, &changed), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"hardware"))
+        );
 
         let mut incomplete_hardware = right.clone();
         incomplete_hardware.identity.hardware.gpu = TelemetryValue::Unavailable;
-        assert!(matches!(comparison_equivalence(&left, &incomplete_hardware), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"hardware")));
+        assert!(
+            matches!(comparison_equivalence(&left, &incomplete_hardware), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"hardware"))
+        );
 
         let mut incomplete_model = right.clone();
         incomplete_model.identity.model.representation_size_bytes = TelemetryValue::Unavailable;
-        assert!(matches!(comparison_equivalence(&left, &incomplete_model), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"model_representation")));
+        assert!(
+            matches!(comparison_equivalence(&left, &incomplete_model), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"model_representation"))
+        );
 
         let mut different_claims = right.clone();
         different_claims.identity.tool_budget.work_claims = vec!["asset_target".to_owned()];
-        assert!(matches!(comparison_equivalence(&left, &different_claims), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"tool_or_permission_budget")));
+        assert!(
+            matches!(comparison_equivalence(&left, &different_claims), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"tool_or_permission_budget"))
+        );
     }
 
     #[test]
@@ -1408,7 +1523,10 @@ mod tests {
                 software: false,
             },
         ];
-        assert_eq!(select_adapter_memory("GPU A", 1, 2, &candidates), Some(12_000));
+        assert_eq!(
+            select_adapter_memory("GPU A", 1, 2, &candidates),
+            Some(12_000)
+        );
 
         // Windows enumerates one physical adapter twice on a machine with a
         // virtual display driver. The duplicates describe the same card, so the
@@ -1467,7 +1585,8 @@ mod tests {
 
     #[test]
     fn unavailable_telemetry_serializes_explicitly() {
-        let value = serde_json::to_string(&TelemetryValue::<u64>::Unavailable).expect("telemetry JSON");
+        let value =
+            serde_json::to_string(&TelemetryValue::<u64>::Unavailable).expect("telemetry JSON");
         assert!(value.contains("unavailable"));
     }
 
@@ -1502,21 +1621,37 @@ mod tests {
             tool_capabilities: vec!["structured".to_owned()],
         };
         let partial = vec![record("model-a", BENCHMARK_TASKS[0], 10)];
-        let manifest = CatalogManifest { schema_version: CATALOG_SCHEMA_VERSION, catalog_version: "test".to_owned(), entries: vec![candidate.clone()] };
-        let catalog = CuratedModelCatalog::derive(manifest.clone(), &partial).expect("partial catalog");
+        let manifest = CatalogManifest {
+            schema_version: CATALOG_SCHEMA_VERSION,
+            catalog_version: "test".to_owned(),
+            entries: vec![candidate.clone()],
+        };
+        let catalog =
+            CuratedModelCatalog::derive(manifest.clone(), &partial).expect("partial catalog");
         assert!(catalog.recommendation(CatalogProfile::Balanced).is_none());
 
-        let complete = BENCHMARK_TASKS.iter().copied().map(|task| record("model-a", task, 10)).collect::<Vec<_>>();
+        let complete = BENCHMARK_TASKS
+            .iter()
+            .copied()
+            .map(|task| record("model-a", task, 10))
+            .collect::<Vec<_>>();
         let mut incomplete_identity = complete.clone();
         for record in &mut incomplete_identity {
             record.identity.hardware.gpu = TelemetryValue::Unavailable;
         }
-        let incomplete_catalog = CuratedModelCatalog::derive(manifest.clone(), &incomplete_identity)
-            .expect("incomplete identity catalog");
-        assert!(incomplete_catalog.recommendation(CatalogProfile::Balanced).is_none());
+        let incomplete_catalog =
+            CuratedModelCatalog::derive(manifest.clone(), &incomplete_identity)
+                .expect("incomplete identity catalog");
+        assert!(
+            incomplete_catalog
+                .recommendation(CatalogProfile::Balanced)
+                .is_none()
+        );
 
         let catalog = CuratedModelCatalog::derive(manifest, &complete).expect("complete catalog");
-        let recommendation = catalog.recommendation(CatalogProfile::Balanced).expect("balanced recommendation");
+        let recommendation = catalog
+            .recommendation(CatalogProfile::Balanced)
+            .expect("balanced recommendation");
         assert_eq!(recommendation.candidate.model_id, candidate.model_id);
         assert_eq!(recommendation.evidence_runs, BENCHMARK_TASKS.len());
     }

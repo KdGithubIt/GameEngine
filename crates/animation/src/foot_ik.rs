@@ -17,7 +17,7 @@
 use crate::animation::{AnimationClip, Animator};
 use crate::asset::Assets;
 use crate::collision::{
-    segment_blocked_by_static, static_obstacle_aabbs, Collider, PhysicsBody, TriggerVolume,
+    Collider, PhysicsBody, TriggerVolume, segment_blocked_by_static, static_obstacle_aabbs,
 };
 use crate::contact_detect::ContactInterval;
 use crate::rig_pose::{PoseStage, RigPose};
@@ -142,9 +142,10 @@ fn combined_contact_weight(
     let target_blend = animator.crossfade_progress().unwrap_or(1.0);
     let mut weight = clip_contact_weight(target_clip, bone, animator.time) * target_blend;
     if let Some((source_handle, source_time)) = animator.fade_source()
-        && let Some(source_clip) = clips.get(&source_handle) {
-            weight += clip_contact_weight(source_clip, bone, source_time) * (1.0 - target_blend);
-        }
+        && let Some(source_clip) = clips.get(&source_handle)
+    {
+        weight += clip_contact_weight(source_clip, bone, source_time) * (1.0 - target_blend);
+    }
     weight.clamp(0.0, 1.0)
 }
 
@@ -354,9 +355,7 @@ fn chain_world_transforms(
 
     let mut chain = Vec::with_capacity(ancestors.len());
     for index in ancestors {
-        let (_, rotation, position) = world_matrices
-            .get(index)?
-            .to_scale_rotation_translation();
+        let (_, rotation, position) = world_matrices.get(index)?.to_scale_rotation_translation();
         chain.push((position, rotation));
     }
     Some(chain)
@@ -426,8 +425,7 @@ pub fn foot_ik_system(
 
     let static_aabbs = static_obstacle_aabbs(colliders.iter().map(|(_, data)| data));
 
-    for (entity, (animator, skeleton, foot_ik, global_transform, rig_pose)) in
-        characters.iter_mut()
+    for (entity, (animator, skeleton, foot_ik, global_transform, rig_pose)) in characters.iter_mut()
     {
         if !foot_ik.enabled {
             continue;
@@ -453,9 +451,10 @@ pub fn foot_ik_system(
             .map(|interval| interval.bone)
             .collect();
         if let Some((source_handle, _)) = animator.fade_source()
-            && let Some(source_clip) = clips.get(&source_handle) {
-                contact_bones.extend(source_clip.contacts.iter().map(|interval| interval.bone));
-            }
+            && let Some(source_clip) = clips.get(&source_handle)
+        {
+            contact_bones.extend(source_clip.contacts.iter().map(|interval| interval.bone));
+        }
         if contact_bones.is_empty() {
             continue;
         }
@@ -478,11 +477,9 @@ pub fn foot_ik_system(
                 record_degenerate(&mut diagnostics, entity, bone);
                 continue;
             };
-            let Some(chain) = chain_world_transforms(
-                skeleton_asset,
-                &world_matrices,
-                chain_indices.ankle,
-            ) else {
+            let Some(chain) =
+                chain_world_transforms(skeleton_asset, &world_matrices, chain_indices.ankle)
+            else {
                 record_degenerate(&mut diagnostics, entity, bone);
                 continue;
             };
@@ -497,10 +494,7 @@ pub fn foot_ik_system(
             let parent_of_hip_rotation = if len >= 4 {
                 chain[len - 4].1
             } else {
-                global_transform
-                    .matrix()
-                    .to_scale_rotation_translation()
-                    .1
+                global_transform.matrix().to_scale_rotation_translation().1
             };
 
             let ray_half = foot_ik.max_correction.max(0.0);
@@ -520,8 +514,7 @@ pub fn foot_ik_system(
                 continue;
             };
 
-            let Some(hip_local) =
-                rig_pose.local_transform(PoseStage::Animation, chain_indices.hip)
+            let Some(hip_local) = rig_pose.local_transform(PoseStage::Animation, chain_indices.hip)
             else {
                 continue;
             };
@@ -550,11 +543,7 @@ pub fn foot_ik_system(
             leg_corrections.push((vertical_delta, chain_indices.hip));
         }
 
-        apply_pelvis_follow_up(
-            skeleton_asset,
-            rig_pose,
-            &leg_corrections,
-        );
+        apply_pelvis_follow_up(skeleton_asset, rig_pose, &leg_corrections);
     }
 }
 
@@ -608,7 +597,7 @@ fn apply_pelvis_follow_up(
 mod tests {
     use super::*;
     use crate::rig_pose::publish_final_rig_pose_system;
-    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef};
+    use crate::skeleton_asset::{BoneDef, compute_skeleton_identity};
     use crate::transform::Transform;
     use engine_authoring::id::AssetId;
     use engine_ecs::World;

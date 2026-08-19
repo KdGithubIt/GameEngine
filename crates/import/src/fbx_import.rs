@@ -23,7 +23,9 @@
 use crate::asset::SkeletonRecord;
 use crate::model_import::GltfImportResult;
 use crate::model_ir::{
-    IrClip, IrClipChannel, IrMaterial, IrMesh, IrNode, IrSkin, IrTexture, ModelDocument, IrAnimProperty as AnimProperty, IrKeyframe as Keyframe, IrMeshData as Mesh, IrSkinningVertexData as SkinningVertexData, IrSubmesh as Submesh, IrVertex as Vertex,
+    IrAnimProperty as AnimProperty, IrClip, IrClipChannel, IrKeyframe as Keyframe, IrMaterial,
+    IrMesh, IrMeshData as Mesh, IrNode, IrSkin, IrSkinningVertexData as SkinningVertexData,
+    IrSubmesh as Submesh, IrTexture, IrVertex as Vertex, ModelDocument,
 };
 use crate::skinning::MAX_JOINTS;
 use engine_authoring::diagnostic::Diagnostic;
@@ -1051,8 +1053,18 @@ fn parse_materials(scene: &ufbx::Scene, texture_valid: &[bool]) -> Vec<IrMateria
                 cull_mode: MaterialCullMode::Back,
                 shading_model: MaterialShadingModel::StandardLit,
                 toon_ramp_texture: None,
-                toon_shadow_color: LinearRgba { r: 0.55, g: 0.55, b: 0.62, a: 1.0 },
-                toon_ambient_color: LinearRgba { r: 0.2, g: 0.2, b: 0.2, a: 1.0 },
+                toon_shadow_color: LinearRgba {
+                    r: 0.55,
+                    g: 0.55,
+                    b: 0.62,
+                    a: 1.0,
+                },
+                toon_ambient_color: LinearRgba {
+                    r: 0.2,
+                    g: 0.2,
+                    b: 0.2,
+                    a: 1.0,
+                },
                 toon_specular_color: LinearRgba::WHITE,
                 toon_specular_power: 16.0,
                 sphere_texture: None,
@@ -1073,7 +1085,7 @@ fn parse_materials(scene: &ufbx::Scene, texture_valid: &[bool]) -> Vec<IrMateria
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::asset::{imported_sub_asset_id, ImportedSubAssetKind};
+    use crate::asset::{ImportedSubAssetKind, imported_sub_asset_id};
 
     #[test]
     fn import_invalid_bytes_returns_error() {
@@ -1187,10 +1199,12 @@ pub(crate) mod tests {
                 "resampled keyframes must be sorted by time ascending"
             );
         }
-        assert!(document
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "anim.fbx_curve_resampled"));
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "anim.fbx_curve_resampled")
+        );
     }
 
     #[test]

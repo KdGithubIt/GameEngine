@@ -12,11 +12,10 @@
 
 use engine_assets::asset::{AssetManifest, ImportSettings, ManifestEntry};
 use engine_authoring::{
-    load_scene_from_json, AuthoringCommand, AuthoringPermission, AuthoringPermissions,
-    AuthoringScene, AuthoringSession, BehaviorTreeAuthoringService, BehaviorTreeDomain, EdgeId,
-    EntityId, Graph, GraphCommand, GraphId, NodeId, ProjectConfig, ProjectRoot,
-    SceneAuthoringService, Transaction, VfxAuthoringService, VfxCommand, VfxTemplate,
-    PROJECT_SCHEMA_VERSION,
+    AuthoringCommand, AuthoringPermission, AuthoringPermissions, AuthoringScene, AuthoringSession,
+    BehaviorTreeAuthoringService, BehaviorTreeDomain, EdgeId, EntityId, Graph, GraphCommand,
+    GraphId, NodeId, PROJECT_SCHEMA_VERSION, ProjectConfig, ProjectRoot, SceneAuthoringService,
+    Transaction, VfxAuthoringService, VfxCommand, VfxTemplate, load_scene_from_json,
 };
 use engine_cli::run_cli_with_status;
 use engine_mcp::{
@@ -116,7 +115,11 @@ fn cli(args: [&str; 4]) -> Value {
 fn cli_result(args: Vec<String>) -> Value {
     let result = run_cli_with_status(args.clone())
         .unwrap_or_else(|error| panic!("CLI `{}` failed: {error}", args.join(" ")));
-    assert_eq!(result.exit_code, 0, "CLI reported failure: {}", result.output);
+    assert_eq!(
+        result.exit_code, 0,
+        "CLI reported failure: {}",
+        result.output
+    );
     serde_json::from_str(&result.output).expect("CLI output is JSON")
 }
 
@@ -459,10 +462,9 @@ fn vfx_template_creation_is_equivalent_across_cli_and_mcp() {
     assert_eq!(semantic(through_cli.clone()), semantic(through_mcp));
     // Each template instantiation mints fresh VFX IDs, so persistence is proven
     // against the document this CLI run returned rather than the MCP run's.
-    let persisted: Value = serde_json::from_str(
-        &fs::read_to_string(&created_path).expect("created effect"),
-    )
-    .expect("created effect is JSON");
+    let persisted: Value =
+        serde_json::from_str(&fs::read_to_string(&created_path).expect("created effect"))
+            .expect("created effect is JSON");
     assert_eq!(semantic(persisted), semantic(through_cli));
     let _ = fs::remove_dir_all(directory);
 }
@@ -477,12 +479,7 @@ fn asset_queries_are_equivalent_across_cli_and_mcp() {
     let root = project.open();
 
     let cli_search = cli(["asset", "search", &project.argument(), "hero"]);
-    let cli_inspect = cli([
-        "asset",
-        "inspect",
-        &project.argument(),
-        asset_id.as_str(),
-    ]);
+    let cli_inspect = cli(["asset", "inspect", &project.argument(), asset_id.as_str()]);
 
     assert_eq!(
         semantic(cli_search),

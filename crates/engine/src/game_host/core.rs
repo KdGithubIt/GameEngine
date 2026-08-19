@@ -11,22 +11,22 @@ use crate::character_controller::KinematicCharacterController;
 use crate::collision::{CollisionEvents, CollisionPhase};
 use crate::combat::{DamageReceiver, HitResults};
 use crate::game_io::{
-    validate_game_input_bytes, validate_game_output_bytes, EngineViewKind, GameAccessError,
-    GameAccessMode, GameClock, GameCommand, GameCommandFamily, GameEntityHandle, GameEventEmission,
-    GameEventRecord, GameEventStream, GameHostViewKind, GameInputActionState, GameInvocation,
-    GameInvocationOutput, GameIoLimitError, GameQueryResult, GameQueryRow, GameSystemAccess,
-    GAME_IO_SCHEMA_VERSION, MAX_GAME_EVENT_RECORDS,
+    EngineViewKind, GAME_IO_SCHEMA_VERSION, GameAccessError, GameAccessMode, GameClock,
+    GameCommand, GameCommandFamily, GameEntityHandle, GameEventEmission, GameEventRecord,
+    GameEventStream, GameHostViewKind, GameInputActionState, GameInvocation, GameInvocationOutput,
+    GameIoLimitError, GameQueryResult, GameQueryRow, GameSystemAccess, MAX_GAME_EVENT_RECORDS,
+    validate_game_input_bytes, validate_game_output_bytes,
 };
 use crate::game_module::GameComponentStore;
 use crate::game_prefab::GamePrefabEvents;
 use crate::game_timer::GameTimerEvents;
 use crate::hitbox::AttackHitbox;
 use crate::lock_on::TargetLock;
-use crate::navmesh::NavMeshAgent;
 use crate::native_2d::{
     CharacterController2d, CharacterControllerMotion2d, ContactPhase2d, PhysicsRuntime2d,
     SpriteAnimationEvents2d, SpriteAnimatorRuntime2d,
 };
+use crate::navmesh::NavMeshAgent;
 use crate::player::InputActionMap;
 use crate::runtime_metadata::RuntimeMetadata;
 use crate::save::{SaveData, SaveValue};
@@ -1110,12 +1110,21 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
                 (
                     "ground_normal".to_owned(),
                     Value::Object(BTreeMap::from([
-                        ("x".to_owned(), Value::F64(f64::from(controller.ground_normal.x))),
-                        ("y".to_owned(), Value::F64(f64::from(controller.ground_normal.y))),
+                        (
+                            "x".to_owned(),
+                            Value::F64(f64::from(controller.ground_normal.x)),
+                        ),
+                        (
+                            "y".to_owned(),
+                            Value::F64(f64::from(controller.ground_normal.y)),
+                        ),
                     ])),
                 ),
                 ("hit_wall".to_owned(), Value::Bool(controller.hit_wall)),
-                ("hit_ceiling".to_owned(), Value::Bool(controller.hit_ceiling)),
+                (
+                    "hit_ceiling".to_owned(),
+                    Value::Bool(controller.hit_ceiling),
+                ),
                 (
                     "drop_through_seconds".to_owned(),
                     Value::F64(f64::from(controller.drop_through_seconds)),
@@ -1143,12 +1152,27 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
         EngineViewKind::SpriteAnimationState => {
             let animator = world.get_component::<SpriteAnimatorRuntime2d>(entity)?;
             Value::Object(BTreeMap::from([
-                ("clip_asset".to_owned(), Value::String(animator.clip_asset.as_str().to_owned())),
+                (
+                    "clip_asset".to_owned(),
+                    Value::String(animator.clip_asset.as_str().to_owned()),
+                ),
                 ("playing".to_owned(), Value::Bool(animator.state.playing)),
-                ("frame_index".to_owned(), Value::U64(animator.state.frame_index as u64)),
-                ("tick_in_frame".to_owned(), Value::U64(u64::from(animator.state.tick_in_frame))),
-                ("speed".to_owned(), Value::F64(f64::from(animator.state.speed))),
-                ("looping".to_owned(), Value::Bool(animator.looping_override.unwrap_or(animator.clip.looping))),
+                (
+                    "frame_index".to_owned(),
+                    Value::U64(animator.state.frame_index as u64),
+                ),
+                (
+                    "tick_in_frame".to_owned(),
+                    Value::U64(u64::from(animator.state.tick_in_frame)),
+                ),
+                (
+                    "speed".to_owned(),
+                    Value::F64(f64::from(animator.state.speed)),
+                ),
+                (
+                    "looping".to_owned(),
+                    Value::Bool(animator.looping_override.unwrap_or(animator.clip.looping)),
+                ),
             ]))
         }
         EngineViewKind::VfxState => {
@@ -1167,12 +1191,29 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
                 ("state".to_owned(), Value::String(state.to_owned())),
                 ("playing".to_owned(), Value::Bool(player.is_playing())),
                 ("complete".to_owned(), Value::Bool(instance.is_complete())),
-                ("elapsed_seconds".to_owned(), Value::F64(f64::from(instance.elapsed_seconds()))),
-                ("live_particles".to_owned(), Value::String(stats.live_particles.to_string())),
-                ("spawned_particles".to_owned(), Value::String(stats.spawned_particles.to_string())),
-                ("dropped_particles".to_owned(), Value::String(stats.dropped_particles.to_string())),
+                (
+                    "elapsed_seconds".to_owned(),
+                    Value::F64(f64::from(instance.elapsed_seconds())),
+                ),
+                (
+                    "live_particles".to_owned(),
+                    Value::String(stats.live_particles.to_string()),
+                ),
+                (
+                    "spawned_particles".to_owned(),
+                    Value::String(stats.spawned_particles.to_string()),
+                ),
+                (
+                    "dropped_particles".to_owned(),
+                    Value::String(stats.dropped_particles.to_string()),
+                ),
                 ("backend".to_owned(), Value::String(backend.to_owned())),
-                ("seed_override".to_owned(), instance.seed_override().map_or(Value::Null, |seed| Value::I64(i64::from(seed)))),
+                (
+                    "seed_override".to_owned(),
+                    instance
+                        .seed_override()
+                        .map_or(Value::Null, |seed| Value::I64(i64::from(seed))),
+                ),
             ]))
         }
         EngineViewKind::LockOnState => {
@@ -1814,9 +1855,11 @@ mod tests {
             assert_eq!(invocation.queries[0].rows.len(), 100);
             let bytes = serde_json::to_vec(&invocation).unwrap();
             assert_eq!(bytes.len(), baseline_bytes);
-            assert!(!bytes
-                .windows("IRRELEVANT_WORLD_SENTINEL".len())
-                .any(|window| window == b"IRRELEVANT_WORLD_SENTINEL"));
+            assert!(
+                !bytes
+                    .windows("IRRELEVANT_WORLD_SENTINEL".len())
+                    .any(|window| window == b"IRRELEVANT_WORLD_SENTINEL")
+            );
         }
     }
 

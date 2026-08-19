@@ -245,9 +245,10 @@ impl EditorApp {
             )
             .on_disabled_hover_text("This State has no motion slot assigned yet")
             .clicked()
-            && let Some(slot) = &committed_slot {
-                self.preview_animation_clip(slot.as_str().to_owned());
-            }
+            && let Some(slot) = &committed_slot
+        {
+            self.preview_animation_clip(slot.as_str().to_owned());
+        }
         ui.small("Bind this stable slot to an imported clip in an Animation Set.");
     }
 

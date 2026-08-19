@@ -7,8 +7,8 @@
 //! (e.g. through [`engine_authoring::ProjectRoot::resolve_asset`]).
 
 use engine_authoring::{
-    load_scene_from_json, AuthoringScene, Diagnostic, Graph, GraphView, SceneLoadError, Severity,
-    UiDocument, UiDocumentError,
+    AuthoringScene, Diagnostic, Graph, GraphView, SceneLoadError, Severity, UiDocument,
+    UiDocumentError, load_scene_from_json,
 };
 use std::{
     fmt, fs, io,

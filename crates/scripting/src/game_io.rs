@@ -1663,10 +1663,7 @@ mod tests {
             "current query access must carry components and engine_views"
         );
         assert!(
-            serde_json::from_str::<GameQueryRow>(
-                r#"{"entity":{"id":1,"generation":0}}"#
-            )
-            .is_err(),
+            serde_json::from_str::<GameQueryRow>(r#"{"entity":{"id":1,"generation":0}}"#).is_err(),
             "current query rows must carry components and engine_views"
         );
         assert!(

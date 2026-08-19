@@ -9,12 +9,12 @@
 //! declares (component, resource, system, or an ordinary helper module) is
 //! decided by the attributes in the source itself, never by its folder.
 
-use crate::component_metadata::{
-    component_metadata_path, load_component_metadata, write_component_metadata, ComponentMetadata,
-    ComponentMetadataError,
-};
-use crate::persist::{replace_file_contents, PersistError};
 use crate::ProjectRoot;
+use crate::component_metadata::{
+    ComponentMetadata, ComponentMetadataError, component_metadata_path, load_component_metadata,
+    write_component_metadata,
+};
+use crate::persist::{PersistError, replace_file_contents};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -437,9 +437,7 @@ pub fn move_rust_script(
         source: error,
     })?;
     let moved_metadata = source_metadata.is_file();
-    if moved_metadata
-        && let Err(error) = fs::rename(&source_metadata, &destination_metadata)
-    {
+    if moved_metadata && let Err(error) = fs::rename(&source_metadata, &destination_metadata) {
         let _ = fs::rename(&destination, &source);
         return Err(GameProjectError::Io {
             path: source_metadata,
@@ -546,7 +544,9 @@ fn validate_current_game_host(project: &ProjectRoot) -> Result<(), GameProjectEr
         let has_index = contents
             .lines()
             .any(|line| line.trim() == MODULE_INDEX_INCLUDE);
-        let has_export = contents.lines().any(|line| line.trim() == GAME_MODULE_EXPORT);
+        let has_export = contents
+            .lines()
+            .any(|line| line.trim() == GAME_MODULE_EXPORT);
         let has_obsolete_declaration = contents
             .lines()
             .any(|line| OBSOLETE_ROOT_DECLARATIONS.contains(&line.trim()));
@@ -1252,7 +1252,7 @@ impl std::error::Error for GameProjectError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ProjectConfig, PROJECT_SCHEMA_VERSION};
+    use crate::{PROJECT_SCHEMA_VERSION, ProjectConfig};
     use tempfile::tempdir;
 
     fn project() -> (tempfile::TempDir, ProjectRoot) {
@@ -1314,7 +1314,8 @@ mod tests {
         let source_root = project.game_dir().join("src");
         fs::create_dir_all(source_root.join("components")).unwrap();
         let root_contents = "//! Legacy host.\nmod components;\n\nengine::export_game_module!();\n";
-        let bridge_contents = "//! Automatically generated bridge to user-authored sources in assets.\n";
+        let bridge_contents =
+            "//! Automatically generated bridge to user-authored sources in assets.\n";
         fs::write(source_root.join("lib.rs"), root_contents).unwrap();
         fs::write(source_root.join("components/mod.rs"), bridge_contents).unwrap();
 
@@ -1728,19 +1729,23 @@ mod tests {
 
         let scene_json = scene.to_canonical_json().unwrap();
         let reopened_scene = crate::load_scene_from_json(&scene_json).unwrap();
-        assert!(reopened_scene
-            .entity(&entity_id)
-            .unwrap()
-            .components
-            .contains_key(&component_type));
+        assert!(
+            reopened_scene
+                .entity(&entity_id)
+                .unwrap()
+                .components
+                .contains_key(&component_type)
+        );
 
         let prefab = crate::PrefabAsset::from_selection(reopened_scene.entities()).unwrap();
         let prefab_json = prefab.to_json().unwrap();
         let reopened_prefab = crate::PrefabAsset::from_json(&prefab_json).unwrap();
-        assert!(reopened_prefab
-            .entities
-            .values()
-            .any(|entity| entity.components.contains_key(&component_type)));
+        assert!(
+            reopened_prefab
+                .entities
+                .values()
+                .any(|entity| entity.components.contains_key(&component_type))
+        );
         assert!(scene_json.contains(&component_id));
         assert!(prefab_json.contains(&component_id));
         assert_eq!(

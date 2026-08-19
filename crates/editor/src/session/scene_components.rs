@@ -3,8 +3,8 @@
 //! Every edit is routed through [`AuthoringCommand`] so validation, undo, and
 //! diagnostics behave identically for single-entity and multi-selection edits.
 
-use super::errors::EditorSessionError;
 use super::EditorSession;
+use super::errors::EditorSessionError;
 use engine_authoring::{
     AuthoringCommand, ComponentTypeId, EntityId, PropertyPath, PropertyPathSegment, Value,
 };
@@ -184,13 +184,15 @@ mod tests {
         session
             .remove_scene_component(entity.clone(), component_type.clone())
             .expect("component remove should succeed");
-        assert!(!session
-            .scene()
-            .unwrap()
-            .entity(&entity)
-            .unwrap()
-            .components
-            .contains_key(&component_type));
+        assert!(
+            !session
+                .scene()
+                .unwrap()
+                .entity(&entity)
+                .unwrap()
+                .components
+                .contains_key(&component_type)
+        );
         assert!(session.undo(), "component removal must be undoable");
         assert_eq!(
             session.scene().unwrap().entity(&entity).unwrap().components[&component_type],

@@ -5,13 +5,13 @@
 
 use crate::game_contracts::{GameComponent, GameResourceSchema, GameSystemSchedule};
 use crate::game_io::{
-    validate_game_input_bytes, validate_game_output_bytes, GameInvocation, GameInvocationOutput,
-    GameSystemAccess,
+    GameInvocation, GameInvocationOutput, GameSystemAccess, validate_game_input_bytes,
+    validate_game_output_bytes,
 };
 use engine_authoring::schema::ComponentSchema;
 use engine_authoring::value::Value;
 use serde::{Deserialize, Serialize};
-use std::ffi::{c_char, CString};
+use std::ffi::{CString, c_char};
 use std::sync::OnceLock;
 
 /// Current native game-module ABI version.

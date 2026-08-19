@@ -75,9 +75,18 @@ mod tests {
         let logical = egui::vec2(800.0, 480.0);
 
         assert_eq!(render_target_size_in_pixels(logical, 1.0, 8192), [800, 480]);
-        assert_eq!(render_target_size_in_pixels(logical, 1.25, 8192), [1000, 600]);
-        assert_eq!(render_target_size_in_pixels(logical, 1.5, 8192), [1200, 720]);
-        assert_eq!(render_target_size_in_pixels(logical, 2.0, 8192), [1600, 960]);
+        assert_eq!(
+            render_target_size_in_pixels(logical, 1.25, 8192),
+            [1000, 600]
+        );
+        assert_eq!(
+            render_target_size_in_pixels(logical, 1.5, 8192),
+            [1200, 720]
+        );
+        assert_eq!(
+            render_target_size_in_pixels(logical, 2.0, 8192),
+            [1600, 960]
+        );
     }
 
     #[test]

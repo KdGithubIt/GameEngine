@@ -36,9 +36,18 @@ pub enum SpriteAnimationRuntimeError {
 impl fmt::Display for SpriteAnimationRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidClip(errors) => write!(formatter, "invalid Sprite Animation clip: {}", errors.join("; ")),
-            Self::InitialFrameOutOfRange { frame, frame_count } => write!(formatter, "initial Sprite Animation frame {frame} is outside {frame_count} frames"),
-            Self::InvalidSpeed => formatter.write_str("Sprite Animation speed must be finite and non-negative"),
+            Self::InvalidClip(errors) => write!(
+                formatter,
+                "invalid Sprite Animation clip: {}",
+                errors.join("; ")
+            ),
+            Self::InitialFrameOutOfRange { frame, frame_count } => write!(
+                formatter,
+                "initial Sprite Animation frame {frame} is outside {frame_count} frames"
+            ),
+            Self::InvalidSpeed => {
+                formatter.write_str("Sprite Animation speed must be finite and non-negative")
+            }
         }
     }
 }
@@ -203,7 +212,10 @@ impl SpriteAnimationState2d {
                 break;
             }
             if let Some(name) = &clip.frames[self.frame_index].event {
-                events.push(SpriteFrameEvent2d { frame_index: self.frame_index, name: name.clone() });
+                events.push(SpriteFrameEvent2d {
+                    frame_index: self.frame_index,
+                    name: name.clone(),
+                });
             }
         }
         events
@@ -247,9 +259,7 @@ impl SpriteAnimationState2d {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_authoring::{
-        SpriteAnimationFrame, SpriteId, SPRITE_ANIMATION_SCHEMA_VERSION,
-    };
+    use engine_authoring::{SPRITE_ANIMATION_SCHEMA_VERSION, SpriteAnimationFrame, SpriteId};
 
     fn clip() -> SpriteAnimationDocument {
         let atlas = AssetId::generate();
@@ -260,12 +270,18 @@ mod tests {
             default_speed: 1.0,
             frames: vec![
                 SpriteAnimationFrame {
-                    sprite: SpriteRef { atlas: atlas.clone(), sprite: SpriteId::generate() },
+                    sprite: SpriteRef {
+                        atlas: atlas.clone(),
+                        sprite: SpriteId::generate(),
+                    },
                     duration_ticks: 2,
                     event: None,
                 },
                 SpriteAnimationFrame {
-                    sprite: SpriteRef { atlas, sprite: SpriteId::generate() },
+                    sprite: SpriteRef {
+                        atlas,
+                        sprite: SpriteId::generate(),
+                    },
                     duration_ticks: 2,
                     event: Some("step".to_owned()),
                 },
@@ -276,8 +292,24 @@ mod tests {
     #[test]
     fn shared_clip_keeps_independent_entity_state() {
         let clip = Arc::new(clip());
-        let mut a = SpriteAnimatorRuntime2d::new(AssetId::generate(), Arc::clone(&clip), true, 1.0, None, 0).unwrap();
-        let b = SpriteAnimatorRuntime2d::new(AssetId::generate(), Arc::clone(&clip), true, 1.0, None, 0).unwrap();
+        let mut a = SpriteAnimatorRuntime2d::new(
+            AssetId::generate(),
+            Arc::clone(&clip),
+            true,
+            1.0,
+            None,
+            0,
+        )
+        .unwrap();
+        let b = SpriteAnimatorRuntime2d::new(
+            AssetId::generate(),
+            Arc::clone(&clip),
+            true,
+            1.0,
+            None,
+            0,
+        )
+        .unwrap();
         let events = a.state.advance_ticks(&clip, 2, None);
         assert_eq!(a.state.frame_index, 1);
         assert_eq!(b.state.frame_index, 0);

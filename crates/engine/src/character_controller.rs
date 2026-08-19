@@ -6,8 +6,8 @@
 
 use engine_ecs::{Query, Res};
 use engine_physics::character_controller::{
-    character_separation_deltas, step_character_controller, CharacterObstacle,
-    CharacterSeparationBody, CharacterStepContext,
+    CharacterObstacle, CharacterSeparationBody, CharacterStepContext, character_separation_deltas,
+    step_character_controller,
 };
 use glam::Vec3;
 

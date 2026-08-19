@@ -70,10 +70,7 @@ impl Collider {
             Self::CapsuleY {
                 half_height,
                 radius,
-            } => SharedShape::capsule_y(
-                half_height * scale.y,
-                radius * scale.x.max(scale.z),
-            ),
+            } => SharedShape::capsule_y(half_height * scale.y, radius * scale.x.max(scale.z)),
         }
     }
 
@@ -240,8 +237,7 @@ pub fn world_shapes_overlap(a: &WorldShape, b: &WorldShape) -> Option<PushOut> {
         .ok()
         .flatten()?;
     (contact.dist < 0.0).then(|| PushOut {
-        vector: Vec3::new(contact.normal2.x, contact.normal2.y, contact.normal2.z)
-            * -contact.dist,
+        vector: Vec3::new(contact.normal2.x, contact.normal2.y, contact.normal2.z) * -contact.dist,
     })
 }
 
@@ -417,10 +413,7 @@ impl CollisionEvents {
 
     /// Completes transitions and stores the shape snapshot for the next step.
     #[doc(hidden)]
-    pub fn finish_detection(
-        &mut self,
-        shapes: impl IntoIterator<Item = (Entity, WorldShape)>,
-    ) {
+    pub fn finish_detection(&mut self, shapes: impl IntoIterator<Item = (Entity, WorldShape)>) {
         let mut current_pairs = BTreeMap::new();
         for event in &self.events {
             let (pair, reversed) = CollisionPair::new(event.entity_a, event.entity_b);

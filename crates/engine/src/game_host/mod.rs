@@ -7,14 +7,14 @@
 mod core;
 
 pub use core::{
-    apply_game_output, GameDeferredEffects, GameHostApplyError, GameHostCompileError,
-    GameHostFrame, GameHostRuntime, GameSystemMetrics,
+    GameDeferredEffects, GameHostApplyError, GameHostCompileError, GameHostFrame, GameHostRuntime,
+    GameSystemMetrics, apply_game_output,
 };
 
 use crate::camera::{Camera3D, ViewportSize};
 use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume, WorldShape};
 use crate::game_io::{
-    validate_game_input_bytes, GameEntityHandle, GameInvocation, GameSystemAccess,
+    GameEntityHandle, GameInvocation, GameSystemAccess, validate_game_input_bytes,
 };
 use crate::input::MouseInput;
 use crate::transform::GlobalTransform;

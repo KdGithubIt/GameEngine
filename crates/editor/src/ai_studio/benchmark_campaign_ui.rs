@@ -18,8 +18,8 @@ use crate::agent_benchmark_campaign::{
     DEFAULT_CAMPAIGN_REPETITIONS,
 };
 use crate::benchmark_campaign::{
-    CampaignBaselineReuse, CampaignEnvironmentProbe, CampaignEvidence, CampaignPlan, CampaignPolicy,
-    CampaignRun, CampaignState,
+    CampaignBaselineReuse, CampaignEnvironmentProbe, CampaignEvidence, CampaignPlan,
+    CampaignPolicy, CampaignRun, CampaignState,
 };
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRunOutcome, ENGINE_COMMIT_HEAD,
@@ -84,8 +84,7 @@ impl Default for BenchmarkCampaignPanel {
 impl AiStudioPanel {
     #[cfg(feature = "visual-validation")]
     pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {
-        self.benchmark_campaign.execution_environment =
-            CampaignExecutionEnvironment::WindowsNative;
+        self.benchmark_campaign.execution_environment = CampaignExecutionEnvironment::WindowsNative;
         self.benchmark_campaign.selected_models.clear();
         self.benchmark_campaign
             .selected_models
@@ -149,10 +148,7 @@ impl AiStudioPanel {
             ] {
                 let selected = self.benchmark_campaign.execution_profile == profile;
                 if ui
-                    .add_enabled(
-                        !frozen,
-                        egui::Button::selectable(selected, profile.label()),
-                    )
+                    .add_enabled(!frozen, egui::Button::selectable(selected, profile.label()))
                     .clicked()
                 {
                     self.benchmark_campaign.execution_profile = profile;
@@ -236,7 +232,9 @@ impl AiStudioPanel {
                             .selected_models
                             .insert(model.model_id.clone());
                     } else {
-                        self.benchmark_campaign.selected_models.remove(&model.model_id);
+                        self.benchmark_campaign
+                            .selected_models
+                            .remove(&model.model_id);
                     }
                 }
                 if let Some(representation) = model.exact_representation() {
@@ -259,7 +257,10 @@ impl AiStudioPanel {
             let exact = model.digest.is_some()
                 && model.quantization_level.is_some()
                 && model.size_bytes.is_some_and(|bytes| bytes > 0);
-            let mut selected = self.benchmark_campaign.selected_models.contains(&model.name);
+            let mut selected = self
+                .benchmark_campaign
+                .selected_models
+                .contains(&model.name);
             if ui
                 .add_enabled(
                     !frozen && exact,
@@ -306,7 +307,10 @@ impl AiStudioPanel {
             ui.label("Repetitions");
             let mut repetitions = self.benchmark_campaign.repetitions;
             if ui
-                .add_enabled(!frozen, egui::DragValue::new(&mut repetitions).range(1..=10))
+                .add_enabled(
+                    !frozen,
+                    egui::DragValue::new(&mut repetitions).range(1..=10),
+                )
                 .changed()
             {
                 self.benchmark_campaign.repetitions = repetitions;
@@ -431,7 +435,10 @@ impl AiStudioPanel {
                 candidate.candidate_id,
                 candidate.representation,
                 candidate.expected_sha256,
-                candidate.license.clone().unwrap_or_else(|| "unstated".to_owned())
+                candidate
+                    .license
+                    .clone()
+                    .unwrap_or_else(|| "unstated".to_owned())
             ));
         }
         ui.small(
@@ -481,10 +488,7 @@ impl AiStudioPanel {
                                     && evidence.outcome == BenchmarkRunOutcome::Passed
                             })
                             .count();
-                        ui.label(format!(
-                            "{passed}/{recorded} of {}",
-                            plan.repetitions
-                        ));
+                        ui.label(format!("{passed}/{recorded} of {}", plan.repetitions));
                     }
                     ui.end_row();
                 }
@@ -536,7 +540,10 @@ impl AiStudioPanel {
     }
 
     fn freeze_campaign(&mut self) {
-        match self.build_campaign_policy().and_then(CampaignPolicy::freeze) {
+        match self
+            .build_campaign_policy()
+            .and_then(CampaignPolicy::freeze)
+        {
             Ok(plan) => {
                 let installed = self.installed_campaign_model_ids();
                 self.benchmark_campaign.acquisition = plan.acquisition_plan(&installed);
@@ -586,17 +593,21 @@ impl AiStudioPanel {
                 {
                     continue;
                 }
-                let representation = model
-                    .exact_representation()
-                    .map(str::to_owned)
-                    .ok_or_else(|| {
-                        format!(
-                            "model `{}` has no GGUF-derived exact representation",
-                            model.display_name
-                        )
-                    })?;
+                let representation =
+                    model
+                        .exact_representation()
+                        .map(str::to_owned)
+                        .ok_or_else(|| {
+                            format!(
+                                "model `{}` has no GGUF-derived exact representation",
+                                model.display_name
+                            )
+                        })?;
                 if model.size_bytes == 0 {
-                    return Err(format!("model `{}` has no measured size", model.display_name));
+                    return Err(format!(
+                        "model `{}` has no measured size",
+                        model.display_name
+                    ));
                 }
                 candidates.push(CampaignCandidate {
                     representation: CampaignRepresentation {
@@ -615,29 +626,31 @@ impl AiStudioPanel {
                 .installed_model_inventory
                 .as_ref()
                 .ok_or_else(|| "no compatible local model inventory is available".to_owned())?;
-            let backend_runtime_version = inventory
-                .backend_version
-                .clone()
-                .ok_or_else(|| "the compatible local backend did not report an exact runtime version".to_owned())?;
+            let backend_runtime_version = inventory.backend_version.clone().ok_or_else(|| {
+                "the compatible local backend did not report an exact runtime version".to_owned()
+            })?;
             let mut candidates = Vec::new();
             for model in &inventory.models {
-                if !self.benchmark_campaign.selected_models.contains(&model.name) {
+                if !self
+                    .benchmark_campaign
+                    .selected_models
+                    .contains(&model.name)
+                {
                     continue;
                 }
                 candidates.push(CampaignCandidate {
                     representation: CampaignRepresentation {
                         backend_id: "ollama-compatible".to_owned(),
                         model_id: model.name.clone(),
-                        model_version: model
-                            .digest
-                            .clone()
-                            .ok_or_else(|| format!("model `{}` has no measured digest", model.name))?,
+                        model_version: model.digest.clone().ok_or_else(|| {
+                            format!("model `{}` has no measured digest", model.name)
+                        })?,
                         quantization: model.quantization_level.clone().ok_or_else(|| {
                             format!("model `{}` has no measured quantization", model.name)
                         })?,
-                        representation_size_bytes: model
-                            .size_bytes
-                            .ok_or_else(|| format!("model `{}` has no measured size", model.name))?,
+                        representation_size_bytes: model.size_bytes.ok_or_else(|| {
+                            format!("model `{}` has no measured size", model.name)
+                        })?,
                     },
                     source: CampaignCandidateSource::installed(),
                 });
@@ -673,7 +686,12 @@ impl AiStudioPanel {
                 .active_installation(environment)
                 .map_err(|error| error.to_string())?
                 .map(|installation| installation.benchmark_runtime_identity())
-                .ok_or_else(|| format!("the GameEngine-managed {} runtime is not installed", environment.label()));
+                .ok_or_else(|| {
+                    format!(
+                        "the GameEngine-managed {} runtime is not installed",
+                        environment.label()
+                    )
+                });
         }
         self.installed_model_inventory
             .as_ref()
@@ -773,9 +791,7 @@ impl AiStudioPanel {
     fn resume_campaign(&mut self) {
         let probe = CampaignEnvironmentProbe {
             execution_environment: self.benchmark_campaign.execution_environment,
-            backend_runtime_version: self
-                .campaign_backend_runtime_version()
-                .unwrap_or_default(),
+            backend_runtime_version: self.campaign_backend_runtime_version().unwrap_or_default(),
             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
         };
         let Some(run) = self.benchmark_campaign.run.as_mut() else {
@@ -807,7 +823,10 @@ impl AiStudioPanel {
         let mut results: Vec<BenchmarkExperimentResult> = entries
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
             .filter_map(|path| read_campaign_result(&path).ok())
             .collect();
         results.sort_by_key(|result| result.run.ordinal);

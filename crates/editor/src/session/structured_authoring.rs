@@ -55,7 +55,9 @@ impl fmt::Display for StructuredAuthoringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedGraphKind(error) => error.fmt(formatter),
-            Self::NoGraphDocument => formatter.write_str("the active Editor tab is not a Graph document"),
+            Self::NoGraphDocument => {
+                formatter.write_str("the active Editor tab is not a Graph document")
+            }
             Self::Graph(error) => error.fmt(formatter),
             Self::NoGraphView => formatter.write_str("the active Graph has no GraphView document"),
             Self::GraphView(error) => error.fmt(formatter),
@@ -93,7 +95,10 @@ impl From<UiAuthoringError> for StructuredAuthoringError {
 
 impl EditorSession {
     fn require_structured_graph_document(&self) -> Result<(), StructuredAuthoringError> {
-        if matches!(self.current_document, CurrentDocument::Graph { .. } | CurrentDocument::None) {
+        if matches!(
+            self.current_document,
+            CurrentDocument::Graph { .. } | CurrentDocument::None
+        ) {
             Ok(())
         } else {
             Err(StructuredAuthoringError::NoGraphDocument)
@@ -316,8 +321,8 @@ impl EditorSession {
                 expected_generation,
                 commands,
             )?;
-            let updated_document = (mutation.success && !mutation.diff.is_empty())
-                .then(|| session.document().clone());
+            let updated_document =
+                (mutation.success && !mutation.diff.is_empty()).then(|| session.document().clone());
             (mutation, updated_document)
         };
         self.diagnostics = mutation.diagnostics.clone();

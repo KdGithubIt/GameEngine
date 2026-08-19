@@ -10,23 +10,22 @@
 //! previous policy.
 
 use crate::agent_benchmark::{
-    benchmark_task, BenchmarkExecutionIdentity, BenchmarkRecord, BENCHMARK_CORPUS_VERSION,
-    BENCHMARK_HARNESS_VERSION,
+    BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BenchmarkExecutionIdentity,
+    BenchmarkRecord, benchmark_task,
 };
 use crate::agent_benchmark_campaign::{
+    CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION, CAMPAIGN_SCHEMA_VERSION,
     CampaignCandidate, CampaignComparisonClass, CampaignExecutionEnvironment,
     CampaignExecutionProfile, CampaignRepresentation, CampaignRuntimeIdentity, CampaignTaskPlan,
-    CandidateTaskContract,
-    HostOnlyEvaluation, CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION,
-    CAMPAIGN_SCHEMA_VERSION,
+    CandidateTaskContract, HostOnlyEvaluation,
 };
 use crate::benchmark_experiment::{
-    BenchmarkExecutionOrder, BenchmarkExperimentSpec, BenchmarkRoutingMode,
-    BenchmarkRunFailureKind, BenchmarkRunOutcome, BENCHMARK_FIXTURE_VERSION,
+    BENCHMARK_FIXTURE_VERSION, BenchmarkExecutionOrder, BenchmarkExperimentSpec,
+    BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
 };
 use crate::managed_local_runtime::{
-    ManagedAcquisitionApproval, ManagedAcquisitionCandidate, ManagedAcquisitionPlan,
-    MANAGED_BACKEND_ID,
+    MANAGED_BACKEND_ID, ManagedAcquisitionApproval, ManagedAcquisitionCandidate,
+    ManagedAcquisitionPlan,
 };
 use crate::resource_arbitration::{QualityPreference, TelemetryValue};
 use serde::{Deserialize, Serialize};
@@ -88,9 +87,7 @@ impl CampaignRejection {
         match self {
             Self::IdentityMismatch => "evidence identity does not match the frozen campaign",
             Self::NotRunning => "campaign is not running",
-            Self::EnvironmentDrift => {
-                "execution environment changed while the campaign was paused"
-            }
+            Self::EnvironmentDrift => "execution environment changed while the campaign was paused",
             Self::UnapprovedCandidate => {
                 "Download & Run approval does not cover this model representation"
             }
@@ -351,7 +348,10 @@ impl CampaignPlan {
     /// # Errors
     ///
     /// Returns an error when `task_id` is not part of this frozen plan.
-    pub(crate) fn candidate_contract(&self, task_id: &str) -> Result<CandidateTaskContract, String> {
+    pub(crate) fn candidate_contract(
+        &self,
+        task_id: &str,
+    ) -> Result<CandidateTaskContract, String> {
         self.task_plan(task_id)?.fixture.candidate_contract(task_id)
     }
 
@@ -393,7 +393,8 @@ impl CampaignPlan {
                     source,
                     representation: format!(
                         "{} {}",
-                        candidate.representation.model_version, candidate.representation.quantization
+                        candidate.representation.model_version,
+                        candidate.representation.quantization
                     ),
                     license: candidate.source.license.clone(),
                     expected_sha256,
@@ -747,9 +748,7 @@ impl CampaignRun {
                 .plan
                 .candidates
                 .iter()
-                .find(|candidate| {
-                    candidate.representation.model_id == evidence.scheduled.model_id
-                })
+                .find(|candidate| candidate.representation.model_id == evidence.scheduled.model_id)
                 .ok_or(CampaignRejection::IdentityMismatch)?;
             if CampaignRepresentation::from_model(&record.identity.model) != frozen.representation {
                 return Err(CampaignRejection::RepresentationDrift);
@@ -880,9 +879,8 @@ impl CampaignRun {
         for model in models.values_mut() {
             model.evidence_complete =
                 model.planned_runs > 0 && model.recorded_runs == model.planned_runs;
-            model.aggregate_elapsed_ms =
-                (model.recorded_runs > 0 && model.elapsed_fully_measured)
-                    .then_some(model.measured_elapsed_ms);
+            model.aggregate_elapsed_ms = (model.recorded_runs > 0 && model.elapsed_fully_measured)
+                .then_some(model.measured_elapsed_ms);
         }
         let models: Vec<CampaignModelReport> = models.into_values().collect();
         let evidence_complete =
@@ -1002,11 +1000,11 @@ fn is_full_git_sha(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::agent_benchmark::{
-        BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics, BenchmarkModelIdentity,
-        BenchmarkToolBudget, BENCHMARK_TASKS,
+        BENCHMARK_TASKS, BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics,
+        BenchmarkModelIdentity, BenchmarkToolBudget,
     };
     use crate::agent_benchmark_campaign::{
-        campaign_task_harness, CampaignCandidateSource, CampaignTaskHarness,
+        CampaignCandidateSource, CampaignTaskHarness, campaign_task_harness,
     };
     use crate::resource_arbitration::InferenceWorkload;
 
@@ -1184,7 +1182,9 @@ mod tests {
     #[test]
     fn a_candidate_without_exactly_measured_bytes_cannot_be_frozen() {
         let mut inexact = policy(&["model-a"], &["read_question_v1"]);
-        inexact.candidates[0].representation.representation_size_bytes = 0;
+        inexact.candidates[0]
+            .representation
+            .representation_size_bytes = 0;
         assert!(inexact.freeze().is_err());
     }
 
@@ -1360,7 +1360,8 @@ mod tests {
             record: None,
         };
         for _ in 0..PRE_MEASUREMENT_RETRY_BUDGET {
-            run.record(infrastructure.clone()).expect("retry is allowed");
+            run.record(infrastructure.clone())
+                .expect("retry is allowed");
             assert!(run.evidence().is_empty());
             assert_eq!(run.next_scheduled(), Some(scheduled.clone()));
         }

@@ -524,9 +524,10 @@ mod tests {
             .scene()
             .entity(&result.proposed_root)
             .expect("instantiated root");
-        assert!(root
-            .components
-            .contains_key(&ComponentTypeId::new(PREFAB_INSTANCE_COMPONENT)));
+        assert!(
+            root.components
+                .contains_key(&ComponentTypeId::new(PREFAB_INSTANCE_COMPONENT))
+        );
         assert!(session.can_undo());
         assert!(session.undo());
         assert!(session.scene().entity(&result.proposed_root).is_none());
@@ -614,8 +615,9 @@ mod tests {
 
     #[test]
     fn portable_source_normalizes_separators_and_resolves_natively() {
-        let source = PrefabSourcePath::from_project_relative("assets\\prefabs\\.\\enemy.prefab.json")
-            .expect("native separators are accepted");
+        let source =
+            PrefabSourcePath::from_project_relative("assets\\prefabs\\.\\enemy.prefab.json")
+                .expect("native separators are accepted");
         assert_eq!(source.as_str(), "assets/prefabs/enemy.prefab.json");
         assert_eq!(
             source.resolve(Path::new("/projects/demo")),

@@ -2,10 +2,10 @@
 
 #![warn(missing_docs)]
 
-/// Clip assets, animator state, events, and fixed-step sampling.
-pub mod animation;
 /// Compiled Animation Graph state-machine runtime and transition evaluation.
 pub mod anim_graph;
+/// Clip assets, animator state, events, and fixed-step sampling.
+pub mod animation;
 /// Typed animation parameter storage and blend sampling.
 pub mod animation_parameters;
 /// Offline ground-contact detection over animation clips.
@@ -27,10 +27,10 @@ pub mod morph;
 pub mod motion_binding;
 /// Pure pose sampling and blending.
 pub mod pose_graph;
-/// Deterministic per-entity Sprite Animation playback (ADR 0127).
-pub mod sprite_2d;
 /// Skeleton retargeting and baked-clip cache integration.
 pub mod retarget;
+/// Deterministic per-entity Sprite Animation playback (ADR 0127).
+pub mod sprite_2d;
 /// Cross-crate acceptance fixtures, compiled only for tests or opt-in test consumers.
 #[cfg(any(test, feature = "test-fixtures"))]
 #[doc(hidden)]

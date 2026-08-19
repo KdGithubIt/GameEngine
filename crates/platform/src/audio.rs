@@ -13,7 +13,7 @@ use engine_ecs::{Query, Res, ResMut};
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 #[cfg(not(target_arch = "wasm32"))]
@@ -464,11 +464,12 @@ impl AudioSystem {
             });
         }
         let voice_id = AudioVoiceId(self.next_voice_id);
-        let next_voice_id = self.next_voice_id.checked_add(1).ok_or_else(|| {
-            AudioError::Playback {
-                message: "runtime audio voice ID space is exhausted".to_owned(),
-            }
-        })?;
+        let next_voice_id =
+            self.next_voice_id
+                .checked_add(1)
+                .ok_or_else(|| AudioError::Playback {
+                    message: "runtime audio voice ID space is exhausted".to_owned(),
+                })?;
         let gains = Arc::new(Mutex::new(sanitize_stereo_gains(gains)));
         self.send_command(|respond_to| AudioCommand::StartVoice {
             voice_id,
@@ -782,9 +783,7 @@ fn run_audio_thread(
             }) => {
                 let result = if voices.len() >= MAX_ACTIVE_VOICES {
                     Err(AudioError::Playback {
-                        message: format!(
-                            "active audio voice limit ({MAX_ACTIVE_VOICES}) reached"
-                        ),
+                        message: format!("active audio voice limit ({MAX_ACTIVE_VOICES}) reached"),
                     })
                 } else {
                     play_voice_on_thread(
@@ -891,7 +890,10 @@ fn managed_voice_naturally_completes(looping: bool, sink_empty: bool) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn retire_managed_voice<T>(voices: &mut HashMap<AudioVoiceId, T>, voice_id: AudioVoiceId) -> Option<T> {
+fn retire_managed_voice<T>(
+    voices: &mut HashMap<AudioVoiceId, T>,
+    voice_id: AudioVoiceId,
+) -> Option<T> {
     voices.remove(&voice_id)
 }
 

@@ -85,7 +85,10 @@ mod tests {
         let cache = DerivedCache::new(dir.path());
         let key = CacheKey(0xdead_beef);
         cache.put("anim", &key, "clip.json", b"hello").expect("put");
-        assert_eq!(cache.get("anim", &key, "clip.json").as_deref(), Some(b"hello".as_slice()));
+        assert_eq!(
+            cache.get("anim", &key, "clip.json").as_deref(),
+            Some(b"hello".as_slice())
+        );
     }
 
     #[test]
@@ -93,7 +96,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let cache = DerivedCache::new(dir.path());
         let key = CacheKey(42);
-        cache.put("anim", &key, "clip.json", b"payload").expect("put");
+        cache
+            .put("anim", &key, "clip.json", b"payload")
+            .expect("put");
         cache.clear().expect("clear");
         assert!(cache.get("anim", &key, "clip.json").is_none());
     }

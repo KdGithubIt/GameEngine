@@ -3,8 +3,8 @@
 use crate::authoring_tools::AuthoringTool;
 use crate::native_2d_editor::Native2dEditorState;
 use crate::vfx_builder::VfxBuilderState;
+use eframe::{Frame, egui};
 use engine_authoring::ProjectRoot;
-use eframe::{egui, Frame};
 
 /// Owns the state and visibility of every project authoring window.
 ///
@@ -25,7 +25,6 @@ pub struct AuthoringWindows {
     native_2d: Native2dEditorState,
     vfx: VfxBuilderState,
 }
-
 
 impl AuthoringWindows {
     /// Makes the selected authoring window visible.
@@ -52,8 +51,7 @@ impl AuthoringWindows {
         project: &ProjectRoot,
         manifest: &engine::AssetManifest,
     ) {
-        self.ability
-            .show(context, frame, &mut self.ability_open);
+        self.ability.show(context, frame, &mut self.ability_open);
         self.runtime_event
             .show(context, frame, &mut self.runtime_event_open);
         self.ui_contract

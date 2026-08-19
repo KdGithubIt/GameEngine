@@ -49,10 +49,7 @@ pub(super) fn is_representation_descriptor(value: &str) -> bool {
         && !value.ends_with(";types=")
 }
 
-fn inspect_reader<R: Read + Seek>(
-    reader: &mut R,
-    file_len: u64,
-) -> io::Result<GgufRepresentation> {
+fn inspect_reader<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<GgufRepresentation> {
     let mut magic = [0_u8; 4];
     reader.read_exact(&mut magic)?;
     if magic != *GGUF_MAGIC {
@@ -187,7 +184,8 @@ fn read_string<R: Read>(reader: &mut R) -> io::Result<String> {
         .map_err(|_| invalid_data("GGUF string length does not fit this platform"))?;
     let mut bytes = vec![0_u8; len];
     reader.read_exact(&mut bytes)?;
-    String::from_utf8(bytes).map_err(|error| invalid_data(format!("GGUF string is not UTF-8: {error}")))
+    String::from_utf8(bytes)
+        .map_err(|error| invalid_data(format!("GGUF string is not UTF-8: {error}")))
 }
 
 fn skip_string<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<()> {
@@ -200,20 +198,12 @@ fn skip_string<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<()> 
     skip_bytes(reader, file_len, len)
 }
 
-fn skip_value<R: Read + Seek>(
-    reader: &mut R,
-    file_len: u64,
-    value_type: u32,
-) -> io::Result<()> {
+fn skip_value<R: Read + Seek>(reader: &mut R, file_len: u64, value_type: u32) -> io::Result<()> {
     match value_type {
         GGUF_TYPE_UINT8 | GGUF_TYPE_INT8 | GGUF_TYPE_BOOL => skip_bytes(reader, file_len, 1),
         GGUF_TYPE_UINT16 | GGUF_TYPE_INT16 => skip_bytes(reader, file_len, 2),
-        GGUF_TYPE_UINT32 | GGUF_TYPE_INT32 | GGUF_TYPE_FLOAT32 => {
-            skip_bytes(reader, file_len, 4)
-        }
-        GGUF_TYPE_UINT64 | GGUF_TYPE_INT64 | GGUF_TYPE_FLOAT64 => {
-            skip_bytes(reader, file_len, 8)
-        }
+        GGUF_TYPE_UINT32 | GGUF_TYPE_INT32 | GGUF_TYPE_FLOAT32 => skip_bytes(reader, file_len, 4),
+        GGUF_TYPE_UINT64 | GGUF_TYPE_INT64 | GGUF_TYPE_FLOAT64 => skip_bytes(reader, file_len, 8),
         GGUF_TYPE_STRING => skip_string(reader, file_len),
         GGUF_TYPE_ARRAY => {
             let element_type = read_u32(reader)?;
@@ -364,10 +354,7 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 
 #[cfg(feature = "visual-validation")]
 pub(super) fn write_visual_validation_gguf(path: &Path) -> io::Result<()> {
-    std::fs::write(
-        path,
-        build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]),
-    )
+    std::fs::write(path, build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]))
 }
 
 #[cfg(test)]
@@ -429,7 +416,8 @@ mod tests {
     fn mixed_tensor_types_produce_a_stable_distribution_without_single_quantization() {
         let bytes = build_test_gguf(3, None, Some(2), &[12, 14, 12, 0]);
         let mut reader = Cursor::new(bytes.as_slice());
-        let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
+        let representation =
+            inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
         assert_eq!(representation.canonical_quantization, None);
         assert_eq!(
             representation.descriptor,
@@ -442,7 +430,8 @@ mod tests {
     fn general_file_type_supplies_only_a_canonical_label_while_descriptor_stays_exact() {
         let bytes = build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]);
         let mut reader = Cursor::new(bytes.as_slice());
-        let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
+        let representation =
+            inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
         assert_eq!(
             representation.canonical_quantization.as_deref(),
             Some("Q4_K_M")

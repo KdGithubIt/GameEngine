@@ -2,12 +2,11 @@
 
 use eframe::egui;
 use engine::glam::Vec3;
-use engine::vfx::{VfxPlayer, VfxRestartPolicy, VFX_PREVIEW_STEP_SECONDS};
+use engine::vfx::{VFX_PREVIEW_STEP_SECONDS, VfxPlayer, VfxRestartPolicy};
 use engine_authoring::{
-    AssetId, StableId, VfxAuthoringService, VfxCommand, VfxCompilation, VfxCurve,
-    VfxCurveInterpolation,
-    ProjectRoot, VfxCurveKey, VfxCurveKeyId, VfxEffect, VfxEmitterId, VfxGradient, VfxGradientKey,
-    VfxGradientKeyId, VfxModule, VfxModuleId, VfxModuleOperation, VfxRandomChannel,
+    AssetId, ProjectRoot, StableId, VfxAuthoringService, VfxCommand, VfxCompilation, VfxCurve,
+    VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId, VfxEffect, VfxEmitterId, VfxGradient,
+    VfxGradientKey, VfxGradientKeyId, VfxModule, VfxModuleId, VfxModuleOperation, VfxRandomChannel,
     VfxScalarValue, VfxShape, VfxTemplate, VfxTextureSheet, VfxVectorValue,
 };
 use std::collections::BTreeMap;
@@ -82,7 +81,11 @@ impl VfxPreviewState {
             self.status = Some("Compiling preview...".to_owned());
             return;
         };
-        self.apply_compilation(effect, compilation, same_document || self.last_effect.is_none());
+        self.apply_compilation(
+            effect,
+            compilation,
+            same_document || self.last_effect.is_none(),
+        );
     }
 
     fn apply_compilation(
@@ -91,15 +94,16 @@ impl VfxPreviewState {
         compilation: &VfxCompilation,
         preserve_time: bool,
     ) {
-        let target_time = if preserve_time { self.current_time } else { 0.0 };
-        let was_playing = preserve_time
-            && self
-                .player
-                .as_ref()
-                .is_some_and(VfxPlayer::is_playing);
+        let target_time = if preserve_time {
+            self.current_time
+        } else {
+            0.0
+        };
+        let was_playing = preserve_time && self.player.as_ref().is_some_and(VfxPlayer::is_playing);
         let Some(compiled) = compilation.compiled_effect.clone() else {
             self.player = None;
-            self.status = Some("Preview unavailable until blocking VFX diagnostics are fixed.".into());
+            self.status =
+                Some("Preview unavailable until blocking VFX diagnostics are fixed.".into());
             self.last_effect = Some(effect.clone());
             return;
         };
@@ -112,9 +116,7 @@ impl VfxPreviewState {
             Some(self.preview_seed),
             BTreeMap::new(),
         );
-        player
-            .instance_mut()
-            .seek_preview(target_time, Vec3::ZERO);
+        player.instance_mut().seek_preview(target_time, Vec3::ZERO);
         self.current_time = player.instance().elapsed_seconds();
         self.player = Some(player);
         self.last_effect = Some(effect.clone());
@@ -145,11 +147,10 @@ impl VfxPreviewState {
         let mut seek_requested = false;
         let mut seed_changed = false;
         ui.horizontal_wrapped(|ui| {
-            let is_playing = self
-                .player
-                .as_ref()
-                .is_some_and(VfxPlayer::is_playing);
-            if ui.button(if is_playing { "Pause" } else { "Play" }).clicked()
+            let is_playing = self.player.as_ref().is_some_and(VfxPlayer::is_playing);
+            if ui
+                .button(if is_playing { "Pause" } else { "Play" })
+                .clicked()
                 && let Some(player) = self.player.as_mut()
             {
                 if is_playing {
@@ -206,20 +207,14 @@ impl VfxPreviewState {
             } else {
                 self.status = Some("Compiling preview...".to_owned());
             }
-        } else if seek_requested
-            && let Some(player) = self.player.as_mut()
-        {
+        } else if seek_requested && let Some(player) = self.player.as_mut() {
             player
                 .instance_mut()
                 .seek_preview(self.current_time, Vec3::ZERO);
             self.current_time = player.instance().elapsed_seconds();
         }
 
-        if self
-            .player
-            .as_ref()
-            .is_some_and(VfxPlayer::is_playing)
-        {
+        if self.player.as_ref().is_some_and(VfxPlayer::is_playing) {
             let dt = ui.ctx().input(|input| input.stable_dt).min(0.1);
             if let Some(player) = self.player.as_mut() {
                 player.step(dt, Vec3::ZERO);
@@ -249,47 +244,49 @@ impl VfxPreviewState {
             });
         }
         if let Some(emitter_id) = selected_emitter
-            && let Some(emitter) = effect.emitters.iter().find(|emitter| &emitter.id == emitter_id)
+            && let Some(emitter) = effect
+                .emitters
+                .iter()
+                .find(|emitter| &emitter.id == emitter_id)
         {
             egui::CollapsingHeader::new("Curve / Gradient Overview")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for module in &emitter.modules {
-                            match &module.operation {
-                                VfxModuleOperation::ColorOverLife { gradient } => {
-                                    ui.small("Color Over Life");
-                                    draw_gradient(ui, gradient);
-                                }
-                                VfxModuleOperation::SizeOverLife { curve } => {
-                                    ui.small("Size Over Life");
-                                    draw_curve(ui, curve);
-                                }
-                                VfxModuleOperation::RotationOverLife { curve } => {
-                                    ui.small("Rotation Over Life");
-                                    draw_curve(ui, curve);
-                                }
-                                VfxModuleOperation::Billboard {
-                                    texture_sheet: Some(sheet),
-                                    ..
-                                }
-                                | VfxModuleOperation::Mesh {
-                                    texture_sheet: Some(sheet),
-                                    ..
-                                } => {
-                                    ui.small("Texture Sheet Frame Over Life");
-                                    draw_curve(ui, &sheet.frame_over_life);
-                                }
-                                _ => {}
+                .default_open(true)
+                .show(ui, |ui| {
+                    for module in &emitter.modules {
+                        match &module.operation {
+                            VfxModuleOperation::ColorOverLife { gradient } => {
+                                ui.small("Color Over Life");
+                                draw_gradient(ui, gradient);
                             }
+                            VfxModuleOperation::SizeOverLife { curve } => {
+                                ui.small("Size Over Life");
+                                draw_curve(ui, curve);
+                            }
+                            VfxModuleOperation::RotationOverLife { curve } => {
+                                ui.small("Rotation Over Life");
+                                draw_curve(ui, curve);
+                            }
+                            VfxModuleOperation::Billboard {
+                                texture_sheet: Some(sheet),
+                                ..
+                            }
+                            | VfxModuleOperation::Mesh {
+                                texture_sheet: Some(sheet),
+                                ..
+                            } => {
+                                ui.small("Texture Sheet Frame Over Life");
+                                draw_curve(ui, &sheet.frame_over_life);
+                            }
+                            _ => {}
                         }
-                    });
+                    }
+                });
         }
         if let Some(status) = &self.status {
             ui.small(status);
         }
     }
 }
-
 
 #[derive(Default)]
 pub(super) struct VfxCompletionState {
@@ -335,7 +332,11 @@ impl super::VfxBuilderState {
         let Some(emitter_id) = self.selected_emitter.as_ref() else {
             return;
         };
-        let Some(emitter) = effect.emitters.iter().find(|emitter| &emitter.id == emitter_id) else {
+        let Some(emitter) = effect
+            .emitters
+            .iter()
+            .find(|emitter| &emitter.id == emitter_id)
+        else {
             return;
         };
         let selected_is_valid = self
@@ -498,8 +499,12 @@ fn edit_operation(ui: &mut egui::Ui, draft: &mut VfxModuleDraft) {
             ui.label("Linear RGBA");
             ui.color_edit_button_rgba_unmultiplied(color);
         }
-        VfxModuleOperation::Force { acceleration } => vector3_field(ui, "Acceleration", acceleration),
-        VfxModuleOperation::Drag { coefficient } => scalar_field(ui, "Coefficient", coefficient, 0.01),
+        VfxModuleOperation::Force { acceleration } => {
+            vector3_field(ui, "Acceleration", acceleration)
+        }
+        VfxModuleOperation::Drag { coefficient } => {
+            scalar_field(ui, "Coefficient", coefficient, 0.01)
+        }
         VfxModuleOperation::ColorOverLife { gradient } => edit_gradient(ui, gradient),
         VfxModuleOperation::SizeOverLife { curve }
         | VfxModuleOperation::RotationOverLife { curve } => edit_curve(ui, curve),
@@ -605,7 +610,9 @@ fn edit_vector_value(ui: &mut egui::Ui, value: &mut VfxVectorValue) {
         ui.label("Mode");
         if ui.selectable_label(!is_range, "Constant").clicked() && is_range {
             let current = match value {
-                VfxVectorValue::Range { min, max, .. } => std::array::from_fn(|i| (min[i] + max[i]) * 0.5),
+                VfxVectorValue::Range { min, max, .. } => {
+                    std::array::from_fn(|i| (min[i] + max[i]) * 0.5)
+                }
                 VfxVectorValue::Constant { value } => *value,
             };
             *value = VfxVectorValue::Constant { value: current };
@@ -647,7 +654,11 @@ fn edit_curve(ui: &mut egui::Ui, curve: &mut VfxCurve) {
         ui.horizontal(|ui| {
             ui.monospace(short_id(key.id.as_str()));
             ui.label("t");
-            ui.add(egui::DragValue::new(&mut key.time).speed(0.01).range(0.0..=1.0));
+            ui.add(
+                egui::DragValue::new(&mut key.time)
+                    .speed(0.01)
+                    .range(0.0..=1.0),
+            );
             ui.label("v");
             ui.add(egui::DragValue::new(&mut key.value).speed(0.01));
             egui::ComboBox::from_id_salt(("vfx_curve_interp", key.id.as_str()))
@@ -656,8 +667,16 @@ fn edit_curve(ui: &mut egui::Ui, curve: &mut VfxCurve) {
                     VfxCurveInterpolation::Linear => "Linear",
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut key.interpolation, VfxCurveInterpolation::Step, "Step");
-                    ui.selectable_value(&mut key.interpolation, VfxCurveInterpolation::Linear, "Linear");
+                    ui.selectable_value(
+                        &mut key.interpolation,
+                        VfxCurveInterpolation::Step,
+                        "Step",
+                    );
+                    ui.selectable_value(
+                        &mut key.interpolation,
+                        VfxCurveInterpolation::Linear,
+                        "Linear",
+                    );
                 });
             if key_count > 1 && ui.small_button("Delete").clicked() {
                 remove = Some(index);
@@ -681,7 +700,11 @@ fn edit_gradient(ui: &mut egui::Ui, gradient: &mut VfxGradient) {
         ui.horizontal(|ui| {
             ui.monospace(short_id(key.id.as_str()));
             ui.label("t");
-            ui.add(egui::DragValue::new(&mut key.time).speed(0.01).range(0.0..=1.0));
+            ui.add(
+                egui::DragValue::new(&mut key.time)
+                    .speed(0.01)
+                    .range(0.0..=1.0),
+            );
             ui.color_edit_button_rgba_unmultiplied(&mut key.color);
             if key_count > 1 && ui.small_button("Delete").clicked() {
                 remove = Some(index);
@@ -722,15 +745,21 @@ fn edit_texture_sheet(ui: &mut egui::Ui, texture_sheet: &mut Option<VfxTextureSh
 }
 
 fn draw_curve(ui: &mut egui::Ui, curve: &VfxCurve) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(420.0), 100.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().min(420.0), 100.0),
+        egui::Sense::hover(),
+    );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
     if curve.keys.is_empty() {
         return;
     }
-    let (min_value, max_value) = curve.keys.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), key| {
-        (min.min(key.value), max.max(key.value))
-    });
+    let (min_value, max_value) = curve
+        .keys
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), key| {
+            (min.min(key.value), max.max(key.value))
+        });
     let span = (max_value - min_value).abs().max(1.0e-4);
     let points = curve
         .keys
@@ -738,15 +767,24 @@ fn draw_curve(ui: &mut egui::Ui, curve: &VfxCurve) {
         .map(|key| {
             egui::pos2(
                 egui::lerp(rect.left()..=rect.right(), key.time.clamp(0.0, 1.0)),
-                egui::lerp(rect.bottom()..=rect.top(), ((key.value - min_value) / span).clamp(0.0, 1.0)),
+                egui::lerp(
+                    rect.bottom()..=rect.top(),
+                    ((key.value - min_value) / span).clamp(0.0, 1.0),
+                ),
             )
         })
         .collect::<Vec<_>>();
-    painter.line(points, egui::Stroke::new(2.0_f32, ui.visuals().text_color()));
+    painter.line(
+        points,
+        egui::Stroke::new(2.0_f32, ui.visuals().text_color()),
+    );
     for point in curve.keys.iter().map(|key| {
         egui::pos2(
             egui::lerp(rect.left()..=rect.right(), key.time.clamp(0.0, 1.0)),
-            egui::lerp(rect.bottom()..=rect.top(), ((key.value - min_value) / span).clamp(0.0, 1.0)),
+            egui::lerp(
+                rect.bottom()..=rect.top(),
+                ((key.value - min_value) / span).clamp(0.0, 1.0),
+            ),
         )
     }) {
         painter.circle_filled(point, 3.5, ui.visuals().strong_text_color());
@@ -754,7 +792,10 @@ fn draw_curve(ui: &mut egui::Ui, curve: &VfxCurve) {
 }
 
 fn draw_gradient(ui: &mut egui::Ui, gradient: &VfxGradient) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(420.0), 30.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().min(420.0), 30.0),
+        egui::Sense::hover(),
+    );
     let painter = ui.painter_at(rect);
     let segments = 48;
     for index in 0..segments {
@@ -762,7 +803,8 @@ fn draw_gradient(ui: &mut egui::Ui, gradient: &VfxGradient) {
         let right_t = (index + 1) as f32 / segments as f32;
         let color = rgba(gradient.evaluate((left_t + right_t) * 0.5));
         let cell = egui::Rect::from_x_y_ranges(
-            egui::lerp(rect.left()..=rect.right(), left_t)..=egui::lerp(rect.left()..=rect.right(), right_t),
+            egui::lerp(rect.left()..=rect.right(), left_t)
+                ..=egui::lerp(rect.left()..=rect.right(), right_t),
             rect.top()..=rect.bottom(),
         );
         painter.rect_filled(cell, 0.0, color);
@@ -802,7 +844,11 @@ fn insertion_point(times: impl Iterator<Item = f32>) -> (usize, f32) {
         return (0, 0.0);
     }
     if times.len() == 1 {
-        let time = if times[0] <= 0.5 { (times[0] + 1.0) * 0.5 } else { times[0] * 0.5 };
+        let time = if times[0] <= 0.5 {
+            (times[0] + 1.0) * 0.5
+        } else {
+            times[0] * 0.5
+        };
         return (usize::from(time > times[0]), time);
     }
     let mut best = (1, (times[0] + times[1]) * 0.5, times[1] - times[0]);
@@ -851,11 +897,17 @@ fn asset_strings(operation: &VfxModuleOperation) -> (String, String) {
     match operation {
         VfxModuleOperation::Billboard { material, .. } => (
             String::new(),
-            material.as_ref().map(ToString::to_string).unwrap_or_default(),
+            material
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
         ),
         VfxModuleOperation::Mesh { mesh, material, .. } => (
             mesh.to_string(),
-            material.as_ref().map(ToString::to_string).unwrap_or_default(),
+            material
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
         ),
         _ => (String::new(), String::new()),
     }
@@ -889,7 +941,9 @@ fn vector3_field(ui: &mut egui::Ui, label: &str, value: &mut [f32; 3]) {
 }
 
 fn short_id(id: &str) -> &str {
-    id.rsplit('_').next().map_or(id, |suffix| &suffix[suffix.len().saturating_sub(6)..])
+    id.rsplit('_')
+        .next()
+        .map_or(id, |suffix| &suffix[suffix.len().saturating_sub(6)..])
 }
 
 fn draw_preview_viewport(
@@ -908,11 +962,17 @@ fn draw_preview_viewport(
     for index in -5..=5 {
         let offset = index as f32 * scale * 0.5;
         painter.line_segment(
-            [egui::pos2(rect.left(), center.y + offset), egui::pos2(rect.right(), center.y + offset)],
+            [
+                egui::pos2(rect.left(), center.y + offset),
+                egui::pos2(rect.right(), center.y + offset),
+            ],
             egui::Stroke::new(1.0_f32, egui::Color32::from_gray(32)),
         );
         painter.line_segment(
-            [egui::pos2(center.x + offset, rect.top()), egui::pos2(center.x + offset, rect.bottom())],
+            [
+                egui::pos2(center.x + offset, rect.top()),
+                egui::pos2(center.x + offset, rect.bottom()),
+            ],
             egui::Stroke::new(1.0_f32, egui::Color32::from_gray(32)),
         );
     }
@@ -921,17 +981,27 @@ fn draw_preview_viewport(
         for particle in player.render_particles() {
             let point = project(particle.position, center, scale);
             if rect.contains(point) {
-                painter.circle_filled(point, (particle.size.abs() * 3.0).clamp(1.5, 10.0), rgba(particle.color));
+                painter.circle_filled(
+                    point,
+                    (particle.size.abs() * 3.0).clamp(1.5, 10.0),
+                    rgba(particle.color),
+                );
             }
         }
     }
 
     if let Some(emitter_id) = selected_emitter {
-        if let Some(emitter) = effect.emitters.iter().find(|emitter| &emitter.id == emitter_id)
-            && let Some(shape) = emitter.modules.iter().find_map(|module| match &module.operation {
-                VfxModuleOperation::Shape { shape } if module.enabled => Some(shape),
-                _ => None,
-            })
+        if let Some(emitter) = effect
+            .emitters
+            .iter()
+            .find(|emitter| &emitter.id == emitter_id)
+            && let Some(shape) = emitter
+                .modules
+                .iter()
+                .find_map(|module| match &module.operation {
+                    VfxModuleOperation::Shape { shape } if module.enabled => Some(shape),
+                    _ => None,
+                })
         {
             draw_shape(&painter, rect, center, scale, shape);
         }
@@ -943,7 +1013,14 @@ fn draw_preview_viewport(
                 .find(|runtime| runtime.source() == emitter_id)
         }) && let Some((min, max)) = runtime.live_bounds()
         {
-            draw_bounds(&painter, center, scale, min, max, egui::Color32::LIGHT_GREEN);
+            draw_bounds(
+                &painter,
+                center,
+                scale,
+                min,
+                max,
+                egui::Color32::LIGHT_GREEN,
+            );
         }
     }
 
@@ -952,7 +1029,9 @@ fn draw_preview_viewport(
         for runtime in player.instance().emitters() {
             if let Some((min, max)) = runtime.live_bounds() {
                 bounds = Some(match bounds {
-                    Some((current_min, current_max)) => (current_min.min(min), current_max.max(max)),
+                    Some((current_min, current_max)) => {
+                        (current_min.min(min), current_max.max(max))
+                    }
                     None => (min, max),
                 });
             }
@@ -981,8 +1060,14 @@ fn draw_shape(
     let stroke = egui::Stroke::new(1.5_f32, egui::Color32::YELLOW);
     match shape {
         VfxShape::Point => {
-            painter.line_segment([center - egui::vec2(8.0, 0.0), center + egui::vec2(8.0, 0.0)], stroke);
-            painter.line_segment([center - egui::vec2(0.0, 8.0), center + egui::vec2(0.0, 8.0)], stroke);
+            painter.line_segment(
+                [center - egui::vec2(8.0, 0.0), center + egui::vec2(8.0, 0.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [center - egui::vec2(0.0, 8.0), center + egui::vec2(0.0, 8.0)],
+                stroke,
+            );
         }
         VfxShape::Box { half_extents } => {
             let corners = [
@@ -992,9 +1077,21 @@ fn draw_shape(
                 Vec3::new(-half_extents[0], half_extents[1], 0.0),
             ];
             for pair in corners.windows(2) {
-                painter.line_segment([project(pair[0], center, scale), project(pair[1], center, scale)], stroke);
+                painter.line_segment(
+                    [
+                        project(pair[0], center, scale),
+                        project(pair[1], center, scale),
+                    ],
+                    stroke,
+                );
             }
-            painter.line_segment([project(corners[3], center, scale), project(corners[0], center, scale)], stroke);
+            painter.line_segment(
+                [
+                    project(corners[3], center, scale),
+                    project(corners[0], center, scale),
+                ],
+                stroke,
+            );
         }
         VfxShape::Sphere { radius } => {
             painter.circle_stroke(center, radius * scale, stroke);
@@ -1013,7 +1110,10 @@ fn draw_shape(
             painter.line_segment([tip, base_center + egui::vec2(radius_pixels, 0.0)], stroke);
             painter.line_segment([tip, base_center - egui::vec2(radius_pixels, 0.0)], stroke);
             painter.line_segment(
-                [base_center - egui::vec2(radius_pixels, 0.0), base_center + egui::vec2(radius_pixels, 0.0)],
+                [
+                    base_center - egui::vec2(radius_pixels, 0.0),
+                    base_center + egui::vec2(radius_pixels, 0.0),
+                ],
                 stroke,
             );
         }
@@ -1038,7 +1138,10 @@ fn draw_bounds(
     let stroke = egui::Stroke::new(1.0_f32, color);
     painter.line_segment([egui::pos2(left, top), egui::pos2(right, top)], stroke);
     painter.line_segment([egui::pos2(right, top), egui::pos2(right, bottom)], stroke);
-    painter.line_segment([egui::pos2(right, bottom), egui::pos2(left, bottom)], stroke);
+    painter.line_segment(
+        [egui::pos2(right, bottom), egui::pos2(left, bottom)],
+        stroke,
+    );
     painter.line_segment([egui::pos2(left, bottom), egui::pos2(left, top)], stroke);
 }
 
@@ -1076,17 +1179,28 @@ mod tests {
     fn preview_recompile_uses_production_seek_semantics() {
         let mut effect = VfxEffect::new("preview", 64);
         let mut emitter = VfxEmitter::new("emitter", 64);
-        emitter.modules.push(VfxModule::new(VfxModuleOperation::SpawnRate {
-            particles_per_second: 10.0,
-        }));
-        emitter.modules.push(VfxModule::new(VfxModuleOperation::Lifetime {
-            value: VfxScalarValue::Constant { value: 2.0 },
-        }));
-        emitter.modules.push(VfxModule::new(VfxModuleOperation::Billboard {
-            material: None,
-            texture_sheet: None,
-        }));
-        assert!(emitter.modules.iter().all(|module| module.phase == module.operation.required_phase()));
+        emitter
+            .modules
+            .push(VfxModule::new(VfxModuleOperation::SpawnRate {
+                particles_per_second: 10.0,
+            }));
+        emitter
+            .modules
+            .push(VfxModule::new(VfxModuleOperation::Lifetime {
+                value: VfxScalarValue::Constant { value: 2.0 },
+            }));
+        emitter
+            .modules
+            .push(VfxModule::new(VfxModuleOperation::Billboard {
+                material: None,
+                texture_sheet: None,
+            }));
+        assert!(
+            emitter
+                .modules
+                .iter()
+                .all(|module| module.phase == module.operation.required_phase())
+        );
         effect.emitters.push(emitter);
 
         let compilation = VfxAuthoringService::new().compile(&effect);
@@ -1096,9 +1210,7 @@ mod tests {
         };
         preview.apply_compilation(&effect, &compilation, true);
 
-        let compiled = compilation
-            .compiled_effect
-            .expect("valid effect compiles");
+        let compiled = compilation.compiled_effect.expect("valid effect compiles");
         let mut expected = VfxPlayer::new(
             compiled,
             false,
@@ -1112,7 +1224,10 @@ mod tests {
 
         let actual = preview.player.expect("preview player exists");
         assert_eq!(actual.instance().stats(), expected.instance().stats());
-        assert_eq!(actual.render_particles().len(), expected.render_particles().len());
+        assert_eq!(
+            actual.render_particles().len(),
+            expected.render_particles().len()
+        );
         assert_eq!(VfxPhase::Render, effect.emitters[0].modules[2].phase);
     }
 }

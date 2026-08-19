@@ -10,8 +10,8 @@
 #![warn(rustdoc::broken_intra_doc_links)]
 
 use engine_authoring::{
-    initialize_game_project, replace_file_contents, AuthoringScene, ProjectConfig, ProjectError,
-    ProjectId, ProjectRoot, ProjectSettings, PROJECT_SCHEMA_VERSION,
+    AuthoringScene, PROJECT_SCHEMA_VERSION, ProjectConfig, ProjectError, ProjectId, ProjectRoot,
+    ProjectSettings, initialize_game_project, replace_file_contents,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -325,18 +325,9 @@ impl EditorLease {
 
 impl Drop for EditorLease {
     fn drop(&mut self) {
-        remove_owned_metadata(
-            &self.state_dir.join(EDITOR_OWNER_FILE),
-            std::process::id(),
-        );
-        remove_owned_ready(
-            &self.state_dir.join(EDITOR_READY_FILE),
-            std::process::id(),
-        );
-        remove_owned_mcp_endpoint(
-            &self.state_dir.join(EDITOR_MCP_FILE),
-            std::process::id(),
-        );
+        remove_owned_metadata(&self.state_dir.join(EDITOR_OWNER_FILE), std::process::id());
+        remove_owned_ready(&self.state_dir.join(EDITOR_READY_FILE), std::process::id());
+        remove_owned_mcp_endpoint(&self.state_dir.join(EDITOR_MCP_FILE), std::process::id());
     }
 }
 
@@ -427,13 +418,20 @@ pub fn create_standard_project(
 ) -> Result<ProjectRoot, LifecycleError> {
     validate_project_name(name)?;
     if final_path.exists() {
-        return Err(LifecycleError::ProjectAlreadyExists(final_path.to_path_buf()));
+        return Err(LifecycleError::ProjectAlreadyExists(
+            final_path.to_path_buf(),
+        ));
     }
-    let parent = final_path.parent().ok_or_else(|| LifecycleError::InvalidProjectName(name.into()))?;
+    let parent = final_path
+        .parent()
+        .ok_or_else(|| LifecycleError::InvalidProjectName(name.into()))?;
     if !parent.is_dir() {
         return Err(LifecycleError::Io {
             path: parent.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::NotFound, "project parent directory does not exist"),
+            source: io::Error::new(
+                io::ErrorKind::NotFound,
+                "project parent directory does not exist",
+            ),
         });
     }
 
@@ -528,22 +526,20 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
     let lock = open_lock_file(&lock_path)?;
     match lock.try_lock() {
         Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            match described_writer_role(&state_dir) {
-                Some(ProjectWriterRole::Editor) => {
-                    let _ = write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE));
-                    return Err(LifecycleError::EditorAlreadyOpen(
-                        project.path().to_path_buf(),
-                    ));
-                }
-                owner => {
-                    return Err(LifecycleError::ProjectWriterAlreadyOwned {
-                        canonical_project: project.path().to_path_buf(),
-                        owner,
-                    });
-                }
+        Err(TryLockError::WouldBlock) => match described_writer_role(&state_dir) {
+            Some(ProjectWriterRole::Editor) => {
+                let _ = write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE));
+                return Err(LifecycleError::EditorAlreadyOpen(
+                    project.path().to_path_buf(),
+                ));
             }
-        }
+            owner => {
+                return Err(LifecycleError::ProjectWriterAlreadyOwned {
+                    canonical_project: project.path().to_path_buf(),
+                    owner,
+                });
+            }
+        },
         Err(TryLockError::Error(source)) => {
             return Err(LifecycleError::Io {
                 path: lock_path,
@@ -647,9 +643,9 @@ pub fn project_writer_owner_metadata(
     if !editor_lock_is_held(&state_dir)? {
         return Ok(None);
     }
-    if let Ok(Some(metadata)) =
-        read_json_optional::<ProjectWriterOwnerMetadata>(&state_dir.join(HEADLESS_WRITER_OWNER_FILE))
-        && metadata.project_id == *project.project_id()
+    if let Ok(Some(metadata)) = read_json_optional::<ProjectWriterOwnerMetadata>(
+        &state_dir.join(HEADLESS_WRITER_OWNER_FILE),
+    ) && metadata.project_id == *project.project_id()
         && metadata.canonical_project.as_path() == project.path()
         && metadata.role == ProjectWriterRole::HeadlessMcp
     {
@@ -677,9 +673,7 @@ pub fn project_writer_owner_metadata(
 /// # Errors
 ///
 /// Returns an error if project inspection or lock probing fails.
-pub fn editor_owner_metadata(
-    path: &Path,
-) -> Result<Option<EditorOwnerMetadata>, LifecycleError> {
+pub fn editor_owner_metadata(path: &Path) -> Result<Option<EditorOwnerMetadata>, LifecycleError> {
     let project = inspect_project(path)?;
     let state_dir = project_state_dir(&project);
     if !editor_lock_is_held(&state_dir)? {
@@ -1094,9 +1088,9 @@ fn sibling_executable(name: &str) -> Result<PathBuf, LifecycleError> {
         path: PathBuf::from("<current executable>"),
         source,
     })?;
-    let parent = current.parent().ok_or_else(|| {
-        LifecycleError::ExecutableNotFound(PathBuf::from(name))
-    })?;
+    let parent = current
+        .parent()
+        .ok_or_else(|| LifecycleError::ExecutableNotFound(PathBuf::from(name)))?;
     let path = parent.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if !path.is_file() {
         return Err(LifecycleError::ExecutableNotFound(path));
@@ -1169,8 +1163,7 @@ mod tests {
     fn editor_and_headless_writer_are_mutually_exclusive_and_handoff_cleanly() {
         let parent = tempfile::tempdir().expect("temp directory must be created");
         let final_path = parent.path().join("WriterOwnershipGame");
-        create_standard_project(&final_path, "WriterOwnershipGame")
-            .expect("scaffold must succeed");
+        create_standard_project(&final_path, "WriterOwnershipGame").expect("scaffold must succeed");
 
         let editor = acquire_editor_project(&final_path).expect("Editor writer must acquire");
         let denied = acquire_headless_project(&final_path);
@@ -1187,8 +1180,8 @@ mod tests {
         assert_eq!(owner.role, ProjectWriterRole::Editor);
 
         drop(editor);
-        let headless =
-            acquire_headless_project(&final_path).expect("headless writer must acquire after handoff");
+        let headless = acquire_headless_project(&final_path)
+            .expect("headless writer must acquire after handoff");
         let owner = project_writer_owner_metadata(&final_path)
             .expect("writer metadata lookup")
             .expect("headless writer metadata");
@@ -1241,8 +1234,7 @@ mod tests {
     fn opening_lock_file_preserves_existing_contents() {
         let parent = tempfile::tempdir().expect("temp directory must be created");
         let lock_path = parent.path().join("editor.lock");
-        fs::write(&lock_path, "existing lifecycle state")
-            .expect("lock fixture must be written");
+        fs::write(&lock_path, "existing lifecycle state").expect("lock fixture must be written");
 
         let lock = open_lock_file(&lock_path).expect("lock file must open");
         drop(lock);
@@ -1297,7 +1289,10 @@ mod tests {
 
         assert_eq!(published, discovered);
         assert_eq!(&discovered.project_id, lease.project_root().project_id());
-        assert_eq!(discovered.canonical_project.as_path(), lease.project_root().path());
+        assert_eq!(
+            discovered.canonical_project.as_path(),
+            lease.project_root().path()
+        );
         assert!(
             !project_state_dir(lease.project_root()).starts_with(lease.project_root().path()),
             "MCP discovery metadata must remain outside canonical project data"
@@ -1317,7 +1312,8 @@ mod tests {
         let parent = tempfile::tempdir().expect("temp directory must be created");
         let original = parent.path().join("Original");
         let moved = parent.path().join("Moved");
-        let project = create_standard_project(&original, "Original").expect("scaffold must succeed");
+        let project =
+            create_standard_project(&original, "Original").expect("scaffold must succeed");
         let id = project.project_id().clone();
         drop(project);
         fs::rename(&original, &moved).expect("project move must succeed");

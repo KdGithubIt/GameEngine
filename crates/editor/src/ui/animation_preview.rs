@@ -290,9 +290,11 @@ impl AnimationPreviewWindow {
                 }
             }
             if let Some(fade) = fields.get("fade_duration").and_then(numeric_value_as_f32)
-                && fade.is_finite() && fade >= 0.0 {
-                    self.fade_duration = fade;
-                }
+                && fade.is_finite()
+                && fade >= 0.0
+            {
+                self.fade_duration = fade;
+            }
         }
     }
 
@@ -1147,14 +1149,16 @@ mod tests {
             .expect("preview scene fixture must commit");
 
         let mut cache = None;
-        assert!(animation_clip_choices_cached(
-            &mut cache,
-            &scene,
-            &entity,
-            &engine::AssetManifest::default(),
-            None
-        )
-        .is_empty());
+        assert!(
+            animation_clip_choices_cached(
+                &mut cache,
+                &scene,
+                &entity,
+                &engine::AssetManifest::default(),
+                None
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1206,7 +1210,8 @@ mod tests {
         let set_path = root.join("hero.animset.json");
         std::fs::write(
             &set_path,
-            set.to_canonical_json().expect("animation set must serialize"),
+            set.to_canonical_json()
+                .expect("animation set must serialize"),
         )
         .expect("animation set fixture must be written");
 
@@ -1259,7 +1264,8 @@ mod tests {
         );
         std::fs::write(
             &set_path,
-            set.to_canonical_json().expect("updated animation set must serialize"),
+            set.to_canonical_json()
+                .expect("updated animation set must serialize"),
         )
         .expect("updated animation set fixture must be written");
         let updated =

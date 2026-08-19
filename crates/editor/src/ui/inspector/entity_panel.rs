@@ -118,9 +118,7 @@ impl EditorApp {
             (None, None) => false,
             (Some(_), None) | (None, Some(_)) => true,
         };
-        if self.inspector_cache.builtins.is_none()
-            || game_module_changed
-        {
+        if self.inspector_cache.builtins.is_none() || game_module_changed {
             let builtins = Arc::new(engine::builtin_registry());
             let mut component_catalog = builtins
                 .definitions()
@@ -360,15 +358,14 @@ impl EditorApp {
             if placement_mode {
                 self.prefab_placement_source = Some(info.resolved.clone());
             }
-            if open_prefab
-                && let Some(project) = &self.project_root {
-                    let relative = info
-                        .resolved
-                        .strip_prefix(project.assets_root())
-                        .map(Path::to_path_buf)
-                        .unwrap_or_else(|_| info.resolved.clone());
-                    self.reveal_asset_in_browser(&relative);
-                }
+            if open_prefab && let Some(project) = &self.project_root {
+                let relative = info
+                    .resolved
+                    .strip_prefix(project.assets_root())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|_| info.resolved.clone());
+                self.reveal_asset_in_browser(&relative);
+            }
             if apply {
                 let result = self
                     .session
@@ -410,13 +407,13 @@ impl EditorApp {
             if unpack
                 && let Err(error) =
                     crate::prefab_workflow::unpack_prefab_instance(&mut self.session, &selected)
-                {
-                    self.session
-                        .push_diagnostic(engine_authoring::Diagnostic::error(
-                            "editor.prefab_unpack_failed",
-                            error.to_string(),
-                        ));
-                }
+            {
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::error(
+                        "editor.prefab_unpack_failed",
+                        error.to_string(),
+                    ));
+            }
         }
 
         ui.separator();
@@ -495,9 +492,10 @@ impl EditorApp {
                 .then(|| self.session.model_render_parts(&selected));
             let mut edited_value = value.clone();
             if let Some(pending) = &self.pending_component_drag
-                && pending.matches_component(&selected, component_type) {
-                    upsert_property_value(&mut edited_value, &pending.path, pending.value.clone());
-                }
+                && pending.matches_component(&selected, component_type)
+            {
+                upsert_property_value(&mut edited_value, &pending.path, pending.value.clone());
+            }
             let mut edit = None;
             let mut audio_action = None;
             let game_display_name = self
@@ -761,7 +759,8 @@ impl EditorApp {
                 }
             }
             if self.add_component_picker_open {
-                let picker = ui.scope(|ui| self.show_add_component_choices(ui, &search, &available));
+                let picker =
+                    ui.scope(|ui| self.show_add_component_choices(ui, &search, &available));
                 if toggle.clicked() {
                     // The button sits at the end of a long Inspector column, so
                     // the list it just revealed usually starts below the visible

@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::bloom::BloomPass;
-use crate::camera::{select_active_game_camera, Camera3D};
+use crate::camera::{Camera3D, select_active_game_camera};
 use crate::native_2d::Camera2d;
 use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
 use crate::transform::Transform;
@@ -27,10 +27,16 @@ impl fmt::Display for RenderStateError {
         match &self.0 {
             RenderStateErrorKind::Backend(error) => error.fmt(formatter),
             RenderStateErrorKind::Bloom(error) => {
-                write!(formatter, "bloom render pipeline validation failed: {error}")
+                write!(
+                    formatter,
+                    "bloom render pipeline validation failed: {error}"
+                )
             }
             RenderStateErrorKind::Temporal(error) => {
-                write!(formatter, "temporal render pipeline validation failed: {error}")
+                write!(
+                    formatter,
+                    "temporal render pipeline validation failed: {error}"
+                )
             }
         }
     }
@@ -107,8 +113,7 @@ impl WorldRenderer {
         self.inner
             .render_to_view(world, device, queue, temporal_view, depth_view)
             .map_err(RenderFrameError)?;
-        self.temporal
-            .copy_current_to(device, queue, color_view);
+        self.temporal.copy_current_to(device, queue, color_view);
         self.temporal.commit();
         Ok(())
     }
@@ -158,8 +163,7 @@ impl WorldRenderer {
                 depth_view,
             )
             .map_err(RenderFrameError)?;
-        self.temporal
-            .copy_current_to(device, queue, color_view);
+        self.temporal.copy_current_to(device, queue, color_view);
         self.temporal.commit();
         Ok(())
     }
@@ -181,7 +185,14 @@ impl WorldRenderer {
             return self
                 .inner
                 .render_to_view_with_camera_2d(
-                    world, camera, camera_transform, viewport, device, queue, color_view, depth_view,
+                    world,
+                    camera,
+                    camera_transform,
+                    viewport,
+                    device,
+                    queue,
+                    color_view,
+                    depth_view,
                 )
                 .map_err(RenderFrameError);
         }
@@ -191,10 +202,19 @@ impl WorldRenderer {
             .map(|view_projection| {
                 TemporalCameraSample::new(TemporalCameraSource::Explicit, view_projection)
             });
-        let temporal_view = self.temporal.prepare(device, queue, color_view, camera_sample);
+        let temporal_view = self
+            .temporal
+            .prepare(device, queue, color_view, camera_sample);
         self.inner
             .render_to_view_with_camera_2d(
-                world, camera, camera_transform, viewport, device, queue, temporal_view, depth_view,
+                world,
+                camera,
+                camera_transform,
+                viewport,
+                device,
+                queue,
+                temporal_view,
+                depth_view,
             )
             .map_err(RenderFrameError)?;
         self.temporal.copy_current_to(device, queue, color_view);
@@ -211,7 +231,10 @@ impl WorldRenderer {
 
     pub(crate) fn set_upload_budget(&mut self, max_bytes: u64, max_uploads: u32) {
         self.inner
-            .set_upload_budget(crate::gpu_streaming::GpuUploadBudget::new(max_bytes, max_uploads));
+            .set_upload_budget(crate::gpu_streaming::GpuUploadBudget::new(
+                max_bytes,
+                max_uploads,
+            ));
     }
 
     pub(crate) const fn upload_report(&self) -> crate::gpu_streaming::GpuUploadReport {
@@ -232,9 +255,7 @@ impl WorldRenderer {
         self.temporal.reset();
     }
 
-    fn active_temporal_camera(
-        world: &mut engine_ecs::World,
-    ) -> Option<TemporalCameraSample> {
+    fn active_temporal_camera(world: &mut engine_ecs::World) -> Option<TemporalCameraSample> {
         let query = engine_ecs::Query::<(&Camera3D, &Transform)>::new(world);
         select_active_game_camera(query.iter()).map(|(entity, (camera, transform))| {
             TemporalCameraSample::new(
@@ -308,8 +329,7 @@ impl ToneMapPass {
                 .execute(device, queue, swapchain_view, &tone_map_settings);
         } else {
             if self.inner_reads_bloom {
-                self.inner
-                    .update_bind_group(device, &self.source_hdr_view);
+                self.inner.update_bind_group(device, &self.source_hdr_view);
                 self.inner_reads_bloom = false;
             }
             self.inner.execute(device, queue, swapchain_view, settings);

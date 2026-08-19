@@ -334,14 +334,8 @@ impl Texture {
         validate_texture_dimensions(width, height, device.limits().max_texture_dimension_2d)?;
         validate_rgba8_length(width, height, rgba8.len())?;
         let mip_level_count = texture_mip_level_count(width, height);
-        let mip_data = (mip_level_count > 1).then(|| {
-            generate_rgba8_mip_chain(
-                width,
-                height,
-                rgba8,
-                format.is_srgb(),
-            )
-        });
+        let mip_data = (mip_level_count > 1)
+            .then(|| generate_rgba8_mip_chain(width, height, rgba8, format.is_srgb()));
         let upload_data = mip_data.as_deref().unwrap_or(rgba8);
         let texture = device.create_texture_with_data(
             queue,
@@ -420,12 +414,7 @@ fn texture_mip_level_count(width: u32, height: u32) -> u32 {
     }
 }
 
-fn generate_rgba8_mip_chain(
-    width: u32,
-    height: u32,
-    rgba8: &[u8],
-    srgb: bool,
-) -> Vec<u8> {
+fn generate_rgba8_mip_chain(width: u32, height: u32, rgba8: &[u8], srgb: bool) -> Vec<u8> {
     let mut chain = rgba8.to_vec();
     let mut source_offset = 0;
     let mut source_width = width;
@@ -448,12 +437,7 @@ fn generate_rgba8_mip_chain(
     chain
 }
 
-fn downsample_rgba8(
-    source: &[u8],
-    source_width: u32,
-    source_height: u32,
-    srgb: bool,
-) -> Vec<u8> {
+fn downsample_rgba8(source: &[u8], source_width: u32, source_height: u32, srgb: bool) -> Vec<u8> {
     let target_width = (source_width / 2).max(1);
     let target_height = (source_height / 2).max(1);
     let mut target = vec![0; target_width as usize * target_height as usize * 4];
@@ -500,8 +484,7 @@ fn downsample_rgba8(
                 }
             }
 
-            let target_index =
-                (target_y as usize * target_width as usize + target_x as usize) * 4;
+            let target_index = (target_y as usize * target_width as usize + target_x as usize) * 4;
             for (channel, accumulated) in accumulated.into_iter().enumerate() {
                 let value = accumulated / total_weight;
                 target[target_index + channel] = if srgb && channel < 3 {
@@ -849,26 +832,53 @@ impl Material {
                 engine_authoring::MaterialShadingModel::Unlit => ShadingModel::Unlit,
             },
             toon: ToonMaterial {
-                shadow_color: [asset.toon.shadow_color.r, asset.toon.shadow_color.g, asset.toon.shadow_color.b],
-                ambient_color: [asset.toon.ambient_color.r, asset.toon.ambient_color.g, asset.toon.ambient_color.b],
-                specular_color: [asset.toon.specular_color.r, asset.toon.specular_color.g, asset.toon.specular_color.b],
+                shadow_color: [
+                    asset.toon.shadow_color.r,
+                    asset.toon.shadow_color.g,
+                    asset.toon.shadow_color.b,
+                ],
+                ambient_color: [
+                    asset.toon.ambient_color.r,
+                    asset.toon.ambient_color.g,
+                    asset.toon.ambient_color.b,
+                ],
+                specular_color: [
+                    asset.toon.specular_color.r,
+                    asset.toon.specular_color.g,
+                    asset.toon.specular_color.b,
+                ],
                 specular_power: asset.toon.specular_power,
                 sphere_blend: match asset.toon.sphere_blend {
-                    engine_authoring::MaterialSphereBlendMode::Multiply => SphereBlendMode::Multiply,
+                    engine_authoring::MaterialSphereBlendMode::Multiply => {
+                        SphereBlendMode::Multiply
+                    }
                     engine_authoring::MaterialSphereBlendMode::Add => SphereBlendMode::Add,
                 },
                 sphere_coordinates: match asset.toon.sphere_coordinates {
-                    engine_authoring::MaterialSphereCoordinateSource::ViewNormal => SphereCoordinateSource::ViewNormal,
-                    engine_authoring::MaterialSphereCoordinateSource::AdditionalUv0 => SphereCoordinateSource::AdditionalUv0,
+                    engine_authoring::MaterialSphereCoordinateSource::ViewNormal => {
+                        SphereCoordinateSource::ViewNormal
+                    }
+                    engine_authoring::MaterialSphereCoordinateSource::AdditionalUv0 => {
+                        SphereCoordinateSource::AdditionalUv0
+                    }
                 },
-                rim_color: [asset.toon.rim_color.r, asset.toon.rim_color.g, asset.toon.rim_color.b],
+                rim_color: [
+                    asset.toon.rim_color.r,
+                    asset.toon.rim_color.g,
+                    asset.toon.rim_color.b,
+                ],
                 rim_power: asset.toon.rim_power,
                 rim_intensity: asset.toon.rim_intensity,
                 ..ToonMaterial::default()
             },
             outline: OutlineMaterial {
                 enabled: asset.outline.enabled,
-                color: [asset.outline.color.r, asset.outline.color.g, asset.outline.color.b, asset.outline.color.a],
+                color: [
+                    asset.outline.color.r,
+                    asset.outline.color.g,
+                    asset.outline.color.b,
+                    asset.outline.color.a,
+                ],
                 width: asset.outline.width,
                 internal_boundary_strength: asset.outline.internal_boundary_strength,
             },

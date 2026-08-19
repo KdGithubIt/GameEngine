@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::canvas::{
-    show_graph_debug_canvas, GraphDebugBadge, GraphDebugNodePresentation, GraphDebugOverlay,
+    GraphDebugBadge, GraphDebugNodePresentation, GraphDebugOverlay, show_graph_debug_canvas,
 };
 use crate::session::AnimationNodeInsertKind;
 use engine_authoring::{Diagnostic, DiagnosticTarget, Vec2 as GraphVec2};
@@ -25,9 +25,7 @@ impl EditorApp {
         };
 
         match scenario.as_str() {
-            "adr0136-preview-pending"
-            | "adr0136-preview-ready"
-            | "adr0136-preview-failed" => {
+            "adr0136-preview-pending" | "adr0136-preview-ready" | "adr0136-preview-failed" => {
                 self.animation_preview.prepare_adr_visual_validation();
             }
             "adr0137-diagnostics" => {
@@ -144,9 +142,7 @@ impl EditorApp {
         };
 
         match scenario.as_str() {
-            "adr0136-preview-pending"
-            | "adr0136-preview-ready"
-            | "adr0136-preview-failed" => {
+            "adr0136-preview-pending" | "adr0136-preview-ready" | "adr0136-preview-failed" => {
                 self.show_preview_residency_visual_fixture(context, &scenario);
             }
             "adr0137-diagnostics" => {
@@ -162,11 +158,7 @@ impl EditorApp {
         }
     }
 
-    fn show_preview_residency_visual_fixture(
-        &mut self,
-        context: &egui::Context,
-        scenario: &str,
-    ) {
+    fn show_preview_residency_visual_fixture(&mut self, context: &egui::Context, scenario: &str) {
         let (state, color, headline, cpu, gpu, placeholder, detail) = match scenario {
             "adr0136-preview-pending" => (
                 "Loading",
@@ -271,8 +263,20 @@ impl EditorApp {
     }
 
     fn show_graph_debug_visual_fixture(&mut self, context: &egui::Context, scenario: &str) {
-        let nodes = self.session.graph().nodes.keys().cloned().collect::<Vec<_>>();
-        let edges = self.session.graph().edges.keys().cloned().collect::<Vec<_>>();
+        let nodes = self
+            .session
+            .graph()
+            .nodes
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let edges = self
+            .session
+            .graph()
+            .edges
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         let stale = scenario == "adr0138-stale-source";
         let mut overlay = GraphDebugOverlay::default();
 

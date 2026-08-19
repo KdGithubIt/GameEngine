@@ -215,7 +215,7 @@ pub fn validate_resource_value(schema: &GameResourceSchema, value: &Value) -> Re
             Some(value) => validate_field_value(&field.field_type, value)
                 .map_err(|error| format!("field `{}`: {error}", field.name))?,
             None if field.required => {
-                return Err(format!("required field `{}` is missing", field.name))
+                return Err(format!("required field `{}` is missing", field.name));
             }
             None => {}
         }
@@ -327,7 +327,6 @@ pub struct GameResourceSchema {
     /// Complete value installed at the beginning of a Play generation.
     pub default_value: Value,
 }
-
 
 impl GameField for DataAssetRef {
     fn field_type() -> FieldType {

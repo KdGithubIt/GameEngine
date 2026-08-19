@@ -281,12 +281,13 @@ pub struct SpawnedRig {
 pub fn spawn_rig(world: &mut World, skeleton: &SkeletonAsset) -> Result<SpawnedRig, RigSpawnError> {
     for (bone_index, bone) in skeleton.bones.iter().enumerate() {
         if let Some(parent_index) = bone.parent
-            && parent_index >= bone_index {
-                return Err(RigSpawnError::BoneParentOutOfOrder {
-                    bone_index,
-                    parent_index,
-                });
-            }
+            && parent_index >= bone_index
+        {
+            return Err(RigSpawnError::BoneParentOutOfOrder {
+                bone_index,
+                parent_index,
+            });
+        }
     }
 
     let mut joints: Vec<Entity> = Vec::with_capacity(skeleton.bones.len());
@@ -346,7 +347,7 @@ fn spawn_rig_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef};
+    use crate::skeleton_asset::{BoneDef, compute_skeleton_identity};
 
     fn bone(id: u32, name: &str, parent: Option<usize>, translation: Vec3) -> BoneDef {
         BoneDef {
@@ -455,10 +456,12 @@ mod tests {
         let matrices = palette_of(&world, skinned);
         assert_eq!(matrices.len(), 1);
         let expected = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
-        assert!((matrices[0] - expected)
-            .to_cols_array()
-            .iter()
-            .all(|difference| difference.abs() < 1.0e-6));
+        assert!(
+            (matrices[0] - expected)
+                .to_cols_array()
+                .iter()
+                .all(|difference| difference.abs() < 1.0e-6)
+        );
     }
 
     #[test]

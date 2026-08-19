@@ -85,7 +85,10 @@ impl DocumentWorkspace {
     }
 
     pub(crate) fn tab_session_mut(&mut self, id: WorkspaceTabId) -> Option<&mut EditorSession> {
-        self.tabs.iter_mut().find(|tab| tab.id == id).map(|tab| &mut tab.session)
+        self.tabs
+            .iter_mut()
+            .find(|tab| tab.id == id)
+            .map(|tab| &mut tab.session)
     }
 
     /// Iterates every open session without transferring working-copy ownership.
@@ -218,10 +221,11 @@ impl DocumentWorkspace {
     pub(crate) fn save_all(&mut self) -> Result<(), EditorPersistError> {
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             if tab.session.is_dirty()
-                && let Err(error) = tab.session.save() {
-                    self.active_index = index;
-                    return Err(error);
-                }
+                && let Err(error) = tab.session.save()
+            {
+                self.active_index = index;
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -279,26 +283,24 @@ impl DocumentWorkspace {
             (session.graph().id == *graph_id
                 && matches!(session.current_document(), CurrentDocument::Graph { .. }))
             .then(|| {
-                {
-                    let graph = serde_json::from_value(
-                        serde_json::to_value(session.graph())
-                            .expect("open graph working copy must serialize"),
+                let graph = serde_json::from_value(
+                    serde_json::to_value(session.graph())
+                        .expect("open graph working copy must serialize"),
+                )
+                .expect("serialized open graph working copy must deserialize");
+                let graph_view = session.graph_view().map(|view| {
+                    serde_json::from_value(
+                        serde_json::to_value(view)
+                            .expect("open graph view working copy must serialize"),
                     )
-                    .expect("serialized open graph working copy must deserialize");
-                    let graph_view = session.graph_view().map(|view| {
-                        serde_json::from_value(
-                            serde_json::to_value(view)
-                                .expect("open graph view working copy must serialize"),
-                        )
-                        .expect("serialized open graph view working copy must deserialize")
-                    });
-                    (
-                        graph,
-                        graph_view,
-                        session.document_revision(),
-                        session.is_dirty(),
-                    )
-                }
+                    .expect("serialized open graph view working copy must deserialize")
+                });
+                (
+                    graph,
+                    graph_view,
+                    session.document_revision(),
+                    session.is_dirty(),
+                )
             })
         })
     }
@@ -325,11 +327,11 @@ impl DocumentWorkspace {
                 .iter()
                 .map(|tab| &tab.session)
                 .find(|session| session.scene_entity(target).is_some())
-            {
-                return session
-                    .scene()
-                    .map(|scene| (scene, session.document_revision()));
-            }
+        {
+            return session
+                .scene()
+                .map(|scene| (scene, session.document_revision()));
+        }
         let active = &self.tabs[self.active_index].session;
         if let Some(scene) = active.scene() {
             return Some((scene, active.document_revision()));

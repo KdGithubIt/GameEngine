@@ -112,7 +112,10 @@ mod tests {
 
         manager.request_switch("scenes/b.scene.json");
         manager.request_switch("scenes/b.scene.json");
-        assert_eq!(manager.take_pending_request().as_deref(), Some("scenes/b.scene.json"));
+        assert_eq!(
+            manager.take_pending_request().as_deref(),
+            Some("scenes/b.scene.json")
+        );
     }
 
     #[test]

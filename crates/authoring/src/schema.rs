@@ -313,12 +313,16 @@ mod tests {
     fn builtin_registry_contains_addable_engine_components() {
         let registry = ComponentSchemaRegistry::builtin();
 
-        assert!(registry
-            .get(&ComponentTypeId::new("engine.transform"))
-            .is_some());
-        assert!(registry
-            .get(&ComponentTypeId::new("engine.player_marker"))
-            .is_some());
+        assert!(
+            registry
+                .get(&ComponentTypeId::new("engine.transform"))
+                .is_some()
+        );
+        assert!(
+            registry
+                .get(&ComponentTypeId::new("engine.player_marker"))
+                .is_some()
+        );
     }
 
     #[test]
@@ -378,8 +382,10 @@ mod tests {
 
         let health_type = ComponentTypeId::new("gameplay.health");
         assert!(registry.get(&health_type).is_some());
-        assert!(registry
-            .schemas()
-            .any(|schema| schema.type_id == health_type));
+        assert!(
+            registry
+                .schemas()
+                .any(|schema| schema.type_id == health_type)
+        );
     }
 }

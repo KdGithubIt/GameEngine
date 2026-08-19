@@ -98,13 +98,20 @@ impl EditorApp {
     fn any_authoring_dirty(&self) -> bool {
         self.session.any_dirty()
             || self.material_editor.any_dirty()
-            || self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty)
+            || self
+                .animation_set_editor
+                .as_ref()
+                .is_some_and(AnimationSetEditorState::is_dirty)
     }
 
     /// Persists every dirty working copy through its existing validated atomic adapter.
     fn save_all_authoring_documents(&mut self) -> Result<(), String> {
         self.session.save_all().map_err(|error| error.to_string())?;
-        if self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty) {
+        if self
+            .animation_set_editor
+            .as_ref()
+            .is_some_and(AnimationSetEditorState::is_dirty)
+        {
             self.save_animation_set_document()?;
         }
         self.save_all_material_documents()?;
@@ -117,10 +124,11 @@ impl EditorApp {
             return;
         }
         if let Err(error) = self.save_all_authoring_documents() {
-            self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                "editor.save_all_failed",
-                format!("save all failed: {error}"),
-            ));
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.save_all_failed",
+                    format!("save all failed: {error}"),
+                ));
         }
     }
 
@@ -565,14 +573,15 @@ impl EditorApp {
         }
         if game_source_changed {
             if let Some(project) = self.project_root.clone()
-                && let Err(error) = engine_authoring::refresh_game_module_indexes(&project) {
-                    self.session
-                        .push_diagnostic(engine_authoring::Diagnostic::error(
-                            "editor.game_index_refresh_failed",
-                            error.to_string(),
-                        ));
-                    return;
-                }
+                && let Err(error) = engine_authoring::refresh_game_module_indexes(&project)
+            {
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::error(
+                        "editor.game_index_refresh_failed",
+                        error.to_string(),
+                    ));
+                return;
+            }
             self.refresh_game_code_browser(None);
             self.request_game_build_after_edit();
         }
@@ -603,14 +612,17 @@ impl EditorApp {
                     .animation_set_editor
                     .as_ref()
                     .is_some_and(|state| state.absolute_path == absolute);
-                let material_open = material_relative.as_ref().is_some_and(|path| {
-                    self.material_editor.materials.contains_key(path)
-                });
+                let material_open = material_relative
+                    .as_ref()
+                    .is_some_and(|path| self.material_editor.materials.contains_key(path));
                 let workspace_tab = self.session.tab_for_path(&absolute);
                 let dirty_open_document = workspace_tab
                     .is_some_and(|tab_id| self.session.tab_is_dirty(tab_id))
                     || (animation_set_open
-                        && self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty))
+                        && self
+                            .animation_set_editor
+                            .as_ref()
+                            .is_some_and(AnimationSetEditorState::is_dirty))
                     || material_relative
                         .as_ref()
                         .is_some_and(|path| material_open && self.material_editor.is_dirty(path));
@@ -618,7 +630,9 @@ impl EditorApp {
                 let owner = if animation_set_open {
                     Some(ExternalDocumentOwner::AnimationSet)
                 } else if material_open {
-                    material_relative.clone().map(ExternalDocumentOwner::Material)
+                    material_relative
+                        .clone()
+                        .map(ExternalDocumentOwner::Material)
                 } else {
                     workspace_tab.map(ExternalDocumentOwner::Workspace)
                 };
@@ -636,22 +650,21 @@ impl EditorApp {
                             ExternalReloadPolicy::CleanOnly,
                         );
                     } else {
-                        self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
-                            "editor.file_sync.open_document_removed",
-                            format!(
-                                "the open document was removed externally: {}",
-                                absolute.display()
-                            ),
-                        ));
+                        self.session
+                            .push_diagnostic(engine_authoring::Diagnostic::warning(
+                                "editor.file_sync.open_document_removed",
+                                format!(
+                                    "the open document was removed externally: {}",
+                                    absolute.display()
+                                ),
+                            ));
                     }
                 }
                 self.asset_browser.refresh(&project.assets_root());
                 match event.kind {
                     FileSyncKind::Removed => {
-                        let removed_path = event
-                            .relative_path
-                            .strip_prefix(Path::new("assets"))
-                            .ok();
+                        let removed_path =
+                            event.relative_path.strip_prefix(Path::new("assets")).ok();
                         if let Some(removed_path) = removed_path {
                             if !removed_path.as_os_str().is_empty() && !dirty_open_document {
                                 self.unregister_removed_asset(&project, removed_path);
@@ -913,19 +926,21 @@ impl EditorApp {
             }
             ExternalDocumentOwner::AnimationSet => fs::read_to_string(path)
                 .map_err(|error| error.to_string())
-                .and_then(|json| engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string()))
+                .and_then(|json| {
+                    engine_authoring::AnimationSet::from_json(&json)
+                        .map_err(|error| error.to_string())
+                })
                 .and_then(|document| {
                     let state = self
                         .animation_set_editor
                         .as_mut()
                         .ok_or_else(|| "Animation Set editor is closed".to_owned())?;
                     match policy {
-                        ExternalReloadPolicy::CleanOnly => state
-                            .reload_clean(document)
-                            .then_some(())
-                            .ok_or_else(|| {
+                        ExternalReloadPolicy::CleanOnly => {
+                            state.reload_clean(document).then_some(()).ok_or_else(|| {
                                 "Animation Set became dirty before external reload".to_owned()
-                            }),
+                            })
+                        }
                         ExternalReloadPolicy::DiscardChanges => {
                             state.reload_discarding_changes(document);
                             Ok(())
@@ -934,7 +949,10 @@ impl EditorApp {
                 }),
             ExternalDocumentOwner::Material(relative) => fs::read_to_string(path)
                 .map_err(|error| error.to_string())
-                .and_then(|json| engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string()))
+                .and_then(|json| {
+                    engine_authoring::MaterialAsset::from_json(&json)
+                        .map_err(|error| error.to_string())
+                })
                 .and_then(|material| {
                     let reloaded = match policy {
                         ExternalReloadPolicy::CleanOnly => {
@@ -959,15 +977,18 @@ impl EditorApp {
             Ok(()) => {
                 self.scene_view.invalidate_asset_preview();
                 self.refresh_scene_problems();
-                self.session.push_diagnostic(engine_authoring::Diagnostic::info(
-                    "editor.file_sync.document_reloaded",
-                    format!("reloaded external change from {}", path.display()),
-                ));
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::info(
+                        "editor.file_sync.document_reloaded",
+                        format!("reloaded external change from {}", path.display()),
+                    ));
             }
-            Err(error) => self.session.push_diagnostic(engine_authoring::Diagnostic::error(
-                "editor.file_sync.reload_failed",
-                format!("could not reload {}: {error}", path.display()),
-            )),
+            Err(error) => self
+                .session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.file_sync.reload_failed",
+                    format!("could not reload {}: {error}", path.display()),
+                )),
         }
     }
 

@@ -3,22 +3,21 @@
 use super::EditorApp;
 use crate::session::StructuredAuthoringError;
 use engine_authoring::{
-    AnimationSet, AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
-    MaterialAsset, ProjectSettings, TypedDocumentAuthoringError,
+    AnimationSet, AuthoringPermission, AuthoringPermissions, AuthoringSession,
+    ComponentSchemaRegistry, MaterialAsset, ProjectSettings, TypedDocumentAuthoringError,
 };
 use engine_mcp::{
-    AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
+    AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL, AUTHORING_DESCRIBE_TOOL,
+    AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL, AssetInspectInput,
+    AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
     BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, CapabilityDescribeInput,
     CapabilityInvokeInput, EntityFindInput, EntityInspectInput, GraphMutationInput,
-    GraphViewMutationInput, McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools,
-    SceneMcpTools, SceneMutationInput, TypedDocumentMutationInput, UiMutationInput, VfxEffectInput,
-    VfxMcpTools, VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL,
-    AUTHORING_CAPABILITIES_TOOL,
-    AUTHORING_DESCRIBE_TOOL, AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL,
-    AUTHORING_VALIDATE_TOOL,
+    GraphViewMutationInput, McpToolError, PrefabCreateInput, PrefabInstantiateInput,
+    PrefabMcpTools, SceneMcpTools, SceneMutationInput, TypedDocumentMutationInput, UiMutationInput,
+    VfxEffectInput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
 };
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::fmt;
 
@@ -233,24 +232,14 @@ impl EditorApp {
                 let input: PrefabInstantiateInput = decode(arguments)?;
                 let project = self.project_root().clone();
                 let session = self.scene_authoring_session()?;
-                to_value(prefab_tools.prefab_preview(
-                    &project,
-                    session,
-                    &permissions,
-                    input,
-                )?)
+                to_value(prefab_tools.prefab_preview(&project, session, &permissions, input)?)
             }
             "prefab.instantiate" => {
                 let input: PrefabInstantiateInput = decode(arguments)?;
                 let project = self.project_root().clone();
                 let mutation = {
                     let session = self.scene_authoring_session_mut()?;
-                    prefab_tools.prefab_instantiate(
-                        &project,
-                        session,
-                        &permissions,
-                        input,
-                    )?
+                    prefab_tools.prefab_instantiate(&project, session, &permissions, input)?
                 };
                 self.session
                     .extend_diagnostics(mutation.mutation.diagnostics.iter().cloned());
@@ -339,71 +328,165 @@ impl EditorApp {
             }
             "material.inspect" => {
                 require_empty_arguments(arguments)?;
-                let output = self.material_editor.structured_inspect(&permissions)
+                let output = self
+                    .material_editor
+                    .structured_inspect(&permissions)
                     .map_err(EditorMcpCallFailure::typed)?
                     .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
                 to_value(output)
             }
             "material.validate" => {
                 require_empty_arguments(arguments)?;
-                let output = self.material_editor.structured_validate(&permissions)
+                let output = self
+                    .material_editor
+                    .structured_validate(&permissions)
                     .map_err(EditorMcpCallFailure::typed)?
                     .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
                 to_value(output)
             }
             "material.preview" => {
                 let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
-                let output = self.material_editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement)
+                let output = self
+                    .material_editor
+                    .structured_preview(
+                        &permissions,
+                        input.expected_revision,
+                        input.expected_generation,
+                        input.replacement,
+                    )
                     .map_err(EditorMcpCallFailure::typed)?
                     .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
                 to_value(output)
             }
             "material.apply" => {
                 let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
-                let output = self.material_editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement)
+                let output = self
+                    .material_editor
+                    .structured_apply(
+                        &permissions,
+                        input.expected_revision,
+                        input.expected_generation,
+                        input.replacement,
+                    )
                     .map_err(EditorMcpCallFailure::typed)?
                     .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
                 to_value(output)
             }
             "project_settings.inspect" => {
                 require_empty_arguments(arguments)?;
-                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
-                to_value(panel.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
+                let panel = self
+                    .project_settings_panel
+                    .as_ref()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(
+                    panel
+                        .structured_inspect(&permissions)
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "project_settings.validate" => {
                 require_empty_arguments(arguments)?;
-                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
-                to_value(panel.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
+                let panel = self
+                    .project_settings_panel
+                    .as_ref()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(
+                    panel
+                        .structured_validate(&permissions)
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "project_settings.preview" => {
                 let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
-                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
-                to_value(panel.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
+                let panel = self
+                    .project_settings_panel
+                    .as_ref()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(
+                    panel
+                        .structured_preview(
+                            &permissions,
+                            input.expected_revision,
+                            input.expected_generation,
+                            input.replacement,
+                        )
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "project_settings.apply" => {
                 let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
-                let panel = self.project_settings_panel.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
-                to_value(panel.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
+                let panel = self
+                    .project_settings_panel
+                    .as_mut()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(
+                    panel
+                        .structured_apply(
+                            &permissions,
+                            input.expected_revision,
+                            input.expected_generation,
+                            input.replacement,
+                        )
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "animation_set.inspect" => {
                 require_empty_arguments(arguments)?;
-                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
-                to_value(editor.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
+                let editor = self
+                    .animation_set_editor
+                    .as_ref()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(
+                    editor
+                        .structured_inspect(&permissions)
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "animation_set.validate" => {
                 require_empty_arguments(arguments)?;
-                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
-                to_value(editor.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
+                let editor = self
+                    .animation_set_editor
+                    .as_ref()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(
+                    editor
+                        .structured_validate(&permissions)
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "animation_set.preview" => {
                 let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
-                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
-                to_value(editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
+                let editor = self
+                    .animation_set_editor
+                    .as_ref()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(
+                    editor
+                        .structured_preview(
+                            &permissions,
+                            input.expected_revision,
+                            input.expected_generation,
+                            input.replacement,
+                        )
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "animation_set.apply" => {
                 let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
-                let editor = self.animation_set_editor.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
-                to_value(editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
+                let editor = self
+                    .animation_set_editor
+                    .as_mut()
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(
+                    editor
+                        .structured_apply(
+                            &permissions,
+                            input.expected_revision,
+                            input.expected_generation,
+                            input.replacement,
+                        )
+                        .map_err(EditorMcpCallFailure::typed)?,
+                )
             }
             "vfx.schemas" => {
                 require_empty_arguments(arguments)?;
@@ -625,19 +708,18 @@ mod tests {
             .expect("schema query");
         let schemas = output["schemas"].as_array().expect("schema array");
 
-        assert!(schemas.iter().any(|schema| {
-            schema["type_id"] == Value::String("engine.camera".into())
-        }));
+        assert!(
+            schemas
+                .iter()
+                .any(|schema| { schema["type_id"] == Value::String("engine.camera".into()) })
+        );
     }
 
     #[test]
     fn generic_apply_routes_through_the_same_live_scene_transaction() {
         let (_directory, mut app) = editor_app();
         let snapshot = app
-            .handle_mcp_tool_call(
-                "authoring.inspect",
-                json!({"capability": "scene.inspect"}),
-            )
+            .handle_mcp_tool_call("authoring.inspect", json!({"capability": "scene.inspect"}))
             .expect("generic scene inspection");
         let revision = snapshot["revision"].as_u64().expect("revision");
         let generation = snapshot["generation"].as_u64().expect("generation");
@@ -749,10 +831,7 @@ mod tests {
         let assets = output["assets"].as_array().expect("asset array");
 
         assert_eq!(assets.len(), 1);
-        assert_eq!(
-            assets[0]["id"],
-            Value::String(asset_id.as_str().to_owned())
-        );
+        assert_eq!(assets[0]["id"], Value::String(asset_id.as_str().to_owned()));
     }
 }
 
@@ -767,7 +846,7 @@ mod parity_tests {
         AnimationSet, AssetId, GraphCommand, GraphViewCommand, MaterialAsset, ProjectSettings,
         UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,
     };
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::path::PathBuf;
 
     fn editor_app() -> (tempfile::TempDir, EditorApp) {
@@ -790,10 +869,10 @@ mod parity_tests {
             .expect("material diff array")
             .iter()
             .map(|change| {
-                let before = serde_json::from_value(change["before"].clone())
-                    .expect("material diff before");
-                let after = serde_json::from_value(change["after"].clone())
-                    .expect("material diff after");
+                let before =
+                    serde_json::from_value(change["before"].clone()).expect("material diff before");
+                let after =
+                    serde_json::from_value(change["after"].clone()).expect("material diff after");
                 (before, after)
             })
             .collect()
@@ -803,10 +882,9 @@ mod parity_tests {
     fn generic_graph_and_layout_adapters_produce_equivalent_results() {
         let seed = EditorSession::behavior_tree_example().expect("behavior tree example");
         let graph_json = serde_json::to_string_pretty(seed.graph()).expect("graph JSON");
-        let view_json = serde_json::to_string_pretty(
-            seed.graph_view().expect("behavior tree example view"),
-        )
-        .expect("view JSON");
+        let view_json =
+            serde_json::to_string_pretty(seed.graph_view().expect("behavior tree example view"))
+                .expect("view JSON");
         let graph_command = GraphCommand::SetGraphAnnotation {
             key: "parity.marker".into(),
             value: Some(AuthoringValue::String("same".into())),
@@ -919,10 +997,9 @@ mod parity_tests {
         ])
         .expect("CLI graph apply");
         assert_eq!(cli_graph.exit_code, 0, "{}", cli_graph.output);
-        let cli_graph_value: Value = serde_json::from_str(
-            &std::fs::read_to_string(&graph_path).expect("read CLI graph"),
-        )
-        .expect("CLI graph value");
+        let cli_graph_value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&graph_path).expect("read CLI graph"))
+                .expect("CLI graph value");
         assert_eq!(
             cli_graph_value,
             serde_json::to_value(direct.graph()).expect("direct graph value")
@@ -954,8 +1031,12 @@ mod parity_tests {
         let mcp_layout_base = app
             .handle_mcp_tool_call("graph.layout.inspect", json!({}))
             .expect("MCP layout inspect");
-        let layout_revision = mcp_layout_base["revision"].as_u64().expect("layout revision");
-        let layout_generation = mcp_layout_base["generation"].as_u64().expect("layout generation");
+        let layout_revision = mcp_layout_base["revision"]
+            .as_u64()
+            .expect("layout revision");
+        let layout_generation = mcp_layout_base["generation"]
+            .as_u64()
+            .expect("layout generation");
         let mcp_layout_preview = app
             .handle_mcp_tool_call(
                 "graph.layout.preview",
@@ -1000,10 +1081,9 @@ mod parity_tests {
         ])
         .expect("CLI layout apply");
         assert_eq!(cli_layout.exit_code, 0, "{}", cli_layout.output);
-        let cli_view_value: Value = serde_json::from_str(
-            &std::fs::read_to_string(&view_path).expect("read CLI view"),
-        )
-        .expect("CLI view value");
+        let cli_view_value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&view_path).expect("read CLI view"))
+                .expect("CLI view value");
         assert_eq!(
             cli_view_value,
             serde_json::to_value(direct.graph_view().expect("direct view")).expect("view value")
@@ -1121,10 +1201,9 @@ mod parity_tests {
         ])
         .expect("CLI UI apply");
         assert_eq!(cli_ui.exit_code, 0, "{}", cli_ui.output);
-        let cli_ui_value: Value = serde_json::from_str(
-            &std::fs::read_to_string(&ui_path).expect("read CLI UI"),
-        )
-        .expect("CLI UI value");
+        let cli_ui_value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&ui_path).expect("read CLI UI"))
+                .expect("CLI UI value");
         assert_eq!(
             cli_ui_value,
             serde_json::to_value(direct.ui_document().expect("direct UI")).expect("UI value")
@@ -1203,7 +1282,10 @@ mod parity_tests {
                 json!({"capability": "material.validate"}),
             )
             .expect("generic material validate");
-        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            mcp_validation["success"],
+            Value::Bool(direct_validation.success)
+        );
         assert_eq!(
             mcp_validation["diagnostics"],
             serde_json::to_value(&direct_validation.diagnostics).expect("material diagnostics")
@@ -1264,7 +1346,10 @@ mod parity_tests {
             project.path().to_string_lossy().into_owned(),
             relative.to_string_lossy().into_owned(),
         ]);
-        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            cli_validation["success"],
+            Value::Bool(direct_validation.success)
+        );
         assert_eq!(
             cli_validation["diagnostics"],
             serde_json::to_value(&direct_validation.diagnostics).expect("CLI material diagnostics")
@@ -1370,7 +1455,10 @@ mod parity_tests {
                 json!({"capability": "project_settings.validate"}),
             )
             .expect("generic settings validate");
-        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            mcp_validation["success"],
+            Value::Bool(direct_validation.success)
+        );
         assert_eq!(
             mcp_validation["diagnostics"],
             serde_json::to_value(&direct_validation.diagnostics).expect("settings diagnostics")
@@ -1437,7 +1525,10 @@ mod parity_tests {
             "validate".into(),
             project.path().to_string_lossy().into_owned(),
         ]);
-        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            cli_validation["success"],
+            Value::Bool(direct_validation.success)
+        );
         assert_eq!(
             cli_validation["diagnostics"],
             serde_json::to_value(&direct_validation.diagnostics).expect("CLI settings diagnostics")
@@ -1493,11 +1584,8 @@ mod parity_tests {
         .expect("animation replacement fixture");
 
         let permissions = mcp_authoring_permissions();
-        let mut direct = AnimationSetEditorState::new(
-            relative.clone(),
-            absolute.clone(),
-            baseline.clone(),
-        );
+        let mut direct =
+            AnimationSetEditorState::new(relative.clone(), absolute.clone(), baseline.clone());
         let direct_base = direct
             .structured_inspect(&permissions)
             .expect("direct animation inspect");
@@ -1544,7 +1632,10 @@ mod parity_tests {
                 json!({"capability": "animation_set.validate"}),
             )
             .expect("generic animation validate");
-        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            mcp_validation["success"],
+            Value::Bool(direct_validation.success)
+        );
         assert_eq!(
             mcp_validation["diagnostics"],
             serde_json::to_value(&direct_validation.diagnostics).expect("animation diagnostics")
@@ -1609,10 +1700,14 @@ mod parity_tests {
             project.path().to_string_lossy().into_owned(),
             relative.to_string_lossy().into_owned(),
         ]);
-        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            cli_validation["success"],
+            Value::Bool(direct_validation.success)
+        );
         assert_eq!(
             cli_validation["diagnostics"],
-            serde_json::to_value(&direct_validation.diagnostics).expect("CLI animation diagnostics")
+            serde_json::to_value(&direct_validation.diagnostics)
+                .expect("CLI animation diagnostics")
         );
         let cli_preview = cli_json(vec![
             "animation_set".into(),

@@ -5,18 +5,18 @@
 //! bytes; ECS values never cross the dynamic-library boundary by value. See
 //! ADRs 0050 and 0052.
 
-use crate::game_commands::{apply_prepared_game_commands, prepare_game_commands, GameCommandError};
+use crate::game_commands::{GameCommandError, apply_prepared_game_commands, prepare_game_commands};
 use crate::game_host::{
-    apply_game_output, compile_game_invocation, GameHostApplyError, GameHostCompileError,
-    GameHostRuntime,
+    GameHostApplyError, GameHostCompileError, GameHostRuntime, apply_game_output,
+    compile_game_invocation,
 };
 use crate::game_io::{
-    validate_game_input_bytes, validate_game_output_bytes, GameAccessError, GameInvocation,
-    GameInvocationOutput, GameIoLimitError,
+    GameAccessError, GameInvocation, GameInvocationOutput, GameIoLimitError,
+    validate_game_input_bytes, validate_game_output_bytes,
 };
 use engine_ecs::{Entity, SystemDescriptor, SystemId, SystemOrigin, World};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,8 +31,8 @@ const ERROR_BUFFER_SIZE: usize = 4096;
 pub use engine_scripting::game_contracts::{
     GameComponent, GameField, GameResource, GameResourceSchema, GameSystemSchedule,
 };
-pub use engine_scripting::game_module::*;
 use engine_scripting::game_contracts::{validate_resource_schema, validate_resource_value};
+pub use engine_scripting::game_module::*;
 
 /// Engine-owned ECS component containing all project component authoring data.
 #[derive(Debug, Clone, Default)]
@@ -110,8 +110,8 @@ macro_rules! export_game_module {
     () => {
         /// Returns this project's versioned native game-module descriptor.
         #[unsafe(no_mangle)]
-        pub extern "C" fn iroha_game_module_v3(
-        ) -> *const engine::game_module::GameModuleDescriptorAbi {
+        pub extern "C" fn iroha_game_module_v3()
+        -> *const engine::game_module::GameModuleDescriptorAbi {
             engine::game_module::exported_descriptor()
         }
     };

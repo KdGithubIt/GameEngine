@@ -306,7 +306,6 @@ impl EditorApp {
                 )),
         }
     }
-
 }
 
 /// Project-relative location of the prefab generated for one model source.
@@ -316,7 +315,9 @@ impl EditorApp {
 /// (ADR 0075). Naming the file after the source asset ID means a reimport
 /// overwrites the same artifact instead of accumulating one per import, and
 /// survives renaming or moving the source file.
-pub(in crate::ui) fn generated_prefab_relative_path(source_id: &engine_authoring::AssetId) -> PathBuf {
+pub(in crate::ui) fn generated_prefab_relative_path(
+    source_id: &engine_authoring::AssetId,
+) -> PathBuf {
     Path::new(".engine")
         .join("imported")
         .join(format!("{}.prefab.json", source_id.as_str()))

@@ -139,7 +139,8 @@ fn native_2d_physics_components_bridge_to_runtime_contracts() {
     tx.commit(&mut scene).expect("2D physics setup must commit");
 
     let mut world = World::new();
-    let bridge = spawn_from_authoring_scene(&mut world, &scene).expect("2D physics scene must bridge");
+    let bridge =
+        spawn_from_authoring_scene(&mut world, &scene).expect("2D physics scene must bridge");
     let entity = bridge.get(&id).expect("2D physics entity must spawn");
 
     let collider = world
@@ -243,9 +244,7 @@ fn rollback_removes_secondary_motion_registry_created_by_conversion() {
     let errors = rollback_bridge_changes(&mut world, &mut spawned, &assets);
 
     assert!(errors.is_empty());
-    assert!(world
-        .get_resource::<SecondaryMotionRigRegistry>()
-        .is_none());
+    assert!(world.get_resource::<SecondaryMotionRigRegistry>().is_none());
 }
 
 #[test]
@@ -486,9 +485,11 @@ fn engine_transform_component_sets_rotation_and_scale_and_defaults_the_optional_
 
     assert_eq!(runtime.translation, Vec3::new(1.0, 2.0, 3.0));
     assert_eq!(runtime.scale, Vec3::new(2.0, 3.0, 4.0));
-    assert!(runtime
-        .rotation
-        .abs_diff_eq(Quat::from_rotation_y(90.0_f32.to_radians()), 1.0e-5));
+    assert!(
+        runtime
+            .rotation
+            .abs_diff_eq(Quat::from_rotation_y(90.0_f32.to_radians()), 1.0e-5)
+    );
 
     // Rotation and scale are optional in the current Transform schema, so a
     // position-only value stays valid and keeps the identity pose.
@@ -729,9 +730,11 @@ fn best_effort_conversion_skips_invalid_component_and_keeps_the_scene() {
     assert_eq!(skipped.len(), 1, "exactly one component must be skipped");
     assert!(!skipped[0].is_blocking());
     assert!(skipped[0].message.contains("engine.nav_mesh_surface"));
-    assert!(skipped[0]
-        .message
-        .contains("entity_01JP0000000000000000000002"));
+    assert!(
+        skipped[0]
+            .message
+            .contains("entity_01JP0000000000000000000002")
+    );
     assert!(
         world
             .get_resource::<crate::navmesh::NavMeshQuery>()
@@ -811,13 +814,15 @@ fn unassigned_audio_clip_converts_to_inactive_emitter_in_strict_mode() {
         .expect("an unassigned clip must not abort strict conversion");
 
     assert_eq!(world.entity_count(), 1);
-    assert!(result
-        .asset_diagnostics
-        .iter()
-        .any(
-            |diagnostic| diagnostic.code == COMPONENT_INACTIVE_DIAGNOSTIC
-                && diagnostic.message.contains("engine.audio_emitter")
-        ));
+    assert!(
+        result
+            .asset_diagnostics
+            .iter()
+            .any(
+                |diagnostic| diagnostic.code == COMPONENT_INACTIVE_DIAGNOSTIC
+                    && diagnostic.message.contains("engine.audio_emitter")
+            )
+    );
 }
 
 #[test]
@@ -1425,8 +1430,7 @@ fn retarget_skeleton_lookup_imports_manifest_source_without_scene_entity() {
 #[test]
 fn cross_skeleton_resolution_rebinds_stale_asset_id_when_identity_matches_target() {
     let directory = tempfile::tempdir().expect("temp asset root");
-    let (source_id, imported, _, _, _, _) =
-        independently_imported_fixture_pair(directory.path());
+    let (source_id, imported, _, _, _, _) = independently_imported_fixture_pair(directory.path());
     let target_skeleton = imported.skins[0].skeleton.clone();
 
     let stale_skeleton_id = AssetId::generate();
@@ -1454,10 +1458,7 @@ fn cross_skeleton_resolution_rebinds_stale_asset_id_when_identity_matches_target
     .expect("matching skeleton identities must rebind without a retarget map");
 
     assert_eq!(resolved.skeleton.as_ref(), Some(&target_skeleton.id));
-    assert_eq!(
-        resolved.skeleton_identity,
-        Some(target_skeleton.identity)
-    );
+    assert_eq!(resolved.skeleton_identity, Some(target_skeleton.identity));
     assert_eq!(resolved.channels.len(), clip.channels.len());
 }
 
@@ -1598,7 +1599,10 @@ fn animation_set_resolves_and_retargets_clips_from_multiple_model_sources() {
     let attack_slot = engine_authoring::MotionSlotId::generate();
     std::fs::write(
         directory.path().join("cross_source.graph.json"),
-        engine_animation::test_fixtures::valid_graph_json_for_motion_slots(&idle_slot, &attack_slot),
+        engine_animation::test_fixtures::valid_graph_json_for_motion_slots(
+            &idle_slot,
+            &attack_slot,
+        ),
     )
     .expect("graph fixture must write");
     let mut animation_set = engine_authoring::AnimationSet::new(graph_id.clone());
@@ -1606,7 +1610,9 @@ fn animation_set_resolves_and_retargets_clips_from_multiple_model_sources() {
         idle_slot,
         engine_authoring::AnimationBinding {
             name: "villain_idle".to_owned(),
-            clip: engine_authoring::MotionSourceRef::native(villain_imported.animations[0].id.clone()),
+            clip: engine_authoring::MotionSourceRef::native(
+                villain_imported.animations[0].id.clone(),
+            ),
             overlays: Vec::new(),
             events: Vec::new(),
         },
@@ -2215,11 +2221,8 @@ fn authorable_behavior_tree_preserves_blackboard_and_executes() {
 #[test]
 fn authorable_audio_components_decode_once_and_execute_headless_state() {
     let directory = tempfile::tempdir().expect("temporary asset root");
-    std::fs::write(
-        directory.path().join("tone.wav"),
-        test_wav_bytes(),
-    )
-    .expect("WAV fixture must be written");
+    std::fs::write(directory.path().join("tone.wav"), test_wav_bytes())
+        .expect("WAV fixture must be written");
     let audio_asset = AssetId::generate();
     let mut manifest = AssetManifest::default();
     manifest.insert(
@@ -2566,11 +2569,13 @@ fn a_bone_attachment_reparents_its_entity_onto_the_joint() {
             .0,
         joint
     );
-    assert!(world
-        .get_component::<Children>(joint)
-        .expect("joint gains a child")
-        .0
-        .contains(&sword));
+    assert!(
+        world
+            .get_component::<Children>(joint)
+            .expect("joint gains a child")
+            .0
+            .contains(&sword)
+    );
 
     // The entity's own transform is now an offset from the bone, so
     // propagation must place it relative to the joint rather than the world.
@@ -2614,10 +2619,12 @@ fn a_bone_the_rig_does_not_have_leaves_the_attached_entity_alone() {
         world.get_component::<Parent>(sword).is_none(),
         "an unresolvable attachment must not move the entity"
     );
-    assert!(bridge
-        .asset_diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene_bridge.bone_attachment_unresolved_bone"));
+    assert!(
+        bridge
+            .asset_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene_bridge.bone_attachment_unresolved_bone")
+    );
 }
 
 #[test]
@@ -2625,10 +2632,9 @@ fn an_unassigned_bone_is_an_editing_state_not_an_error() {
     let directory = tempfile::tempdir().expect("temporary asset root");
     let source = AssetId::generate();
     let (manifest, imported) = skinned_fixture_manifest(directory.path(), &source);
-    let scene = load_scene_fixture(
-        &bone_attachment_scene(&imported.skins[0].skeleton_id, -1).to_string(),
-    )
-    .expect("attachment scene");
+    let scene =
+        load_scene_fixture(&bone_attachment_scene(&imported.skins[0].skeleton_id, -1).to_string())
+            .expect("attachment scene");
     let mut world = World::new();
     world.insert_resource(crate::asset::AssetServer::with_assets_root(
         directory.path(),
@@ -2703,10 +2709,7 @@ fn a_skinned_renderer_uses_the_model_it_references() {
     let rig_pose = world
         .get_component::<crate::rig_pose::RigPose>(model)
         .expect("the model entity owns its layered rig pose");
-    assert_eq!(
-        rig_pose.skeleton_asset(),
-        &imported.skins[0].skeleton.id
-    );
+    assert_eq!(rig_pose.skeleton_asset(), &imported.skins[0].skeleton.id);
     assert_eq!(
         rig_pose.joint_count(),
         imported.skins[0].skeleton.bones.len()
@@ -2770,10 +2773,12 @@ fn a_renderer_with_no_model_stays_in_bind_pose() {
             .is_none(),
         "an unowned part is inert rather than bound to an arbitrary rig"
     );
-    assert!(bridge
-        .asset_diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == COMPONENT_INACTIVE_DIAGNOSTIC));
+    assert!(
+        bridge
+            .asset_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == COMPONENT_INACTIVE_DIAGNOSTIC)
+    );
 }
 
 #[test]
@@ -3008,7 +3013,9 @@ fn extracted_material_remap_resolves_to_the_standalone_file_instead_of_the_impor
     };
     std::fs::write(
         directory.path().join("armor_extracted.material.json"),
-        extracted.to_json().expect("extracted material fixture JSON"),
+        extracted
+            .to_json()
+            .expect("extracted material fixture JSON"),
     )
     .expect("extracted material fixture");
 
@@ -3029,9 +3036,12 @@ fn extracted_material_remap_resolves_to_the_standalone_file_instead_of_the_impor
                     index: 0,
                     target_model_source: None,
                 }],
-                material_remaps: [(material_id.as_str().to_owned(), extracted_id.as_str().to_owned())]
-                    .into_iter()
-                    .collect(),
+                material_remaps: [(
+                    material_id.as_str().to_owned(),
+                    extracted_id.as_str().to_owned(),
+                )]
+                .into_iter()
+                .collect(),
                 ..crate::asset::ImportSettings::default()
             },
         },
@@ -3268,7 +3278,10 @@ fn imported_material_uses_model_level_texture_override() {
         &mut asset_state,
     );
 
-    assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected diagnostics: {diagnostics:?}"
+    );
     assert_eq!(
         material
             .pending_texture
@@ -4462,9 +4475,11 @@ fn lock_on_camera_unresolved_source_skips_component_with_diagnostic() {
         world.get_component::<LockOnCamera>(camera_entity).is_none(),
         "camera component must be skipped when source is unresolved"
     );
-    assert!(asset_diagnostics
-        .iter()
-        .any(|d| d.code == "scene_bridge.lock_on_camera_unresolved_source"));
+    assert!(
+        asset_diagnostics
+            .iter()
+            .any(|d| d.code == "scene_bridge.lock_on_camera_unresolved_source")
+    );
 }
 
 #[test]

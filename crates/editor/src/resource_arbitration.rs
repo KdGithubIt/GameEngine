@@ -170,10 +170,9 @@ pub(crate) fn resource_operation_for_residency_request(
 ) -> Option<ModelResourceOperation> {
     match request {
         ModelResidencyRequest::Keep => None,
-        ModelResidencyRequest::ReduceIfSupported => {
-            (capabilities.cpu_gpu_offload == CapabilityAvailability::Available)
-                .then_some(ModelResourceOperation::ReduceGpuResidency)
-        }
+        ModelResidencyRequest::ReduceIfSupported => (capabilities.cpu_gpu_offload
+            == CapabilityAvailability::Available)
+            .then_some(ModelResourceOperation::ReduceGpuResidency),
         ModelResidencyRequest::ReleaseIfSupported => {
             if capabilities.unload_reload == CapabilityAvailability::Available {
                 Some(ModelResourceOperation::Release)
@@ -324,9 +323,7 @@ pub(crate) fn resolve_resource_plan(
             } else {
                 PresentationPosture::Interactive
             },
-            reclaim: if quality == QualityPreference::Deep
-                && pressure != MemoryPressure::Normal
-            {
+            reclaim: if quality == QualityPreference::Deep && pressure != MemoryPressure::Normal {
                 ReclaimLevel::Transient
             } else {
                 ReclaimLevel::None

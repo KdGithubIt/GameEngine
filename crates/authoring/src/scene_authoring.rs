@@ -91,7 +91,9 @@ impl SceneAuthoringError {
             Self::Transaction(TransactionError::ValidationFailed { .. }) => {
                 "authoring.validation_failed"
             }
-            Self::Transaction(TransactionError::Conflict { .. }) => "authoring.transaction_conflict",
+            Self::Transaction(TransactionError::Conflict { .. }) => {
+                "authoring.transaction_conflict"
+            }
         }
     }
 }
@@ -463,10 +465,12 @@ mod tests {
         assert!(!result.success);
         assert_eq!(session.scene().entity_count(), 0);
         assert!(!session.can_undo());
-        assert!(result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error));
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error)
+        );
     }
 
     #[test]

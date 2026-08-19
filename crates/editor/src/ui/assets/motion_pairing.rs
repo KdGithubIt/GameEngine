@@ -142,15 +142,15 @@ pub(super) fn show_motion_pairing_editor(ui: &mut egui::Ui, pairing: &mut Motion
                     } else {
                         "Missing"
                     };
-                    format!(
-                        "{original_label} -> Retarget Map ({status}) -> {target_label}"
-                    )
+                    format!("{original_label} -> Retarget Map ({status}) -> {target_label}")
                 }
             };
             ui.label(summary);
         }
         if pairing.original.is_some() {
-            ui.label("Missing maps must be created as explicit Retarget Map assets before reimport.");
+            ui.label(
+                "Missing maps must be created as explicit Retarget Map assets before reimport.",
+            );
         }
     }
 
@@ -180,11 +180,7 @@ pub(super) fn show_motion_pairing_editor(ui: &mut egui::Ui, pairing: &mut Motion
                 "Not set - Native candidates only",
             );
             for (id, label) in &humanoid_choices {
-                ui.selectable_value(
-                    &mut pairing.humanoid_source,
-                    Some(id.clone()),
-                    label,
-                );
+                ui.selectable_value(&mut pairing.humanoid_source, Some(id.clone()), label);
             }
         });
     if pairing.humanoid_source.is_none() {
@@ -195,8 +191,12 @@ pub(super) fn show_motion_pairing_editor(ui: &mut egui::Ui, pairing: &mut Motion
             .cloned()
             .map(|id| (id, "Use original model"))
             .or_else(|| {
-                (humanoid_choices.len() == 1)
-                    .then(|| (humanoid_choices[0].0.clone(), "Use sole Humanoid-capable model"))
+                (humanoid_choices.len() == 1).then(|| {
+                    (
+                        humanoid_choices[0].0.clone(),
+                        "Use sole Humanoid-capable model",
+                    )
+                })
             });
         if let Some((suggested, label)) = suggested
             && ui.button(label).clicked()
@@ -210,7 +210,9 @@ pub(super) fn show_motion_pairing_editor(ui: &mut egui::Ui, pairing: &mut Motion
             "The selected Humanoid source is no longer an associated Humanoid-capable model. Choose another model or clear it before saving.",
         );
     } else if pairing.humanoid_source.is_some() {
-        ui.label("Changing this source regenerates the same logical Humanoid candidate on reimport.");
+        ui.label(
+            "Changing this source regenerates the same logical Humanoid candidate on reimport.",
+        );
     }
     show_motion_compatibility_checker(ui, pairing);
 }
@@ -219,9 +221,7 @@ fn humanoid_source_choices(pairing: &MotionPairingState) -> Vec<(AssetId, String
     pairing
         .humanoid_capable_models
         .iter()
-        .filter(|(id, _)| {
-            pairing.original.as_ref() == Some(id) || pairing.selected.contains(id)
-        })
+        .filter(|(id, _)| pairing.original.as_ref() == Some(id) || pairing.selected.contains(id))
         .cloned()
         .collect()
 }
@@ -304,10 +304,12 @@ fn run_motion_compatibility_checks(pairing: &mut MotionPairingState) {
                 engine::check_vmd_pmx_compatibility_path(vmd_path, pmx_path)
                     .map_err(|error| error.to_string())
             });
-        pairing.compatibility_reports.push(MotionCompatibilityDisplay {
-            model_source: target,
-            result,
-        });
+        pairing
+            .compatibility_reports
+            .push(MotionCompatibilityDisplay {
+                model_source: target,
+                result,
+            });
     }
 }
 
@@ -359,7 +361,10 @@ fn show_motion_compatibility_report(
         );
     }
     if report.issues.len() > shown {
-        ui.label(format!("... and {} more issues", report.issues.len() - shown));
+        ui.label(format!(
+            "... and {} more issues",
+            report.issues.len() - shown
+        ));
     }
 }
 
@@ -442,10 +447,7 @@ mod tests {
         let state = pairing(
             vec![first.clone(), second.clone()],
             None,
-            vec![
-                (first, "first".to_owned()),
-                (second, "second".to_owned()),
-            ],
+            vec![(first, "first".to_owned()), (second, "second".to_owned())],
         );
 
         assert_eq!(humanoid_source_choices(&state).len(), 2);
@@ -455,11 +457,7 @@ mod tests {
     #[test]
     fn sole_capable_model_is_only_an_offer_until_the_author_selects_it() {
         let only = AssetId::generate();
-        let state = pairing(
-            vec![only.clone()],
-            None,
-            vec![(only, "only".to_owned())],
-        );
+        let state = pairing(vec![only.clone()], None, vec![(only, "only".to_owned())]);
 
         assert_eq!(humanoid_source_choices(&state).len(), 1);
         assert!(state.humanoid_source.is_none());

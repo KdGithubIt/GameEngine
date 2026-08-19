@@ -96,8 +96,7 @@ impl ProblemsPanel {
     /// Error diagnostics always remain active even if their code was stored by
     /// an older editor version or was previously used by a lower severity.
     pub fn is_suppressed(&self, diagnostic: &Diagnostic) -> bool {
-        diagnostic.severity != Severity::Error
-            && self.suppressed_codes.contains(&diagnostic.code)
+        diagnostic.severity != Severity::Error && self.suppressed_codes.contains(&diagnostic.code)
     }
 
     /// Counts active, unsuppressed diagnostic groups at one severity.
@@ -191,21 +190,18 @@ impl ProblemsPanel {
             // Hidden codes remain discoverable and reversible even when no
             // current diagnostic uses them.
             let suppressed_codes = self.suppressed_codes();
-            ui.menu_button(
-                format!("Suppressed ({})", suppressed_codes.len()),
-                |ui| {
-                    if suppressed_codes.is_empty() {
-                        ui.label("No suppressed diagnostic codes");
+            ui.menu_button(format!("Suppressed ({})", suppressed_codes.len()), |ui| {
+                if suppressed_codes.is_empty() {
+                    ui.label("No suppressed diagnostic codes");
+                }
+                for code in suppressed_codes {
+                    if ui.button(format!("Show {code}")).clicked() {
+                        self.suppressed_codes.remove(&code);
+                        output.suppression_changed = true;
+                        ui.close();
                     }
-                    for code in suppressed_codes {
-                        if ui.button(format!("Show {code}")).clicked() {
-                            self.suppressed_codes.remove(&code);
-                            output.suppression_changed = true;
-                            ui.close();
-                        }
-                    }
-                },
-            );
+                }
+            });
         });
 
         // Generate the groups once for rendering. The same helper also supplies
@@ -349,8 +345,7 @@ impl ProblemsPanel {
         let mut groups = Vec::new();
 
         for diagnostic in &self.problems {
-            if self.is_suppressed(diagnostic)
-                || !self.severity_filter.accepts(diagnostic.severity)
+            if self.is_suppressed(diagnostic) || !self.severity_filter.accepts(diagnostic.severity)
             {
                 continue;
             }
@@ -689,10 +684,7 @@ mod tests {
         let mut panel = ProblemsPanel::default();
         panel.set_problems(vec![diagnostic.clone()]);
 
-        assert_eq!(
-            panel.active_count_with(Severity::Warning, &[diagnostic]),
-            1
-        );
+        assert_eq!(panel.active_count_with(Severity::Warning, &[diagnostic]), 1);
     }
 
     /// Verifies that preferences can hide notices but never blocking errors.

@@ -7,9 +7,9 @@
 use super::errors::EditorSessionError;
 use super::{EditorGraphDomain, EditorSession};
 use engine_authoring::{
-    animation_graph_motion_slots, motion_slots_annotation_value, Diagnostic, Edge, EdgeId,
-    GraphCommand, MotionSlot, MotionSlotId, Node, NodeId, NodeLayout, PortRef, Value, Vec2,
-    MOTION_SLOTS_ANNOTATION,
+    Diagnostic, Edge, EdgeId, GraphCommand, MOTION_SLOTS_ANNOTATION, MotionSlot, MotionSlotId,
+    Node, NodeId, NodeLayout, PortRef, Value, Vec2, animation_graph_motion_slots,
+    motion_slots_annotation_value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,14 +60,15 @@ impl EditorSession {
         self.push_undo_checkpoint();
         self.apply_graph_command(GraphCommand::AddNode { node })?;
         if let Some(position) = position
-            && let Err(error) = self.set_node_layout(node_id.clone(), NodeLayout::new(position)) {
-                self.diagnostics.push(Diagnostic::warning(
-                    "editor.presentation_after_semantic_failed",
-                    format!(
-                        "semantic animation node was added but presentation placement failed: {error}"
-                    ),
-                ));
-            }
+            && let Err(error) = self.set_node_layout(node_id.clone(), NodeLayout::new(position))
+        {
+            self.diagnostics.push(Diagnostic::warning(
+                "editor.presentation_after_semantic_failed",
+                format!(
+                    "semantic animation node was added but presentation placement failed: {error}"
+                ),
+            ));
+        }
         if let Err(error) = self.select_node(Some(node_id.clone())) {
             self.diagnostics.push(Diagnostic::warning(
                 "editor.presentation_after_semantic_failed",
@@ -491,9 +492,11 @@ mod tests {
             .filter(|node| node.node_type.as_str() == "anim.entry")
             .collect::<Vec<_>>();
         assert_eq!(entries.len(), 1);
-        assert!(session
-            .graph_view()
-            .is_some_and(|view| view.nodes.contains_key(&entries[0].id)));
+        assert!(
+            session
+                .graph_view()
+                .is_some_and(|view| view.nodes.contains_key(&entries[0].id))
+        );
         assert_eq!(
             session.available_graph_node_kinds(),
             vec![GraphNodeInsertKind::Animation(
@@ -683,20 +686,24 @@ mod tests {
             .delete_motion_slot(motion_slot.clone())
             .expect("confirmed slot deletion should succeed");
 
-        assert!(session
-            .motion_slots()
-            .expect("slot list should remain valid")
-            .is_empty());
+        assert!(
+            session
+                .motion_slots()
+                .expect("slot list should remain valid")
+                .is_empty()
+        );
         for node in [&first, &second] {
             let Value::Object(properties) = &session.graph().nodes[node].properties else {
                 panic!("State properties must remain an object");
             };
             assert!(!properties.contains_key("motion_slot"));
         }
-        assert!(session
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "anim.state_no_motion"));
+        assert!(
+            session
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "anim.state_no_motion")
+        );
 
         assert!(session.undo(), "slot deletion should be one undo step");
         assert_eq!(

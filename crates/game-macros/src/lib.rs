@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use syn::parse::Parser;
 use syn::{
-    parse_macro_input, Attribute, DeriveInput, Expr, Fields, FnArg, Item, ItemFn, Lit, Meta,
-    ReturnType, Token, Type,
+    Attribute, DeriveInput, Expr, Fields, FnArg, Item, ItemFn, Lit, Meta, ReturnType, Token, Type,
+    parse_macro_input,
 };
 
 /// Derives a stable Project Settings input-action marker.
@@ -248,14 +248,14 @@ fn derive_game_resource_impl(input: DeriveInput) -> syn::Result<proc_macro2::Tok
                 return Err(syn::Error::new_spanned(
                     name,
                     "GameResource requires a struct with named fields",
-                ))
+                ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 name,
                 "GameResource can only be derived for structs",
-            ))
+            ));
         }
     };
 
@@ -417,14 +417,14 @@ fn derive_game_component_impl(input: DeriveInput) -> syn::Result<proc_macro2::To
                 return Err(syn::Error::new_spanned(
                     name,
                     "GameComponent requires a struct with named fields",
-                ))
+                ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 name,
                 "GameComponent can only be derived for structs",
-            ))
+            ));
         }
     };
 
@@ -891,7 +891,7 @@ fn game_system_impl(
             return Err(syn::Error::new_spanned(
                 &function.sig.ident,
                 format!("unsupported schedule `{other}`"),
-            ))
+            ));
         }
     };
     let name = &function.sig.ident;
@@ -1096,8 +1096,10 @@ mod tests {
         ));
 
         let error = game_component_field_is_skipped(&field).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("game_field requires the `skip` option"));
+        assert!(
+            error
+                .to_string()
+                .contains("game_field requires the `skip` option")
+        );
     }
 }

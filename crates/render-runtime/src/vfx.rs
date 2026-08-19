@@ -256,7 +256,11 @@ impl VfxInstance {
     /// Aggregate live/spawned/dropped counters and backend identity.
     pub fn stats(&self) -> VfxRuntimeStats {
         VfxRuntimeStats {
-            live_particles: self.emitters.iter().map(VfxEmitterRuntime::live_count).sum(),
+            live_particles: self
+                .emitters
+                .iter()
+                .map(VfxEmitterRuntime::live_count)
+                .sum(),
             spawned_particles: self
                 .emitters
                 .iter()
@@ -277,15 +281,19 @@ impl VfxInstance {
             return false;
         }
         self.emitters.iter().all(|runtime| {
-            runtime.definition.spawn_operations.iter().all(|operation| match &operation.operation {
-                VfxModuleOperation::SpawnRate {
-                    particles_per_second,
-                } => *particles_per_second <= 0.0,
-                VfxModuleOperation::Burst { .. } => {
-                    runtime.fired_bursts.contains(&operation.source_module)
-                }
-                _ => true,
-            })
+            runtime
+                .definition
+                .spawn_operations
+                .iter()
+                .all(|operation| match &operation.operation {
+                    VfxModuleOperation::SpawnRate {
+                        particles_per_second,
+                    } => *particles_per_second <= 0.0,
+                    VfxModuleOperation::Burst { .. } => {
+                        runtime.fired_bursts.contains(&operation.source_module)
+                    }
+                    _ => true,
+                })
         })
     }
 
@@ -344,8 +352,12 @@ impl VfxInstance {
             update_particles(runtime, dt);
         }
 
-        let mut remaining_effect_capacity = (self.effect.max_particles as usize)
-            .saturating_sub(self.emitters.iter().map(VfxEmitterRuntime::live_count).sum());
+        let mut remaining_effect_capacity = (self.effect.max_particles as usize).saturating_sub(
+            self.emitters
+                .iter()
+                .map(VfxEmitterRuntime::live_count)
+                .sum(),
+        );
 
         for (emitter_index, runtime) in self.emitters.iter_mut().enumerate() {
             let requested = requested_spawns(runtime, dt, end_time);
@@ -471,7 +483,11 @@ impl VfxPlayer {
             autoplay,
             looping,
             restart_policy,
-            time_scale: if time_scale.is_finite() { time_scale.max(0.0) } else { 1.0 },
+            time_scale: if time_scale.is_finite() {
+                time_scale.max(0.0)
+            } else {
+                1.0
+            },
             parameter_overrides,
         }
     }
@@ -566,7 +582,10 @@ impl VfxPlayer {
 }
 
 /// Advances every scene [`VfxPlayer`] from the frame clock.
-pub fn vfx_update_system(time: Res<'_, Time>, mut query: Query<'_, (&mut VfxPlayer, &GlobalTransform)>) {
+pub fn vfx_update_system(
+    time: Res<'_, Time>,
+    mut query: Query<'_, (&mut VfxPlayer, &GlobalTransform)>,
+) {
     let dt = time.delta_seconds;
     if dt <= 0.0 {
         return;
@@ -604,7 +623,8 @@ fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) -> 
                 particles_per_second,
             } => rate += (*particles_per_second).max(0.0),
             VfxModuleOperation::Burst { time, count }
-                if *time <= end_time && !runtime.fired_bursts.contains(&operation.source_module) =>
+                if *time <= end_time
+                    && !runtime.fired_bursts.contains(&operation.source_module) =>
             {
                 runtime.fired_bursts.insert(operation.source_module.clone());
                 bursts = bursts.saturating_add(u64::from(*count));
@@ -622,9 +642,7 @@ fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) -> 
         runtime.spawn_accumulator = 0.0;
         0
     };
-    continuous
-        .saturating_add(bursts)
-        .min(u64::from(u32::MAX)) as u32
+    continuous.saturating_add(bursts).min(u64::from(u32::MAX)) as u32
 }
 
 fn update_particles(runtime: &mut VfxEmitterRuntime, dt: f32) {
@@ -687,23 +705,11 @@ fn spawn_particle(
                 direction = sampled.1;
             }
             VfxModuleOperation::Lifetime { value } => {
-                lifetime = sample_scalar(
-                    value,
-                    effect_seed,
-                    emitter_index,
-                    spawn_serial,
-                    0,
-                )
-                .max(0.01);
+                lifetime =
+                    sample_scalar(value, effect_seed, emitter_index, spawn_serial, 0).max(0.01);
             }
             VfxModuleOperation::InitialSpeed { value } => {
-                let speed = sample_scalar(
-                    value,
-                    effect_seed,
-                    emitter_index,
-                    spawn_serial,
-                    0,
-                );
+                let speed = sample_scalar(value, effect_seed, emitter_index, spawn_serial, 0);
                 velocity = direction.normalize_or_zero() * speed;
             }
             VfxModuleOperation::InitialVelocity { value } => {
@@ -716,23 +722,10 @@ fn spawn_particle(
             }
             VfxModuleOperation::InitialColor { color: initial } => color = *initial,
             VfxModuleOperation::InitialSize { value } => {
-                size = sample_scalar(
-                    value,
-                    effect_seed,
-                    emitter_index,
-                    spawn_serial,
-                    0,
-                )
-                .max(0.0);
+                size = sample_scalar(value, effect_seed, emitter_index, spawn_serial, 0).max(0.0);
             }
             VfxModuleOperation::InitialRotation { value } => {
-                rotation = sample_scalar(
-                    value,
-                    effect_seed,
-                    emitter_index,
-                    spawn_serial,
-                    0,
-                );
+                rotation = sample_scalar(value, effect_seed, emitter_index, spawn_serial, 0);
             }
             _ => {}
         }
@@ -761,7 +754,8 @@ fn sample_scalar(
     match value {
         VfxScalarValue::Constant { value } => *value,
         VfxScalarValue::Range { min, max, channel } => {
-            min + (max - min) * random_unit(seed, emitter_index, spawn_serial, channel.index(), lane)
+            min + (max - min)
+                * random_unit(seed, emitter_index, spawn_serial, channel.index(), lane)
         }
     }
 }
@@ -833,8 +827,7 @@ fn sample_shape(
             let around = sample(0) * std::f32::consts::TAU;
             let tilt = sample(1) * *angle_radians;
             let radial_dir = tangent * around.cos() + bitangent * around.sin();
-            let spawn_direction =
-                (axis * tilt.cos() + radial_dir * tilt.sin()).normalize_or_zero();
+            let spawn_direction = (axis * tilt.cos() + radial_dir * tilt.sin()).normalize_or_zero();
             let disk_radius = sample(2).sqrt() * *radius;
             (radial_dir * disk_radius, spawn_direction)
         }
@@ -874,8 +867,7 @@ mod tests {
     };
 
     fn emitter_id() -> VfxEmitterId {
-        VfxEmitterId::try_new("vfxemitter_00000000000000000000000000")
-            .expect("test emitter ID")
+        VfxEmitterId::try_new("vfxemitter_00000000000000000000000000").expect("test emitter ID")
     }
 
     fn module_id(index: u8) -> VfxModuleId {
@@ -1010,7 +1002,10 @@ mod tests {
             second.step(1.0 / 60.0, Vec3::new(1.0, 2.0, 3.0));
         }
         assert_eq!(first.stats(), second.stats());
-        assert_eq!(first.emitters()[0].particles(), second.emitters()[0].particles());
+        assert_eq!(
+            first.emitters()[0].particles(),
+            second.emitters()[0].particles()
+        );
     }
 
     #[test]
@@ -1064,7 +1059,10 @@ mod tests {
         let mut definition = effect(128);
         definition.emitters[0].spawn_operations = vec![operation(
             1,
-            VfxModuleOperation::Burst { time: 0.0, count: 4 },
+            VfxModuleOperation::Burst {
+                time: 0.0,
+                count: 4,
+            },
         )];
         let mut instance = VfxInstance::new(definition, None);
         instance.step(0.1, Vec3::ZERO);
@@ -1078,7 +1076,10 @@ mod tests {
         let mut definition = effect(32);
         definition.emitters[0].spawn_operations = vec![operation(
             1,
-            VfxModuleOperation::Burst { time: 0.0, count: 1 },
+            VfxModuleOperation::Burst {
+                time: 0.0,
+                count: 1,
+            },
         )];
         definition.emitters[0].update_operations.clear();
         definition.emitters[0].spawn_operations.push(operation(

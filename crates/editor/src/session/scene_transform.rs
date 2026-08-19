@@ -268,9 +268,11 @@ mod tests {
             )
             .unwrap();
 
-        assert!(session
-            .offset_scene_entities([valid.clone(), invalid], [10.0, 0.0, 0.0])
-            .is_err());
+        assert!(
+            session
+                .offset_scene_entities([valid.clone(), invalid], [10.0, 0.0, 0.0])
+                .is_err()
+        );
         let value = session
             .scene_entity(&valid)
             .unwrap()

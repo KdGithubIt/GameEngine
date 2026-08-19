@@ -4,7 +4,7 @@
 //! historical `engine::scene_manager` path while keeping the world-spawn bridge
 //! and exclusive-world switch algorithm in the top-level composition crate.
 
-use crate::scene_bridge::{spawn_from_authoring_scene, SceneBridgeError};
+use crate::scene_bridge::{SceneBridgeError, spawn_from_authoring_scene};
 use crate::scene_loader::SceneLoader;
 use engine_ecs::{Entity, World};
 
@@ -95,7 +95,7 @@ fn despawn_current_scene(world: &mut World, requested_path: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_authoring::{ProjectConfig, ProjectRoot, PROJECT_SCHEMA_VERSION};
+    use engine_authoring::{PROJECT_SCHEMA_VERSION, ProjectConfig, ProjectRoot};
 
     fn make_project() -> (tempfile::TempDir, ProjectRoot) {
         let dir = tempfile::tempdir().unwrap();
@@ -183,7 +183,11 @@ mod tests {
                 "scene A entity must be despawned after switching away"
             );
         }
-        assert_eq!(world.entity_count(), 1, "scene B's single entity must exist");
+        assert_eq!(
+            world.entity_count(),
+            1,
+            "scene B's single entity must exist"
+        );
         let manager = world.get_resource::<SceneManager>().unwrap();
         assert_eq!(manager.generation(), 1);
         assert_eq!(manager.current_scene_path(), Some("scenes/b.scene.json"));
@@ -210,7 +214,11 @@ mod tests {
             );
         }
         let manager = world.get_resource::<SceneManager>().unwrap();
-        assert_eq!(manager.generation(), 0, "failed switch must not bump generation");
+        assert_eq!(
+            manager.generation(),
+            0,
+            "failed switch must not bump generation"
+        );
         assert_eq!(manager.current_scene_path(), Some("scenes/a.scene.json"));
         match world.get_resource::<SceneSwitchState>().unwrap() {
             SceneSwitchState::Failed { path, .. } => {
@@ -279,7 +287,11 @@ mod tests {
 
         let manager = world.get_resource::<SceneManager>().unwrap();
         assert_eq!(manager.current_scene_path(), Some("scenes/c.scene.json"));
-        assert_eq!(manager.generation(), 1, "only the last request in the frame must execute");
+        assert_eq!(
+            manager.generation(),
+            1,
+            "only the last request in the frame must execute"
+        );
         drop(dir);
     }
 

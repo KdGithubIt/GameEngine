@@ -317,7 +317,9 @@ mod tests {
         let permissions = writable();
         let mut direct = AuthoringSession::new(AuthoringScene::new());
         let mut through_mcp = AuthoringSession::new(direct.scene().clone());
-        let direct_base = service.inspect(&direct, &permissions).expect("direct inspect");
+        let direct_base = service
+            .inspect(&direct, &permissions)
+            .expect("direct inspect");
         let mcp_base = service
             .inspect(&through_mcp, &permissions)
             .expect("mcp inspect");

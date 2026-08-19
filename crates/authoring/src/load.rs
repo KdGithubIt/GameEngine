@@ -363,9 +363,11 @@ mod tests {
             .map(|(_, entity)| entity)
             .expect("future entity must exist");
 
-        assert!(entity
-            .components
-            .contains_key(&crate::id::ComponentTypeId::new("future.camera")));
+        assert!(
+            entity
+                .components
+                .contains_key(&crate::id::ComponentTypeId::new("future.camera"))
+        );
     }
 
     #[test]

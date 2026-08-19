@@ -1,7 +1,7 @@
 //! Transform gizmo state and drag-delta computation for Phase 29.
 
-use engine_authoring::id::ComponentTypeId;
 use engine_authoring::Value;
+use engine_authoring::id::ComponentTypeId;
 
 /// Describes which part of the transform the user is dragging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

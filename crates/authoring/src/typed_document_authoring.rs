@@ -7,9 +7,10 @@
 
 use crate::project_settings::SYSTEM_SETTINGS_SCHEMA_VERSION;
 use crate::{
-    AnimationSet, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, Diagnostic,
-    MaterialAsset, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
-    TileSetDocument, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
+    ANIMATION_SET_SCHEMA_VERSION, AnimationSet, AuthoringPermission, AuthoringPermissionError,
+    AuthoringPermissions, Diagnostic, MaterialAsset, PROJECT_SETTINGS_SCHEMA_VERSION,
+    ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
+    TileSetDocument,
 };
 use serde::Serialize;
 use std::fmt;
@@ -320,7 +321,14 @@ impl TypedDocumentAuthoringService {
     ) -> Result<TypedDocumentAuthoringMutation<T>, TypedDocumentAuthoringError> {
         permissions.require(AuthoringPermission::Preview)?;
         ensure_current(state, expected_revision, expected_generation)?;
-        Ok(evaluate(document, state, expected_revision, expected_generation, replacement, false))
+        Ok(evaluate(
+            document,
+            state,
+            expected_revision,
+            expected_generation,
+            replacement,
+            false,
+        ))
     }
 
     /// Applies one validated whole-document replacement atomically.
@@ -400,7 +408,10 @@ fn evaluate<T: TypedAuthoringDocument>(
     }
 }
 
-fn replacement_diff<T: TypedAuthoringDocument>(before: &T, after: &T) -> Vec<TypedDocumentChange<T>> {
+fn replacement_diff<T: TypedAuthoringDocument>(
+    before: &T,
+    after: &T,
+) -> Vec<TypedDocumentChange<T>> {
     if before == after {
         Vec::new()
     } else {
@@ -451,7 +462,9 @@ mod tests {
         let service = TypedDocumentAuthoringService::new();
         let mut document = MaterialAsset::default();
         let mut state = TypedDocumentAuthoringState::new();
-        let base = service.inspect(&document, &state, &writable()).expect("inspect");
+        let base = service
+            .inspect(&document, &state, &writable())
+            .expect("inspect");
         let mut replacement = document.clone();
         replacement.roughness = 0.25;
         let preview = service
@@ -497,7 +510,10 @@ mod tests {
             stale_generation,
             original.clone(),
         );
-        assert!(matches!(stale, Err(TypedDocumentAuthoringError::Stale { .. })));
+        assert!(matches!(
+            stale,
+            Err(TypedDocumentAuthoringError::Stale { .. })
+        ));
         let mut invalid = original.clone();
         invalid.roughness = f32::NAN;
         let revision = state.revision();
@@ -521,8 +537,23 @@ mod tests {
         let service = TypedDocumentAuthoringService::new();
         let permissions = AuthoringPermissions::read_only();
         let state = TypedDocumentAuthoringState::new();
-        assert!(service.validate(&MaterialAsset::default(), &state, &permissions).unwrap().success);
-        assert!(service.validate(&ProjectSettings::default(), &state, &permissions).unwrap().success);
-        assert!(service.validate(&AnimationSet::empty(), &state, &permissions).unwrap().success);
+        assert!(
+            service
+                .validate(&MaterialAsset::default(), &state, &permissions)
+                .unwrap()
+                .success
+        );
+        assert!(
+            service
+                .validate(&ProjectSettings::default(), &state, &permissions)
+                .unwrap()
+                .success
+        );
+        assert!(
+            service
+                .validate(&AnimationSet::empty(), &state, &permissions)
+                .unwrap()
+                .success
+        );
     }
 }

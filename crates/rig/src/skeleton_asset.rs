@@ -352,9 +352,11 @@ mod tests {
             registry.get(&asset.id).map(|found| found.identity),
             Some(asset.identity)
         );
-        assert!(registry
-            .get(&engine_authoring::id::AssetId::generate())
-            .is_none());
+        assert!(
+            registry
+                .get(&engine_authoring::id::AssetId::generate())
+                .is_none()
+        );
 
         let removed = registry.remove(&asset.id);
         assert_eq!(removed.map(|found| found.identity), Some(asset.identity));

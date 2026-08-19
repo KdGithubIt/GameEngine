@@ -396,14 +396,15 @@ fn asset_drop_on_response(
     kind: engine::AssetKind,
 ) -> Option<AssetId> {
     if let Some(payload) = response.dnd_hover_payload::<crate::drag_drop::DragPayload>()
-        && payload_matches_engine_kind(&payload, kind) {
-            ui.painter().rect_stroke(
-                response.rect,
-                2.0,
-                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 180, 255)),
-                egui::StrokeKind::Outside,
-            );
-        }
+        && payload_matches_engine_kind(&payload, kind)
+    {
+        ui.painter().rect_stroke(
+            response.rect,
+            2.0,
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 180, 255)),
+            egui::StrokeKind::Outside,
+        );
+    }
     response
         .dnd_release_payload::<crate::drag_drop::DragPayload>()
         .filter(|payload| payload_matches_engine_kind(payload, kind))
