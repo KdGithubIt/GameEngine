@@ -162,6 +162,9 @@ pub(crate) struct CampaignRepresentation {
     pub(crate) backend_id: String,
     pub(crate) model_id: String,
     pub(crate) model_version: String,
+    /// Provider quantization label or an equivalent exact representation descriptor.
+    ///
+    /// The serialized field name is retained for campaign-schema compatibility.
     pub(crate) quantization: String,
     pub(crate) representation_size_bytes: u64,
 }

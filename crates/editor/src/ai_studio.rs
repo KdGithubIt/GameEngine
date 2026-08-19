@@ -3018,7 +3018,10 @@ impl AiStudioPanel {
                 digest: Some(config.model_content_sha256.clone()),
                 size_bytes: Some(config.model_size_bytes),
                 parameter_size: None,
-                quantization_level: config.quantization.clone(),
+                quantization_level: config
+                    .model_representation
+                    .clone()
+                    .or_else(|| config.quantization.clone()),
                 family: Some("managed llama.cpp GGUF".to_owned()),
             }],
         }
