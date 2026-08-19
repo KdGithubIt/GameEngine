@@ -49,6 +49,31 @@ const WSL_SERVER_LAUNCH_GRACE_SECONDS: u64 = 1;
 /// The pinned llama.cpp revision supports automatic layer selection plus `--fit`; keeping
 /// `--n-gpu-layers` unset lets that fitter account for the exact model and currently available VRAM.
 const MANAGED_GPU_FIT_TARGET_MIB: u32 = 1024;
+/// Serve one request at a time so the context window below is not multiplied by idle slots.
+///
+/// llama-server allocates `--ctx-size` per slot, so the KV cache it reserves is the context window
+/// times the slot count. Managed local inference is issued sequentially, so extra slots only
+/// multiply KV residency and scatter prompt-prefix reuse across cold slots.
+const MANAGED_SERVER_PARALLEL_SLOTS: u32 = 1;
+/// Size the per-request context window from measured managed-agent prompts rather than the
+/// llama-server default of 4096, which truncated or rejected every benchmark prompt.
+///
+/// Observed managed-agent prompts reach roughly 6400 tokens and grow as tool results accumulate,
+/// so this leaves several turns of headroom. The upper bound is device memory, and the cost per
+/// token varies by more than an order of magnitude across architectures: a dense 14B spends about
+/// 160 KiB per token, while an interleaved sliding-window 12B spends about 16 KiB per token plus a
+/// fixed window reservation. This window therefore reserves roughly 830 MiB on a sliding-window
+/// model but would exceed device memory on a dense model of similar size. Deriving it from model
+/// metadata and free device memory instead of a shared constant is the correct fix once more than
+/// one architecture has to be resident.
+const MANAGED_SERVER_CONTEXT_TOKENS: u32 = 12288;
+/// Allow a released llama-server to finish exiting before another one measures device memory.
+///
+/// A forced kill closes the loopback socket long before the process frees its device allocations,
+/// so treating an unreachable endpoint as a completed release lets the next launch run `--fit`
+/// while the previous weights and KV cache are still resident. The fitter then moves blocks onto
+/// the CPU for the whole session, which costs far more than waiting out the teardown.
+const MANAGED_SERVER_RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -186,6 +211,57 @@ impl ManagedModelRegistration {
             && self.size_bytes > 0
             && self.exact_representation().is_some()
     }
+}
+
+/// Restores measured representations for models registered by an older build.
+///
+/// Registration has always recorded the digest and byte size, but the GGUF
+/// representation descriptor was added later, so registries written before that
+/// hold records that can never become campaign candidates. Returns whether any
+/// record changed, so a reader only rewrites the registry when a record was
+/// actually restored.
+fn remeasure_unmeasured_representations(registry: &mut ManagedModelRegistry) -> bool {
+    let mut remeasured = false;
+    for model in &mut registry.models {
+        if model.exact_representation().is_some() {
+            continue;
+        }
+        let Some(representation) = remeasure_registered_representation(model) else {
+            continue;
+        };
+        // Replace the legacy label from the same measurement that produced the
+        // descriptor, so both fields keep describing one inspection of one file.
+        model.quantization = representation.canonical_quantization;
+        model.representation = Some(representation.descriptor);
+        remeasured = true;
+    }
+    remeasured
+}
+
+/// Re-reads the GGUF header of an already registered model file.
+///
+/// ADR 0155 keeps presentation paths free of whole-file hashing, so this accepts
+/// a file only while its byte size and modification time still match the record.
+/// A file that passes that check is the one whose digest was recorded, under the
+/// same assumption [`ManagedLocalRuntime::verify_registered_model`] already makes
+/// before inference. Anything else stays unmeasured and keeps asking the operator
+/// to register the exact GGUF again.
+fn remeasure_registered_representation(
+    model: &ManagedModelRegistration,
+) -> Option<gguf::GgufRepresentation> {
+    let recorded_modified = model.modified_unix_ms?;
+    if !is_sha256_hex(&model.content_sha256) || model.size_bytes == 0 {
+        return None;
+    }
+    let metadata = fs::metadata(&model.source_path).ok()?;
+    if metadata.len() != model.size_bytes {
+        return None;
+    }
+    if metadata.modified().ok().and_then(system_time_unix_ms)? != recorded_modified {
+        return None;
+    }
+    let representation = gguf::inspect_representation(&model.source_path).ok()?;
+    gguf::is_representation_descriptor(&representation.descriptor).then_some(representation)
 }
 
 /// Whether a resolved managed configuration also runs content verification.
@@ -834,12 +910,24 @@ impl ManagedLocalRuntime {
         read_optional_json(&path).map_err(runtime_io)
     }
 
+    /// Returns every registered managed model.
+    ///
+    /// Records written before GameEngine measured GGUF representations are
+    /// re-measured here from the registered file itself, so an operator does not
+    /// have to re-register a multi-gigabyte GGUF only to recover a descriptor
+    /// that the file still carries.
     pub(crate) fn registered_models(
         &self,
     ) -> Result<Vec<ManagedModelRegistration>, ManagedLocalRuntimeError> {
-        let registry: ManagedModelRegistry = read_optional_json(&self.model_registry_path())
+        let mut registry: ManagedModelRegistry = read_optional_json(&self.model_registry_path())
             .map_err(model_io)?
             .unwrap_or_default();
+        if remeasure_unmeasured_representations(&mut registry) {
+            // A registry that cannot be rewritten only costs another measurement
+            // on the next read. These descriptors were measured from the
+            // registered bytes either way, so a failed rewrite must not hide them.
+            let _ = write_json(&self.model_registry_path(), &registry);
+        }
         Ok(registry.models)
     }
 
@@ -1598,10 +1686,17 @@ impl ManagedLocalRuntime {
             ));
         }
         let started = Instant::now();
-        while endpoint_is_healthy(&state.endpoint) && started.elapsed() < Duration::from_secs(5) {
+        while process_is_alive(state)? && started.elapsed() < MANAGED_SERVER_RELEASE_TIMEOUT {
             thread::sleep(Duration::from_millis(50));
         }
+        let still_alive = process_is_alive(state)?;
         self.clear_process_state()?;
+        if still_alive {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ModelResource,
+                "managed llama-server did not exit after the requested release, so its device memory is still reserved",
+            ));
+        }
         if endpoint_is_healthy(&state.endpoint) {
             return Err(ManagedLocalRuntimeError::new(
                 ManagedDiagnosticLayer::ModelResource,
@@ -1683,6 +1778,10 @@ fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
         "on".to_owned(),
         "--fit-target".to_owned(),
         MANAGED_GPU_FIT_TARGET_MIB.to_string(),
+        "--parallel".to_owned(),
+        MANAGED_SERVER_PARALLEL_SLOTS.to_string(),
+        "--ctx-size".to_owned(),
+        MANAGED_SERVER_CONTEXT_TOKENS.to_string(),
     ]
 }
 
@@ -2358,7 +2457,7 @@ fn wsl_server_launch_command(
     let log = wsl_server_log_path(environment);
     let quoted_log = shell_quote(&log);
     format!(
-        "mkdir -p {}; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {quoted_log} 2>&1 < /dev/null & pid=$!; sleep {WSL_SERVER_LAUNCH_GRACE_SECONDS}; if ! kill -0 \"$pid\" 2>/dev/null; then printf 'managed llama-server exited during WSL startup; log: %s\\n' {quoted_log} >&2; tail -n 40 {quoted_log} >&2 2>/dev/null || true; exit 1; fi; echo \"$pid\"",
+        "mkdir -p {}; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} --parallel {MANAGED_SERVER_PARALLEL_SLOTS} --ctx-size {MANAGED_SERVER_CONTEXT_TOKENS} > {quoted_log} 2>&1 < /dev/null & pid=$!; sleep {WSL_SERVER_LAUNCH_GRACE_SECONDS}; if ! kill -0 \"$pid\" 2>/dev/null; then printf 'managed llama-server exited during WSL startup; log: %s\\n' {quoted_log} >&2; tail -n 40 {quoted_log} >&2 2>/dev/null || true; exit 1; fi; echo \"$pid\"",
         shell_quote(WSL_SERVER_LOG_ROOT)
     )
 }
@@ -2631,6 +2730,111 @@ mod tests {
         assert!(!model.has_exact_representation_identity());
     }
 
+    /// Rewrites a registry into the shape an older GameEngine build persisted.
+    fn strip_measured_representation(path: &Path) {
+        let bytes = fs::read(path).expect("registry bytes");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("registry document");
+        for model in registry["models"].as_array_mut().expect("registry models") {
+            let model = model.as_object_mut().expect("registry model");
+            model.remove("representation");
+            model["quantization"] = serde_json::Value::Null;
+        }
+        fs::write(path, serde_json::to_vec(&registry).expect("registry bytes"))
+            .expect("write registry");
+    }
+
+    #[test]
+    fn legacy_registration_is_remeasured_from_its_registered_gguf() {
+        let root = temp_root("legacy-remeasure");
+        let model = root.join("legacy-Q4_K_M.gguf");
+        fs::create_dir_all(&root).expect("temp root");
+        gguf::write_test_gguf(&model, Some(15), &[12, 12, 14]).expect("model fixture");
+        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+        let registration = manager
+            .register_existing_gguf(&model, None)
+            .expect("register GGUF");
+        strip_measured_representation(&manager.model_registry_path());
+
+        let models = manager.registered_models().expect("registered models");
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].representation, registration.representation);
+        assert_eq!(models[0].quantization, registration.quantization);
+        assert!(models[0].has_exact_representation_identity());
+        let persisted: ManagedModelRegistry = read_optional_json(&manager.model_registry_path())
+            .expect("registry")
+            .expect("registry document");
+        assert_eq!(
+            persisted.models[0].representation, registration.representation,
+            "a remeasured registry must be persisted instead of measured on every read"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_registration_whose_file_no_longer_matches_stays_unmeasured() {
+        let root = temp_root("legacy-drift");
+        let model = root.join("drifted-Q4_K_M.gguf");
+        fs::create_dir_all(&root).expect("temp root");
+        gguf::write_test_gguf(&model, Some(15), &[12, 12, 14]).expect("model fixture");
+        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+        manager
+            .register_existing_gguf(&model, None)
+            .expect("register GGUF");
+        let registry_path = manager.model_registry_path();
+        strip_measured_representation(&registry_path);
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("registry bytes"))
+                .expect("registry document");
+        registry["models"][0]["size_bytes"] = serde_json::json!(1);
+        fs::write(
+            &registry_path,
+            serde_json::to_vec(&registry).expect("registry bytes"),
+        )
+        .expect("write registry");
+        let before = fs::read(&registry_path).expect("registry bytes");
+
+        let models = manager.registered_models().expect("registered models");
+
+        assert_eq!(models[0].representation, None);
+        assert!(!models[0].has_exact_representation_identity());
+        assert_eq!(
+            fs::read(&registry_path).expect("registry bytes"),
+            before,
+            "a record that cannot be remeasured must not be rewritten"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_registration_without_a_recorded_modification_time_stays_unmeasured() {
+        let root = temp_root("legacy-untimed");
+        let model = root.join("untimed-Q4_K_M.gguf");
+        fs::create_dir_all(&root).expect("temp root");
+        gguf::write_test_gguf(&model, Some(15), &[12, 12, 14]).expect("model fixture");
+        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+        manager
+            .register_existing_gguf(&model, None)
+            .expect("register GGUF");
+        let registry_path = manager.model_registry_path();
+        strip_measured_representation(&registry_path);
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("registry bytes"))
+                .expect("registry document");
+        registry["models"][0]["modified_unix_ms"] = serde_json::Value::Null;
+        fs::write(
+            &registry_path,
+            serde_json::to_vec(&registry).expect("registry bytes"),
+        )
+        .expect("write registry");
+
+        let models = manager.registered_models().expect("registered models");
+
+        assert_eq!(models[0].representation, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn restart_continuation_is_machine_local_state() {
         let root = temp_root("restart");
@@ -2817,6 +3021,10 @@ mod tests {
                 "on".to_owned(),
                 "--fit-target".to_owned(),
                 "1024".to_owned(),
+                "--parallel".to_owned(),
+                "1".to_owned(),
+                "--ctx-size".to_owned(),
+                "12288".to_owned(),
             ]
         );
         assert!(

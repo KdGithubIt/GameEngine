@@ -241,7 +241,7 @@ impl AiStudioPanel {
                     ui.small(format!("Representation: {representation}"));
                 } else {
                     ui.small(format!(
-                        "{} cannot be a candidate: its exact digest, GGUF-derived representation, or byte size is not measured. Re-register this GGUF once if it was registered by an older GameEngine build.",
+                        "{} cannot be a candidate: its exact digest, GGUF-derived representation, or byte size could not be measured from the registered file. Re-register this GGUF if it moved or changed since it was registered.",
                         model.display_name
                     ));
                 }
