@@ -31,9 +31,10 @@ use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::managed_local_runtime::{
-    ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
-    ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
-    PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
+    ManagedEnvironmentProbe, ManagedEnvironmentProbeTask, ManagedExecutionEnvironment,
+    ManagedIntegrityCheck, ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation,
+    ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask, PINNED_LLAMA_CPP_REVISION,
+    PINNED_LLAMA_CPP_TAG,
 };
 use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
 use crate::native_agent::{
@@ -69,6 +70,8 @@ const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
 const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
 const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
 const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
+/// How long a managed-environment snapshot is reused before a worker re-probes it.
+const MANAGED_PROBE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -669,6 +672,10 @@ pub struct AiStudioPanel {
     managed_execution_environment: ManagedExecutionEnvironment,
     managed_model_id: String,
     managed_setup_task: Option<ManagedSetupTask>,
+    managed_probe: Option<ManagedEnvironmentProbe>,
+    managed_probe_task: Option<ManagedEnvironmentProbeTask>,
+    managed_probe_completed_at: Option<std::time::Instant>,
+    managed_probe_requested: bool,
     local_model_endpoint: String,
     local_model_name: String,
     benchmark_store: BenchmarkStore,
@@ -804,6 +811,10 @@ impl AiStudioPanel {
             managed_execution_environment: preferences.managed_execution_environment,
             managed_model_id: preferences.managed_model_id,
             managed_setup_task: None,
+            managed_probe: None,
+            managed_probe_task: None,
+            managed_probe_completed_at: None,
+            managed_probe_requested: false,
             local_model_endpoint: preferences.local_model_endpoint,
             local_model_name: preferences.local_model_name,
             benchmark_store,
@@ -1140,6 +1151,13 @@ impl AiStudioPanel {
         self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
         self.managed_model_id.clear();
         self.managed_setup_task = None;
+        self.managed_probe_task = None;
+        self.managed_probe_requested = false;
+        self.managed_probe = Some(self.managed_local_runtime.probe_environment(
+            self.managed_execution_environment,
+            self.managed_model_id.clone(),
+        ));
+        self.managed_probe_completed_at = Some(std::time::Instant::now());
         self.last_model_resource_telemetry = ModelResourceTelemetry::default();
         self.external_provider_kind = ExternalAgentProviderKind::Generic;
         self.external_provider_status =
@@ -1550,6 +1568,7 @@ impl AiStudioPanel {
         self.poll_remote_requests();
         self.poll_model_discovery(context);
         self.poll_managed_setup(context);
+        self.poll_managed_probe(context);
         self.poll_native_question(context);
         self.poll_model_resource_task(context);
         self.poll_native_mcp(context);
@@ -2100,7 +2119,7 @@ impl AiStudioPanel {
             if self.native_question.is_some() {
                 ui.spinner();
                 ui.small("Reading current GameEngine/project evidence…");
-            } else if self.selected_native_model_config().is_err() {
+            } else if self.described_native_model_config().is_err() {
                 ui.small("Configure the selected model backend to receive read-only answers.");
             } else {
                 ui.small("Questions use the read-only native harness; Go remains explicit for writes.");
@@ -2191,20 +2210,22 @@ impl AiStudioPanel {
                         ui.small(
                             "Managed Local AI remains an engineering path until Windows-native versus WSL2 characterization selects the normal product default. Windows native is the currently selected candidate; WSL2 remains available for characterization and fallback in the dedicated GameEngine-LocalAI distribution.",
                         );
-                        let setup_status = self
-                            .managed_local_runtime
-                            .setup_status(self.managed_execution_environment);
+                        let probe = self.managed_probe_for_panel();
+                        let setup_status = probe.as_ref().map(|probe| probe.setup_status.clone());
                         let setup_busy = self.managed_setup_task.is_some();
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Runtime");
                             ui.monospace(format!(
                                 "llama.cpp {PINNED_LLAMA_CPP_TAG} @ {PINNED_LLAMA_CPP_REVISION}"
                             ));
-                            match &setup_status {
-                                ManagedSetupStatus::Ready => {
+                            match setup_status.as_ref() {
+                                None => {
+                                    ui.weak("Checking...");
+                                }
+                                Some(ManagedSetupStatus::Ready) => {
                                     ui.strong("Ready");
                                 }
-                                ManagedSetupStatus::RuntimeNotInstalled => {
+                                Some(ManagedSetupStatus::RuntimeNotInstalled) => {
                                     if ui
                                         .add_enabled(
                                             !setup_busy,
@@ -2220,7 +2241,7 @@ impl AiStudioPanel {
                                         );
                                     }
                                 }
-                                ManagedSetupStatus::WslDistributionMissing => {
+                                Some(ManagedSetupStatus::WslDistributionMissing) => {
                                     if ui
                                         .add_enabled(
                                             !setup_busy,
@@ -2234,29 +2255,33 @@ impl AiStudioPanel {
                                         );
                                     }
                                 }
-                                ManagedSetupStatus::RestartRequired => {
+                                Some(ManagedSetupStatus::RestartRequired) => {
                                     ui.strong("Restart required");
                                 }
-                                ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
+                                Some(ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
                                     message,
-                                ) => {
+                                )) => {
                                     ui.strong("Unavailable");
                                     ui.small(message);
                                 }
                             }
-                            if setup_busy {
+                            if setup_busy || setup_status.is_none() {
                                 ui.spinner();
                             }
                         });
-                        if matches!(&setup_status, ManagedSetupStatus::RestartRequired) {
+                        if matches!(setup_status.as_ref(), Some(ManagedSetupStatus::RestartRequired))
+                        {
                             ui.small(
                                 "Windows reported that setup requires a restart. GameEngine persists only a machine-local continuation marker and does not reboot automatically. Reopen the Editor after the restart to continue.",
                             );
                         }
-                        if !matches!(
-                            &setup_status,
-                            ManagedSetupStatus::RuntimeNotInstalled
-                                | ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(_)
+                        if matches!(
+                            setup_status.as_ref(),
+                            Some(
+                                ManagedSetupStatus::Ready
+                                    | ManagedSetupStatus::WslDistributionMissing
+                                    | ManagedSetupStatus::RestartRequired
+                            )
                         ) {
                             ui.horizontal_wrapped(|ui| {
                                 ui.small(
@@ -2341,18 +2366,18 @@ impl AiStudioPanel {
                             if self.managed_execution_environment
                                 == ManagedExecutionEnvironment::Wsl2Linux
                             {
-                                match self.managed_local_runtime.additional_storage_for_environment(
-                                    &model.model_id,
-                                    self.managed_execution_environment,
-                                ) {
-                                    Ok(0) => {
+                                match probe.as_ref().map(|probe| &probe.additional_storage_bytes) {
+                                    None => {
+                                        ui.small("Checking the Linux-native WSL model copy...");
+                                    }
+                                    Some(Ok(0)) => {
                                         ui.small("Linux-native WSL model copy: verified/present.");
                                     }
-                                    Ok(bytes) => {
+                                    Some(Ok(bytes)) => {
                                         ui.horizontal_wrapped(|ui| {
                                             ui.small(format!(
                                                 "WSL2 needs an additional {} Linux-native copy of these same model bytes.",
-                                                format_model_bytes(bytes)
+                                                format_model_bytes(*bytes)
                                             ));
                                             if ui
                                                 .add_enabled(
@@ -2372,7 +2397,7 @@ impl AiStudioPanel {
                                             }
                                         });
                                     }
-                                    Err(error) => {
+                                    Some(Err(error)) => {
                                         ui.small(format!(
                                             "WSL model preparation unavailable: {error}"
                                         ));
@@ -2555,7 +2580,7 @@ impl AiStudioPanel {
                     })
                     .capability_profile(),
                     ModelBackendPreference::ManagedLocal => self
-                        .managed_model_config()
+                        .described_managed_model_config()
                         .map(NativeModelConfig::Managed)
                         .map(|config| config.capability_profile())
                         .unwrap_or_else(|_| {
@@ -2742,8 +2767,8 @@ impl AiStudioPanel {
         });
     }
 
-    fn model_routing_status(&self) -> String {
-        let Ok(primary) = self.selected_native_model_config() else {
+    fn model_routing_status(&mut self) -> String {
+        let Ok(primary) = self.described_native_model_config() else {
             return format!(
                 "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · unavailable until a primary model is selected."
             );
@@ -2835,6 +2860,7 @@ impl AiStudioPanel {
             return;
         };
         self.managed_setup_task = None;
+        self.managed_probe_completed_at = None;
         match result {
             Ok(ManagedSetupResult::RuntimeInstalled(installation)) => {
                 self.status = Some(format!(
@@ -2882,6 +2908,75 @@ impl AiStudioPanel {
         }
     }
 
+    /// Refreshes the managed-environment snapshot on a worker thread.
+    ///
+    /// The Local AI panel renders `managed_probe` and never probes inline. A
+    /// WSL2 frame would otherwise block on three `wsl.exe` launches, and while a
+    /// managed model transfer keeps the dedicated distribution busy each of
+    /// those takes seconds, which stops the frame loop outright.
+    fn poll_managed_probe(&mut self, context: &egui::Context) {
+        let panel_visible = std::mem::take(&mut self.managed_probe_requested);
+        if let Some(task) = self.managed_probe_task.as_ref() {
+            let Some(outcome) = task.poll() else {
+                context.request_repaint_after(std::time::Duration::from_millis(100));
+                return;
+            };
+            self.managed_probe_task = None;
+            self.managed_probe_completed_at = Some(std::time::Instant::now());
+            if let Some(probe) = outcome {
+                self.managed_probe = Some(probe);
+            }
+            context.request_repaint();
+            return;
+        }
+        if !panel_visible || self.managed_setup_task.is_some() || !self.managed_probe_is_stale() {
+            return;
+        }
+        match ManagedEnvironmentProbeTask::spawn(
+            self.managed_local_runtime.clone(),
+            self.managed_execution_environment,
+            self.managed_model_id.clone(),
+        ) {
+            Ok(task) => {
+                self.managed_probe_task = Some(task);
+                context.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(error) => {
+                self.managed_probe_completed_at = Some(std::time::Instant::now());
+                self.status = Some(format!(
+                    "Managed Local AI environment probe failed to start ({}): {error}",
+                    error.layer().label()
+                ));
+            }
+        }
+    }
+
+    fn managed_probe_is_stale(&self) -> bool {
+        let Some(probe) = self.managed_probe.as_ref() else {
+            return true;
+        };
+        if probe.environment != self.managed_execution_environment
+            || probe.model_id != self.managed_model_id
+        {
+            return true;
+        }
+        self.managed_probe_completed_at
+            .is_none_or(|completed_at| completed_at.elapsed() >= MANAGED_PROBE_REFRESH_INTERVAL)
+    }
+
+    /// Returns the snapshot the Local AI panel may render and asks the frame
+    /// loop to keep it refreshed while the panel stays visible.
+    fn managed_probe_for_panel(&mut self) -> Option<ManagedEnvironmentProbe> {
+        self.managed_probe_requested = true;
+        self.managed_probe
+            .as_ref()
+            .filter(|probe| {
+                probe.environment == self.managed_execution_environment
+                    && probe.model_id == self.managed_model_id
+            })
+            .cloned()
+    }
+
     fn managed_model_config(&self) -> Result<ManagedLocalModelConfig, String> {
         if self.managed_model_id.trim().is_empty() {
             return Err("Register or select a managed GGUF model before starting inference.".to_owned());
@@ -2890,8 +2985,34 @@ impl AiStudioPanel {
             .configuration_for(
                 &self.managed_model_id,
                 self.managed_execution_environment,
+                ManagedIntegrityCheck::Enforced,
             )
             .map_err(|error| error.to_string())
+    }
+
+    /// Resolves the managed configuration the panel may render.
+    ///
+    /// Answers come from the cached environment probe, so drawing a frame never
+    /// hashes the model. [`Self::managed_model_config`] keeps the ADR 0155
+    /// pre-inference verification for the paths that start inference.
+    fn described_managed_model_config(&mut self) -> Result<ManagedLocalModelConfig, String> {
+        if self.managed_model_id.trim().is_empty() {
+            return Err("Register or select a managed GGUF model before starting inference.".to_owned());
+        }
+        match self.managed_probe_for_panel() {
+            Some(probe) => probe.described_config,
+            None => Err("Checking the managed Local AI environment...".to_owned()),
+        }
+    }
+
+    /// Presentation counterpart of [`Self::selected_native_model_config`].
+    fn described_native_model_config(&mut self) -> Result<NativeModelConfig, String> {
+        match self.model_backend {
+            ModelBackendPreference::ManagedLocal => self
+                .described_managed_model_config()
+                .map(NativeModelConfig::Managed),
+            _ => self.selected_native_model_config(),
+        }
     }
 
     fn managed_benchmark_inventory(
@@ -4234,7 +4355,7 @@ impl AiStudioPanel {
                 && self.pending_question_permission.is_none()
                 && (self.external_provider_is_ready()
                     || (!self.external_provider_is_requested()
-                        && self.selected_native_model_config().is_ok()));
+                        && self.described_native_model_config().is_ok()));
             if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
                 self.begin_run();
             }

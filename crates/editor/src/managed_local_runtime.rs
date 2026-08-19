@@ -156,6 +156,19 @@ pub(crate) struct ManagedModelRegistration {
     pub(crate) license: Option<String>,
 }
 
+/// Whether a resolved managed configuration also runs content verification.
+///
+/// ADR 0155 requires integrity verification before inference, not for every
+/// rendered label. Verifying a WSL2 model means hashing the whole GGUF, so
+/// presentation paths MUST pass [`ManagedIntegrityCheck::Skipped`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedIntegrityCheck {
+    /// Resolve paths and identity only. Safe to call for presentation.
+    Skipped,
+    /// Resolve and verify the retained runtime artifact and model content.
+    Enforced,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedLocalModelConfig {
     pub(crate) state_root: PathBuf,
@@ -375,6 +388,58 @@ impl ManagedSetupTask {
                 ManagedDiagnosticLayer::OperatingSystemPrerequisite,
                 "managed Local AI setup worker disconnected unexpectedly",
             ))),
+        }
+    }
+}
+
+/// Managed-environment facts whose collection requires Windows or WSL2 process probes.
+///
+/// Every WSL2 answer costs at least one `wsl.exe` process, so the Editor collects
+/// these on a worker thread and renders the last completed snapshot. Probing from
+/// the frame loop stalls the UI thread for as long as the dedicated distribution
+/// is busy, which spans the whole duration of a managed model transfer.
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedEnvironmentProbe {
+    pub(crate) environment: ManagedExecutionEnvironment,
+    pub(crate) model_id: String,
+    pub(crate) setup_status: ManagedSetupStatus,
+    pub(crate) additional_storage_bytes: Result<u64, String>,
+    pub(crate) described_config: Result<ManagedLocalModelConfig, String>,
+}
+
+pub(crate) struct ManagedEnvironmentProbeTask {
+    result: Receiver<ManagedEnvironmentProbe>,
+}
+
+impl ManagedEnvironmentProbeTask {
+    pub(crate) fn spawn(
+        manager: ManagedLocalRuntime,
+        environment: ManagedExecutionEnvironment,
+        model_id: String,
+    ) -> Result<Self, ManagedLocalRuntimeError> {
+        let (sender, result) = mpsc::channel();
+        thread::Builder::new()
+            .name("managed-local-ai-probe".to_owned())
+            .spawn(move || {
+                let _ = sender.send(manager.probe_environment(environment, model_id));
+            })
+            .map_err(|error| {
+                ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::OperatingSystemPrerequisite,
+                    format!("could not start managed Local AI probe worker: {error}"),
+                )
+            })?;
+        Ok(Self { result })
+    }
+
+    /// Returns `None` while the probe is still running, `Some(None)` when the
+    /// worker ended without a snapshot so the caller retires the task instead of
+    /// waiting on a closed channel forever.
+    pub(crate) fn poll(&self) -> Option<Option<ManagedEnvironmentProbe>> {
+        match self.result.try_recv() {
+            Ok(probe) => Some(Some(probe)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(None),
         }
     }
 }
@@ -785,6 +850,39 @@ impl ManagedLocalRuntime {
         }
     }
 
+    /// Collects every managed-environment fact the Local AI panel renders.
+    ///
+    /// Callers must run this off the UI thread: the WSL2 paths of
+    /// [`Self::setup_status`] and [`Self::additional_storage_for_environment`]
+    /// both block on `wsl.exe`.
+    pub(crate) fn probe_environment(
+        &self,
+        environment: ManagedExecutionEnvironment,
+        model_id: String,
+    ) -> ManagedEnvironmentProbe {
+        let setup_status = self.setup_status(environment);
+        let (additional_storage_bytes, described_config) = if model_id.trim().is_empty() {
+            (
+                Ok(0),
+                Err("Register or select a managed GGUF model before starting inference.".to_owned()),
+            )
+        } else {
+            (
+                self.additional_storage_for_environment(&model_id, environment)
+                    .map_err(|error| error.to_string()),
+                self.configuration_for(&model_id, environment, ManagedIntegrityCheck::Skipped)
+                    .map_err(|error| error.to_string()),
+            )
+        };
+        ManagedEnvironmentProbe {
+            environment,
+            model_id,
+            setup_status,
+            additional_storage_bytes,
+            described_config,
+        }
+    }
+
     pub(crate) fn prepare_model_for_environment(
         &self,
         model_id: &str,
@@ -853,11 +951,26 @@ impl ManagedLocalRuntime {
         Ok(PathBuf::from(target))
     }
 
+    /// Resolves the launch configuration of a registered managed model.
+    ///
+    /// With [`ManagedIntegrityCheck::Enforced`] this also runs the ADR 0155
+    /// pre-inference verification, which hashes the retained runtime artifact
+    /// and, on WSL2, the whole model file. Callers that only render the
+    /// resulting identity MUST pass [`ManagedIntegrityCheck::Skipped`] and MUST
+    /// NOT call the enforced form from a frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pinned runtime is not installed, the model is
+    /// not registered, the selected environment has no prepared model copy, or
+    /// an enforced integrity check fails.
     pub(crate) fn configuration_for(
         &self,
         model_id: &str,
         environment: ManagedExecutionEnvironment,
+        integrity: ManagedIntegrityCheck,
     ) -> Result<ManagedLocalModelConfig, ManagedLocalRuntimeError> {
+        let enforced = integrity == ManagedIntegrityCheck::Enforced;
         let installation = self
             .active_installation(environment)?
             .ok_or_else(|| {
@@ -866,10 +979,14 @@ impl ManagedLocalRuntime {
                     format!("{} managed llama.cpp runtime is not installed", environment.label()),
                 )
             })?;
-        self.verify_retained_runtime_artifact(&installation)?;
+        if enforced {
+            self.verify_retained_runtime_artifact(&installation)?;
+        }
         let model = self.require_model(model_id)?;
         let model_path = if environment == ManagedExecutionEnvironment::WindowsNative {
-            self.verify_registered_model(&model)?;
+            if enforced {
+                self.verify_registered_model(&model)?;
+            }
             model.source_path.clone()
         } else {
             let path = wsl_model_path(&model.content_sha256);
@@ -882,7 +999,9 @@ impl ManagedLocalRuntime {
                     ),
                 ));
             }
-            verify_wsl_sha256(&path, &model.content_sha256)?;
+            if enforced {
+                verify_wsl_sha256(&path, &model.content_sha256)?;
+            }
             PathBuf::from(path)
         };
         Ok(ManagedLocalModelConfig {
@@ -2485,6 +2604,89 @@ mod tests {
         assert!(identity.contains(PINNED_LLAMA_CPP_REVISION));
         assert!(identity.contains("env=windows_native"));
         assert!(identity.contains(&"b".repeat(64)));
+    }
+
+    fn write_active_installation(root: &Path, artifact: &Path) -> ManagedRuntimeInstallation {
+        let installation = ManagedRuntimeInstallation {
+            schema_version: STATE_SCHEMA_VERSION,
+            runtime_family: "llama.cpp".to_owned(),
+            runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
+            runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
+            environment: ManagedExecutionEnvironment::WindowsNative,
+            artifact_name: WINDOWS_CUDA_MANIFEST.to_owned(),
+            artifact_sha256: "f".repeat(64),
+            installed_unix_ms: 1,
+            compatibility_version: MANAGED_RUNTIME_COMPATIBILITY_VERSION.to_owned(),
+            server_path: "llama-server.exe".to_owned(),
+            retained_artifact_path: artifact.to_path_buf(),
+        };
+        let environment_root = root.join("runtime").join("windows_native");
+        fs::create_dir_all(&environment_root).expect("environment root");
+        write_json(&environment_root.join("active.json"), &installation).expect("active pointer");
+        installation
+    }
+
+    #[test]
+    fn presentation_configuration_skips_runtime_artifact_verification() {
+        let root = temp_root("describe-runtime");
+        let model_source = root.join("sample-Q4_K_M.gguf");
+        fs::create_dir_all(&root).expect("temp root");
+        fs::write(&model_source, b"GGUF-test-bytes").expect("model fixture");
+        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+        let registration = manager
+            .register_existing_gguf(&model_source, None)
+            .expect("register existing GGUF");
+        let artifact = root.join("state").join("runtime-manifest.txt");
+        fs::create_dir_all(root.join("state")).expect("state root");
+        fs::write(&artifact, b"not-the-pinned-manifest").expect("artifact fixture");
+        write_active_installation(&root.join("state"), &artifact);
+
+        // The enforced form hashes the retained artifact, so the deliberately
+        // mismatched digest must fail it.
+        assert!(manager
+            .configuration_for(
+                &registration.model_id,
+                ManagedExecutionEnvironment::WindowsNative,
+                ManagedIntegrityCheck::Enforced,
+            )
+            .is_err());
+        let described = manager
+            .configuration_for(
+                &registration.model_id,
+                ManagedExecutionEnvironment::WindowsNative,
+                ManagedIntegrityCheck::Skipped,
+            )
+            .expect("presentation configuration resolves without verification");
+        assert_eq!(described.model_content_sha256, registration.content_sha256);
+        assert_eq!(described.model_path, registration.source_path);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn presentation_configuration_skips_registered_model_verification() {
+        let root = temp_root("describe-model");
+        let model_source = root.join("sample-Q4_K_M.gguf");
+        fs::create_dir_all(&root).expect("temp root");
+        fs::write(&model_source, b"GGUF-test-bytes").expect("model fixture");
+        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+        let registration = manager
+            .register_existing_gguf(&model_source, None)
+            .expect("register existing GGUF");
+        let artifact = root.join("state").join("runtime-manifest.txt");
+        fs::create_dir_all(root.join("state")).expect("state root");
+        fs::write(&artifact, b"not-the-pinned-manifest").expect("artifact fixture");
+        write_active_installation(&root.join("state"), &artifact);
+        fs::write(&model_source, b"tampered").expect("tamper the registered source");
+
+        assert!(manager.verify_registered_model(&registration).is_err());
+        assert!(manager
+            .configuration_for(
+                &registration.model_id,
+                ManagedExecutionEnvironment::WindowsNative,
+                ManagedIntegrityCheck::Skipped,
+            )
+            .is_ok());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
