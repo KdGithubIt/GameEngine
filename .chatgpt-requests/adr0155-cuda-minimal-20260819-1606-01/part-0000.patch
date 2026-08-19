@@ -1,0 +1,123 @@
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index b890f3f7efcbe8bfc10e90a44cdee47eb9d2ce7f..b0a251a455ba147b5da2dfd05c530ed6755675ed 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -29,7 +29,8 @@ const WINDOWS_CUDA_MANIFEST: &str = "llama-b10336-win-cuda-12.4-manifest.txt";
+ const WSL_CUDA_MANIFEST: &str = "llama-b10336-wsl-cuda-12.4-source-manifest.txt";
+ const WSL_CUDA_REPOSITORY_URL: &str =
+     "https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64";
+-const WSL_CUDA_TOOLKIT_PACKAGE: &str = "cuda-toolkit-12-4";
++const WSL_CUDA_COMPILER_PACKAGE: &str = "cuda-compiler-12-4";
++const WSL_CUDA_LIBRARIES_DEV_PACKAGE: &str = "cuda-libraries-dev-12-4";
+ const WSL_CUDA_KEYRING_ASSET: &str = "cuda-keyring_1.1-1_all.deb";
+ const LLAMA_CPP_REPOSITORY_URL: &str = "https://github.com/ggml-org/llama.cpp.git";
+ const STATE_SCHEMA_VERSION: u32 = 2;
+@@ -1440,7 +1441,8 @@ fn managed_process_exited_before_health(endpoint_healthy: bool, process_alive: b
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ struct WslCudaBuildProvenance {
+     revision: String,
+-    toolkit_version: String,
++    compiler_version: String,
++    libraries_dev_version: String,
+     server_sha256: String,
+     bench_sha256: String,
+ }
+@@ -1486,19 +1488,21 @@ fn verify_windows_cuda_runtime(root: &Path) -> Result<(), ManagedLocalRuntimeErr
+ 
+ fn build_pinned_wsl_cuda_runtime() -> Result<WslCudaBuildProvenance, ManagedLocalRuntimeError> {
+     let bootstrap = format!(
+-        "set -eu; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y --no-install-recommends ca-certificates curl gnupg git build-essential cmake ninja-build pkg-config libcurl4-openssl-dev; if ! dpkg-query -W -f='${{Status}}' {package} 2>/dev/null | grep -q 'ok installed'; then curl -fsSL {repository}/{keyring} -o /tmp/{keyring}; dpkg -i /tmp/{keyring}; rm -f /tmp/{keyring}; apt-get update; apt-get install -y --no-install-recommends {package}; fi; test -x /usr/local/cuda-12.4/bin/nvcc; test -e /dev/dxg",
+-        package = WSL_CUDA_TOOLKIT_PACKAGE,
++        "set -eu; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y --no-install-recommends ca-certificates curl gnupg git build-essential cmake ninja-build pkg-config libcurl4-openssl-dev; installed=$(dpkg-query -W -f='${{Status}}\n' {compiler_package} {libraries_dev_package} 2>/dev/null | grep -c 'ok installed' || true); if [ \"$installed\" -ne 2 ]; then curl -fsSL {repository}/{keyring} -o /tmp/{keyring}; dpkg -i /tmp/{keyring}; rm -f /tmp/{keyring}; apt-get update; apt-get install -y --no-install-recommends {compiler_package} {libraries_dev_package}; fi; test -x /usr/local/cuda-12.4/bin/nvcc; test -e /dev/dxg",
++        compiler_package = WSL_CUDA_COMPILER_PACKAGE,
++        libraries_dev_package = WSL_CUDA_LIBRARIES_DEV_PACKAGE,
+         repository = WSL_CUDA_REPOSITORY_URL,
+         keyring = WSL_CUDA_KEYRING_ASSET,
+     );
+     wsl_shell(&bootstrap, ManagedDiagnosticLayer::GpuOrBackendCapability)?;
+ 
+     let build = format!(
+-        "set -eu; root=/var/lib/gameengine/local-ai; src=\"$root/src/llama.cpp-{tag}\"; stage=\"$root/runtime/{tag}.staging\"; final=\"$root/runtime/{tag}\"; log=\"$root/logs/llama-build-{tag}.log\"; mkdir -p \"$root/src\" \"$root/runtime\" \"$root/logs\"; rm -rf \"$src\" \"$stage\"; {{ git clone --filter=blob:none --depth 1 --branch {tag} {repository} \"$src\"; revision=$(git -C \"$src\" rev-parse HEAD); case \"$revision\" in {revision}*) ;; *) echo \"unexpected llama.cpp revision: $revision\" >&2; exit 1;; esac; export PATH=/usr/local/cuda-12.4/bin:$PATH; cmake -S \"$src\" -B \"$src/build\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc; cmake --build \"$src/build\" --target llama-server llama-bench --parallel; mkdir -p \"$stage\"; cp -a \"$src/build/bin/.\" \"$stage/\"; test -x \"$stage/llama-server\"; test -x \"$stage/llama-bench\"; \"$stage/llama-server\" --version; devices=$(\"$stage/llama-bench\" --list-devices 2>&1); printf '%s\n' \"$devices\"; printf '%s\n' \"$devices\" | grep -qi cuda; server_sha=$(sha256sum \"$stage/llama-server\" | awk '{{print $1}}'); bench_sha=$(sha256sum \"$stage/llama-bench\" | awk '{{print $1}}'); toolkit_version=$(dpkg-query -W -f='${{Version}}' {package}); rm -rf \"$final\"; mv \"$stage\" \"$final\"; rm -rf \"$src\"; }} >\"$log\" 2>&1 || {{ tail -200 \"$log\" >&2; exit 1; }}; printf 'GAMEENGINE_REVISION=%s\nGAMEENGINE_TOOLKIT_VERSION=%s\nGAMEENGINE_SERVER_SHA256=%s\nGAMEENGINE_BENCH_SHA256=%s\n' \"$revision\" \"$toolkit_version\" \"$server_sha\" \"$bench_sha\"",
++        "set -eu; root=/var/lib/gameengine/local-ai; src=\"$root/src/llama.cpp-{tag}\"; stage=\"$root/runtime/{tag}.staging\"; final=\"$root/runtime/{tag}\"; log=\"$root/logs/llama-build-{tag}.log\"; mkdir -p \"$root/src\" \"$root/runtime\" \"$root/logs\"; rm -rf \"$src\" \"$stage\"; {{ git clone --filter=blob:none --depth 1 --branch {tag} {repository} \"$src\"; revision=$(git -C \"$src\" rev-parse HEAD); case \"$revision\" in {revision}*) ;; *) echo \"unexpected llama.cpp revision: $revision\" >&2; exit 1;; esac; export PATH=/usr/local/cuda-12.4/bin:$PATH; cmake -S \"$src\" -B \"$src/build\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc; cmake --build \"$src/build\" --target llama-server llama-bench --parallel; mkdir -p \"$stage\"; cp -a \"$src/build/bin/.\" \"$stage/\"; test -x \"$stage/llama-server\"; test -x \"$stage/llama-bench\"; \"$stage/llama-server\" --version; devices=$(\"$stage/llama-bench\" --list-devices 2>&1); printf '%s\n' \"$devices\"; printf '%s\n' \"$devices\" | grep -qi cuda; server_sha=$(sha256sum \"$stage/llama-server\" | awk '{{print $1}}'); bench_sha=$(sha256sum \"$stage/llama-bench\" | awk '{{print $1}}'); compiler_version=$(dpkg-query -W -f='${{Version}}' {compiler_package}); libraries_dev_version=$(dpkg-query -W -f='${{Version}}' {libraries_dev_package}); rm -rf \"$final\"; mv \"$stage\" \"$final\"; rm -rf \"$src\"; }} >\"$log\" 2>&1 || {{ tail -200 \"$log\" >&2; exit 1; }}; printf 'GAMEENGINE_REVISION=%s\nGAMEENGINE_COMPILER_VERSION=%s\nGAMEENGINE_LIBRARIES_DEV_VERSION=%s\nGAMEENGINE_SERVER_SHA256=%s\nGAMEENGINE_BENCH_SHA256=%s\n' \"$revision\" \"$compiler_version\" \"$libraries_dev_version\" \"$server_sha\" \"$bench_sha\"",
+         tag = PINNED_LLAMA_CPP_TAG,
+         revision = PINNED_LLAMA_CPP_REVISION,
+         repository = LLAMA_CPP_REPOSITORY_URL,
+-        package = WSL_CUDA_TOOLKIT_PACKAGE,
++        compiler_package = WSL_CUDA_COMPILER_PACKAGE,
++        libraries_dev_package = WSL_CUDA_LIBRARIES_DEV_PACKAGE,
+     );
+     let output = wsl_shell(&build, ManagedDiagnosticLayer::RuntimeArtifactIntegrity)?;
+     let text = String::from_utf8_lossy(&output.stdout);
+@@ -1520,10 +1524,16 @@ fn build_pinned_wsl_cuda_runtime() -> Result<WslCudaBuildProvenance, ManagedLoca
+             format!("WSL CUDA source build produced unexpected revision {revision}"),
+         ));
+     }
+-    let toolkit_version = marker("GAMEENGINE_TOOLKIT_VERSION=").ok_or_else(|| {
++    let compiler_version = marker("GAMEENGINE_COMPILER_VERSION=").ok_or_else(|| {
+         ManagedLocalRuntimeError::new(
+             ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+-            "WSL CUDA source build did not report the installed CUDA toolkit version",
++            "WSL CUDA source build did not report the installed CUDA compiler version",
++        )
++    })?;
++    let libraries_dev_version = marker("GAMEENGINE_LIBRARIES_DEV_VERSION=").ok_or_else(|| {
++        ManagedLocalRuntimeError::new(
++            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++            "WSL CUDA source build did not report the installed CUDA development libraries version",
+         )
+     })?;
+     let server_sha256 = marker("GAMEENGINE_SERVER_SHA256=").ok_or_else(|| {
+@@ -1546,7 +1556,8 @@ fn build_pinned_wsl_cuda_runtime() -> Result<WslCudaBuildProvenance, ManagedLoca
+     }
+     Ok(WslCudaBuildProvenance {
+         revision,
+-        toolkit_version,
++        compiler_version,
++        libraries_dev_version,
+         server_sha256,
+         bench_sha256,
+     })
+@@ -1564,8 +1575,9 @@ fn windows_cuda_runtime_manifest(assets: &[(String, String)]) -> String {
+ 
+ fn wsl_cuda_runtime_manifest(provenance: &WslCudaBuildProvenance) -> String {
+     format!(
+-        "format=gameengine-managed-runtime-v2\nruntime=llama.cpp\ntag={PINNED_LLAMA_CPP_TAG}\nrevision={PINNED_LLAMA_CPP_REVISION}\nenvironment=wsl2_linux\nbackend=cuda\ncuda_toolkit=12.4\ncuda_toolkit_package={WSL_CUDA_TOOLKIT_PACKAGE}\ncuda_toolkit_version={}\nsource={}\nsource_revision={}\nserver_sha256={}\nbench_sha256={}\n",
+-        provenance.toolkit_version,
++        "format=gameengine-managed-runtime-v2\nruntime=llama.cpp\ntag={PINNED_LLAMA_CPP_TAG}\nrevision={PINNED_LLAMA_CPP_REVISION}\nenvironment=wsl2_linux\nbackend=cuda\ncuda_toolkit=12.4\ncuda_compiler_package={WSL_CUDA_COMPILER_PACKAGE}\ncuda_compiler_version={}\ncuda_libraries_dev_package={WSL_CUDA_LIBRARIES_DEV_PACKAGE}\ncuda_libraries_dev_version={}\nsource={}\nsource_revision={}\nserver_sha256={}\nbench_sha256={}\n",
++        provenance.compiler_version,
++        provenance.libraries_dev_version,
+         LLAMA_CPP_REPOSITORY_URL,
+         provenance.revision,
+         provenance.server_sha256,
+@@ -2211,7 +2223,11 @@ mod tests {
+             WSL_CUDA_MANIFEST,
+             "llama-b10336-wsl-cuda-12.4-source-manifest.txt"
+         );
+-        assert_eq!(WSL_CUDA_TOOLKIT_PACKAGE, "cuda-toolkit-12-4");
++        assert_eq!(WSL_CUDA_COMPILER_PACKAGE, "cuda-compiler-12-4");
++        assert_eq!(
++            WSL_CUDA_LIBRARIES_DEV_PACKAGE,
++            "cuda-libraries-dev-12-4"
++        );
+         assert_eq!(STATE_SCHEMA_VERSION, 2);
+         assert_eq!(MANAGED_WSL_DISTRIBUTION, "GameEngine-LocalAI");
+ 
+@@ -2226,12 +2242,17 @@ mod tests {
+ 
+         let wsl_manifest = wsl_cuda_runtime_manifest(&WslCudaBuildProvenance {
+             revision: format!("{PINNED_LLAMA_CPP_REVISION}deadbeef"),
+-            toolkit_version: "12.4.1-1".to_owned(),
++            compiler_version: "12.4.131-1".to_owned(),
++            libraries_dev_version: "12.4.1-1".to_owned(),
+             server_sha256: "c".repeat(64),
+             bench_sha256: "d".repeat(64),
+         });
+         assert!(wsl_manifest.contains("environment=wsl2_linux"));
+         assert!(wsl_manifest.contains("backend=cuda"));
++        assert!(wsl_manifest.contains("cuda_compiler_package=cuda-compiler-12-4"));
++        assert!(wsl_manifest.contains(
++            "cuda_libraries_dev_package=cuda-libraries-dev-12-4"
++        ));
+         assert!(wsl_manifest.contains("source_revision=f401bb1deadbeef"));
+     }
+ 
