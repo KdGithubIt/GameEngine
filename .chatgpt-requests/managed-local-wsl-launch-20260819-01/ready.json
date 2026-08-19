@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "managed-local-wsl-launch-20260819-01",
+  "target_branch": "chatgpt/gameengine-managed-local-wsl-launch-reliability",
+  "expected_head_sha": "4a779cb5d07e26680b87f7233d248eb2c63cdd26",
+  "baseline_main_sha": "4a779cb5d07e26680b87f7233d248eb2c63cdd26",
+  "patch_sha256": "b8782f2fe3b14cf3bad884dfe285bd2680903fc8a567b480194eee4bf5027d91",
+  "patch_bytes": 5868,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Managed Local WSL llama-server startup",
+  "pr_title": "Fix Managed Local WSL llama-server startup",
+  "pr_body": "## Summary\n\n- keep the managed WSL launch shell alive for a short grace period before returning the llama-server PID\n- require the background process to survive the grace period and surface the WSL log tail on immediate startup failure\n- report the actual distro-internal WSL log path instead of the Windows state-root path\n- add regression coverage for launch ordering and environment-specific log paths\n\n## Scope\n\nThis is limited to Managed Local AI WSL process startup and diagnostics. It does not change model integrity policy, GPU-layer selection, conversation error projection, or benchmark campaign routing.\n"
+}
