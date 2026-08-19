@@ -31,9 +31,10 @@ use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::managed_local_runtime::{
-    ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
-    ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
-    PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
+    ManagedEnvironmentProbe, ManagedEnvironmentProbeTask, ManagedExecutionEnvironment,
+    ManagedIntegrityCheck, ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation,
+    ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask, PINNED_LLAMA_CPP_REVISION,
+    PINNED_LLAMA_CPP_TAG,
 };
 use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
 use crate::native_agent::{
@@ -69,6 +70,8 @@ const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
 const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
 const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
 const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
+/// How long a managed-environment snapshot is reused before a worker re-probes it.
+const MANAGED_PROBE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -103,6 +106,8 @@ struct AiStudioPreferences {
     hosted_model_endpoint: String,
     #[serde(default)]
     hosted_model_name: String,
+    #[serde(default)]
+    presentation_mode: AiStudioPresentationMode,
 }
 
 impl Default for AiStudioPreferences {
@@ -119,6 +124,7 @@ impl Default for AiStudioPreferences {
             local_model_name: String::new(),
             hosted_model_endpoint: String::new(),
             hosted_model_name: String::new(),
+            presentation_mode: AiStudioPresentationMode::default(),
         }
     }
 }
@@ -594,9 +600,14 @@ struct PendingQuestionPermission {
     conversation: Vec<QuestionMessage>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 enum AiStudioPresentationMode {
     Embedded,
+    /// AI Studio opens in its own OS window unless the user reattaches it,
+    /// because the studio is a conversation surface used beside the Editor
+    /// rather than one more dock competing with the scene for the same pixels.
+    #[default]
     Detached,
 }
 
@@ -609,7 +620,7 @@ struct AiStudioPresentationState {
 impl Default for AiStudioPresentationState {
     fn default() -> Self {
         Self {
-            mode: AiStudioPresentationMode::Embedded,
+            mode: AiStudioPresentationMode::default(),
             open: true,
         }
     }
@@ -661,6 +672,10 @@ pub struct AiStudioPanel {
     managed_execution_environment: ManagedExecutionEnvironment,
     managed_model_id: String,
     managed_setup_task: Option<ManagedSetupTask>,
+    managed_probe: Option<ManagedEnvironmentProbe>,
+    managed_probe_task: Option<ManagedEnvironmentProbeTask>,
+    managed_probe_completed_at: Option<std::time::Instant>,
+    managed_probe_requested: bool,
     local_model_endpoint: String,
     local_model_name: String,
     benchmark_store: BenchmarkStore,
@@ -796,6 +811,10 @@ impl AiStudioPanel {
             managed_execution_environment: preferences.managed_execution_environment,
             managed_model_id: preferences.managed_model_id,
             managed_setup_task: None,
+            managed_probe: None,
+            managed_probe_task: None,
+            managed_probe_completed_at: None,
+            managed_probe_requested: false,
             local_model_endpoint: preferences.local_model_endpoint,
             local_model_name: preferences.local_model_name,
             benchmark_store,
@@ -839,7 +858,10 @@ impl AiStudioPanel {
             active_external_args: None,
             provider_program: String::new(),
             provider_args: String::new(),
-            presentation: AiStudioPresentationState::default(),
+            presentation: AiStudioPresentationState {
+                mode: preferences.presentation_mode,
+                open: true,
+            },
             #[cfg(feature = "visual-validation")]
             detached_visual_frames: 0,
             #[cfg(feature = "visual-validation")]
@@ -1129,6 +1151,13 @@ impl AiStudioPanel {
         self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
         self.managed_model_id.clear();
         self.managed_setup_task = None;
+        self.managed_probe_task = None;
+        self.managed_probe_requested = false;
+        self.managed_probe = Some(self.managed_local_runtime.probe_environment(
+            self.managed_execution_environment,
+            self.managed_model_id.clone(),
+        ));
+        self.managed_probe_completed_at = Some(std::time::Instant::now());
         self.last_model_resource_telemetry = ModelResourceTelemetry::default();
         self.external_provider_kind = ExternalAgentProviderKind::Generic;
         self.external_provider_status =
@@ -1539,6 +1568,7 @@ impl AiStudioPanel {
         self.poll_remote_requests();
         self.poll_model_discovery(context);
         self.poll_managed_setup(context);
+        self.poll_managed_probe(context);
         self.poll_native_question(context);
         self.poll_model_resource_task(context);
         self.poll_native_mcp(context);
@@ -1567,19 +1597,8 @@ impl AiStudioPanel {
     fn show_embedded(&mut self, context: &egui::Context) {
         let mut open = self.presentation.open;
         let mut detach_requested = false;
-        egui::Window::new("AI Studio")
-            .id(egui::Id::new("gameengine_ai_studio"))
-            .frame(
-                egui::Frame::window(&context.global_style())
-                    .fill(theme::BACKGROUND)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER)),
-            )
+        embedded_window(context)
             .open(&mut open)
-            .default_pos(egui::pos2(940.0, 84.0))
-            .default_size(egui::vec2(600.0, 760.0))
-            .min_width(460.0)
-            .min_height(520.0)
-            .resizable(true)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Detach").clicked() {
@@ -1588,11 +1607,12 @@ impl AiStudioPanel {
                     ui.small("Open AI Studio in its own OS window.");
                 });
                 ui.separator();
-                self.show_contents(ui);
+                embedded_contents_scroll_area().show(ui, |ui| self.show_contents(ui));
             });
         self.presentation.open = open;
         if detach_requested {
             self.presentation.detach();
+            self.save_preferences();
         }
     }
 
@@ -1637,6 +1657,7 @@ impl AiStudioPanel {
 
         if reattach_requested {
             self.presentation.reattach();
+            self.save_preferences();
         } else if close_requested {
             self.presentation.close();
         }
@@ -1921,8 +1942,8 @@ impl AiStudioPanel {
             .default_open(false)
             .show(ui, |ui| {
                 ui.small("Loopback-only companion gateway. Expose it only through a trusted private overlay or local reverse proxy. Remote authentication is separate from Agent Host permissions; MCP is never exposed remotely.");
-                ui.label(format!("Gateway: {}", server.endpoint()));
-                ui.monospace(server.companion_url());
+                theme::selectable_text(ui, format!("Gateway: {}", server.endpoint()));
+                theme::selectable_text(ui, egui::RichText::new(server.companion_url()).monospace());
             });
     }
 
@@ -1966,9 +1987,9 @@ impl AiStudioPanel {
             // The status line is the studio's one running narration, so it keeps
             // a tinted border instead of dissolving into the cards above it.
             theme::attention_card(ui, theme::ACCENT, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_top(|ui| {
                     theme::status_dot(ui, theme::ACCENT_TEXT);
-                    ui.label(status);
+                    theme::selectable_text(ui, status);
                 });
             });
         }
@@ -2050,7 +2071,7 @@ impl AiStudioPanel {
                             ConversationRole::Assistant => "Agent",
                             ConversationRole::System => "System",
                         });
-                        ui.label(message.text);
+                        theme::selectable_text(ui, message.text);
                     });
                 }
             });
@@ -2098,7 +2119,7 @@ impl AiStudioPanel {
             if self.native_question.is_some() {
                 ui.spinner();
                 ui.small("Reading current GameEngine/project evidence…");
-            } else if self.selected_native_model_config().is_err() {
+            } else if self.described_native_model_config().is_err() {
                 ui.small("Configure the selected model backend to receive read-only answers.");
             } else {
                 ui.small("Questions use the read-only native harness; Go remains explicit for writes.");
@@ -2189,20 +2210,22 @@ impl AiStudioPanel {
                         ui.small(
                             "Managed Local AI remains an engineering path until Windows-native versus WSL2 characterization selects the normal product default. Windows native is the currently selected candidate; WSL2 remains available for characterization and fallback in the dedicated GameEngine-LocalAI distribution.",
                         );
-                        let setup_status = self
-                            .managed_local_runtime
-                            .setup_status(self.managed_execution_environment);
+                        let probe = self.managed_probe_for_panel();
+                        let setup_status = probe.as_ref().map(|probe| probe.setup_status.clone());
                         let setup_busy = self.managed_setup_task.is_some();
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Runtime");
                             ui.monospace(format!(
                                 "llama.cpp {PINNED_LLAMA_CPP_TAG} @ {PINNED_LLAMA_CPP_REVISION}"
                             ));
-                            match &setup_status {
-                                ManagedSetupStatus::Ready => {
+                            match setup_status.as_ref() {
+                                None => {
+                                    ui.weak("Checking...");
+                                }
+                                Some(ManagedSetupStatus::Ready) => {
                                     ui.strong("Ready");
                                 }
-                                ManagedSetupStatus::RuntimeNotInstalled => {
+                                Some(ManagedSetupStatus::RuntimeNotInstalled) => {
                                     if ui
                                         .add_enabled(
                                             !setup_busy,
@@ -2218,7 +2241,7 @@ impl AiStudioPanel {
                                         );
                                     }
                                 }
-                                ManagedSetupStatus::WslDistributionMissing => {
+                                Some(ManagedSetupStatus::WslDistributionMissing) => {
                                     if ui
                                         .add_enabled(
                                             !setup_busy,
@@ -2232,29 +2255,33 @@ impl AiStudioPanel {
                                         );
                                     }
                                 }
-                                ManagedSetupStatus::RestartRequired => {
+                                Some(ManagedSetupStatus::RestartRequired) => {
                                     ui.strong("Restart required");
                                 }
-                                ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
+                                Some(ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
                                     message,
-                                ) => {
+                                )) => {
                                     ui.strong("Unavailable");
                                     ui.small(message);
                                 }
                             }
-                            if setup_busy {
+                            if setup_busy || setup_status.is_none() {
                                 ui.spinner();
                             }
                         });
-                        if matches!(&setup_status, ManagedSetupStatus::RestartRequired) {
+                        if matches!(setup_status.as_ref(), Some(ManagedSetupStatus::RestartRequired))
+                        {
                             ui.small(
                                 "Windows reported that setup requires a restart. GameEngine persists only a machine-local continuation marker and does not reboot automatically. Reopen the Editor after the restart to continue.",
                             );
                         }
-                        if !matches!(
-                            &setup_status,
-                            ManagedSetupStatus::RuntimeNotInstalled
-                                | ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(_)
+                        if matches!(
+                            setup_status.as_ref(),
+                            Some(
+                                ManagedSetupStatus::Ready
+                                    | ManagedSetupStatus::WslDistributionMissing
+                                    | ManagedSetupStatus::RestartRequired
+                            )
                         ) {
                             ui.horizontal_wrapped(|ui| {
                                 ui.small(
@@ -2339,18 +2366,18 @@ impl AiStudioPanel {
                             if self.managed_execution_environment
                                 == ManagedExecutionEnvironment::Wsl2Linux
                             {
-                                match self.managed_local_runtime.additional_storage_for_environment(
-                                    &model.model_id,
-                                    self.managed_execution_environment,
-                                ) {
-                                    Ok(0) => {
+                                match probe.as_ref().map(|probe| &probe.additional_storage_bytes) {
+                                    None => {
+                                        ui.small("Checking the Linux-native WSL model copy...");
+                                    }
+                                    Some(Ok(0)) => {
                                         ui.small("Linux-native WSL model copy: verified/present.");
                                     }
-                                    Ok(bytes) => {
+                                    Some(Ok(bytes)) => {
                                         ui.horizontal_wrapped(|ui| {
                                             ui.small(format!(
                                                 "WSL2 needs an additional {} Linux-native copy of these same model bytes.",
-                                                format_model_bytes(bytes)
+                                                format_model_bytes(*bytes)
                                             ));
                                             if ui
                                                 .add_enabled(
@@ -2370,7 +2397,7 @@ impl AiStudioPanel {
                                             }
                                         });
                                     }
-                                    Err(error) => {
+                                    Some(Err(error)) => {
                                         ui.small(format!(
                                             "WSL model preparation unavailable: {error}"
                                         ));
@@ -2553,7 +2580,7 @@ impl AiStudioPanel {
                     })
                     .capability_profile(),
                     ModelBackendPreference::ManagedLocal => self
-                        .managed_model_config()
+                        .described_managed_model_config()
                         .map(NativeModelConfig::Managed)
                         .map(|config| config.capability_profile())
                         .unwrap_or_else(|_| {
@@ -2740,8 +2767,8 @@ impl AiStudioPanel {
         });
     }
 
-    fn model_routing_status(&self) -> String {
-        let Ok(primary) = self.selected_native_model_config() else {
+    fn model_routing_status(&mut self) -> String {
+        let Ok(primary) = self.described_native_model_config() else {
             return format!(
                 "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · unavailable until a primary model is selected."
             );
@@ -2833,6 +2860,7 @@ impl AiStudioPanel {
             return;
         };
         self.managed_setup_task = None;
+        self.managed_probe_completed_at = None;
         match result {
             Ok(ManagedSetupResult::RuntimeInstalled(installation)) => {
                 self.status = Some(format!(
@@ -2880,6 +2908,75 @@ impl AiStudioPanel {
         }
     }
 
+    /// Refreshes the managed-environment snapshot on a worker thread.
+    ///
+    /// The Local AI panel renders `managed_probe` and never probes inline. A
+    /// WSL2 frame would otherwise block on three `wsl.exe` launches, and while a
+    /// managed model transfer keeps the dedicated distribution busy each of
+    /// those takes seconds, which stops the frame loop outright.
+    fn poll_managed_probe(&mut self, context: &egui::Context) {
+        let panel_visible = std::mem::take(&mut self.managed_probe_requested);
+        if let Some(task) = self.managed_probe_task.as_ref() {
+            let Some(outcome) = task.poll() else {
+                context.request_repaint_after(std::time::Duration::from_millis(100));
+                return;
+            };
+            self.managed_probe_task = None;
+            self.managed_probe_completed_at = Some(std::time::Instant::now());
+            if let Some(probe) = outcome {
+                self.managed_probe = Some(probe);
+            }
+            context.request_repaint();
+            return;
+        }
+        if !panel_visible || self.managed_setup_task.is_some() || !self.managed_probe_is_stale() {
+            return;
+        }
+        match ManagedEnvironmentProbeTask::spawn(
+            self.managed_local_runtime.clone(),
+            self.managed_execution_environment,
+            self.managed_model_id.clone(),
+        ) {
+            Ok(task) => {
+                self.managed_probe_task = Some(task);
+                context.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(error) => {
+                self.managed_probe_completed_at = Some(std::time::Instant::now());
+                self.status = Some(format!(
+                    "Managed Local AI environment probe failed to start ({}): {error}",
+                    error.layer().label()
+                ));
+            }
+        }
+    }
+
+    fn managed_probe_is_stale(&self) -> bool {
+        let Some(probe) = self.managed_probe.as_ref() else {
+            return true;
+        };
+        if probe.environment != self.managed_execution_environment
+            || probe.model_id != self.managed_model_id
+        {
+            return true;
+        }
+        self.managed_probe_completed_at
+            .is_none_or(|completed_at| completed_at.elapsed() >= MANAGED_PROBE_REFRESH_INTERVAL)
+    }
+
+    /// Returns the snapshot the Local AI panel may render and asks the frame
+    /// loop to keep it refreshed while the panel stays visible.
+    fn managed_probe_for_panel(&mut self) -> Option<ManagedEnvironmentProbe> {
+        self.managed_probe_requested = true;
+        self.managed_probe
+            .as_ref()
+            .filter(|probe| {
+                probe.environment == self.managed_execution_environment
+                    && probe.model_id == self.managed_model_id
+            })
+            .cloned()
+    }
+
     fn managed_model_config(&self) -> Result<ManagedLocalModelConfig, String> {
         if self.managed_model_id.trim().is_empty() {
             return Err("Register or select a managed GGUF model before starting inference.".to_owned());
@@ -2888,8 +2985,34 @@ impl AiStudioPanel {
             .configuration_for(
                 &self.managed_model_id,
                 self.managed_execution_environment,
+                ManagedIntegrityCheck::Enforced,
             )
             .map_err(|error| error.to_string())
+    }
+
+    /// Resolves the managed configuration the panel may render.
+    ///
+    /// Answers come from the cached environment probe, so drawing a frame never
+    /// hashes the model. [`Self::managed_model_config`] keeps the ADR 0155
+    /// pre-inference verification for the paths that start inference.
+    fn described_managed_model_config(&mut self) -> Result<ManagedLocalModelConfig, String> {
+        if self.managed_model_id.trim().is_empty() {
+            return Err("Register or select a managed GGUF model before starting inference.".to_owned());
+        }
+        match self.managed_probe_for_panel() {
+            Some(probe) => probe.described_config,
+            None => Err("Checking the managed Local AI environment...".to_owned()),
+        }
+    }
+
+    /// Presentation counterpart of [`Self::selected_native_model_config`].
+    fn described_native_model_config(&mut self) -> Result<NativeModelConfig, String> {
+        match self.model_backend {
+            ModelBackendPreference::ManagedLocal => self
+                .described_managed_model_config()
+                .map(NativeModelConfig::Managed),
+            _ => self.selected_native_model_config(),
+        }
     }
 
     fn managed_benchmark_inventory(
@@ -3464,6 +3587,7 @@ impl AiStudioPanel {
             local_model_name: self.local_model_name.clone(),
             hosted_model_endpoint: self.hosted_model_endpoint.clone(),
             hosted_model_name: self.hosted_model_name.clone(),
+            presentation_mode: self.presentation.mode,
         };
         match serde_json::to_vec_pretty(&preferences) {
             Ok(bytes) => {
@@ -4231,7 +4355,7 @@ impl AiStudioPanel {
                 && self.pending_question_permission.is_none()
                 && (self.external_provider_is_ready()
                     || (!self.external_provider_is_requested()
-                        && self.selected_native_model_config().is_ok()));
+                        && self.described_native_model_config().is_ok()));
             if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
                 self.begin_run();
             }
@@ -4404,7 +4528,10 @@ impl AiStudioPanel {
         .show(ui, |ui| {
             for change in &self.pending_code_changes {
                 ui.horizontal(|ui| {
-                    ui.monospace(change.relative_path.display().to_string());
+                    theme::selectable_text(
+                        ui,
+                        egui::RichText::new(change.relative_path.display().to_string()).monospace(),
+                    );
                     ui.weak(change_summary(change));
                 });
             }
@@ -4446,7 +4573,7 @@ impl AiStudioPanel {
                             ui.horizontal_wrapped(|ui| {
                                 ui.monospace(format!("#{:03}", event.sequence));
                                 ui.strong(format!("{:?}", event.kind));
-                                ui.label(&event.message);
+                                theme::selectable_text(ui, &event.message);
                             });
                         }
                     });
@@ -5948,6 +6075,54 @@ fn provider_gamepad_axis(axis: &str) -> Result<GamepadAxis, String> {
     }
 }
 
+/// Smallest embedded studio that still shows a conversation beside its cards.
+const EMBEDDED_MIN_SIZE: egui::Vec2 = egui::vec2(460.0_f32, 520.0_f32);
+/// Size the embedded studio opens at before the user resizes it.
+const EMBEDDED_DEFAULT_SIZE: egui::Vec2 = egui::vec2(600.0_f32, 760.0_f32);
+/// Room the embedded studio leaves around itself inside the Editor.
+const EMBEDDED_EDITOR_MARGIN: f32 = 80.0_f32;
+
+/// Returns the embedded AI Studio window, kept inside the Editor around it.
+///
+/// egui moves a window that is larger than the screen but never shrinks one, so
+/// an Editor shorter than the studio's opening size would leave the studio's
+/// lower edge — and the scroll bar that reaches its lower cards — hanging past
+/// the bottom of the display. The bound is generous enough that it never fights
+/// a user dragging the studio wider.
+fn embedded_window(context: &egui::Context) -> egui::Window<'static> {
+    let editor = context.content_rect();
+    let max_width = (editor.width() - EMBEDDED_EDITOR_MARGIN).max(EMBEDDED_MIN_SIZE.x);
+    let max_height = (editor.height() - EMBEDDED_EDITOR_MARGIN).max(EMBEDDED_MIN_SIZE.y);
+    egui::Window::new("AI Studio")
+        .id(egui::Id::new("gameengine_ai_studio"))
+        .frame(
+            egui::Frame::window(&context.global_style())
+                .fill(theme::BACKGROUND)
+                .stroke(egui::Stroke::new(1.0_f32, theme::BORDER)),
+        )
+        .default_pos(egui::pos2(940.0_f32, 84.0_f32))
+        .default_size(EMBEDDED_DEFAULT_SIZE)
+        .min_width(EMBEDDED_MIN_SIZE.x)
+        .min_height(EMBEDDED_MIN_SIZE.y)
+        .max_width(max_width)
+        .max_height(max_height)
+        .resizable(true)
+}
+
+/// Returns the scroll area that carries the embedded studio's cards.
+///
+/// This is what keeps the studio a panel. An `egui::Window` grows to whatever
+/// its contents ask for, so without a scroll area the studio's own cards expand
+/// it until it covers the Editor, and the cards past the screen edge cannot be
+/// reached at all. Refusing to shrink spans the cards across the window the way
+/// the detached presentation already draws them, rather than sizing them to the
+/// widest card.
+fn embedded_contents_scroll_area() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .id_salt("ai_studio_embedded_contents")
+        .auto_shrink([false, false])
+}
+
 fn load_ai_studio_preferences(path: &std::path::Path) -> AiStudioPreferences {
     let Ok(bytes) = fs::read(path) else {
         return AiStudioPreferences::default();
@@ -6357,6 +6532,7 @@ mod tests {
             local_model_name: String::new(),
             hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
             hosted_model_name: "example-model".to_owned(),
+            presentation_mode: AiStudioPresentationMode::default(),
         };
         let json = serde_json::to_string(&preferences).expect("serialize preferences");
         assert!(!json.contains("authorization"));
@@ -6401,6 +6577,163 @@ mod tests {
         assert_eq!(profile.streaming, Some(false));
         assert_eq!(profile.usage, Some(true));
         assert_eq!(profile.resource_capabilities, Default::default());
+    }
+
+    #[test]
+    fn presentation_opens_detached_until_the_user_reattaches_it() {
+        assert_eq!(
+            AiStudioPresentationState::default().mode,
+            AiStudioPresentationMode::Detached
+        );
+        // A studio that was reattached must stay reattached across Editor
+        // restarts, so the chosen mode is machine-local preference state rather
+        // than a per-session default.
+        let reattached: AiStudioPreferences = serde_json::from_str(
+            r#"{"schema_version":1,"presentation_mode":"embedded"}"#,
+        )
+        .expect("deserialize reattached presentation preferences");
+        assert_eq!(
+            reattached.presentation_mode,
+            AiStudioPresentationMode::Embedded
+        );
+        let legacy: AiStudioPreferences = serde_json::from_str(r#"{"schema_version":1}"#)
+            .expect("deserialize preferences written before the mode was persisted");
+        assert_eq!(legacy.presentation_mode, AiStudioPresentationMode::Detached);
+    }
+
+    /// Returns the cursor the studio asks for while one piece of text is hovered.
+    fn studio_cursor_over_text(selectable: bool) -> egui::CursorIcon {
+        const TEXT: &str = "Managed Local AI";
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0_f32, 400.0_f32));
+        let context = egui::Context::default();
+        let draw = |ui: &mut egui::Ui| {
+            theme::apply_studio_style(ui);
+            if selectable {
+                theme::selectable_text(ui, TEXT).rect
+            } else {
+                ui.label(TEXT).rect
+            }
+        };
+
+        // The first pass lays the text out so the second can aim the pointer at
+        // it; a cursor is only claimed by whatever the pointer is over.
+        let mut rect = egui::Rect::NOTHING;
+        let _ = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..egui::RawInput::default()
+            },
+            |ui| rect = draw(ui),
+        );
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![egui::Event::PointerMoved(rect.center())],
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                draw(ui);
+            },
+        );
+        output.platform_output.cursor_icon
+    }
+
+    /// Studio chrome must not turn the pointer into a text caret.
+    ///
+    /// Reported as buttons that become text selection where their labels are:
+    /// a selectable label claims the I-beam for its glyphs, so a row of
+    /// controls flickered between the pointer and the caret as it was crossed.
+    #[test]
+    fn only_copyable_studio_text_claims_the_text_cursor() {
+        assert_ne!(
+            studio_cursor_over_text(false),
+            egui::CursorIcon::Text,
+            "studio chrome claimed the text caret"
+        );
+        assert_eq!(
+            studio_cursor_over_text(true),
+            egui::CursorIcon::Text,
+            "text offered for copying must still be selectable"
+        );
+    }
+
+    /// The embedded studio must stay a panel and must reach its lower cards.
+    ///
+    /// Reported together: the studio grew until it covered the Editor, and once
+    /// reattached its contents could not be scrolled, so everything below the
+    /// window edge was unreachable.
+    #[test]
+    fn embedded_presentation_fits_the_editor_and_scrolls_to_its_lower_contents() {
+        // A long unbroken status line is what the studio writes while managed
+        // Local AI setup runs, and it is one of the contents that used to widen
+        // the window.
+        const LONG_STATUS: &str = "Provisioning the dedicated GameEngine-LocalAI WSL environment. Windows may require explicit elevation or restart; GameEngine never bypasses either boundary.";
+        // The window frame draws its title bar and margins outside the content
+        // area the size bounds apply to.
+        const WINDOW_CHROME: f32 = 60.0_f32;
+
+        for (editor, tallest) in [
+            // A roomy Editor: the studio must stay the size it opens at instead
+            // of growing with its contents.
+            (
+                egui::vec2(1_600.0_f32, 900.0_f32),
+                EMBEDDED_DEFAULT_SIZE.y + WINDOW_CHROME,
+            ),
+            // An Editor shorter than the studio's opening size: the studio must
+            // fit anyway, because egui moves an oversized window but never
+            // shrinks one.
+            (egui::vec2(1_000.0_f32, 640.0_f32), 640.0_f32),
+        ] {
+            let context = egui::Context::default();
+            // A window resolves its size from the previous frame's contents, so
+            // unbounded growth needs more than one frame to show up.
+            for frame in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, editor)),
+                    ..egui::RawInput::default()
+                };
+                let mut window_rect = None;
+                let mut overflow = None;
+                let _ = context.run_ui(input, |ui| {
+                    let response = embedded_window(ui.ctx()).show(ui.ctx(), |ui| {
+                        theme::apply_studio_style(ui);
+                        let scrolled = embedded_contents_scroll_area().show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                theme::status_dot(ui, theme::ACCENT_TEXT);
+                                ui.label(LONG_STATUS);
+                            });
+                            // Stands in for the studio's stack of cards, which
+                            // is taller than any window the Editor can host.
+                            ui.allocate_exact_size(
+                                egui::vec2(10.0_f32, 4_000.0_f32),
+                                egui::Sense::hover(),
+                            );
+                        });
+                        overflow = Some(scrolled.content_size.y - scrolled.inner_rect.height());
+                    });
+                    window_rect = response.map(|response| response.response.rect);
+                });
+
+                let window = window_rect.expect("embedded studio must be laid out");
+                assert!(
+                    window.height() <= tallest,
+                    "frame {frame} grew the embedded studio to {} tall in a {}-tall Editor",
+                    window.height(),
+                    editor.y
+                );
+                assert!(
+                    window.width() <= editor.x,
+                    "frame {frame} widened the embedded studio to {} in a {}-wide Editor",
+                    window.width(),
+                    editor.x
+                );
+                let overflow = overflow.expect("embedded contents must be laid out");
+                assert!(
+                    overflow > 0.0_f32,
+                    "frame {frame} left the lower contents unreachable instead of scrollable"
+                );
+            }
+        }
     }
 
     #[test]
