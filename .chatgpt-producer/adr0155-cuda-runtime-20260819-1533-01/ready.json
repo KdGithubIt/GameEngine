@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0155-cuda-runtime-20260819-1533-01",
+  "target_branch": "chatgpt/gameengine-adr0155-cuda-runtime-v1",
+  "expected_head_sha": "25036154184b3d653d463e2872a512287f33d4e1",
+  "baseline_main_sha": "25036154184b3d653d463e2872a512287f33d4e1",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json"
+  ],
+  "commit_message": "Use CUDA managed llama.cpp runtimes",
+  "pr_title": "GameEngine: use CUDA managed llama.cpp on Windows and WSL2",
+  "pr_body": "## Summary\n\nAligns ADR0155 managed Local AI with the verified CUDA deployment path. Windows now installs the pinned llama.cpp CUDA 12.4 runtime and its separate cudart support archive, verifies both official release digests, and records a composite provenance manifest. WSL2 no longer requests a nonexistent Ubuntu CUDA release asset; the dedicated GameEngine-LocalAI distro installs the CUDA 12.4 toolkit and builds pinned llama.cpp b10336 from source, verifies the pinned revision and CUDA device visibility, and records the built binary digests.\n\nManaged WSL commands explicitly execute as root so a newly provisioned --no-launch distro does not depend on first-launch user setup or detached stdin behavior. Runtime state schema v2 rejects the previous Vulkan/single-artifact installation identity.\n\n## Validation\n\nAdds focused unit coverage for the exact Windows CUDA asset pair, WSL source-build provenance, runtime schema migration, and root WSL command contract. The trusted Dispatcher should run affected Windows Validation on the resulting exact head.\n\nVisual Validation is not requested because this change does not alter Editor UI layout or rendering."
+}
