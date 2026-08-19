@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        let command = format!(\n            \"mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --n-gpu-layers 999 > {} 2>&1 < /dev/null & echo $!\",\n            shell_quote(&log)\n        );",
+  "new": "        let command = format!(\n            \"mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {} 2>&1 < /dev/null & echo $!\",\n            shell_quote(&log)\n        );"
+}
