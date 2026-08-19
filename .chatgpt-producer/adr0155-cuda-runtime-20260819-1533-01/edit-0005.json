@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "            ManagedExecutionEnvironment::Wsl2Linux => Command::new(\"wsl.exe\")\n                .args([\n                    \"-d\",\n                    MANAGED_WSL_DISTRIBUTION,\n                    \"--\",\n                    \"kill\",\n                    &state.process_id.to_string(),\n                ])\n                .stdout(Stdio::null())\n                .stderr(Stdio::null())\n                .status(),",
+  "new": "            ManagedExecutionEnvironment::Wsl2Linux => managed_wsl_command()\n                .args([\"kill\", &state.process_id.to_string()])\n                .stdout(Stdio::null())\n                .stderr(Stdio::null())\n                .status(),"
+}
