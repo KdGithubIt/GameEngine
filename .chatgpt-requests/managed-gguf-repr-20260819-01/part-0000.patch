@@ -1,0 +1,852 @@
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index cffcd94dc1479788783095c4a9d9ddca48bcb467..cfcd74c9da235af077d4827e999281a10c685075 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -162,6 +162,9 @@ pub(crate) struct CampaignRepresentation {
+     pub(crate) backend_id: String,
+     pub(crate) model_id: String,
+     pub(crate) model_version: String,
++    /// Provider quantization label or an equivalent exact representation descriptor.
++    ///
++    /// The serialized field name is retained for campaign-schema compatibility.
+     pub(crate) quantization: String,
+     pub(crate) representation_size_bytes: u64,
+ }
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 9d6f278d9a82a374a18592b333c32f7a858f2bcc..234f311748c41c3da22bc9b4782fa6ceceff9142 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -3018,7 +3018,10 @@ impl AiStudioPanel {
+                 digest: Some(config.model_content_sha256.clone()),
+                 size_bytes: Some(config.model_size_bytes),
+                 parameter_size: None,
+-                quantization_level: config.quantization.clone(),
++                quantization_level: config
++                    .model_representation
++                    .clone()
++                    .or_else(|| config.quantization.clone()),
+                 family: Some("managed llama.cpp GGUF".to_owned()),
+             }],
+         }
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index 2456fea9080cf4bf3621f7407248406081b92df4..a26a706f120ce883dd36c11555968cb01861a64c 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -24,7 +24,7 @@ use crate::benchmark_campaign::{
+ use crate::benchmark_experiment::{
+     BenchmarkExperimentResult, BenchmarkRunOutcome, ENGINE_COMMIT_HEAD,
+ };
+-use crate::managed_local_runtime::ManagedAcquisitionPlan;
++use crate::managed_local_runtime::{ManagedAcquisitionPlan, ManagedModelRegistration};
+ use std::collections::BTreeSet;
+ use std::path::{Path, PathBuf};
+ use std::process::{Child, Command, Stdio};
+@@ -206,9 +206,7 @@ impl AiStudioPanel {
+                 environment.label()
+             ));
+             for model in &models {
+-                let exact = model.content_sha256.len() == 64
+-                    && model.quantization.is_some()
+-                    && model.size_bytes > 0;
++                let exact = managed_model_is_campaign_candidate(model);
+                 let mut selected = self
+                     .benchmark_campaign
+                     .selected_models
+@@ -231,9 +229,11 @@ impl AiStudioPanel {
+                         self.benchmark_campaign.selected_models.remove(&model.model_id);
+                     }
+                 }
+-                if !exact {
++                if let Some(representation) = model.exact_representation() {
++                    ui.small(format!("Representation: {representation}"));
++                } else {
+                     ui.small(format!(
+-                        "{} cannot be a candidate: its exact digest, quantization, or byte size is not measured.",
++                        "{} cannot be a candidate: its exact digest, GGUF-derived representation, or byte size is not measured. Re-register this GGUF once if it was registered by an older GameEngine build.",
+                         model.display_name
+                     ));
+                 }
+@@ -576,8 +576,11 @@ impl AiStudioPanel {
+                 {
+                     continue;
+                 }
+-                let quantization = model.quantization.clone().ok_or_else(|| {
+-                    format!("model `{}` has no measured quantization", model.display_name)
++                let representation = model.exact_representation().ok_or_else(|| {
++                    format!(
++                        "model `{}` has no GGUF-derived exact representation",
++                        model.display_name
++                    )
+                 })?;
+                 if model.size_bytes == 0 {
+                     return Err(format!("model `{}` has no measured size", model.display_name));
+@@ -587,7 +590,7 @@ impl AiStudioPanel {
+                         backend_id: MANAGED_BACKEND_ID.to_owned(),
+                         model_id: model.model_id,
+                         model_version: model.content_sha256,
+-                        quantization,
++                        quantization: representation.to_owned(),
+                         representation_size_bytes: model.size_bytes,
+                     },
+                     source: CampaignCandidateSource::installed(),
+@@ -825,7 +828,42 @@ impl AiStudioPanel {
+     }
+ }
+ 
++fn managed_model_is_campaign_candidate(model: &ManagedModelRegistration) -> bool {
++    model.has_exact_representation_identity()
++}
++
+ fn read_campaign_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
+     let bytes = fs::read(path).map_err(|error| error.to_string())?;
+     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn managed_registration(representation: Option<&str>) -> ManagedModelRegistration {
++        ManagedModelRegistration {
++            model_id: "gguf:test".to_owned(),
++            display_name: "qwen3.8-27b-abliterated-3.69bpw.gguf".to_owned(),
++            content_sha256: "a".repeat(64),
++            source_path: PathBuf::from("model.gguf"),
++            size_bytes: 1024,
++            modified_unix_ms: Some(1),
++            quantization: None,
++            representation: representation.map(str::to_owned),
++            source: None,
++            license: None,
++        }
++    }
++
++    #[test]
++    fn managed_candidate_eligibility_requires_exact_gguf_representation() {
++        let legacy = managed_registration(None);
++        assert!(!managed_model_is_campaign_candidate(&legacy));
++
++        let exact = managed_registration(Some(
++            "gguf-repr-v1;gguf=3;file_type=none;quantization_version=2;types=Q4_K:2,Q6_K:1",
++        ));
++        assert!(managed_model_is_campaign_candidate(&exact));
++    }
++}
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 395fc1aec9a33d8375dbe504764906b67cad4483..4bb06fe1fa27ff06b1579d638f6dc4bbf4183696 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -4,6 +4,8 @@
+ //! Windows/WSL execution-environment setup, and demand-driven loopback process
+ //! lifecycle. It deliberately has no authoring or egui dependency.
+ 
++mod gguf;
++
+ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ use std::fmt;
+@@ -160,11 +162,32 @@ pub(crate) struct ManagedModelRegistration {
+     pub(crate) source_path: PathBuf,
+     pub(crate) size_bytes: u64,
+     pub(crate) modified_unix_ms: Option<u64>,
++    /// Canonical llama.cpp file-type label when GGUF metadata safely provides one.
++    ///
++    /// Older registries may contain a filename-derived value here. Benchmark
++    /// identity never treats this legacy field as authoritative.
+     pub(crate) quantization: Option<String>,
++    /// Stable descriptor measured from GGUF metadata and every tensor descriptor.
++    #[serde(default)]
++    pub(crate) representation: Option<String>,
+     pub(crate) source: Option<String>,
+     pub(crate) license: Option<String>,
+ }
+ 
++impl ManagedModelRegistration {
++    pub(crate) fn exact_representation(&self) -> Option<&str> {
++        self.representation
++            .as_deref()
++            .filter(|descriptor| gguf::is_representation_descriptor(descriptor))
++    }
++
++    pub(crate) fn has_exact_representation_identity(&self) -> bool {
++        is_sha256_hex(&self.content_sha256)
++            && self.size_bytes > 0
++            && self.exact_representation().is_some()
++    }
++}
++
+ /// Whether a resolved managed configuration also runs content verification.
+ ///
+ /// ADR 0155 requires integrity verification before inference, not for every
+@@ -187,6 +210,7 @@ pub(crate) struct ManagedLocalModelConfig {
+     pub(crate) model_path: PathBuf,
+     pub(crate) model_size_bytes: u64,
+     pub(crate) quantization: Option<String>,
++    pub(crate) model_representation: Option<String>,
+     pub(crate) runtime_tag: String,
+     pub(crate) runtime_revision: String,
+     pub(crate) runtime_artifact_sha256: String,
+@@ -814,6 +838,7 @@ impl ManagedLocalRuntime {
+             ));
+         }
+         let canonical = fs::canonicalize(path).map_err(model_io)?;
++        let representation = gguf::inspect_representation(&canonical).map_err(model_io)?;
+         let content_sha256 = sha256_via_platform(&canonical)?;
+         let metadata = fs::metadata(&canonical).map_err(model_io)?;
+         let model_id = format!("gguf:{}", &content_sha256[..16]);
+@@ -834,7 +859,8 @@ impl ManagedLocalRuntime {
+             source_path: canonical.clone(),
+             size_bytes: metadata.len(),
+             modified_unix_ms: metadata.modified().ok().and_then(system_time_unix_ms),
+-            quantization: infer_quantization_from_name(&canonical),
++            quantization: representation.canonical_quantization,
++            representation: Some(representation.descriptor),
+             source: None,
+             license: None,
+         };
+@@ -1034,6 +1060,7 @@ impl ManagedLocalRuntime {
+             model_path,
+             model_size_bytes: model.size_bytes,
+             quantization: model.quantization,
++            model_representation: model.representation,
+             runtime_tag: installation.runtime_tag,
+             runtime_revision: installation.runtime_revision,
+             runtime_artifact_sha256: installation.artifact_sha256,
+@@ -1059,6 +1086,7 @@ impl ManagedLocalRuntime {
+             || verified.model_path != config.model_path
+             || verified.model_size_bytes != config.model_size_bytes
+             || verified.quantization != config.quantization
++            || verified.model_representation != config.model_representation
+         {
+             return Err(ManagedLocalRuntimeError::new(
+                 ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+@@ -2283,19 +2311,6 @@ fn shell_quote(value: &str) -> String {
+     format!("'{}'", value.replace('\'', "'\"'\"'"))
+ }
+ 
+-fn infer_quantization_from_name(path: &Path) -> Option<String> {
+-    let name = path.file_name()?.to_str()?.to_ascii_uppercase();
+-    for marker in [
+-        "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_0",
+-        "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0", "IQ2", "IQ3", "IQ4",
+-    ] {
+-        if name.contains(marker) {
+-            return Some(marker.to_owned());
+-        }
+-    }
+-    None
+-}
+-
+ fn read_optional_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>> {
+     match fs::read(path) {
+         Ok(bytes) => serde_json::from_slice(&bytes)
+@@ -2471,7 +2486,7 @@ mod tests {
+         let root = temp_root("register");
+         let model = root.join("sample-Q4_K_M.gguf");
+         fs::create_dir_all(&root).expect("temp root");
+-        fs::write(&model, b"GGUF-test-bytes").expect("model fixture");
++        gguf::write_test_gguf(&model, Some(15), &[12, 12, 14]).expect("model fixture");
+         let before = fs::read(&model).expect("before bytes");
+         let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+         let registration = manager
+@@ -2480,10 +2495,92 @@ mod tests {
+         let after = fs::read(&model).expect("after bytes");
+         assert_eq!(before, after);
+         assert_eq!(registration.quantization.as_deref(), Some("Q4_K_M"));
++        assert_eq!(
++            registration.exact_representation(),
++            Some(
++                "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:2,Q6_K:1"
++            )
++        );
+         assert!(registration.model_id.starts_with("gguf:"));
+         let _ = fs::remove_dir_all(root);
+     }
+ 
++    #[test]
++    fn registration_representation_is_filename_independent() {
++        let root = temp_root("representation-name");
++        fs::create_dir_all(&root).expect("temp root");
++        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
++        let names = [
++            "named-Q4_K_M.gguf",
++            "no-marker.gguf",
++            "qwen3.8-27b-abliterated-3.69bpw.gguf",
++        ];
++        let mut registrations = Vec::new();
++        for name in names {
++            let path = root.join(name);
++            gguf::write_test_gguf(&path, Some(15), &[12, 12, 14]).expect("model fixture");
++            registrations.push(
++                manager
++                    .register_existing_gguf(&path, None)
++                    .expect("register GGUF"),
++            );
++        }
++        for registration in registrations.iter().skip(1) {
++            assert_eq!(
++                registration.content_sha256,
++                registrations[0].content_sha256
++            );
++            assert_eq!(
++                registration.representation,
++                registrations[0].representation
++            );
++        }
++        assert!(registrations[2].has_exact_representation_identity());
++        let _ = fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn filename_quantization_marker_cannot_override_gguf_metadata() {
++        let root = temp_root("representation-lie");
++        let model = root.join("actually-q6-fake-Q4_K_M.gguf");
++        fs::create_dir_all(&root).expect("temp root");
++        gguf::write_test_gguf(&model, Some(18), &[14, 14, 0]).expect("model fixture");
++        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
++        let registration = manager
++            .register_existing_gguf(&model, None)
++            .expect("register GGUF");
++        assert_eq!(registration.quantization.as_deref(), Some("Q6_K"));
++        let representation = registration
++            .exact_representation()
++            .expect("exact representation");
++        assert!(representation.contains("file_type=18"));
++        assert!(representation.contains("types=F32:1,Q6_K:2"));
++        assert!(!representation.contains("Q4_K_M"));
++        let _ = fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn legacy_registry_deserializes_without_claiming_exact_representation() {
++        let registry: ManagedModelRegistry = serde_json::from_value(serde_json::json!({
++            "models": [{
++                "model_id": "gguf:legacy",
++                "display_name": "legacy-Q4_K_M.gguf",
++                "content_sha256": "a".repeat(64),
++                "source_path": "C:/models/legacy-Q4_K_M.gguf",
++                "size_bytes": 1024,
++                "modified_unix_ms": 1,
++                "quantization": "Q4_K_M",
++                "source": null,
++                "license": null
++            }]
++        }))
++        .expect("legacy registry");
++        let model = &registry.models[0];
++        assert_eq!(model.quantization.as_deref(), Some("Q4_K_M"));
++        assert_eq!(model.representation, None);
++        assert!(!model.has_exact_representation_identity());
++    }
++
+     #[test]
+     fn restart_continuation_is_machine_local_state() {
+         let root = temp_root("restart");
+@@ -2727,6 +2824,9 @@ mod tests {
+             model_path: PathBuf::from("model.gguf"),
+             model_size_bytes: 1,
+             quantization: Some("Q4_K_M".to_owned()),
++            model_representation: Some(
++                "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:1".to_owned(),
++            ),
+             runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
+             runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
+             runtime_artifact_sha256: "b".repeat(64),
+@@ -2763,7 +2863,7 @@ mod tests {
+         let root = temp_root("describe-runtime");
+         let model_source = root.join("sample-Q4_K_M.gguf");
+         fs::create_dir_all(&root).expect("temp root");
+-        fs::write(&model_source, b"GGUF-test-bytes").expect("model fixture");
++        gguf::write_test_gguf(&model_source, Some(15), &[12, 14]).expect("model fixture");
+         let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+         let registration = manager
+             .register_existing_gguf(&model_source, None)
+@@ -2799,7 +2899,7 @@ mod tests {
+         let root = temp_root("describe-model");
+         let model_source = root.join("sample-Q4_K_M.gguf");
+         fs::create_dir_all(&root).expect("temp root");
+-        fs::write(&model_source, b"GGUF-test-bytes").expect("model fixture");
++        gguf::write_test_gguf(&model_source, Some(15), &[12, 14]).expect("model fixture");
+         let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
+         let registration = manager
+             .register_existing_gguf(&model_source, None)
+diff --git a/crates/editor/src/managed_local_runtime/gguf.rs b/crates/editor/src/managed_local_runtime/gguf.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1350265177dc1c46cdf807a01040147ad57a0078
+--- /dev/null
++++ b/crates/editor/src/managed_local_runtime/gguf.rs
+@@ -0,0 +1,474 @@
++//! Streaming GGUF representation inspection for managed Local AI registration.
++//!
++//! Registration only needs GGUF metadata and tensor descriptors. The tensor data
++//! blob can be many gigabytes, so this parser never maps or reads that payload.
++
++use std::collections::BTreeMap;
++use std::fs::File;
++use std::io::{self, Read, Seek, SeekFrom};
++use std::path::Path;
++
++const GGUF_MAGIC: &[u8; 4] = b"GGUF";
++const GGUF_MIN_SUPPORTED_VERSION: u32 = 2;
++const GGUF_MAX_SUPPORTED_VERSION: u32 = 3;
++const GGUF_TYPE_UINT8: u32 = 0;
++const GGUF_TYPE_INT8: u32 = 1;
++const GGUF_TYPE_UINT16: u32 = 2;
++const GGUF_TYPE_INT16: u32 = 3;
++const GGUF_TYPE_UINT32: u32 = 4;
++const GGUF_TYPE_INT32: u32 = 5;
++const GGUF_TYPE_FLOAT32: u32 = 6;
++const GGUF_TYPE_BOOL: u32 = 7;
++const GGUF_TYPE_STRING: u32 = 8;
++const GGUF_TYPE_ARRAY: u32 = 9;
++const GGUF_TYPE_UINT64: u32 = 10;
++const GGUF_TYPE_INT64: u32 = 11;
++const GGUF_TYPE_FLOAT64: u32 = 12;
++const MAX_GGUF_METADATA_ENTRIES: u64 = 1_000_000;
++const MAX_GGUF_TENSORS: u64 = 1_000_000;
++const MAX_GGUF_STRING_BYTES: u64 = 16 * 1024 * 1024;
++const MAX_GGUF_ARRAY_ELEMENTS: u64 = 16_000_000;
++const REPRESENTATION_PREFIX: &str = "gguf-repr-v1;";
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) struct GgufRepresentation {
++    pub(super) descriptor: String,
++    pub(super) canonical_quantization: Option<String>,
++}
++
++pub(super) fn inspect_representation(path: &Path) -> io::Result<GgufRepresentation> {
++    let mut file = File::open(path)?;
++    let file_len = file.metadata()?.len();
++    inspect_reader(&mut file, file_len)
++}
++
++pub(super) fn is_representation_descriptor(value: &str) -> bool {
++    value.starts_with(REPRESENTATION_PREFIX)
++        && value.contains(";gguf=")
++        && value.contains(";types=")
++        && !value.ends_with(";types=")
++}
++
++fn inspect_reader<R: Read + Seek>(
++    reader: &mut R,
++    file_len: u64,
++) -> io::Result<GgufRepresentation> {
++    let mut magic = [0_u8; 4];
++    reader.read_exact(&mut magic)?;
++    if &magic != GGUF_MAGIC {
++        return Err(invalid_data("file does not start with GGUF magic"));
++    }
++
++    let version = read_u32(reader)?;
++    if !(GGUF_MIN_SUPPORTED_VERSION..=GGUF_MAX_SUPPORTED_VERSION).contains(&version) {
++        return Err(invalid_data(format!(
++            "unsupported GGUF version {version}; supported versions are {GGUF_MIN_SUPPORTED_VERSION}..={GGUF_MAX_SUPPORTED_VERSION}"
++        )));
++    }
++
++    let tensor_count = read_u64(reader)?;
++    let metadata_count = read_u64(reader)?;
++    if tensor_count == 0 || tensor_count > MAX_GGUF_TENSORS {
++        return Err(invalid_data(format!(
++            "GGUF tensor count {tensor_count} is outside the supported registration range"
++        )));
++    }
++    if metadata_count > MAX_GGUF_METADATA_ENTRIES {
++        return Err(invalid_data(format!(
++            "GGUF metadata count {metadata_count} is outside the supported registration range"
++        )));
++    }
++
++    let mut file_type = None;
++    let mut quantization_version = None;
++    for _ in 0..metadata_count {
++        let key = read_string(reader)?;
++        let value_type = read_u32(reader)?;
++        match key.as_str() {
++            "general.file_type" => {
++                if value_type != GGUF_TYPE_UINT32 {
++                    return Err(invalid_data(
++                        "GGUF general.file_type is not encoded as UINT32",
++                    ));
++                }
++                if file_type.replace(read_u32(reader)?).is_some() {
++                    return Err(invalid_data("GGUF general.file_type is duplicated"));
++                }
++            }
++            "general.quantization_version" => {
++                if value_type != GGUF_TYPE_UINT32 {
++                    return Err(invalid_data(
++                        "GGUF general.quantization_version is not encoded as UINT32",
++                    ));
++                }
++                if quantization_version.replace(read_u32(reader)?).is_some() {
++                    return Err(invalid_data(
++                        "GGUF general.quantization_version is duplicated",
++                    ));
++                }
++            }
++            _ => skip_value(reader, file_len, value_type)?,
++        }
++    }
++
++    let mut tensor_types = BTreeMap::<u32, u64>::new();
++    for _ in 0..tensor_count {
++        skip_string(reader, file_len)?;
++        let dimensions = read_u32(reader)?;
++        if !(1..=4).contains(&dimensions) {
++            return Err(invalid_data(format!(
++                "GGUF tensor has unsupported dimension count {dimensions}"
++            )));
++        }
++        for _ in 0..dimensions {
++            let dimension = read_u64(reader)?;
++            if dimension == 0 || dimension > i64::MAX as u64 {
++                return Err(invalid_data(format!(
++                    "GGUF tensor has invalid dimension size {dimension}"
++                )));
++            }
++        }
++        let tensor_type = read_u32(reader)?;
++        if ggml_type_name(tensor_type).is_none() {
++            return Err(invalid_data(format!(
++                "GGUF tensor uses unsupported ggml type {tensor_type}"
++            )));
++        }
++        let count = tensor_types.entry(tensor_type).or_default();
++        *count = count
++            .checked_add(1)
++            .ok_or_else(|| invalid_data("GGUF tensor type count overflowed"))?;
++        let _offset = read_u64(reader)?;
++    }
++
++    let type_distribution = tensor_types
++        .iter()
++        .map(|(tensor_type, count)| {
++            format!(
++                "{}:{count}",
++                ggml_type_name(*tensor_type).expect("validated GGML type must have a name")
++            )
++        })
++        .collect::<Vec<_>>()
++        .join(",");
++    let descriptor = format!(
++        "{REPRESENTATION_PREFIX}gguf={version};file_type={};quantization_version={};types={type_distribution}",
++        optional_u32(file_type),
++        optional_u32(quantization_version),
++    );
++    Ok(GgufRepresentation {
++        descriptor,
++        canonical_quantization: file_type
++            .and_then(canonical_quantization_for_file_type)
++            .map(str::to_owned),
++    })
++}
++
++fn read_u32<R: Read>(reader: &mut R) -> io::Result<u32> {
++    let mut bytes = [0_u8; 4];
++    reader.read_exact(&mut bytes)?;
++    Ok(u32::from_le_bytes(bytes))
++}
++
++fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
++    let mut bytes = [0_u8; 8];
++    reader.read_exact(&mut bytes)?;
++    Ok(u64::from_le_bytes(bytes))
++}
++
++fn read_string<R: Read>(reader: &mut R) -> io::Result<String> {
++    let len = read_u64(reader)?;
++    if len > MAX_GGUF_STRING_BYTES {
++        return Err(invalid_data(format!(
++            "GGUF string length {len} exceeds the registration parser limit"
++        )));
++    }
++    let len = usize::try_from(len)
++        .map_err(|_| invalid_data("GGUF string length does not fit this platform"))?;
++    let mut bytes = vec![0_u8; len];
++    reader.read_exact(&mut bytes)?;
++    String::from_utf8(bytes).map_err(|error| invalid_data(format!("GGUF string is not UTF-8: {error}")))
++}
++
++fn skip_string<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<()> {
++    let len = read_u64(reader)?;
++    if len > MAX_GGUF_STRING_BYTES {
++        return Err(invalid_data(format!(
++            "GGUF string length {len} exceeds the registration parser limit"
++        )));
++    }
++    skip_bytes(reader, file_len, len)
++}
++
++fn skip_value<R: Read + Seek>(
++    reader: &mut R,
++    file_len: u64,
++    value_type: u32,
++) -> io::Result<()> {
++    match value_type {
++        GGUF_TYPE_UINT8 | GGUF_TYPE_INT8 | GGUF_TYPE_BOOL => skip_bytes(reader, file_len, 1),
++        GGUF_TYPE_UINT16 | GGUF_TYPE_INT16 => skip_bytes(reader, file_len, 2),
++        GGUF_TYPE_UINT32 | GGUF_TYPE_INT32 | GGUF_TYPE_FLOAT32 => {
++            skip_bytes(reader, file_len, 4)
++        }
++        GGUF_TYPE_UINT64 | GGUF_TYPE_INT64 | GGUF_TYPE_FLOAT64 => {
++            skip_bytes(reader, file_len, 8)
++        }
++        GGUF_TYPE_STRING => skip_string(reader, file_len),
++        GGUF_TYPE_ARRAY => {
++            let element_type = read_u32(reader)?;
++            if element_type == GGUF_TYPE_ARRAY {
++                return Err(invalid_data("nested GGUF metadata arrays are unsupported"));
++            }
++            let count = read_u64(reader)?;
++            if count > MAX_GGUF_ARRAY_ELEMENTS {
++                return Err(invalid_data(format!(
++                    "GGUF metadata array length {count} exceeds the registration parser limit"
++                )));
++            }
++            if element_type == GGUF_TYPE_STRING {
++                for _ in 0..count {
++                    skip_string(reader, file_len)?;
++                }
++                return Ok(());
++            }
++            let element_size = fixed_gguf_type_size(element_type).ok_or_else(|| {
++                invalid_data(format!(
++                    "GGUF metadata array uses unsupported element type {element_type}"
++                ))
++            })?;
++            let bytes = count
++                .checked_mul(element_size)
++                .ok_or_else(|| invalid_data("GGUF metadata array byte size overflowed"))?;
++            skip_bytes(reader, file_len, bytes)
++        }
++        _ => Err(invalid_data(format!(
++            "GGUF metadata uses unsupported value type {value_type}"
++        ))),
++    }
++}
++
++fn fixed_gguf_type_size(value_type: u32) -> Option<u64> {
++    match value_type {
++        GGUF_TYPE_UINT8 | GGUF_TYPE_INT8 | GGUF_TYPE_BOOL => Some(1),
++        GGUF_TYPE_UINT16 | GGUF_TYPE_INT16 => Some(2),
++        GGUF_TYPE_UINT32 | GGUF_TYPE_INT32 | GGUF_TYPE_FLOAT32 => Some(4),
++        GGUF_TYPE_UINT64 | GGUF_TYPE_INT64 | GGUF_TYPE_FLOAT64 => Some(8),
++        GGUF_TYPE_STRING | GGUF_TYPE_ARRAY => None,
++        _ => None,
++    }
++}
++
++fn skip_bytes<R: Seek>(reader: &mut R, file_len: u64, bytes: u64) -> io::Result<()> {
++    let position = reader.stream_position()?;
++    let end = position
++        .checked_add(bytes)
++        .ok_or_else(|| invalid_data("GGUF offset overflowed"))?;
++    if end > file_len {
++        return Err(io::Error::new(
++            io::ErrorKind::UnexpectedEof,
++            "GGUF metadata or tensor descriptor is truncated",
++        ));
++    }
++    reader.seek(SeekFrom::Start(end))?;
++    Ok(())
++}
++
++fn optional_u32(value: Option<u32>) -> String {
++    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
++}
++
++fn canonical_quantization_for_file_type(file_type: u32) -> Option<&'static str> {
++    match file_type {
++        2 => Some("Q4_0"),
++        3 => Some("Q4_1"),
++        7 => Some("Q8_0"),
++        8 => Some("Q5_0"),
++        9 => Some("Q5_1"),
++        10 => Some("Q2_K"),
++        11 => Some("Q3_K_S"),
++        12 => Some("Q3_K_M"),
++        13 => Some("Q3_K_L"),
++        14 => Some("Q4_K_S"),
++        15 => Some("Q4_K_M"),
++        16 => Some("Q5_K_S"),
++        17 => Some("Q5_K_M"),
++        18 => Some("Q6_K"),
++        19 => Some("IQ2_XXS"),
++        20 => Some("IQ2_XS"),
++        21 => Some("Q2_K_S"),
++        22 => Some("IQ3_XS"),
++        23 => Some("IQ3_XXS"),
++        24 => Some("IQ1_S"),
++        25 => Some("IQ4_NL"),
++        26 => Some("IQ3_S"),
++        27 => Some("IQ3_M"),
++        28 => Some("IQ2_S"),
++        29 => Some("IQ2_M"),
++        30 => Some("IQ4_XS"),
++        31 => Some("IQ1_M"),
++        36 => Some("TQ1_0"),
++        37 => Some("TQ2_0"),
++        38 => Some("MXFP4_MOE"),
++        39 => Some("NVFP4"),
++        40 => Some("Q1_0"),
++        41 => Some("Q2_0"),
++        _ => None,
++    }
++}
++
++fn ggml_type_name(tensor_type: u32) -> Option<&'static str> {
++    match tensor_type {
++        0 => Some("F32"),
++        1 => Some("F16"),
++        2 => Some("Q4_0"),
++        3 => Some("Q4_1"),
++        6 => Some("Q5_0"),
++        7 => Some("Q5_1"),
++        8 => Some("Q8_0"),
++        9 => Some("Q8_1"),
++        10 => Some("Q2_K"),
++        11 => Some("Q3_K"),
++        12 => Some("Q4_K"),
++        13 => Some("Q5_K"),
++        14 => Some("Q6_K"),
++        15 => Some("Q8_K"),
++        16 => Some("IQ2_XXS"),
++        17 => Some("IQ2_XS"),
++        18 => Some("IQ3_XXS"),
++        19 => Some("IQ1_S"),
++        20 => Some("IQ4_NL"),
++        21 => Some("IQ3_S"),
++        22 => Some("IQ2_S"),
++        23 => Some("IQ4_XS"),
++        24 => Some("I8"),
++        25 => Some("I16"),
++        26 => Some("I32"),
++        27 => Some("I64"),
++        28 => Some("F64"),
++        29 => Some("IQ1_M"),
++        30 => Some("BF16"),
++        34 => Some("TQ1_0"),
++        35 => Some("TQ2_0"),
++        39 => Some("MXFP4"),
++        40 => Some("NVFP4"),
++        41 => Some("Q1_0"),
++        42 => Some("Q2_0"),
++        _ => None,
++    }
++}
++
++fn invalid_data(message: impl Into<String>) -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, message.into())
++}
++
++#[cfg(test)]
++pub(super) fn write_test_gguf(
++    path: &Path,
++    file_type: Option<u32>,
++    tensor_types: &[u32],
++) -> io::Result<()> {
++    std::fs::write(path, build_test_gguf(3, file_type, Some(2), tensor_types))
++}
++
++#[cfg(test)]
++fn build_test_gguf(
++    version: u32,
++    file_type: Option<u32>,
++    quantization_version: Option<u32>,
++    tensor_types: &[u32],
++) -> Vec<u8> {
++    let mut bytes = Vec::new();
++    bytes.extend_from_slice(GGUF_MAGIC);
++    bytes.extend_from_slice(&version.to_le_bytes());
++    bytes.extend_from_slice(&(tensor_types.len() as u64).to_le_bytes());
++    let metadata_count = file_type.is_some() as u64 + quantization_version.is_some() as u64;
++    bytes.extend_from_slice(&metadata_count.to_le_bytes());
++
++    if let Some(file_type) = file_type {
++        push_string(&mut bytes, "general.file_type");
++        bytes.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
++        bytes.extend_from_slice(&file_type.to_le_bytes());
++    }
++    if let Some(quantization_version) = quantization_version {
++        push_string(&mut bytes, "general.quantization_version");
++        bytes.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
++        bytes.extend_from_slice(&quantization_version.to_le_bytes());
++    }
++
++    for (index, tensor_type) in tensor_types.iter().copied().enumerate() {
++        push_string(&mut bytes, &format!("tensor.{index}"));
++        bytes.extend_from_slice(&1_u32.to_le_bytes());
++        bytes.extend_from_slice(&32_u64.to_le_bytes());
++        bytes.extend_from_slice(&tensor_type.to_le_bytes());
++        bytes.extend_from_slice(&0_u64.to_le_bytes());
++    }
++    bytes
++}
++
++#[cfg(test)]
++fn push_string(bytes: &mut Vec<u8>, value: &str) {
++    bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
++    bytes.extend_from_slice(value.as_bytes());
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::io::Cursor;
++
++    #[test]
++    fn mixed_tensor_types_produce_a_stable_distribution_without_single_quantization() {
++        let bytes = build_test_gguf(3, None, Some(2), &[12, 14, 12, 0]);
++        let mut reader = Cursor::new(bytes.clone());
++        let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
++        assert_eq!(representation.canonical_quantization, None);
++        assert_eq!(
++            representation.descriptor,
++            "gguf-repr-v1;gguf=3;file_type=none;quantization_version=2;types=F32:1,Q4_K:2,Q6_K:1"
++        );
++        assert!(is_representation_descriptor(&representation.descriptor));
++    }
++
++    #[test]
++    fn general_file_type_supplies_only_a_canonical_label_while_descriptor_stays_exact() {
++        let bytes = build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]);
++        let mut reader = Cursor::new(bytes.clone());
++        let representation = inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
++        assert_eq!(
++            representation.canonical_quantization.as_deref(),
++            Some("Q4_K_M")
++        );
++        assert_eq!(
++            representation.descriptor,
++            "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:2,Q6_K:1"
++        );
++    }
++
++    #[test]
++    fn malformed_or_truncated_gguf_is_rejected() {
++        let mut bytes = build_test_gguf(3, Some(15), Some(2), &[12]);
++        bytes.truncate(bytes.len() - 3);
++        let mut reader = Cursor::new(bytes.clone());
++        assert!(inspect_reader(&mut reader, bytes.len() as u64).is_err());
++
++        let mut reader = Cursor::new(b"not-gguf".to_vec());
++        assert!(inspect_reader(&mut reader, 8).is_err());
++    }
++
++    #[test]
++    fn unsupported_gguf_version_is_rejected() {
++        let bytes = build_test_gguf(4, Some(15), Some(2), &[12]);
++        let mut reader = Cursor::new(bytes.clone());
++        let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("version");
++        assert!(error.to_string().contains("unsupported GGUF version 4"));
++    }
++
++    #[test]
++    fn unsupported_tensor_type_is_rejected() {
++        let bytes = build_test_gguf(3, None, Some(2), &[999]);
++        let mut reader = Cursor::new(bytes.clone());
++        let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("type");
++        assert!(error.to_string().contains("unsupported ggml type 999"));
++    }
++}
