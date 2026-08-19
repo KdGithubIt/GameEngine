@@ -210,6 +210,29 @@ impl AnimationPreviewWindow {
         }
     }
 
+    #[cfg(feature = "visual-validation")]
+    pub(super) fn prepare_adr_visual_validation(&mut self) {
+        self.open = true;
+        self.scene = None;
+        self.preview_scene = None;
+        self.target = None;
+        self.tab = AnimationPreviewTab::Transition;
+        self.from_clip = "Locomotion / Idle (Auto → Humanoid)".to_owned();
+        self.to_clip = "Locomotion / Sprint Forward (Native)".to_owned();
+        self.trigger_seconds = 0.65;
+        self.fade_duration = 0.24;
+        self.repeat_transition = true;
+        self.transition_cycle_seconds = 2.8;
+        self.parameters = std::collections::BTreeMap::from([
+            ("is_grounded".to_owned(), true),
+            ("is_running".to_owned(), true),
+            ("wants_jump".to_owned(), false),
+        ]);
+        self.playing = true;
+        self.view.animation_preview_speed = 1.0;
+        self.view.animation_secondary_physics_enabled = true;
+    }
+
     fn refresh_target_defaults(
         &mut self,
         manifest: &engine::AssetManifest,
