@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            Err(error) => self.status = Some(error.to_string()),\n        }\n        if self.restore_for_editing {",
+  "new": "            Err(error) => {\n                let diagnostic = format!(\"Inference failed: {error}\");\n                self.status = Some(diagnostic.clone());\n                if let Err(append_error) = self.host.append_message(\n                    &session_id,\n                    ConversationRole::System,\n                    diagnostic,\n                ) {\n                    self.status = Some(format!(\n                        \"Inference failed: {error}; Conversation diagnostic could not be recorded: {append_error}\"\n                    ));\n                }\n            }\n        }\n        if self.restore_for_editing {"
+}
