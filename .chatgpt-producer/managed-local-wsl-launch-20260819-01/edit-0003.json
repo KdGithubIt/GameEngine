@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "fn shell_quote(value: &str) -> String {\n    format!(\"'{}'\", value.replace('\\'', \"'\\\"'\\\"'\"))\n}\n",
+  "new": "fn wsl_server_log_path(environment: ManagedExecutionEnvironment) -> String {\n    format!(\n        \"{WSL_SERVER_LOG_ROOT}/llama-server-{}.log\",\n        environment.storage_key()\n    )\n}\n\nfn wsl_server_launch_command(\n    server_path: &str,\n    model_path: &Path,\n    port: u16,\n    environment: ManagedExecutionEnvironment,\n) -> String {\n    let server = shell_quote(server_path);\n    let model = shell_quote(&model_path.to_string_lossy());\n    let log = wsl_server_log_path(environment);\n    let quoted_log = shell_quote(&log);\n    format!(\n        \"mkdir -p {}; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} > {quoted_log} 2>&1 < /dev/null & pid=$!; sleep {WSL_SERVER_LAUNCH_GRACE_SECONDS}; if ! kill -0 \\\"$pid\\\" 2>/dev/null; then printf 'managed llama-server exited during WSL startup; log: %s\\\\n' {quoted_log} >&2; tail -n 40 {quoted_log} >&2 2>/dev/null || true; exit 1; fi; echo \\\"$pid\\\"\",\n        shell_quote(WSL_SERVER_LOG_ROOT)\n    )\n}\n\nfn shell_quote(value: &str) -> String {\n    format!(\"'{}'\", value.replace('\\'', \"'\\\"'\\\"'\"))\n}\n"
+}
