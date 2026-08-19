@@ -32,7 +32,17 @@ pub(crate) const DEFAULT_LOCAL_MODEL_ENDPOINT: &str = "http://127.0.0.1:11434";
 pub(crate) const BASELINE_HARNESS_VERSION: &str = "native-read-v1";
 const BACKEND_ID: &str = "ollama-compatible";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const IO_TIMEOUT: Duration = Duration::from_secs(120);
+/// Read/write budget for one loopback backend exchange.
+///
+/// This is not a model-quality budget; it is the point at which the backend is
+/// declared unreachable. It has to cover a cold weight load, because a local
+/// backend answers nothing until the model is resident. A 27B GGUF on a 12 GB
+/// card evicting a previous model needs well over two minutes, and the earlier
+/// 120 second budget recorded exactly that working model as `os error 10060`
+/// at 120.5 seconds. For a benchmark that compares model sizes this is worse
+/// than slow: it systematically reports the largest models as broken. Waiting
+/// longer on a loopback socket costs nothing, and the caller can interrupt.
+const IO_TIMEOUT: Duration = Duration::from_secs(900);
 const MAX_HTTP_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024;
 const MAX_SCANNED_FILES: usize = 1_200;

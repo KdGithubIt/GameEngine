@@ -4,6 +4,9 @@
 //! lifecycle, permissions, persistence, provider process management, and code
 //! workspace rules live in the GUI-free `agent_host` module.
 
+mod benchmark_child;
+mod benchmark_experiment_ui;
+
 use crate::agent_benchmark::{
     agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
@@ -723,6 +726,9 @@ pub struct AiStudioPanel {
     native_evaluation_had_image: bool,
     managed_playtest_started_at: Option<std::time::Instant>,
     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
+    benchmark_child: Option<benchmark_child::BenchmarkChildState>,
+    benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel,
+    benchmark_experiment_root: PathBuf,
     status: Option<String>,
 }
 
@@ -741,6 +747,7 @@ impl AiStudioPanel {
         let managed_local_runtime = ManagedLocalRuntime::open(ai_root.join("managed-local"))
             .map_err(|error| error.to_string())?;
         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
+        let benchmark_experiment_root = ai_root.join("benchmark-experiments");
         let (benchmark_records, benchmark_status) = match benchmark_store.load() {
             Ok(records) => (records, None),
             Err(error) => (
@@ -858,6 +865,9 @@ impl AiStudioPanel {
             native_evaluation_had_image: false,
             managed_playtest_started_at: None,
             last_captured_frame: None,
+            benchmark_child: None,
+            benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel::default(),
+            benchmark_experiment_root,
             status: benchmark_status,
         })
     }
@@ -930,6 +940,172 @@ impl AiStudioPanel {
             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
         self.visual_scroll_offset = 1_600.0;
         self.visual_external_provider_evidence = true;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Seeds deterministic host-owned state for Remote AI Studio browser screenshot validation.
+    pub fn prepare_remote_companion_visual_validation(&mut self) -> Result<(), String> {
+        let session_id = self.selected_session.clone();
+        self.host
+            .append_message(
+                &session_id,
+                ConversationRole::User,
+                "Build a compact playable sample and verify the result from the managed Game View.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .append_message(
+                &session_id,
+                ConversationRole::Assistant,
+                "I will keep the proposal version exact, report progress, and request permission before the next managed frame capture.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        let mut proposal = self
+            .host
+            .session(&session_id)
+            .map_err(|error| error.to_string())?
+            .proposal
+            .clone();
+        proposal.goal = "Complete the Remote AI Studio visual-validation sample.".to_owned();
+        proposal.requirements = vec![
+            "Keep the authoritative project inside the Editor Agent Host.".to_owned(),
+            "Preserve reconnect-safe progress and exact proposal authorization.".to_owned(),
+        ];
+        proposal.acceptance_criteria = vec![
+            "Go and Stop remain available without exposing raw MCP or process controls.".to_owned(),
+            "Captured frame review stays readable at responsive browser widths.".to_owned(),
+        ];
+        proposal.validation_plan = vec![
+            "Validate the managed source changes.".to_owned(),
+            "Review the captured Game View frame.".to_owned(),
+        ];
+        proposal.playtest_plan =
+            vec!["Launch managed Play and capture one Game View frame.".to_owned()];
+        proposal.requested_capabilities =
+            [AgentCapability::RuntimeLaunch, AgentCapability::FrameCapture]
+                .into_iter()
+                .collect();
+        let proposal_version = self
+            .host
+            .update_proposal(&session_id, proposal)
+            .map_err(|error| error.to_string())?;
+        self.proposal_draft = self
+            .host
+            .session(&session_id)
+            .map_err(|error| error.to_string())?
+            .proposal
+            .clone();
+
+        let run_id = self
+            .host
+            .start_run_authorized(&session_id, proposal_version, "visual-validation")
+            .map_err(|error| error.to_string())?;
+        self.active_run_id = Some(run_id.clone());
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Planning,
+                "Authoritative snapshot loaded; planning the managed change.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Executing,
+                "Executing through the normal Agent Host path.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_semantic_progress(
+                &run_id,
+                "Reconnect ready",
+                "Authoritative snapshot and ordered event cursor are synchronized.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Validating,
+                "Managed source validation is represented by deterministic visual evidence.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Playtesting,
+                "Managed Play launched for deterministic frame review.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_playtest_result(
+                &run_id,
+                true,
+                Some(true),
+                "Managed Play launched and the scripted interaction completed.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        let width = 640_u32;
+        let height = 360_u32;
+        let mut rgba = vec![0_u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let offset = ((y * width + x) * 4) as usize;
+                let checker = ((x / 80) + (y / 60)) % 2;
+                rgba[offset] = if checker == 0 { 42 } else { 28 };
+                rgba[offset + 1] = if checker == 0 { 112 } else { 76 };
+                rgba[offset + 2] = if checker == 0 { 176 } else { 126 };
+                rgba[offset + 3] = 255;
+            }
+        }
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+            writer
+                .write_image_data(&rgba)
+                .map_err(|error| error.to_string())?;
+            writer.finish().map_err(|error| error.to_string())?;
+        }
+        self.host
+            .store_captured_frame_artifact(&run_id, width, height, &png_bytes)
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "acceptance_criteria",
+                CompletionStatus::Passed,
+                "Acceptance criteria are represented in the deterministic browser fixture.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "authoring_validation",
+                CompletionStatus::Passed,
+                "Authoring validation is represented in the deterministic browser fixture.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "visual_evaluation",
+                CompletionStatus::Passed,
+                "Captured Game View frame is ready for visual review.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        self.pending_permission = Some(PendingPermission {
+            run_id,
+            capability: AgentCapability::FrameCapture,
+            action: PendingPermissionAction::CaptureFrame,
+        });
+        self.status =
+            Some("Remote AI Studio browser visual-validation fixture is ready.".to_owned());
+        Ok(())
     }
 
     #[cfg(feature = "visual-validation")]
@@ -1321,6 +1497,8 @@ impl AiStudioPanel {
         self.request_managed_playtest_if_ready();
         self.request_managed_runtime_debug_plan_if_ready();
         self.poll_managed_playtest_timeout();
+        self.poll_benchmark_child();
+        self.poll_benchmark_experiment();
 
         if !self.presentation.open {
             return;
@@ -1406,6 +1584,29 @@ impl AiStudioPanel {
         }
         match RemoteAiStudioServer::start(context.clone()) {
             Ok((server, requests)) => {
+                #[cfg(feature = "visual-validation")]
+                if let Some(path) = std::env::var_os("GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO") {
+                    let path = PathBuf::from(path);
+                    match self.prepare_remote_companion_visual_validation() {
+                        Ok(()) => {
+                            if let Err(error) = fs::write(&path, server.companion_url()) {
+                                let message = format!(
+                                    "Remote AI Studio visual-validation URL could not be published: {error}"
+                                );
+                                eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
+                                self.status = Some(message);
+                            }
+                        }
+                        Err(error) => {
+                            let message = format!(
+                                "Remote AI Studio visual-validation fixture failed: {error}"
+                            );
+                            eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
+                            self.status = Some(message.clone());
+                            let _ = fs::write(&path, format!("ERROR: {message}"));
+                        }
+                    }
+                }
                 self.remote_server = Some(server);
                 self.remote_requests = Some(requests);
             }
@@ -2449,6 +2650,8 @@ impl AiStudioPanel {
             ui.small(
                 "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
             );
+            ui.separator();
+            self.show_benchmark_experiment(ui);
         });
     }
 
@@ -3361,14 +3564,21 @@ impl AiStudioPanel {
         images: Vec<Vec<u8>>,
     ) -> Result<(), String> {
         let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
+        let benchmark_single_model = self.benchmark_child_active();
         let (backend_label, routing_summary, routing_decisions) = {
             let runtime = self
                 .native_agent_runtime
                 .as_mut()
                 .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
-            runtime
-                .start_turn(&run, context.as_deref(), images)
-                .map_err(|error| error.to_string())?;
+            if benchmark_single_model {
+                runtime
+                    .start_turn_single_model(&run, context.as_deref(), images)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                runtime
+                    .start_turn(&run, context.as_deref(), images)
+                    .map_err(|error| error.to_string())?;
+            }
             (
                 runtime.backend_label(),
                 runtime.routing_policy_summary(),
@@ -4266,16 +4476,21 @@ impl AiStudioPanel {
         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        let benchmark_single_model = self.benchmark_child_active();
         let routing_candidates = native_config
             .as_ref()
             .map(|config| self.native_routing_candidates(config))
             .unwrap_or_default();
         self.native_agent_runtime = native_config.map(|config| {
-            NativeAgentRuntime::configured_routed(
-                config,
-                routing_candidates,
-                &self.benchmark_records,
-            )
+            if benchmark_single_model {
+                NativeAgentRuntime::configured(config)
+            } else {
+                NativeAgentRuntime::configured_routed(
+                    config,
+                    routing_candidates,
+                    &self.benchmark_records,
+                )
+            }
         });
         self.native_run_benchmark_context = native_benchmark_identity.map(
             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
@@ -4308,6 +4523,22 @@ impl AiStudioPanel {
         self.native_evaluation_had_image = false;
         self.managed_playtest_started_at = None;
         self.last_captured_frame = None;
+        if mode == AgentRuntimeMode::Native
+            && self.benchmark_child_requires_initial_validation_failure()
+        {
+            self.prepare_native_workspace(&run_id)?;
+            self.host
+                .transition_run(
+                    &run_id,
+                    AgentRunState::Executing,
+                    "Benchmark validation-repair baseline prepared; running the mandatory initial failing validation before model repair.",
+                )
+                .map_err(|error| error.to_string())?;
+            self.host
+                .begin_managed_validation(&run_id, true)
+                .map_err(|error| error.to_string())?;
+            return Ok(run_id);
+        }
         match mode {
             AgentRuntimeMode::External => self.request_permission(
                 run_id.clone(),
@@ -4341,6 +4572,13 @@ impl AiStudioPanel {
         capability: AgentCapability,
         action: PendingPermissionAction,
     ) {
+        if self.benchmark_child_allows(capability) {
+            match self.host.resolve_permission(&run_id, capability, ApprovalScope::Run) {
+                Ok(()) => self.execute_permission_action(&run_id, action),
+                Err(error) => self.status = Some(error.to_string()),
+            }
+            return;
+        }
         match self.host.check_permission(&run_id, capability) {
             Ok(PermissionCheck::Granted) => self.execute_permission_action(&run_id, action),
             Ok(PermissionCheck::RequiresApproval) => {
