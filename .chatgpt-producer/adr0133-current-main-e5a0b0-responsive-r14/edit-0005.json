@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/main.rs","old":"            #[cfg(feature = \"visual-validation\")]\n            visual_capture_path: std::env::var_os(\"GAMEENGINE_SCREENSHOT_TO\").map(PathBuf::from),","new":"            #[cfg(feature = \"visual-validation\")]\n            visual_capture_path: visual_screenshot_path(visual_scenario.as_deref()),"}
