@@ -20,6 +20,8 @@ pub(crate) const MANAGED_BACKEND_ID: &str = "gameengine-managed-llama-cpp";
 pub(crate) const PINNED_LLAMA_CPP_TAG: &str = "b10336";
 pub(crate) const PINNED_LLAMA_CPP_REVISION: &str = "f401bb1";
 pub(crate) const MANAGED_WSL_DISTRIBUTION: &str = "GameEngine-LocalAI";
+const MANAGED_WSL_BASE_DISTRIBUTION: &str = "Ubuntu-22.04";
+const MANAGED_WSL_EXPECTED_VERSION_ID: &str = "22.04";
 const MANAGED_RUNTIME_COMPATIBILITY_VERSION: &str = "llama-server-openai-v1";
 const RELEASE_METADATA_URL: &str =
     "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b10336";
@@ -492,7 +494,7 @@ impl ManagedLocalRuntime {
         let output = Command::new("wsl.exe")
             .args([
                 "--install",
-                "Ubuntu-24.04",
+                MANAGED_WSL_BASE_DISTRIBUTION,
                 "--name",
                 MANAGED_WSL_DISTRIBUTION,
                 "--no-launch",
@@ -1511,7 +1513,7 @@ fn verify_windows_cuda_runtime(root: &Path) -> Result<(), ManagedLocalRuntimeErr
 fn wsl_cuda_bootstrap_command() -> String {
     format!(
         concat!(
-            "set -eu; export DEBIAN_FRONTEND=noninteractive; ",
+            "set -eu; . /etc/os-release; if [ \"${{ID:-}}\" != ubuntu ] || [ \"${{VERSION_ID:-}}\" != '{ubuntu_version}' ]; then echo \"managed GameEngine-LocalAI WSL userland must be Ubuntu {ubuntu_version}; remove and reprovision the dedicated environment\" >&2; exit 1; fi; export DEBIAN_FRONTEND=noninteractive; ",
             "apt-get update; ",
             "apt-get install -y --no-install-recommends ca-certificates curl gnupg git build-essential cmake ninja-build pkg-config libcurl4-openssl-dev; ",
             "if ! dpkg-query -W -f='${{Status}}' {compiler_package} 2>/dev/null | grep -qx 'install ok installed' || ! dpkg-query -W -f='${{Status}}' {libraries_dev_package} 2>/dev/null | grep -qx 'install ok installed'; then ",
@@ -1521,6 +1523,7 @@ fn wsl_cuda_bootstrap_command() -> String {
             "dpkg-query -W -f='${{Status}}' {libraries_dev_package} | grep -qx 'install ok installed'; ",
             "test -x /usr/local/cuda-12.4/bin/nvcc; test -e /dev/dxg"
         ),
+        ubuntu_version = MANAGED_WSL_EXPECTED_VERSION_ID,
         compiler_package = WSL_CUDA_COMPILER_PACKAGE,
         libraries_dev_package = WSL_CUDA_LIBRARIES_DEV_PACKAGE,
         repository = WSL_CUDA_REPOSITORY_URL,
@@ -2285,6 +2288,8 @@ mod tests {
         );
         assert_eq!(STATE_SCHEMA_VERSION, 2);
         assert_eq!(MANAGED_WSL_DISTRIBUTION, "GameEngine-LocalAI");
+        assert_eq!(MANAGED_WSL_BASE_DISTRIBUTION, "Ubuntu-22.04");
+        assert_eq!(MANAGED_WSL_EXPECTED_VERSION_ID, "22.04");
 
         let windows_manifest = windows_cuda_runtime_manifest(&[
             (WINDOWS_CUDA_RUNTIME_ASSET.to_owned(), "a".repeat(64)),
@@ -2314,6 +2319,9 @@ mod tests {
     #[test]
     fn wsl_cuda_shell_contract_is_posix_safe_and_relocatable() {
         let bootstrap = wsl_cuda_bootstrap_command();
+        assert!(bootstrap.contains("managed GameEngine-LocalAI WSL userland must be Ubuntu 22.04"));
+        assert!(bootstrap.contains("VERSION_ID"));
+        assert!(!bootstrap.contains("Ubuntu 24.04"));
         assert!(bootstrap.contains("cuda-compiler-12-4"));
         assert!(bootstrap.contains("cuda-libraries-dev-12-4"));
         assert!(bootstrap.contains("grep -qx 'install ok installed'"));
