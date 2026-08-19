@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_experiment.rs",
+  "old": "            if self.managed_execution_environment.is_none() {\n                return Err(\"managed benchmark experiments require an exact execution environment\".to_owned());\n            }\n        } else if self.managed_execution_environment.is_some() {\n            return Err(\"only the GameEngine-managed backend may carry a managed execution environment\".to_owned());\n        }",
+  "new": "            if self.managed_execution_environment.is_none() {\n                return Err(\n                    \"managed benchmark experiments require an exact execution environment\".to_owned(),\n                );\n            }\n        } else if self.managed_execution_environment.is_some() {\n            return Err(\n                \"only the GameEngine-managed backend may carry a managed execution environment\"\n                    .to_owned(),\n            );\n        }"
+}
