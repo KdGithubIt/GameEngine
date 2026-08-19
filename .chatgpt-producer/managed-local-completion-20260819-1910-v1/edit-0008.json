@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "impl ManagedLocalModelConfig {\n    pub(crate) fn benchmark_runtime_identity(&self) -> String {\n        format!(\n            \"llama.cpp:{}@{};env={};artifact_sha256={};compat={}\",\n            self.runtime_tag,\n            self.runtime_revision,\n            self.environment.benchmark_id(),\n            self.runtime_artifact_sha256,\n            self.runtime_compatibility_version,\n        )\n    }\n}",
+  "new": "impl ManagedRuntimeInstallation {\n    pub(crate) fn benchmark_runtime_identity(&self) -> String {\n        format!(\n            \"llama.cpp:{}@{};env={};artifact_sha256={};compat={}\",\n            self.runtime_tag,\n            self.runtime_revision,\n            self.environment.benchmark_id(),\n            self.artifact_sha256,\n            self.compatibility_version,\n        )\n    }\n}\n\nimpl ManagedLocalModelConfig {\n    pub(crate) fn benchmark_runtime_identity(&self) -> String {\n        format!(\n            \"llama.cpp:{}@{};env={};artifact_sha256={};compat={}\",\n            self.runtime_tag,\n            self.runtime_revision,\n            self.environment.benchmark_id(),\n            self.runtime_artifact_sha256,\n            self.runtime_compatibility_version,\n        )\n    }\n}"
+}
