@@ -1,0 +1,13 @@
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index 12ab0d85eb21fffc1ce910dffe95a9ef9bedf091..9b5248dcc6ed2f0c91ae2ec01399e10578faec28 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -593,7 +593,7 @@ impl AiStudioPanel {
+                         backend_id: MANAGED_BACKEND_ID.to_owned(),
+                         model_id: model.model_id,
+                         model_version: model.content_sha256,
+-                        quantization: representation.to_owned(),
++                        quantization: representation,
+                         representation_size_bytes: model.size_bytes,
+                     },
+                     source: CampaignCandidateSource::installed(),
