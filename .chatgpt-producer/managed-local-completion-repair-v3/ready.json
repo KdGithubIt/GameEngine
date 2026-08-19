@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "managed-local-completion-repair-v3",
+  "target_branch": "chatgpt/gameengine-managed-local-completion-v1",
+  "expected_head_sha": "d7136616c20699fbdcfcc564f768359221a5f4b7",
+  "baseline_main_sha": "fea988df06693df933955af78be3730e2620727a",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json"
+  ],
+  "commit_message": "Fix managed benchmark compile failures",
+  "pr_title": "Fix managed Local AI inference and benchmark campaigns",
+  "pr_body": "Fixes the four confirmed managed Local AI gaps: move full managed integrity verification off the Editor UI thread, replace fixed 999 GPU layers with llama.cpp memory fitting, surface inference failures in Conversation, and connect benchmark campaigns to the GameEngine-managed Windows Native / WSL2 GGUF runtime while retaining compatible-backend support. This repair fixes the exact benchmark-child borrow lifetime and fixture initialization failures found by validation review."
+}
