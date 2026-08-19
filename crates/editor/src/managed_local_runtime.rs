@@ -1126,21 +1126,10 @@ impl ManagedLocalRuntime {
             "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --n-gpu-layers 999 > {} 2>&1 < /dev/null & echo $!",
             shell_quote(&log)
         );
-        let output = managed_wsl_command()
-            .args(["sh", "-lc", &command])
-            .output()
-            .map_err(|error| {
-                ManagedLocalRuntimeError::new(
-                    ManagedDiagnosticLayer::ManagedProcessStartup,
-                    format!("could not launch pinned WSL2 llama-server: {error}"),
-                )
-            })?;
-        if !output.status.success() {
-            return Err(ManagedLocalRuntimeError::new(
-                ManagedDiagnosticLayer::ManagedProcessStartup,
-                format!("WSL2 llama-server launch failed: {}", command_output_text(&output)),
-            ));
-        }
+        let output = wsl_shell(
+            &command,
+            ManagedDiagnosticLayer::ManagedProcessStartup,
+        )?;
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .find_map(|line| line.trim().parse::<u32>().ok())
@@ -1510,10 +1499,38 @@ fn verify_windows_cuda_runtime(root: &Path) -> Result<(), ManagedLocalRuntimeErr
     Ok(())
 }
 
+fn os_release_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let (candidate, value) = line.split_once('=')?;
+        (candidate.trim() == key).then(|| value.trim().trim_matches('\"'))
+    })
+}
+
+fn verify_managed_wsl_userland() -> Result<(), ManagedLocalRuntimeError> {
+    let output = wsl_shell(
+        "cat /etc/os-release",
+        ManagedDiagnosticLayer::GpuOrBackendCapability,
+    )?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let id = os_release_value(&text, "ID");
+    let version = os_release_value(&text, "VERSION_ID");
+    if id != Some("ubuntu") || version != Some(MANAGED_WSL_EXPECTED_VERSION_ID) {
+        return Err(ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::GpuOrBackendCapability,
+            format!(
+                "managed GameEngine-LocalAI WSL userland must be Ubuntu {MANAGED_WSL_EXPECTED_VERSION_ID}; observed ID={} VERSION_ID={}",
+                id.unwrap_or("<missing>"),
+                version.unwrap_or("<missing>")
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn wsl_cuda_bootstrap_command() -> String {
     format!(
         concat!(
-            "set -eu; . /etc/os-release; if [ \"${{ID:-}}\" != ubuntu ] || [ \"${{VERSION_ID:-}}\" != '{ubuntu_version}' ]; then echo \"managed GameEngine-LocalAI WSL userland must be Ubuntu {ubuntu_version}; remove and reprovision the dedicated environment\" >&2; exit 1; fi; export DEBIAN_FRONTEND=noninteractive; ",
+            "set -eu; export DEBIAN_FRONTEND=noninteractive; ",
             "apt-get update; ",
             "apt-get install -y --no-install-recommends ca-certificates curl gnupg git build-essential cmake ninja-build pkg-config libcurl4-openssl-dev; ",
             "if ! dpkg-query -W -f='${{Status}}' {compiler_package} 2>/dev/null | grep -qx 'install ok installed' || ! dpkg-query -W -f='${{Status}}' {libraries_dev_package} 2>/dev/null | grep -qx 'install ok installed'; then ",
@@ -1523,7 +1540,6 @@ fn wsl_cuda_bootstrap_command() -> String {
             "dpkg-query -W -f='${{Status}}' {libraries_dev_package} | grep -qx 'install ok installed'; ",
             "test -x /usr/local/cuda-12.4/bin/nvcc; test -e /dev/dxg"
         ),
-        ubuntu_version = MANAGED_WSL_EXPECTED_VERSION_ID,
         compiler_package = WSL_CUDA_COMPILER_PACKAGE,
         libraries_dev_package = WSL_CUDA_LIBRARIES_DEV_PACKAGE,
         repository = WSL_CUDA_REPOSITORY_URL,
@@ -1558,6 +1574,7 @@ fn wsl_cuda_build_command() -> String {
 }
 
 fn build_pinned_wsl_cuda_runtime() -> Result<WslCudaBuildProvenance, ManagedLocalRuntimeError> {
+    verify_managed_wsl_userland()?;
     let bootstrap = wsl_cuda_bootstrap_command();
     wsl_shell(&bootstrap, ManagedDiagnosticLayer::GpuOrBackendCapability)?;
 
@@ -1826,6 +1843,12 @@ fn managed_wsl_command() -> Command {
     command
 }
 
+fn managed_wsl_script_command() -> Command {
+    let mut command = managed_wsl_command();
+    command.args(["sh", "-s"]);
+    command
+}
+
 fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRuntimeError> {
     let parent = Path::new(remote)
         .parent()
@@ -1841,11 +1864,7 @@ fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRu
         ManagedDiagnosticLayer::ModelTransferOrIntegrity,
     )?;
     let mut child = managed_wsl_command()
-        .args([
-            "sh",
-            "-lc",
-            &format!("cat > {}", shell_quote(remote)),
-        ])
+        .args(["tee", remote])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1881,11 +1900,7 @@ fn wsl_model_path(content_sha256: &str) -> String {
 
 fn wsl_file_exists(path: &str) -> Result<bool, ManagedLocalRuntimeError> {
     let output = managed_wsl_command()
-        .args([
-            "sh",
-            "-lc",
-            &format!("test -f {}", shell_quote(path)),
-        ])
+        .args(["test", "-f", path])
         .output()
         .map_err(model_io)?;
     Ok(output.status.success())
@@ -1914,12 +1929,30 @@ fn wsl_shell(
     command: &str,
     layer: ManagedDiagnosticLayer,
 ) -> Result<std::process::Output, ManagedLocalRuntimeError> {
-    let output = managed_wsl_command()
-        .args(["sh", "-lc", command])
-        .output()
+    let mut child = managed_wsl_script_command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             ManagedLocalRuntimeError::new(layer, format!("could not invoke managed WSL: {error}"))
         })?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(ManagedLocalRuntimeError::new(
+            layer,
+            "managed WSL shell did not expose stdin",
+        ));
+    };
+    stdin.write_all(command.as_bytes()).map_err(|error| {
+        ManagedLocalRuntimeError::new(layer, format!("could not stream managed WSL script: {error}"))
+    })?;
+    stdin.write_all(b"\n").map_err(|error| {
+        ManagedLocalRuntimeError::new(layer, format!("could not terminate managed WSL script: {error}"))
+    })?;
+    drop(stdin);
+    let output = child.wait_with_output().map_err(|error| {
+        ManagedLocalRuntimeError::new(layer, format!("could not wait for managed WSL: {error}"))
+    })?;
     if !output.status.success() {
         return Err(ManagedLocalRuntimeError::new(
             layer,
@@ -1976,11 +2009,9 @@ fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRun
             .args(["/FI", &format!("PID eq {}", state.process_id), "/FO", "CSV", "/NH"])
             .output(),
         ManagedExecutionEnvironment::Wsl2Linux => managed_wsl_command()
-            .args([
-                "sh",
-                "-lc",
-                &format!("kill -0 {}", state.process_id),
-            ])
+            .arg("kill")
+            .arg("-0")
+            .arg(state.process_id.to_string())
             .output(),
     }
     .map_err(|error| {
@@ -2317,10 +2348,17 @@ mod tests {
     }
 
     #[test]
+    fn os_release_parser_accepts_managed_ubuntu_22_04_point_release() {
+        let os_release = "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\nID=ubuntu\n";
+        assert_eq!(os_release_value(os_release, "ID"), Some("ubuntu"));
+        assert_eq!(os_release_value(os_release, "VERSION_ID"), Some("22.04"));
+    }
+
+    #[test]
     fn wsl_cuda_shell_contract_is_posix_safe_and_relocatable() {
         let bootstrap = wsl_cuda_bootstrap_command();
-        assert!(bootstrap.contains("managed GameEngine-LocalAI WSL userland must be Ubuntu 22.04"));
-        assert!(bootstrap.contains("VERSION_ID"));
+        assert!(!bootstrap.contains("/etc/os-release"));
+        assert!(!bootstrap.contains("VERSION_ID"));
         assert!(!bootstrap.contains("Ubuntu 24.04"));
         assert!(bootstrap.contains("cuda-compiler-12-4"));
         assert!(bootstrap.contains("cuda-libraries-dev-12-4"));
@@ -2358,6 +2396,25 @@ mod tests {
                 "--".to_owned(),
             ]
         );
+
+        let script_command = managed_wsl_script_command();
+        let script_args = script_command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            script_args,
+            vec![
+                "-d".to_owned(),
+                MANAGED_WSL_DISTRIBUTION.to_owned(),
+                "-u".to_owned(),
+                "root".to_owned(),
+                "--".to_owned(),
+                "sh".to_owned(),
+                "-s".to_owned(),
+            ]
+        );
+        assert!(!script_args.iter().any(|argument| argument == "-lc"));
     }
 
     #[test]
