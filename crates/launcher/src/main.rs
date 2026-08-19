@@ -2,11 +2,13 @@
 
 mod fonts;
 mod icon;
+mod native_2d_template;
 mod theme;
 #[cfg(feature = "visual-validation")]
 mod visual_capture;
 
 use eframe::egui;
+use native_2d_template::ProjectTemplate;
 use engine_launcher::LauncherPreferences;
 #[cfg(test)]
 use engine_launcher::MAX_RECENT_PROJECTS;
@@ -208,6 +210,7 @@ struct LauncherApp {
     preferences: LauncherPreferences,
     recent: RecentProjectList,
     new_project_name: String,
+    new_project_template: ProjectTemplate,
     status: Option<StatusMessage>,
     switch_from: Option<PathBuf>,
     pending_switch: Option<PendingSwitch>,
@@ -222,6 +225,7 @@ impl LauncherApp {
             preferences: LauncherPreferences::load(),
             recent: RecentProjectList::default(),
             new_project_name: "NewGame".to_owned(),
+            new_project_template: ProjectTemplate::default(),
             status: None,
             switch_from: None,
             pending_switch: None,
@@ -282,9 +286,16 @@ impl LauncherApp {
         };
         self.preferences.remember_new_project_parent(&parent);
         let final_path = parent.join(name);
-        match create_standard_project(&final_path, name) {
-            Ok(project) => {
-                let path = project.path().to_path_buf();
+        let created = match self.new_project_template {
+            ProjectTemplate::Empty => create_standard_project(&final_path, name)
+                .map(|project| project.path().to_path_buf())
+                .map_err(|error| error.to_string()),
+            ProjectTemplate::Native2d => {
+                native_2d_template::create_native_2d_project(&final_path, name)
+            }
+        };
+        match created {
+            Ok(path) => {
                 self.preferences.push_recent(&path);
                 self.status = Some(StatusMessage::success(format!("Created {}", path.display())));
                 self.open_project(path);
@@ -389,7 +400,25 @@ impl LauncherApp {
                     .desired_width(f32::INFINITY)
                     .margin(egui::Margin::symmetric(8, 6)),
             );
-            ui.add_space(2.0);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.new_project_template,
+                    ProjectTemplate::Empty,
+                    "Empty",
+                );
+                ui.selectable_value(
+                    &mut self.new_project_template,
+                    ProjectTemplate::Native2d,
+                    "Native 2D",
+                );
+            });
+            ui.label(
+                egui::RichText::new(self.new_project_template.description())
+                    .small()
+                    .color(theme::TEXT_MUTED),
+            );
+            ui.add_space(6.0);
             if accent_button(ui, "Create project").clicked() {
                 self.create_project();
             }
