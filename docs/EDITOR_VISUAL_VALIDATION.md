@@ -73,6 +73,45 @@ state that additionally requires a specific asset or document to be loaded
 still requires a separate explicit document scenario; opening an authoring tool
 alone is not evidence for document-dependent controls that are not visible yet.
 
+### Remote AI Studio browser scenario
+
+A PR that needs responsive Remote AI Studio browser evidence MAY add this
+secondary marker alongside an explicit `editor` or `both` target:
+
+```text
+<!-- gameengine-visual-validation: editor -->
+<!-- gameengine-visual-remote-ai-studio: browser -->
+```
+
+The secondary marker does not broaden the workflow trust boundary. The normal
+same-repository `chatgpt/gameengine-*` pull-request checks must select the
+Windows Editor capture job first. The checked-out validation script then starts
+the exact-head Editor with its non-default `visual-validation` feature, seeds a
+deterministic project-scoped Agent Host fixture after the loopback gateway is
+running, and receives the real companion URL from that production gateway.
+
+Microsoft Edge on the Windows runner opens the production HTTP/JavaScript
+companion directly. The script captures desktop (`1440x1000`), narrow
+(`900x1000`), and mobile (`390x844`) viewport evidence plus a taller image at
+each width so controls, progress, permission state, and captured-frame review
+below the initial fold can be inspected. The fixture is compiled only for
+`visual-validation`; it does not duplicate the companion DOM or bypass Agent
+Host, sanitized DTO, HTTP/SSE, permission, or run-state contracts. Mobile and
+narrow review must also confirm that controls and long metadata remain inside
+the viewport without horizontal clipping or required horizontal scrolling.
+
+The Remote helper launch clears inherited authoring-tool and screenshot
+environment variables, then selects the explicit `ADR 0133 Remote AI Studio`
+scenario before starting the second Editor process. That scenario is excluded
+from the native screenshot lifecycle because browser capture owns its lifetime.
+The Editor also treats empty or whitespace-only authoring-tool and native
+screenshot values as absent, so ambient CI variables cannot accidentally select
+an invalid visual scenario or an invalid capture path.
+
+If deterministic fixture preparation fails, the Editor remains alive and the
+validation marker reports the concrete fixture error to the runner instead of
+turning a fallible screenshot fixture into an Editor startup failure.
+
 ## Workflow and execution boundary
 
 `.github/workflows/gameengine-editor-visual-validation.yml` uses the ordinary

@@ -315,8 +315,10 @@ impl EditorApp {
                         .selected_text("Player Character · Animation Graph")
                         .width(340.0)
                         .show_ui(ui, |ui| {
-                            ui.selectable_label(true, "Player Character · Animation Graph");
-                            ui.selectable_label(false, "Enemy Captain · Behavior Tree");
+                            // A visual fixture draws the closed selector's contents
+                            // for evidence; nothing acts on a click here.
+                            let _ = ui.selectable_label(true, "Player Character · Animation Graph");
+                            let _ = ui.selectable_label(false, "Enemy Captain · Behavior Tree");
                         });
                     if ui.button("Frame All").clicked() {
                         self.canvas.request_frame_all();

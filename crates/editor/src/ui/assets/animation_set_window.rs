@@ -294,85 +294,62 @@ fn show_motion_route_preview(
     });
 }
 
-#[cfg(test)]
-fn test_skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
-    engine::asset::SkeletonRecord {
-        id: id.as_str().to_owned(),
-        identity,
-        next_bone_id: 0,
-        bones: Vec::new(),
-    }
+#[cfg(feature = "visual-validation")]
+fn visual_validation_asset_id(suffix: &str) -> AssetId {
+    AssetId::from_stable_id(StableId::new(format!("asset_{suffix}")))
+        .expect("visual validation AssetId must use a fixed valid ULID suffix")
 }
 
-#[cfg(test)]
-#[test]
-fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
-    let source_id = AssetId::generate();
-    let candidate_id = AssetId::generate();
-    let source_skeleton = AssetId::generate();
-    let other_skeleton = AssetId::generate();
-    let mut manifest = engine::AssetManifest::default();
-    manifest.insert(
-        source_id,
-        engine::ManifestEntry {
-            path: "models/source.glb".to_owned(),
-            name: Some("source".to_owned()),
-            import_settings: engine::ImportSettings {
-                sub_assets: vec![engine::ImportedSubAsset {
-                    id: candidate_id.as_str().to_owned(),
-                    kind: engine::ImportedSubAssetKind::Animation,
-                    name: "Walk".to_owned(),
-                    index: 0,
-                    target_model_source: None,
-                }],
-                skeleton_records: vec![test_skeleton_record(&source_skeleton, 7)],
-                ..engine::ImportSettings::default()
-            },
-        },
+#[cfg(feature = "visual-validation")]
+fn show_adr0154_visual_validation_evidence(ui: &mut egui::Ui) {
+    use engine::motion_binding::{AnimationMotionFailure, AnimationMotionRoute};
+
+    let retarget_map = visual_validation_asset_id("00000000000000000000000003");
+    let humanoid_motion = visual_validation_asset_id("00000000000000000000000004");
+    ui.separator();
+    ui.heading("Selected animation target evidence");
+    ui.small(
+        "Candidate: [Model] Walk · selected imported animation skin resolves its actual source skeleton before target-aware routing.",
     );
-    let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
-
-    let native = preview_motion_route(
-        &manifest,
-        None,
-        None,
-        &candidate,
-        &source_skeleton,
-    )
-    .expect("registered Animation candidate must produce a route");
-    let failed = preview_motion_route(
-        &manifest,
-        None,
-        None,
-        &candidate,
-        &other_skeleton,
-    )
-    .expect("registered Animation candidate must produce a route");
-
-    assert_eq!(native.badge(), "Native");
-    assert_eq!(failed.badge(), "Failed");
-}
-
-#[cfg(test)]
-#[test]
-fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
-    let first_animation = AssetId::generate();
-    let second_animation = AssetId::generate();
-    let first_skeleton = AssetId::generate();
-    let second_skeleton = AssetId::generate();
-    let animations = [
-        (first_animation.as_str(), 1_usize),
-        (second_animation.as_str(), 0_usize),
-    ];
-    let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
-
-    let resolved = animation_source_skeleton_from_parts(
-        first_animation.as_str(),
-        animations,
-        |skin_index| skeletons.get(skin_index).cloned(),
+    ui.group(|ui| {
+        ui.strong("Matching target skeleton");
+        show_motion_route_preview(ui, Some(&AnimationMotionRoute::Native), true);
+    });
+    ui.group(|ui| {
+        ui.strong("Different target · explicit Retarget Map available");
+        show_motion_route_preview(
+            ui,
+            Some(&AnimationMotionRoute::Retarget { map: retarget_map }),
+            true,
+        );
+    });
+    ui.group(|ui| {
+        ui.strong("Different target · import-owned Humanoid fallback available");
+        show_motion_route_preview(
+            ui,
+            Some(&AnimationMotionRoute::Humanoid {
+                motion: humanoid_motion,
+            }),
+            true,
+        );
+    });
+    ui.group(|ui| {
+        ui.strong("Different target · no compatible adaptation");
+        show_motion_route_preview(
+            ui,
+            Some(&AnimationMotionRoute::Failed {
+                reason: AnimationMotionFailure::NoCompatibleRoute,
+            }),
+            true,
+        );
+    });
+    ui.group(|ui| {
+        ui.strong("Imported source still resident-loading");
+        show_motion_route_preview(ui, None, true);
+    });
+    ui.small(
+        "Resolution order: Native → Retarget → Humanoid → Failed. Target Preview is transient and never persisted into the Animation Set.",
     );
-
-    assert_eq!(resolved, Some(second_skeleton));
 }
 
 fn humanoid_motion_choices(
@@ -645,6 +622,17 @@ pub(in crate::ui) fn validate_animation_set_clip_references(
 }
 
 impl EditorApp {
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_animation_set_visual_validation(&mut self) {
+        let mut state = AnimationSetEditorState::new(
+            PathBuf::from("visual/adr0154.animset.json"),
+            PathBuf::from("visual/adr0154.animset.json"),
+            engine_authoring::AnimationSet::empty(),
+        );
+        state.target_preview_skeleton = Some(visual_validation_asset_id("00000000000000000000000002"));
+        self.animation_set_editor = Some(state);
+    }
+
     pub(in crate::ui) fn open_animation_set_editor(
         &mut self,
         relative_path: PathBuf,
@@ -808,6 +796,15 @@ impl EditorApp {
                             .map(|choice| choice.label.as_str())
                     })
                     .unwrap_or("No target - routing unresolved");
+                #[cfg(feature = "visual-validation")]
+                let visual_adr0154 =
+                    state.relative_path == Path::new("visual/adr0154.animset.json");
+                #[cfg(feature = "visual-validation")]
+                let target_preview_label = if visual_adr0154 {
+                    "ADR0154 Hero Target · imported skeleton"
+                } else {
+                    target_preview_label
+                };
                 control_row(ui, |ui| {
                     ui.label("Target Preview");
                     egui::ComboBox::from_id_salt("animation_set_target_preview")
@@ -828,6 +825,10 @@ impl EditorApp {
                         });
                 });
                 ui.small("Preview-only: this target is never saved into the Animation Set.");
+                #[cfg(feature = "visual-validation")]
+                if visual_adr0154 {
+                    show_adr0154_visual_validation_evidence(ui);
+                }
 
                 match &graph_model {
                     Some(Err(error)) => {
@@ -1417,5 +1418,87 @@ impl EditorApp {
             }
         }
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
+        engine::asset::SkeletonRecord {
+            id: id.as_str().to_owned(),
+            identity,
+            next_bone_id: 0,
+            bones: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
+        let source_id = AssetId::generate();
+        let candidate_id = AssetId::generate();
+        let source_skeleton = AssetId::generate();
+        let other_skeleton = AssetId::generate();
+        let mut manifest = engine::AssetManifest::default();
+        manifest.insert(
+            source_id,
+            engine::ManifestEntry {
+                path: "models/source.glb".to_owned(),
+                name: Some("source".to_owned()),
+                import_settings: engine::ImportSettings {
+                    sub_assets: vec![engine::ImportedSubAsset {
+                        id: candidate_id.as_str().to_owned(),
+                        kind: engine::ImportedSubAssetKind::Animation,
+                        name: "Walk".to_owned(),
+                        index: 0,
+                        target_model_source: None,
+                    }],
+                    skeleton_records: vec![skeleton_record(&source_skeleton, 7)],
+                    ..engine::ImportSettings::default()
+                },
+            },
+        );
+        let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
+
+        let native = preview_motion_route(
+            &manifest,
+            None,
+            None,
+            &candidate,
+            &source_skeleton,
+        )
+        .expect("registered Animation candidate must produce a route");
+        let failed = preview_motion_route(
+            &manifest,
+            None,
+            None,
+            &candidate,
+            &other_skeleton,
+        )
+        .expect("registered Animation candidate must produce a route");
+
+        assert_eq!(native.badge(), "Native");
+        assert_eq!(failed.badge(), "Failed");
+    }
+
+    #[test]
+    fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
+        let first_animation = AssetId::generate();
+        let second_animation = AssetId::generate();
+        let first_skeleton = AssetId::generate();
+        let second_skeleton = AssetId::generate();
+        let animations = [
+            (first_animation.as_str(), 1_usize),
+            (second_animation.as_str(), 0_usize),
+        ];
+        let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
+
+        let resolved = animation_source_skeleton_from_parts(
+            first_animation.as_str(),
+            animations,
+            |skin_index| skeletons.get(skin_index).cloned(),
+        );
+
+        assert_eq!(resolved, Some(second_skeleton));
+    }
 }

@@ -4,13 +4,13 @@ mod mcp_transport;
 use std::fs::File;
 #[cfg(feature = "visual-validation")]
 use std::io::BufWriter;
-#[cfg(feature = "visual-validation")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 #[cfg(feature = "visual-validation")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use std::time::Duration;
 
+use engine_editor::benchmark_runner::{run_benchmark_experiment, BenchmarkExperimentOptions};
 use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
 use engine_project_lifecycle::{acquire_editor_project, EditorLease};
 use mcp_transport::{
@@ -45,6 +45,7 @@ impl EditorShell {
     fn new(
         project_lease: EditorLease,
         context: &eframe::egui::Context,
+        benchmark_run: Option<&Path>,
     ) -> Result<Self, String> {
         let root = project_lease.project_root().clone();
         #[cfg(feature = "visual-validation")]
@@ -60,23 +61,53 @@ impl EditorShell {
                 mcp_server.authorization_token(),
             )
             .map_err(|error| error.to_string())?;
-        let ai_studio = AiStudioPanel::new(
+        let mut ai_studio = AiStudioPanel::new(
             &root,
             AiStudioConnection::new(
                 mcp_server.endpoint().to_string(),
                 mcp_server.authorization_token().to_owned(),
             ),
         )?;
+        if let Some(benchmark_run) = benchmark_run {
+            ai_studio.configure_benchmark_child(benchmark_run)?;
+        }
+        #[cfg(feature = "visual-validation")]
+        let visual_scenario = visual_authoring_tool_scenario();
         #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
-            let detached_capture = visual_validation_touches_ai_studio();
-            if detached_capture {
-                if let Ok(scenario) = std::env::var("GAMEENGINE_VISUAL_SCENARIO") {
-                    ai_studio.prepare_adr_visual_validation(&scenario);
-                } else {
-                    ai_studio.prepare_hosted_backend_visual_validation();
+            let detached_capture = match visual_scenario.as_deref() {
+                Some("ADR 0133 Remote AI Studio") => false,
+                Some("ADR 0143 Model Resources") => {
+                    ai_studio.prepare_local_model_resources_visual_validation();
+                    true
                 }
+                Some("ADR 0145 External Agent") => {
+                    ai_studio.prepare_external_agent_visual_validation();
+                    true
+                }
+                Some(_) => false,
+                None => {
+                    // ADR scenarios arrive through GAMEENGINE_VISUAL_SCENARIO, a
+                    // separate namespace from the authoring-tool scenarios matched
+                    // above, so they are prepared here rather than as another arm.
+                    if let Some(scenario) = requested_adr_visual_scenario() {
+                        ai_studio.prepare_adr_visual_validation(&scenario);
+                        true
+                    } else {
+                        let touches_ai_studio = visual_validation_touches_ai_studio();
+                        if touches_ai_studio {
+                            if visual_validation_touches_managed_local_runtime() {
+                                ai_studio.prepare_managed_local_visual_validation()?;
+                            } else {
+                                ai_studio.prepare_hosted_backend_visual_validation();
+                            }
+                        }
+                        touches_ai_studio
+                    }
+                }
+            };
+            if detached_capture {
                 ai_studio.detach();
             }
             (ai_studio, detached_capture)
@@ -86,9 +117,17 @@ impl EditorShell {
         #[cfg(not(feature = "visual-validation"))]
         let authoring_windows = AuthoringWindows::default();
         #[cfg(feature = "visual-validation")]
-        if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
-            let requested = requested.to_string_lossy();
-            if requested == "Navigation" {
+        if let Some(requested) = visual_scenario.as_deref() {
+            if matches!(
+                requested,
+                "ADR 0133 Remote AI Studio"
+                    | "ADR 0143 Model Resources"
+                    | "ADR 0145 External Agent"
+            ) {
+                // AI Studio scenarios are prepared above and use its detached native viewport.
+            } else if requested == "ADR 0154 Animation Set" {
+                app.prepare_animation_set_visual_validation();
+            } else if requested == "Navigation" {
                 app.prepare_navigation_visual_validation();
             } else if requested == "Spatial Audio" {
                 app.prepare_spatial_audio_visual_validation();
@@ -124,7 +163,7 @@ impl EditorShell {
             _mcp_server: mcp_server,
             mcp_requests,
             #[cfg(feature = "visual-validation")]
-            visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO").map(PathBuf::from),
+            visual_capture_path: visual_screenshot_path(visual_scenario.as_deref()),
             #[cfg(feature = "visual-validation")]
             visual_capture_requested_at: None,
             #[cfg(feature = "visual-validation")]
@@ -351,30 +390,84 @@ impl eframe::App for EditorShell {
                 engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,
             );
         }
-        #[cfg(feature = "visual-validation")]
-        self.handle_visual_validation_capture(context);
+        if self.ai_studio.take_benchmark_child_exit_request() {
+            context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+        } else {
+            #[cfg(feature = "visual-validation")]
+            self.handle_visual_validation_capture(context);
+        }
     }
 
     fn ui(&mut self, ui: &mut eframe::egui::Ui, frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
         eframe::App::ui(&mut self.app, ui, frame);
         self.show_authoring_tools_launcher(&context);
-        self.authoring_windows
-            .show(&context, frame, self.app.project_root());
+        self.authoring_windows.show(
+            &context,
+            frame,
+            self.app.project_root(),
+            self.app.asset_manifest(),
+        );
         #[cfg(not(feature = "visual-validation"))]
         self.ai_studio.show(&context);
         #[cfg(feature = "visual-validation")]
-        if !self.visual_behavior_debug_capture
-            && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
-            && (self.visual_ai_studio_detached_capture
-                || std::env::var_os("GAMEENGINE_VISUAL_SCENARIO").is_none())
         {
-            self.ai_studio.show(&context);
+            let visual_scenario = visual_authoring_tool_scenario();
+            let ai_studio_scenario = matches!(
+                visual_scenario.as_deref(),
+                Some("ADR 0133 Remote AI Studio")
+                    | Some("ADR 0143 Model Resources")
+                    | Some("ADR 0145 External Agent")
+            );
+            // An ADR scenario that does not detach AI Studio is capturing an
+            // authoring surface, so drawing AI Studio over it would replace the
+            // evidence the scenario exists to produce.
+            let adr_scenario_owns_capture = requested_adr_visual_scenario().is_some()
+                && !self.visual_ai_studio_detached_capture;
+            if !self.visual_behavior_debug_capture
+                && !adr_scenario_owns_capture
+                && (visual_scenario.is_none() || ai_studio_scenario)
+            {
+                self.ai_studio.show(&context);
+            }
         }
     }
 
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
         eframe::egui::Color32::from_rgb(20, 22, 26).to_normalized_gamma_f32()
+    }
+}
+
+/// Returns the requested ADR visual scenario, if one was named.
+///
+/// ADR scenarios use their own environment variable so an authoring-tool
+/// scenario and an ADR scenario can never be confused for one another.
+#[cfg(feature = "visual-validation")]
+fn requested_adr_visual_scenario() -> Option<String> {
+    std::env::var("GAMEENGINE_VISUAL_SCENARIO")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_authoring_tool_scenario() -> Option<String> {
+    std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_screenshot_path(visual_scenario: Option<&str>) -> Option<PathBuf> {
+    if visual_scenario == Some("ADR 0133 Remote AI Studio") {
+        return None;
+    }
+    let value = std::env::var_os("GAMEENGINE_SCREENSHOT_TO")?;
+    if value.to_string_lossy().trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
     }
 }
 
@@ -416,6 +509,24 @@ fn visual_validation_touches_ai_studio() -> bool {
             &base,
             "--",
             "crates/editor/src/ai_studio.rs",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_validation_touches_managed_local_runtime() -> bool {
+    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+    let base = format!("origin/{base_ref}...HEAD");
+    std::process::Command::new("git")
+        .args([
+            "diff",
+            "--name-only",
+            &base,
+            "--",
+            "crates/editor/src/managed_local_runtime.rs",
         ])
         .output()
         .ok()
@@ -589,19 +700,80 @@ fn write_visual_validation_png(
     writer.finish().map_err(|error| error.to_string())
 }
 
-fn project_argument() -> Result<PathBuf, String> {
+/// How the Editor binary was invoked.
+///
+/// The same executable is the human Editor, one isolated benchmark child, and
+/// the headless parent of a benchmark suite. Separating the three at argument
+/// parsing keeps the benchmark parent from acquiring a project lease or opening
+/// a window it does not need.
+enum EditorInvocation {
+    /// Normal windowed Editor, optionally acting as one benchmark child.
+    Editor {
+        project: PathBuf,
+        benchmark_run: Option<PathBuf>,
+    },
+    /// Headless parent that executes one whole benchmark experiment.
+    BenchmarkExperiment(Box<BenchmarkExperimentOptions>),
+}
+
+/// Reads the value that follows a flag, or reports the flag that lacks one.
+fn next_argument_value<I: Iterator<Item = std::ffi::OsString>>(
+    arguments: &mut I,
+    flag: &str,
+) -> Result<PathBuf, String> {
+    arguments
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+fn editor_invocation() -> Result<EditorInvocation, String> {
     let mut arguments = std::env::args_os().skip(1);
     let mut project = None;
+    let mut benchmark_run = None;
+    let mut benchmark_experiment = None;
+    let mut benchmark_endpoint = None;
+    let mut benchmark_fixture = None;
+    let mut benchmark_run_timeout = None;
     while let Some(argument) = arguments.next() {
         if argument == "--project" {
             if project.is_some() {
                 return Err("--project may be specified only once".to_owned());
             }
-            project = Some(PathBuf::from(
-                arguments
-                    .next()
-                    .ok_or_else(|| "--project requires a path".to_owned())?,
-            ));
+            project = Some(next_argument_value(&mut arguments, "--project")?);
+        } else if argument == "--benchmark-run" {
+            if benchmark_run.is_some() {
+                return Err("--benchmark-run may be specified only once".to_owned());
+            }
+            benchmark_run = Some(next_argument_value(&mut arguments, "--benchmark-run")?);
+        } else if argument == "--benchmark-experiment" {
+            if benchmark_experiment.is_some() {
+                return Err("--benchmark-experiment may be specified only once".to_owned());
+            }
+            benchmark_experiment = Some(next_argument_value(&mut arguments, "--benchmark-experiment")?);
+        } else if argument == "--benchmark-endpoint" {
+            if benchmark_endpoint.is_some() {
+                return Err("--benchmark-endpoint may be specified only once".to_owned());
+            }
+            benchmark_endpoint = Some(
+                next_argument_value(&mut arguments, "--benchmark-endpoint")?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        } else if argument == "--benchmark-fixture" {
+            if benchmark_fixture.is_some() {
+                return Err("--benchmark-fixture may be specified only once".to_owned());
+            }
+            benchmark_fixture = Some(next_argument_value(&mut arguments, "--benchmark-fixture")?);
+        } else if argument == "--benchmark-run-timeout" {
+            if benchmark_run_timeout.is_some() {
+                return Err("--benchmark-run-timeout may be specified only once".to_owned());
+            }
+            let seconds = next_argument_value(&mut arguments, "--benchmark-run-timeout")?
+                .to_string_lossy()
+                .parse::<u64>()
+                .map_err(|error| format!("--benchmark-run-timeout requires seconds: {error}"))?;
+            benchmark_run_timeout = Some(Duration::from_secs(seconds));
         } else {
             return Err(format!(
                 "unknown Editor argument `{}`",
@@ -609,11 +781,64 @@ fn project_argument() -> Result<PathBuf, String> {
             ));
         }
     }
-    project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())
+
+    if let Some(spec_path) = benchmark_experiment {
+        if project.is_some() || benchmark_run.is_some() {
+            return Err(
+                "--benchmark-experiment runs the suite parent and cannot be combined with --project or --benchmark-run"
+                    .to_owned(),
+            );
+        }
+        let mut options = BenchmarkExperimentOptions::new(spec_path);
+        if let Some(endpoint) = benchmark_endpoint {
+            options.endpoint = endpoint;
+        }
+        options.fixture_template_root = benchmark_fixture;
+        options.run_timeout = benchmark_run_timeout;
+        return Ok(EditorInvocation::BenchmarkExperiment(Box::new(options)));
+    }
+    if benchmark_endpoint.is_some() || benchmark_fixture.is_some() || benchmark_run_timeout.is_some()
+    {
+        return Err(
+            "--benchmark-endpoint, --benchmark-fixture, and --benchmark-run-timeout apply only to --benchmark-experiment"
+                .to_owned(),
+        );
+    }
+    Ok(EditorInvocation::Editor {
+        project: project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())?,
+        benchmark_run,
+    })
 }
 
 fn run() -> Result<(), String> {
-    let project = project_argument()?;
+    match editor_invocation()? {
+        EditorInvocation::BenchmarkExperiment(options) => run_benchmark_suite(*options),
+        EditorInvocation::Editor {
+            project,
+            benchmark_run,
+        } => run_editor(project, benchmark_run),
+    }
+}
+
+/// Executes one benchmark experiment and prints its comparison report.
+fn run_benchmark_suite(options: BenchmarkExperimentOptions) -> Result<(), String> {
+    let outcome = run_benchmark_experiment(options)?;
+    print!("{}", outcome.report);
+    println!(
+        "
+{} of {} planned runs recorded, {} passed; comparison written to {}",
+        outcome.completed_runs,
+        outcome.planned_runs,
+        outcome.passed_runs,
+        outcome.comparison_path.display()
+    );
+    if let Some(reason) = outcome.stopped_early {
+        return Err(format!("benchmark experiment stopped early: {reason}"));
+    }
+    Ok(())
+}
+
+fn run_editor(project: PathBuf, benchmark_run: Option<PathBuf>) -> Result<(), String> {
     let project_lease = acquire_editor_project(&project).map_err(|error| error.to_string())?;
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -627,10 +852,14 @@ fn run() -> Result<(), String> {
         Box::new(move |creation_context| {
             engine_editor::install_editor_fonts(&creation_context.egui_ctx);
             Ok(Box::new(
-                EditorShell::new(project_lease, &creation_context.egui_ctx)
-                    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(error))
-                    })?,
+                EditorShell::new(
+                    project_lease,
+                    &creation_context.egui_ctx,
+                    benchmark_run.as_deref(),
+                )
+                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::other(error))
+                })?,
             ))
         }),
     )

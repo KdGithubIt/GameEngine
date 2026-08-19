@@ -594,6 +594,10 @@ pub fn is_registerable_asset_path(path: &Path) -> bool {
         engine::AssetKind::NavMesh,
         engine::AssetKind::UiDocument,
         engine::AssetKind::Prefab,
+        engine::AssetKind::SpriteAtlas,
+        engine::AssetKind::SpriteAnimation,
+        engine::AssetKind::TileSet,
+        engine::AssetKind::TileMap,
     ]
     .into_iter()
     .any(|kind| engine::asset_path_matches_kind(kind, path))
@@ -621,9 +625,13 @@ fn collision_free_file_name(
 fn split_asset_file_name(file_name: &str) -> (&str, &str) {
     let lower = file_name.to_ascii_lowercase();
     for suffix in [
+        ".spriteatlas.json",
+        ".spriteanim.json",
         ".material.json",
         ".prefab.json",
         ".navmesh.json",
+        ".tileset.json",
+        ".tilemap.json",
         ".graph.json",
         ".ui.json",
     ] {

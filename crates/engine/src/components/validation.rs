@@ -296,9 +296,51 @@ pub fn validate_builtin_component_values(scene: &AuthoringScene) -> Vec<Diagnost
         }
     }
     diagnostics.extend(validate_skinned_models_without_renderers(scene));
+    diagnostics.extend(validate_game_camera_scene(scene));
     diagnostics.extend(validate_spatial_audio_scene(scene));
     diagnostics.extend(crate::render_limits::validate_scene_render_limits(scene));
     diagnostics
+}
+
+fn validate_game_camera_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
+    let camera_3d = ComponentTypeId::new(CAMERA_COMPONENT);
+    let camera_2d = ComponentTypeId::new(CAMERA_2D_COMPONENT);
+    let mut enabled = Vec::new();
+    for (entity_id, entity) in scene.entities() {
+        for component_type in [&camera_3d, &camera_2d] {
+            let Some(Value::Object(fields)) = entity.components.get(component_type) else {
+                continue;
+            };
+            if fields.get("enabled") != Some(&Value::Bool(true)) {
+                continue;
+            }
+            let Some(priority) = fields.get("priority").and_then(|value| match value {
+                Value::I64(value) => i32::try_from(*value).ok(),
+                Value::U64(value) => i32::try_from(*value).ok(),
+                _ => None,
+            }) else {
+                continue;
+            };
+            enabled.push((entity_id.clone(), component_type.clone(), priority));
+        }
+    }
+    let Some(highest) = enabled.iter().map(|(_, _, priority)| *priority).max() else {
+        return Vec::new();
+    };
+    if enabled.iter().filter(|(_, _, priority)| *priority == highest).count() <= 1 {
+        return Vec::new();
+    }
+    enabled
+        .into_iter()
+        .filter(|(_, _, priority)| *priority == highest)
+        .map(|(entity, component_type, _)| {
+            Diagnostic::error(
+                "scene.game_camera_priority_ambiguous",
+                "Multiple enabled Camera2D/Camera3D components share the highest priority; assign a unique highest priority instead of relying on runtime entity order.",
+            )
+            .with_target(DiagnosticTarget::Component { entity, component_type })
+        })
+        .collect()
 }
 
 fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {

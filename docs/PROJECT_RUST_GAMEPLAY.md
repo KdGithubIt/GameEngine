@@ -203,14 +203,25 @@ so every fixed callback observes the exact simulation step it is running.
 
 ## Engine views and event streams
 
-Entity queries can copy authoring identity, local/global Transform, character,
-animation, lock-on, navigation, and UI-binding views. `UiBindings` is encoded
-as a stable name-keyed object with string, number, and boolean values; the
-engine resource itself never crosses the module boundary.
+Entity queries can copy authoring identity, local/global Transform, 3D character,
+Native 2D character, skeletal animation, Native 2D sprite-animation, lock-on, navigation,
+and UI-binding views. `Character2dStateView` exposes persistent fixed-step velocity,
+grounded/ground-normal state, wall/ceiling classification, and remaining one-way
+drop-through time without exposing the 2D solver or ECS references.
+`SpriteAnimationState` exposes the stable Sprite Animation `AssetId`, playing state,
+current frame/tick, speed, and effective looping policy without exposing engine ECS
+references or process-local asset handles. `UiBindings` is encoded as a stable
+name-keyed object with string, number, and boolean values; the engine resource
+itself never crosses the module boundary.
 
 Declared event streams receive host-owned records with monotonically
-increasing per-stream sequences. Collision records contain `enter`, `stay`, or
-`exit`; animation records identify the firing entity and event name; UI records
+increasing per-stream sequences. The existing `Collision` stream remains the 3D
+collision contract. Native 2D collision/trigger transitions use the additive
+`Collision2d` stream and typed `Collision2dEvent`, carrying `enter`, `stay`, or
+`exit`, two generation-checked entity handles, and sensor state without exposing
+solver handles. Native 2D Sprite Animation frame events join the existing
+`Animation` stream with the same typed entity/name payload as skeletal markers.
+UI records
 contain the relayed document event name; scene records report completed or
 failed transitions; emitted project events appear on the `Game` stream. Source
 resources carry producer generations, so a project system ordered before a
@@ -259,6 +270,14 @@ components and both finite vectors have been preflighted. Facing is a non-zero
 world-space direction; local `-Z` is rotated toward it. This keeps movement and
 orientation in one atomic command instead of allowing a half-applied state.
 
+Native 2D gameplay uses the separate `Character2d` command family so it never
+projects through the 3D controller. `Commands::set_character_motion_2d` publishes
+persistent world-XY velocity consumed by `CharacterController2D` during the next
+fixed 2D step, after scene/Tile Map collision synchronization and before solver
+integration. `Commands::drop_through_2d` queues a bounded one-way-platform ignore
+interval. `Character2dStateView` reads back the resulting grounded, normal, wall,
+ceiling, velocity, and drop-through state through copied values only.
+
 Lock-on uses the targetless `acquire_lock_on`, `cycle_lock_on`, and
 `release_lock_on` constructors. They queue the existing `TargetLock` service
 request, preserving the engine rule that the last request before
@@ -280,6 +299,16 @@ leave a partially changed animator.
 `set_animation_condition` writes a named boolean condition on a live
 `AnimGraphPlayer`. Empty names, missing graph/animator components, stale
 targets, and unloaded clips reject the entire callback output before mutation.
+
+Native 2D Sprite Animation uses the same deferred `Animation` command family but
+keeps its authored identity contract: `play_sprite_animation`,
+`pause_sprite_animation`, and `stop_sprite_animation` control the entity's independent
+`SpriteAnimator2D` state, while `select_sprite_animation` takes a stable Sprite Animation
+`AssetId` plus an initial frame. Selection resolves only clips already loaded through the
+scene/runtime asset boundary and rejects an unloaded asset or out-of-range frame during
+atomic command preflight. `SpriteAnimationStateView` reports the same stable clip ID and
+current deterministic frame/tick state. Unlike skeletal crossfade clip IDs, these stable
+Sprite Animation IDs are safe to persist in authored project data.
 
 ## UI commands
 

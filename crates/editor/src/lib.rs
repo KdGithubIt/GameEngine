@@ -12,13 +12,19 @@
 #[allow(dead_code)]
 mod agent_asset_acquisition;
 mod agent_benchmark;
+mod benchmark_comparison;
+mod benchmark_experiment;
+mod benchmark_process;
+pub mod benchmark_runner;
 mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;
 mod live_observation;
+mod managed_local_runtime;
 mod model_router;
 mod native_agent;
 mod native_agent_runtime;
+mod native_2d_editor;
 mod remote_ai_studio;
 mod resource_arbitration;
 pub mod ai_studio;

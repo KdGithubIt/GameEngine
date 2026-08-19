@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
 pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
-const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
+pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
 const CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,9 +192,8 @@ fn select_adapter_memory(
                 && candidate.device_id == device_id
         })
         .collect::<Vec<_>>();
-    if by_id.len() == 1 {
-        return (by_id[0].dedicated_video_memory_bytes > 0)
-            .then_some(by_id[0].dedicated_video_memory_bytes);
+    if let Some(memory) = unanimous_dedicated_memory(&by_id) {
+        return Some(memory);
     }
 
     let normalized = adapter_name.trim().to_ascii_lowercase();
@@ -204,11 +203,28 @@ fn select_adapter_memory(
             !candidate.software && candidate.name.trim().to_ascii_lowercase() == normalized
         })
         .collect::<Vec<_>>();
-    if by_name.len() == 1 {
-        return (by_name[0].dedicated_video_memory_bytes > 0)
-            .then_some(by_name[0].dedicated_video_memory_bytes);
+    unanimous_dedicated_memory(&by_name)
+}
+
+/// Accepts a dedicated-memory reading only when every match reports it.
+///
+/// Windows enumerates one physical adapter more than once on machines with a
+/// virtual display driver or multiple outputs, so requiring a single matching
+/// candidate rejected a perfectly unambiguous measurement: the duplicates agree
+/// on vendor, device, and dedicated memory because they describe the same card.
+/// Agreement is what makes a reading trustworthy here, not uniqueness. Two
+/// candidates that disagree stay unavailable rather than being reconciled, and
+/// a zero reading is still treated as no reading at all.
+#[cfg(target_os = "windows")]
+fn unanimous_dedicated_memory(candidates: &[&WindowsAdapterMemory]) -> Option<u64> {
+    let memory = candidates.first()?.dedicated_video_memory_bytes;
+    if memory == 0 {
+        return None;
     }
-    None
+    candidates
+        .iter()
+        .all(|candidate| candidate.dedicated_video_memory_bytes == memory)
+        .then_some(memory)
 }
 
 #[cfg(target_os = "windows")]
@@ -1257,6 +1273,7 @@ mod tests {
         }
     }
 
+
     #[test]
     fn corpus_covers_required_first_release_workloads() {
         assert_eq!(BENCHMARK_TASKS.len(), 7);
@@ -1346,7 +1363,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_adapter_memory_selection_is_unique_and_fail_closed() {
+    fn windows_adapter_memory_is_accepted_only_when_every_match_agrees() {
         let candidates = vec![
             WindowsAdapterMemory {
                 name: "GPU A".to_owned(),
@@ -1365,11 +1382,35 @@ mod tests {
         ];
         assert_eq!(select_adapter_memory("GPU A", 1, 2, &candidates), Some(12_000));
 
-        let ambiguous = vec![
-            WindowsAdapterMemory { name: "GPU A".to_owned(), ..candidates[0].clone() },
-            WindowsAdapterMemory { name: "GPU A".to_owned(), ..candidates[0].clone() },
+        // Windows enumerates one physical adapter twice on a machine with a
+        // virtual display driver. The duplicates describe the same card, so the
+        // reading is unambiguous even though the match is not unique.
+        let duplicated = vec![candidates[0].clone(), candidates[0].clone()];
+        assert_eq!(
+            select_adapter_memory("GPU A", 1, 2, &duplicated),
+            Some(12_000)
+        );
+
+        // Two candidates that disagree are genuinely ambiguous and must not be
+        // reconciled into a guessed value.
+        let disagreeing = vec![
+            candidates[0].clone(),
+            WindowsAdapterMemory {
+                dedicated_video_memory_bytes: 6_000,
+                ..candidates[0].clone()
+            },
         ];
-        assert_eq!(select_adapter_memory("GPU A", 1, 2, &ambiguous), None);
+        assert_eq!(select_adapter_memory("GPU A", 1, 2, &disagreeing), None);
+
+        // A card that reports no dedicated memory is still no measurement.
+        let zero = vec![WindowsAdapterMemory {
+            dedicated_video_memory_bytes: 0,
+            ..candidates[0].clone()
+        }];
+        assert_eq!(select_adapter_memory("GPU A", 1, 2, &zero), None);
+
+        // Nothing matching at all stays unavailable.
+        assert_eq!(select_adapter_memory("GPU Z", 9, 9, &candidates), None);
     }
 
     #[test]

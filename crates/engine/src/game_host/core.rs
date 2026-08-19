@@ -23,6 +23,10 @@ use crate::game_timer::GameTimerEvents;
 use crate::hitbox::AttackHitbox;
 use crate::lock_on::TargetLock;
 use crate::navmesh::NavMeshAgent;
+use crate::native_2d::{
+    CharacterController2d, CharacterControllerMotion2d, ContactPhase2d, PhysicsRuntime2d,
+    SpriteAnimationEvents2d, SpriteAnimatorRuntime2d,
+};
 use crate::player::InputActionMap;
 use crate::runtime_metadata::RuntimeMetadata;
 use crate::save::{SaveData, SaveValue};
@@ -289,8 +293,10 @@ pub struct GameHostRuntime {
     next_event_sequences: BTreeMap<GameEventStream, u64>,
     consumed_event_sequences: BTreeMap<String, BTreeMap<GameEventStream, u64>>,
     last_collision_generation: Option<u64>,
+    last_collision_2d_generation: Option<u64>,
     last_hit_generation: Option<u64>,
     last_animation_generation: Option<u64>,
+    last_sprite_animation_2d_generation: Option<u64>,
     last_ui_generation: Option<u64>,
     last_timer_source_sequence: u64,
     last_spawn_source_sequence: u64,
@@ -435,11 +441,15 @@ impl GameHostRuntime {
         if access.event_streams.contains(&GameEventStream::Collision) {
             self.capture_collision_events(world);
         }
+        if access.event_streams.contains(&GameEventStream::Collision2d) {
+            self.capture_collision_events_2d(world);
+        }
         if access.event_streams.contains(&GameEventStream::Hit) {
             self.capture_hit_events(world);
         }
         if access.event_streams.contains(&GameEventStream::Animation) {
             self.capture_animation_events(world);
+            self.capture_sprite_animation_events_2d(world);
         }
         if access.event_streams.contains(&GameEventStream::Ui) {
             self.capture_ui_events(world);
@@ -478,6 +488,43 @@ impl GameHostRuntime {
             .collect::<Vec<_>>();
         for payload in records {
             self.push_event(GameEventStream::Collision, payload);
+        }
+    }
+
+    fn capture_collision_events_2d(&mut self, world: &World) {
+        let Some(runtime) = world.get_resource::<PhysicsRuntime2d>() else {
+            return;
+        };
+        let generation = runtime.event_generation();
+        if self.last_collision_2d_generation == Some(generation) {
+            return;
+        }
+        self.last_collision_2d_generation = Some(generation);
+        let records = runtime
+            .events()
+            .iter()
+            .map(|event| {
+                let phase = match event.phase {
+                    ContactPhase2d::Enter => "enter",
+                    ContactPhase2d::Stay => "stay",
+                    ContactPhase2d::Exit => "exit",
+                };
+                Value::Object(BTreeMap::from([
+                    ("phase".to_owned(), Value::String(phase.to_owned())),
+                    (
+                        "entity_a".to_owned(),
+                        entity_handle_record_value(entity_handle_from_runtime_key(event.a)),
+                    ),
+                    (
+                        "entity_b".to_owned(),
+                        entity_handle_record_value(entity_handle_from_runtime_key(event.b)),
+                    ),
+                    ("sensor".to_owned(), Value::Bool(event.sensor)),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        for payload in records {
+            self.push_event(GameEventStream::Collision2d, payload);
         }
     }
 
@@ -523,6 +570,29 @@ impl GameHostRuntime {
             return;
         }
         self.last_animation_generation = Some(generation);
+        let records = events
+            .iter()
+            .map(|event| {
+                Value::Object(BTreeMap::from([
+                    ("entity".to_owned(), entity_handle_value(event.entity)),
+                    ("name".to_owned(), Value::String(event.name.clone())),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        for payload in records {
+            self.push_event(GameEventStream::Animation, payload);
+        }
+    }
+
+    fn capture_sprite_animation_events_2d(&mut self, world: &World) {
+        let Some(events) = world.get_resource::<SpriteAnimationEvents2d>() else {
+            return;
+        };
+        let generation = events.generation();
+        if self.last_sprite_animation_2d_generation == Some(generation) {
+            return;
+        }
+        self.last_sprite_animation_2d_generation = Some(generation);
         let records = events
             .iter()
             .map(|event| {
@@ -1022,6 +1092,36 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
                 ),
             ]))
         }
+        EngineViewKind::Character2dState => {
+            let controller = world.get_component::<CharacterController2d>(entity)?;
+            let velocity = world
+                .get_component::<CharacterControllerMotion2d>(entity)
+                .map(|motion| motion.velocity)
+                .unwrap_or(glam::Vec2::ZERO);
+            Value::Object(BTreeMap::from([
+                (
+                    "velocity".to_owned(),
+                    Value::Object(BTreeMap::from([
+                        ("x".to_owned(), Value::F64(f64::from(velocity.x))),
+                        ("y".to_owned(), Value::F64(f64::from(velocity.y))),
+                    ])),
+                ),
+                ("grounded".to_owned(), Value::Bool(controller.grounded)),
+                (
+                    "ground_normal".to_owned(),
+                    Value::Object(BTreeMap::from([
+                        ("x".to_owned(), Value::F64(f64::from(controller.ground_normal.x))),
+                        ("y".to_owned(), Value::F64(f64::from(controller.ground_normal.y))),
+                    ])),
+                ),
+                ("hit_wall".to_owned(), Value::Bool(controller.hit_wall)),
+                ("hit_ceiling".to_owned(), Value::Bool(controller.hit_ceiling)),
+                (
+                    "drop_through_seconds".to_owned(),
+                    Value::F64(f64::from(controller.drop_through_seconds)),
+                ),
+            ]))
+        }
         EngineViewKind::AnimationState => {
             let animator = world.get_component::<Animator>(entity)?;
             let state = match animator.state {
@@ -1038,6 +1138,17 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
                 ("time".to_owned(), Value::F64(f64::from(animator.time))),
                 ("looping".to_owned(), Value::Bool(animator.looping)),
                 ("fading".to_owned(), Value::Bool(animator.is_fading())),
+            ]))
+        }
+        EngineViewKind::SpriteAnimationState => {
+            let animator = world.get_component::<SpriteAnimatorRuntime2d>(entity)?;
+            Value::Object(BTreeMap::from([
+                ("clip_asset".to_owned(), Value::String(animator.clip_asset.as_str().to_owned())),
+                ("playing".to_owned(), Value::Bool(animator.state.playing)),
+                ("frame_index".to_owned(), Value::U64(animator.state.frame_index as u64)),
+                ("tick_in_frame".to_owned(), Value::U64(u64::from(animator.state.tick_in_frame))),
+                ("speed".to_owned(), Value::F64(f64::from(animator.state.speed))),
+                ("looping".to_owned(), Value::Bool(animator.looping_override.unwrap_or(animator.clip.looping))),
             ]))
         }
         EngineViewKind::VfxState => {
@@ -1261,6 +1372,13 @@ fn entity_handle(entity: Entity) -> GameEntityHandle {
     GameEntityHandle {
         id: entity.id(),
         generation: entity.generation(),
+    }
+}
+
+fn entity_handle_from_runtime_key(key: u64) -> GameEntityHandle {
+    GameEntityHandle {
+        id: key as u32,
+        generation: (key >> 32) as u32,
     }
 }
 
