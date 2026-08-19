@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "use crate::resource_arbitration::QualityPreference;",
+  "new": "use crate::managed_local_runtime::{ManagedExecutionEnvironment, MANAGED_BACKEND_ID};\nuse crate::resource_arbitration::QualityPreference;"
+}
