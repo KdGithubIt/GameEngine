@@ -3384,7 +3384,7 @@ impl AiStudioPanel {
             ModelBackendPreference::ManagedLocal => self
                 .described_managed_model_config()
                 .ok()
-                .map(LocalModelResourceConfig::Managed),
+                .map(|config| LocalModelResourceConfig::Managed(Box::new(config))),
             _ => None,
         }
     }
