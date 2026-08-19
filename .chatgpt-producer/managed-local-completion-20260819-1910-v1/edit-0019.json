@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_experiment.rs",
+  "old": "        if self.backend_id.trim().is_empty() {\n            return Err(\"benchmark backend id must be non-empty\".to_owned());\n        }\n        if self.model_ids.is_empty() {",
+  "new": "        if self.backend_id.trim().is_empty() {\n            return Err(\"benchmark backend id must be non-empty\".to_owned());\n        }\n        if self.backend_id == MANAGED_BACKEND_ID {\n            if self.managed_execution_environment.is_none() {\n                return Err(\"managed benchmark experiments require an exact execution environment\".to_owned());\n            }\n        } else if self.managed_execution_environment.is_some() {\n            return Err(\"only the GameEngine-managed backend may carry a managed execution environment\".to_owned());\n        }\n        if self.model_ids.is_empty() {"
+}
