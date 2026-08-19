@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use engine_authoring::ProjectRoot;\nuse serde::{Deserialize, Serialize};\nuse std::ffi::OsString;\n","new":"use engine_authoring::ProjectRoot;\nuse serde::{Deserialize, Serialize};\nuse std::collections::BTreeSet;\nuse std::ffi::OsString;\n"}
