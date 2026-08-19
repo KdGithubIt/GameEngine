@@ -1127,7 +1127,7 @@ const COMPANION_HTML: &str = r#"<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Remote AI Studio</title>
 <style>
-:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#11151c;color:#eef2f7}*{box-sizing:border-box}body{margin:0}.shell{max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;gap:14px}.card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0;overflow-wrap:anywhere}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px;max-width:100%;min-width:0}button{cursor:pointer}button.primary{background:#285ea8}button.danger{background:#853c42}textarea{width:100%;min-height:76px;resize:vertical}.muted{color:#aab5c5;font-size:.9rem}.messages,.events{display:grid;gap:8px;max-height:300px;overflow:auto}.msg,.event{padding:9px;border-radius:9px;background:#11151c;overflow-wrap:anywhere}.proposal-grid,.completion{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#303948;font-size:.8rem}.frame{max-width:100%;height:auto;border-radius:10px;border:1px solid #455166}.error{color:#ffb3b3;overflow-wrap:anywhere}h1,h2,h3,p{margin-top:0}@media(max-width:640px){.shell{padding:10px}.proposal-grid,.completion{grid-template-columns:1fr}.row>button{flex:1 1 8rem}#sessions{width:100%;flex:1 1 100%}.card{padding:12px}.messages,.events{max-height:240px}h1{font-size:1.45rem}}
+:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#11151c;color:#eef2f7}*{box-sizing:border-box}body{margin:0}.shell{width:100%;max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;grid-template-columns:minmax(0,1fr);gap:14px}.card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0;overflow-wrap:anywhere}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px;max-width:100%;min-width:0}button{cursor:pointer}button.primary{background:#285ea8}button.danger{background:#853c42}textarea{width:100%;min-height:76px;resize:vertical}.muted{color:#aab5c5;font-size:.9rem}.messages,.events{display:grid;gap:8px;max-height:300px;overflow:auto}.msg,.event{padding:9px;border-radius:9px;background:#11151c;overflow-wrap:anywhere}.proposal-grid,.completion{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#303948;font-size:.8rem}.frame{max-width:100%;height:auto;border-radius:10px;border:1px solid #455166}.error{color:#ffb3b3;overflow-wrap:anywhere}h1,h2,h3,p{margin-top:0}@media(max-width:640px){.shell{padding:10px}.proposal-grid,.completion{grid-template-columns:1fr}.row>button{flex:1 1 8rem}#sessions{width:100%;flex:1 1 100%}.card{padding:12px}.messages,.events{max-height:240px}h1{font-size:1.45rem}}
 </style>
 </head>
 <body><main class="shell">
@@ -1480,6 +1480,9 @@ mod tests {
 
     #[test]
     fn companion_mobile_layout_constrains_content_without_hiding_overflow() {
+        assert!(COMPANION_HTML.contains(
+            ".shell{width:100%;max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;grid-template-columns:minmax(0,1fr);gap:14px}"
+        ));
         assert!(COMPANION_HTML.contains(
             "min-width:0;overflow-wrap:anywhere"
         ));
