@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod agent_benchmark;\nmod agent_benchmark_campaign;\nmod agent_host;\n","new":"mod agent_benchmark;\nmod agent_benchmark_campaign;\nmod agent_benchmark_fixture;\nmod agent_host;\n"}
