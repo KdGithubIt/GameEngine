@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "            if self.managed_execution_environment.is_none() {\n                return Err(\"managed benchmark child requires an exact execution environment\".to_owned());\n            }",
+  "new": "            if self.managed_execution_environment.is_none() {\n                return Err(\n                    \"managed benchmark child requires an exact execution environment\".to_owned(),\n                );\n            }"
+}
