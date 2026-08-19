@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_experiment.rs",
+  "old": "            backend_id: \"ollama-compatible\".to_owned(),\n            model_ids,",
+  "new": "            backend_id: \"ollama-compatible\".to_owned(),\n            managed_execution_environment: None,\n            model_ids,"
+}
