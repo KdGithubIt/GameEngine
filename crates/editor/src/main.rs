@@ -104,7 +104,9 @@ impl EditorShell {
         if let Some(requested) = visual_scenario.as_deref() {
             if matches!(
                 requested,
-                "ADR 0143 Model Resources" | "ADR 0145 External Agent"
+                "ADR 0133 Remote AI Studio"
+                    | "ADR 0143 Model Resources"
+                    | "ADR 0145 External Agent"
             ) {
                 // AI Studio scenarios are prepared above and use its detached native viewport.
             } else if requested == "ADR 0154 Animation Set" {
