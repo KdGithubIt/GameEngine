@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "use crate::managed_local_runtime::{\n    ManagedAcquisitionApproval, ManagedAcquisitionCandidate, ManagedAcquisitionPlan,\n};",
+  "new": "use crate::managed_local_runtime::{\n    ManagedAcquisitionApproval, ManagedAcquisitionCandidate, ManagedAcquisitionPlan,\n    MANAGED_BACKEND_ID,\n};"
+}
