@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/Cargo.toml","old":"[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }","new":"[dependencies]\nengine-timeline = { path = \"../timeline\", features = [\"serde\"] }\nserde = { version = \"1\", features = [\"derive\"] }"}
