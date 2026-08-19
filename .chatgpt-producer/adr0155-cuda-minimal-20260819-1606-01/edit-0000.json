@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"const WSL_CUDA_TOOLKIT_PACKAGE: &str = \"cuda-toolkit-12-4\";","new":"const WSL_CUDA_COMPILER_PACKAGE: &str = \"cuda-compiler-12-4\";\nconst WSL_CUDA_LIBRARIES_DEV_PACKAGE: &str = \"cuda-libraries-dev-12-4\";"}
