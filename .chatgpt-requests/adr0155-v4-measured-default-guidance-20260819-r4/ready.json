@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-v4-measured-default-guidance-20260819-r4",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai-v4",
+  "expected_head_sha": "7bc05dce399ebff6a3684b9408570b78b907b69b",
+  "baseline_main_sha": "ad370648d044b63c562622dd1e3b1c5981af8454",
+  "patch_sha256": "cbec0bfb79a03b9fe72bc9fb87a7839c222324b0f152bacf95810b2a57ecb89a",
+  "patch_bytes": 1041,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Gate ADR0155 product default on measured platform characterization",
+  "pr_title": "GameEngine: ADR0155 managed Local AI implementation v4",
+  "pr_body": "## Summary\n\nCompletes ADR0155 managed llama.cpp integration on latest main, including provider-independent backend/runtime lifecycle, AI Studio setup, Windows/WSL identities, GGUF registration, resource arbitration, benchmark provenance, Visual fixture, migration preservation, Windows SHA-256 verification, and deterministic Windows/WSL failure-boundary tests.\n\nRepresentative WindowsNative versus Wsl2Linux performance characterization is still required to select the normal Managed Local product environment. Until that evidence exists, the existing external-local compatibility path remains the ordinary default and Managed Local AI is an explicit engineering/advanced path.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
