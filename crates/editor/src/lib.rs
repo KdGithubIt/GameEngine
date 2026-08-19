@@ -12,6 +12,10 @@
 #[allow(dead_code)]
 mod agent_asset_acquisition;
 mod agent_benchmark;
+// ADR 0156 owns machine-local benchmark campaign orchestration above the benchmark primitives;
+// UI and execution adapters are added incrementally on the same task branch.
+#[allow(dead_code)]
+mod agent_benchmark_campaign;
 mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;

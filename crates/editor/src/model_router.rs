@@ -429,6 +429,7 @@ mod tests {
                     .iter()
                     .map(|value| (*value).to_owned())
                     .collect(),
+                execution: None,
             },
             metrics: BenchmarkMetrics {
                 acceptance_success: TelemetryValue::Measured(successful),
