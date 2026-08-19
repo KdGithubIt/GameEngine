@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "managed-local-resource-worker-20260819-02",
+  "target_branch": "chatgpt/gameengine-managed-local-ui-worker-boundaries-v2",
+  "expected_head_sha": "414941ddc4bcd9cc4c153048ce14c985e74e4e2d",
+  "baseline_main_sha": "fea988df06693df933955af78be3730e2620727a",
+  "patch_sha256": "38428cd2b34ffd1caaa7c7dcf06cb36b32c68d2c6de81d287999b28600d6e78d",
+  "patch_bytes": 5470,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Move managed resource integrity checks into workers",
+  "pr_title": "Fix Managed Local AI resource worker boundaries",
+  "pr_body": "## Summary\n\n- enforce ADR 0155 frozen Managed Local integrity inside the existing model-resource worker before Release/Reload operations\n- carry one frozen Managed Local resource config through Managed Play capability planning and transition startup to avoid duplicate resolution\n- keep Resume/reload integrity work off the Editor frame thread and cover WindowsNative/Wsl2 worker behavior with regression tests\n\n## Scope\n\nThis change is intentionally stacked on the repaired Draft PR #909 HEAD so it reuses that in-flight frozen-config/inference-worker boundary instead of duplicating the separate Send, GPU-layer, inference-error, or benchmark-campaign fixes.\n\nNo presentation/layout behavior changes; Visual Validation is not requested."
+}
