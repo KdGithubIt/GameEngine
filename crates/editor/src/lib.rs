@@ -12,6 +12,9 @@
 #[allow(dead_code)]
 mod agent_asset_acquisition;
 mod agent_benchmark;
+// ADR 0156 owns machine-local campaign identity above the ADR 0142 record primitives.
+#[allow(dead_code)]
+mod agent_benchmark_campaign;
 mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;
