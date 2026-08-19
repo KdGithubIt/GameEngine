@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            return self\n                .managed_local_runtime\n                .active_installation(environment)\n                .map_err(|error| error.to_string())?\n                .map(|installation| installation.benchmark_runtime_identity())\n                .ok_or_else(|| format!(\"the GameEngine-managed {} runtime is not installed\", environment.label()));",
+  "new": "            return self\n                .managed_local_runtime\n                .active_installation(environment)\n                .map_err(|error| error.to_string())?\n                .map(|installation| installation.benchmark_runtime_identity())\n                .ok_or_else(|| {\n                    format!(\n                        \"the GameEngine-managed {} runtime is not installed\",\n                        environment.label()\n                    )\n                });"
+}
