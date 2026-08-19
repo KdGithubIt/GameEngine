@@ -1,0 +1,146 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 42e37f135102e015fea4fc50ccab1becb8af1e8a..9d6f278d9a82a374a18592b333c32f7a858f2bcc 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -3433,7 +3433,24 @@ impl AiStudioPanel {
+             );
+             return;
+         }
+-        let Some(config) = self.selected_local_resource_config() else {
++        let config = self.selected_local_resource_config();
++        self.begin_model_residency_request_with_config(config, request, continuation);
++    }
++
++    fn begin_model_residency_request_with_config(
++        &mut self,
++        config: Option<LocalModelResourceConfig>,
++        request: ModelResidencyRequest,
++        continuation: ModelResourceContinuation,
++    ) {
++        if self.model_resource_task.is_some() {
++            self.status = Some(
++                "A model resource transition is already active; the new transition was not started."
++                    .to_owned(),
++            );
++            return;
++        }
++        let Some(config) = config else {
+             self.finish_model_resource_continuation(continuation);
+             return;
+         };
+@@ -5552,14 +5569,17 @@ impl AiStudioPanel {
+         self.managed_evaluation_requested = false;
+         self.managed_runtime_observation = None;
+         self.managed_playtest_requested = true;
+-        let capabilities = self
+-            .selected_local_resource_config()
++        let config = self.selected_local_resource_config();
++        let capabilities = config
++            .as_ref()
+             .map(|config| config.capability_profile().resource_capabilities)
+             .unwrap_or_default();
+         self.resolved_workload = InferenceWorkload::RuntimeObservation;
+         self.resource_plan = managed_play_resource_plan(self.quality_preference, capabilities);
+-        self.begin_model_residency_request(
+-            self.resource_plan.model_residency,
++        let residency_request = self.resource_plan.model_residency;
++        self.begin_model_residency_request_with_config(
++            config,
++            residency_request,
+             ModelResourceContinuation::LaunchManagedPlay { run_id },
+         );
+     }
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index 7b0ec7879bdd73535e66aad4093bdad20f44c47a..80084aaefbe9f14173b2895c6cc5b9535f9aaef7 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -2196,4 +2196,89 @@ mod tests {
+             TelemetryValue::Measured(42)
+         );
+     }
++
++    #[test]
++    fn managed_resource_integrity_verification_runs_inside_worker_for_both_environments() {
++        for environment in [
++            crate::managed_local_runtime::ManagedExecutionEnvironment::WindowsNative,
++            crate::managed_local_runtime::ManagedExecutionEnvironment::Wsl2Linux,
++        ] {
++            for operation in [
++                ModelResourceOperation::Release,
++                ModelResourceOperation::Reload,
++            ] {
++                let state_root = temp_path(&format!(
++                    "managed-resource-worker-{}-{operation:?}",
++                    environment.benchmark_id()
++                ));
++                let _ = fs::remove_dir_all(&state_root);
++                let config = LocalModelResourceConfig::Managed(ManagedLocalModelConfig {
++                    state_root: state_root.clone(),
++                    environment,
++                    model_id: "gguf:test".to_owned(),
++                    model_content_sha256: "a".repeat(64),
++                    model_path: state_root.join("missing-model.gguf"),
++                    model_size_bytes: 1,
++                    quantization: Some("Q4_K_M".to_owned()),
++                    runtime_tag: "test-runtime".to_owned(),
++                    runtime_revision: "test-revision".to_owned(),
++                    runtime_artifact_sha256: "b".repeat(64),
++                    runtime_compatibility_version: "test-compat".to_owned(),
++                });
++
++                let task = ModelResourceTask::spawn(config, operation)
++                    .expect("spawning a resource worker must not verify managed files inline");
++                let result = task
++                    .result
++                    .recv_timeout(Duration::from_secs(2))
++                    .expect("managed resource worker should report its integrity result");
++                assert!(matches!(
++                    result,
++                    Err(NativeAgentError::BackendUnavailable(message))
++                        if message.contains("runtime artifact integrity/update")
++                ));
++                let _ = fs::remove_dir_all(state_root);
++            }
++        }
++    }
++
++    #[test]
++    fn managed_native_model_turn_integrity_verification_runs_inside_worker_for_both_environments() {
++        for environment in [
++            crate::managed_local_runtime::ManagedExecutionEnvironment::WindowsNative,
++            crate::managed_local_runtime::ManagedExecutionEnvironment::Wsl2Linux,
++        ] {
++            let state_root = temp_path(&format!(
++                "managed-model-turn-worker-{}",
++                environment.benchmark_id()
++            ));
++            let _ = fs::remove_dir_all(&state_root);
++            let config = NativeModelConfig::Managed(ManagedLocalModelConfig {
++                state_root: state_root.clone(),
++                environment,
++                model_id: "gguf:test".to_owned(),
++                model_content_sha256: "a".repeat(64),
++                model_path: state_root.join("missing-model.gguf"),
++                model_size_bytes: 1,
++                quantization: Some("Q4_K_M".to_owned()),
++                runtime_tag: "test-runtime".to_owned(),
++                runtime_revision: "test-revision".to_owned(),
++                runtime_artifact_sha256: "b".repeat(64),
++                runtime_compatibility_version: "test-compat".to_owned(),
++            });
++
++            let task = NativeModelTask::spawn(config, "test turn".to_owned(), Vec::new())
++                .expect("spawning a managed model turn must not verify managed files inline");
++            let result = task
++                .result
++                .recv_timeout(Duration::from_secs(2))
++                .expect("managed model-turn worker should report its integrity result");
++            assert!(matches!(
++                result,
++                Err(NativeAgentError::BackendUnavailable(message))
++                    if message.contains("runtime artifact integrity/update")
++            ));
++            let _ = fs::remove_dir_all(state_root);
++        }
++    }
+ }
