@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"//! lifecycle. It deliberately has no authoring or egui dependency.\n\nuse serde::{Deserialize, Serialize};\n","new":"//! lifecycle. It deliberately has no authoring or egui dependency.\n\nmod gguf;\n\nuse serde::{Deserialize, Serialize};\n"}
