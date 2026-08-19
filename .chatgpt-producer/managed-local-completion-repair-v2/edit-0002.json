@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "            if let Err(error) = probe.described_config.as_ref() {\n                self.write_benchmark_child_failure(\n                    BenchmarkRunFailureKind::CapabilityUnavailable,\n                    format!(\"managed benchmark preflight failed: {error}\"),\n                );\n                return;\n            }",
+  "new": "            if let Err(error) = probe.described_config.as_ref() {\n                let message = format!(\"managed benchmark preflight failed: {error}\");\n                self.write_benchmark_child_failure(\n                    BenchmarkRunFailureKind::CapabilityUnavailable,\n                    message,\n                );\n                return;\n            }"
+}
