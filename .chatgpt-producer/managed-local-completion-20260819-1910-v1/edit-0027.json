@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "            backend_id: self.spec.backend_id.clone(),\n            endpoint: self.endpoint.clone(),",
+  "new": "            backend_id: self.spec.backend_id.clone(),\n            managed_execution_environment: self.spec.managed_execution_environment,\n            endpoint: if self.spec.backend_id == MANAGED_BACKEND_ID {\n                String::new()\n            } else {\n                self.endpoint.clone()\n            },"
+}
