@@ -1903,7 +1903,7 @@ impl AiStudioPanel {
                             }
                         });
                         ui.small(
-                            "Windows native is the ordinary first-release default. WSL2 is an advanced characterization/fallback environment and uses the dedicated GameEngine-LocalAI distribution only.",
+                            "Managed Local AI remains an engineering path until Windows-native versus WSL2 characterization selects the normal product default. Windows native is the currently selected candidate; WSL2 remains available for characterization and fallback in the dedicated GameEngine-LocalAI distribution.",
                         );
                         let setup_status = self
                             .managed_local_runtime
