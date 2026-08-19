@@ -514,6 +514,11 @@ fn execute_managed_resource_operation(
     config: &ManagedLocalModelConfig,
     operation: ModelResourceOperation,
 ) -> Result<ModelResourceTransition, NativeAgentError> {
+    // Resource transitions run on the dedicated model-resource worker. Keep the
+    // ADR 0155 pre-operation integrity gate that previously happened during UI
+    // configuration resolution, but perform its full GGUF hash off the frame thread.
+    ManagedLocalRuntime::verify_frozen_configuration(config)
+        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
     let before = observe_managed_model(config);
     let started = Instant::now();
     match operation {
