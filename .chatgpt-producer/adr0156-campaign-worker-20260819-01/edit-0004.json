@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod live_observation;\nmod model_router;\nmod native_agent;","new":"mod live_observation;\n// The same loopback transport backs both the visible Editor host and controlled\n// ADR 0156 fixture workers; tool business logic remains EditorApp-owned.\nmod mcp_transport;\nmod model_router;\nmod native_agent;"}
