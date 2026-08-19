@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        let probe = CampaignEnvironmentProbe {\n            execution_environment: self.benchmark_campaign.execution_environment,\n            backend_runtime_version: self\n                .installed_model_inventory\n                .as_ref()\n                .and_then(|inventory| inventory.backend_version.clone())\n                .unwrap_or_default(),\n            engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),\n        };",
+  "new": "        let probe = CampaignEnvironmentProbe {\n            execution_environment: self.benchmark_campaign.execution_environment,\n            backend_runtime_version: self\n                .campaign_backend_runtime_version()\n                .unwrap_or_default(),\n            engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),\n        };"
+}
