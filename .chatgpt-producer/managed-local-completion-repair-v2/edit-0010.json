@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            let inventory = self\n                .installed_model_inventory\n                .as_ref()\n                .ok_or_else(|| \"no compatible local model inventory is available\".to_owned())?;\n            let backend_runtime_version = inventory\n                .backend_version\n                .clone()\n                .ok_or_else(|| \"the compatible local backend did not report an exact runtime version\".to_owned())?;",
+  "new": "            let inventory = self\n                .installed_model_inventory\n                .as_ref()\n                .ok_or_else(|| \"no compatible local model inventory is available\".to_owned())?;\n            let backend_runtime_version = inventory.backend_version.clone().ok_or_else(|| {\n                \"the compatible local backend did not report an exact runtime version\".to_owned()\n            })?;"
+}
