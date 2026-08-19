@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod managed_local_runtime;\nmod model_router;","new":"mod managed_local_runtime;\nmod mcp_transport;\nmod model_router;"}
