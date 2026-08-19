@@ -1510,10 +1510,38 @@ fn verify_windows_cuda_runtime(root: &Path) -> Result<(), ManagedLocalRuntimeErr
     Ok(())
 }
 
+fn os_release_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let (candidate, value) = line.split_once('=')?;
+        (candidate.trim() == key).then(|| value.trim().trim_matches('\"'))
+    })
+}
+
+fn verify_managed_wsl_userland() -> Result<(), ManagedLocalRuntimeError> {
+    let output = wsl_shell(
+        "cat /etc/os-release",
+        ManagedDiagnosticLayer::GpuOrBackendCapability,
+    )?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let id = os_release_value(&text, "ID");
+    let version = os_release_value(&text, "VERSION_ID");
+    if id != Some("ubuntu") || version != Some(MANAGED_WSL_EXPECTED_VERSION_ID) {
+        return Err(ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::GpuOrBackendCapability,
+            format!(
+                "managed GameEngine-LocalAI WSL userland must be Ubuntu {MANAGED_WSL_EXPECTED_VERSION_ID}; observed ID={} VERSION_ID={}",
+                id.unwrap_or("<missing>"),
+                version.unwrap_or("<missing>")
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn wsl_cuda_bootstrap_command() -> String {
     format!(
         concat!(
-            "set -eu; . /etc/os-release; if [ \"${{ID:-}}\" != ubuntu ] || [ \"${{VERSION_ID:-}}\" != '{ubuntu_version}' ]; then echo \"managed GameEngine-LocalAI WSL userland must be Ubuntu {ubuntu_version}; remove and reprovision the dedicated environment\" >&2; exit 1; fi; export DEBIAN_FRONTEND=noninteractive; ",
+            "set -eu; export DEBIAN_FRONTEND=noninteractive; ",
             "apt-get update; ",
             "apt-get install -y --no-install-recommends ca-certificates curl gnupg git build-essential cmake ninja-build pkg-config libcurl4-openssl-dev; ",
             "if ! dpkg-query -W -f='${{Status}}' {compiler_package} 2>/dev/null | grep -qx 'install ok installed' || ! dpkg-query -W -f='${{Status}}' {libraries_dev_package} 2>/dev/null | grep -qx 'install ok installed'; then ",
@@ -1523,7 +1551,6 @@ fn wsl_cuda_bootstrap_command() -> String {
             "dpkg-query -W -f='${{Status}}' {libraries_dev_package} | grep -qx 'install ok installed'; ",
             "test -x /usr/local/cuda-12.4/bin/nvcc; test -e /dev/dxg"
         ),
-        ubuntu_version = MANAGED_WSL_EXPECTED_VERSION_ID,
         compiler_package = WSL_CUDA_COMPILER_PACKAGE,
         libraries_dev_package = WSL_CUDA_LIBRARIES_DEV_PACKAGE,
         repository = WSL_CUDA_REPOSITORY_URL,
@@ -1558,6 +1585,7 @@ fn wsl_cuda_build_command() -> String {
 }
 
 fn build_pinned_wsl_cuda_runtime() -> Result<WslCudaBuildProvenance, ManagedLocalRuntimeError> {
+    verify_managed_wsl_userland()?;
     let bootstrap = wsl_cuda_bootstrap_command();
     wsl_shell(&bootstrap, ManagedDiagnosticLayer::GpuOrBackendCapability)?;
 
@@ -2317,10 +2345,17 @@ mod tests {
     }
 
     #[test]
+    fn os_release_parser_accepts_managed_ubuntu_22_04_point_release() {
+        let os_release = "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\nID=ubuntu\n";
+        assert_eq!(os_release_value(os_release, "ID"), Some("ubuntu"));
+        assert_eq!(os_release_value(os_release, "VERSION_ID"), Some("22.04"));
+    }
+
+    #[test]
     fn wsl_cuda_shell_contract_is_posix_safe_and_relocatable() {
         let bootstrap = wsl_cuda_bootstrap_command();
-        assert!(bootstrap.contains("managed GameEngine-LocalAI WSL userland must be Ubuntu 22.04"));
-        assert!(bootstrap.contains("VERSION_ID"));
+        assert!(!bootstrap.contains("/etc/os-release"));
+        assert!(!bootstrap.contains("VERSION_ID"));
         assert!(!bootstrap.contains("Ubuntu 24.04"));
         assert!(bootstrap.contains("cuda-compiler-12-4"));
         assert!(bootstrap.contains("cuda-libraries-dev-12-4"));
