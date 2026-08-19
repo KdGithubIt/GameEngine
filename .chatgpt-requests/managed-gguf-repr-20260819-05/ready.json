@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "managed-gguf-repr-20260819-05",
+  "target_branch": "chatgpt/gameengine-managed-gguf-representation",
+  "expected_head_sha": "c776989ac42b53683fb8c4d4733c076763b482db",
+  "baseline_main_sha": "a481fcc3ee05e0520a47ffbdb55309aac3a0284d",
+  "patch_sha256": "c1ac67d7be421e75cc7558224d0369ffd5470f414a98eb92d1e808a69d1d8793",
+  "patch_bytes": 8418,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix GGUF parser lint and seed visual candidate",
+  "pr_title": "GameEngine: derive managed GGUF representation from file contents",
+  "pr_body": "## Summary\n\n- derive Managed Local GGUF representation from file metadata and tensor descriptors rather than filename markers\n- preserve an exact path-independent descriptor for mixed/custom representations and require it for managed Benchmark Campaign candidates\n- keep legacy registry JSON readable while requiring one re-registration before old filename-derived entries become benchmark eligible\n- fix the GGUF parser Clippy failure and remove avoidable test allocations\n- seed a feature-gated `3.69bpw` GGUF visual fixture so the managed campaign candidate and exact representation can be inspected\n\n## Scope\n\nManaged Local AI GGUF registration and ADR 0156 Benchmark Campaign representation identity only.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
