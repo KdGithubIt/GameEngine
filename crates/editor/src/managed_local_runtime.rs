@@ -23,7 +23,16 @@ pub(crate) const MANAGED_WSL_DISTRIBUTION: &str = "GameEngine-LocalAI";
 const MANAGED_RUNTIME_COMPATIBILITY_VERSION: &str = "llama-server-openai-v1";
 const RELEASE_METADATA_URL: &str =
     "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b10336";
-const STATE_SCHEMA_VERSION: u32 = 1;
+const WINDOWS_CUDA_RUNTIME_ASSET: &str = "llama-b10336-bin-win-cuda-12.4-x64.zip";
+const WINDOWS_CUDA_SUPPORT_ASSET: &str = "cudart-llama-bin-win-cuda-12.4-x64.zip";
+const WINDOWS_CUDA_MANIFEST: &str = "llama-b10336-win-cuda-12.4-manifest.txt";
+const WSL_CUDA_MANIFEST: &str = "llama-b10336-wsl-cuda-12.4-source-manifest.txt";
+const WSL_CUDA_REPOSITORY_URL: &str =
+    "https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64";
+const WSL_CUDA_TOOLKIT_PACKAGE: &str = "cuda-toolkit-12-4";
+const WSL_CUDA_KEYRING_ASSET: &str = "cuda-keyring_1.1-1_all.deb";
+const LLAMA_CPP_REPOSITORY_URL: &str = "https://github.com/ggml-org/llama.cpp.git";
+const STATE_SCHEMA_VERSION: u32 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const HEALTH_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -422,8 +431,19 @@ impl ManagedLocalRuntime {
             }
         }
         match self.active_installation(environment) {
-            Ok(Some(_)) => ManagedSetupStatus::Ready,
-            Ok(None) | Err(_) => ManagedSetupStatus::RuntimeNotInstalled,
+            Ok(Some(installation))
+                if installation.schema_version == STATE_SCHEMA_VERSION
+                    && installation.runtime_tag == PINNED_LLAMA_CPP_TAG
+                    && installation.runtime_revision == PINNED_LLAMA_CPP_REVISION
+                    && installation.artifact_name
+                        == match environment {
+                            ManagedExecutionEnvironment::WindowsNative => WINDOWS_CUDA_MANIFEST,
+                            ManagedExecutionEnvironment::Wsl2Linux => WSL_CUDA_MANIFEST,
+                        } =>
+            {
+                ManagedSetupStatus::Ready
+            }
+            Ok(Some(_)) | Ok(None) | Err(_) => ManagedSetupStatus::RuntimeNotInstalled,
         }
     }
 
@@ -542,28 +562,6 @@ impl ManagedLocalRuntime {
             }
         }
 
-        let artifact_name = pinned_asset_name(environment);
-        let release_asset = fetch_release_asset(artifact_name)?;
-        let expected_sha256 = release_asset
-            .digest
-            .strip_prefix("sha256:")
-            .filter(|digest| is_sha256_hex(digest))
-            .ok_or_else(|| {
-                ManagedLocalRuntimeError::new(
-                    ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-                    format!(
-                        "official llama.cpp release metadata did not provide a SHA-256 digest for {artifact_name}"
-                    ),
-                )
-            })?
-            .to_ascii_lowercase();
-
-        let downloads = self.root.join("downloads");
-        fs::create_dir_all(&downloads).map_err(runtime_io)?;
-        let archive_path = downloads.join(artifact_name);
-        download_https_file(&release_asset.browser_download_url, &archive_path)?;
-        verify_file_sha256(&archive_path, &expected_sha256, ManagedDiagnosticLayer::RuntimeArtifactIntegrity)?;
-
         let environment_root = self
             .root
             .join("runtime")
@@ -576,34 +574,87 @@ impl ManagedLocalRuntime {
         }
         fs::create_dir_all(&staging_root).map_err(runtime_io)?;
 
-        let server_path = match environment {
+        let (artifact_name, artifact_sha256, server_path) = match environment {
             ManagedExecutionEnvironment::WindowsNative => {
-                expand_zip(&archive_path, &staging_root)?;
-                find_file_named(&staging_root, "llama-server.exe")
+                let downloads = self.root.join("downloads");
+                fs::create_dir_all(&downloads).map_err(runtime_io)?;
+                let mut verified_assets = Vec::new();
+                for asset_name in windows_cuda_asset_names() {
+                    let release_asset = fetch_release_asset(asset_name)?;
+                    let expected_sha256 = release_asset
+                        .digest
+                        .strip_prefix("sha256:")
+                        .filter(|digest| is_sha256_hex(digest))
+                        .ok_or_else(|| {
+                            ManagedLocalRuntimeError::new(
+                                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                                format!(
+                                    "official llama.cpp release metadata did not provide a SHA-256 digest for {asset_name}"
+                                ),
+                            )
+                        })?
+                        .to_ascii_lowercase();
+                    let archive_path = downloads.join(asset_name);
+                    download_https_file(&release_asset.browser_download_url, &archive_path)?;
+                    verify_file_sha256(
+                        &archive_path,
+                        &expected_sha256,
+                        ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                    )?;
+                    expand_zip(&archive_path, &staging_root)?;
+                    verified_assets.push((asset_name.to_owned(), expected_sha256));
+                }
+                verify_windows_cuda_runtime(&staging_root)?;
+                let server_path = find_file_named(&staging_root, "llama-server.exe")
                     .ok_or_else(|| {
                         ManagedLocalRuntimeError::new(
                             ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-                            "verified llama.cpp archive does not contain llama-server.exe",
+                            "verified CUDA llama.cpp runtime does not contain llama-server.exe",
                         )
                     })?
                     .to_string_lossy()
-                    .into_owned()
+                    .into_owned();
+                for (asset_name, expected_sha256) in &verified_assets {
+                    let source = downloads.join(asset_name);
+                    let retained = staging_root.join(asset_name);
+                    fs::copy(&source, &retained).map_err(runtime_io)?;
+                    verify_file_sha256(
+                        &retained,
+                        expected_sha256,
+                        ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                    )?;
+                }
+                let manifest_path = staging_root.join(WINDOWS_CUDA_MANIFEST);
+                write_atomic(
+                    &manifest_path,
+                    windows_cuda_runtime_manifest(&verified_assets).as_bytes(),
+                )
+                .map_err(runtime_io)?;
+                let manifest_sha256 = runtime_manifest_sha256(&manifest_path)?;
+                (
+                    WINDOWS_CUDA_MANIFEST.to_owned(),
+                    manifest_sha256,
+                    server_path,
+                )
             }
             ManagedExecutionEnvironment::Wsl2Linux => {
-                install_archive_into_wsl(&archive_path, &expected_sha256)?;
-                format!(
-                    "/var/lib/gameengine/local-ai/runtime/{PINNED_LLAMA_CPP_TAG}/llama-server"
+                let provenance = build_pinned_wsl_cuda_runtime()?;
+                let manifest_path = staging_root.join(WSL_CUDA_MANIFEST);
+                write_atomic(
+                    &manifest_path,
+                    wsl_cuda_runtime_manifest(&provenance).as_bytes(),
+                )
+                .map_err(runtime_io)?;
+                let manifest_sha256 = runtime_manifest_sha256(&manifest_path)?;
+                (
+                    WSL_CUDA_MANIFEST.to_owned(),
+                    manifest_sha256,
+                    format!(
+                        "/var/lib/gameengine/local-ai/runtime/{PINNED_LLAMA_CPP_TAG}/llama-server"
+                    ),
                 )
             }
         };
-
-        let retained_artifact = staging_root.join(artifact_name);
-        fs::copy(&archive_path, &retained_artifact).map_err(runtime_io)?;
-        verify_file_sha256(
-            &retained_artifact,
-            &expected_sha256,
-            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-        )?;
 
         let installation = ManagedRuntimeInstallation {
             schema_version: STATE_SCHEMA_VERSION,
@@ -611,12 +662,12 @@ impl ManagedLocalRuntime {
             runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
             runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
             environment,
-            artifact_name: artifact_name.to_owned(),
-            artifact_sha256: expected_sha256,
+            artifact_name: artifact_name.clone(),
+            artifact_sha256,
             installed_unix_ms: now_unix_ms(),
             compatibility_version: MANAGED_RUNTIME_COMPATIBILITY_VERSION.to_owned(),
             server_path,
-            retained_artifact_path: final_root.join(artifact_name),
+            retained_artifact_path: final_root.join(&artifact_name),
         };
         write_json(&staging_root.join("installation.json"), &installation).map_err(runtime_io)?;
 
@@ -635,7 +686,7 @@ impl ManagedLocalRuntime {
                 .to_string_lossy()
                 .into_owned();
         }
-        activated.retained_artifact_path = final_root.join(artifact_name);
+        activated.retained_artifact_path = final_root.join(&artifact_name);
         write_json(&environment_root.join("active.json"), &activated).map_err(runtime_io)?;
         Ok(activated)
     }
@@ -1050,8 +1101,8 @@ impl ManagedLocalRuntime {
             "mkdir -p /var/lib/gameengine/local-ai/logs; nohup {server} --model {model} --host 127.0.0.1 --port {port} --n-gpu-layers 999 > {} 2>&1 < /dev/null & echo $!",
             shell_quote(&log)
         );
-        let output = Command::new("wsl.exe")
-            .args(["-d", MANAGED_WSL_DISTRIBUTION, "--", "sh", "-lc", &command])
+        let output = managed_wsl_command()
+            .args(["sh", "-lc", &command])
             .output()
             .map_err(|error| {
                 ManagedLocalRuntimeError::new(
@@ -1080,21 +1131,123 @@ impl ManagedLocalRuntime {
         &self,
         installation: &ManagedRuntimeInstallation,
     ) -> Result<(), ManagedLocalRuntimeError> {
+        let expected_manifest = match installation.environment {
+            ManagedExecutionEnvironment::WindowsNative => WINDOWS_CUDA_MANIFEST,
+            ManagedExecutionEnvironment::Wsl2Linux => WSL_CUDA_MANIFEST,
+        };
         if installation.schema_version != STATE_SCHEMA_VERSION
             || installation.runtime_family != "llama.cpp"
             || installation.runtime_tag != PINNED_LLAMA_CPP_TAG
             || installation.runtime_revision != PINNED_LLAMA_CPP_REVISION
+            || installation.artifact_name != expected_manifest
         {
             return Err(ManagedLocalRuntimeError::new(
                 ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-                "managed runtime metadata does not match the pinned first-release runtime identity",
+                "managed runtime metadata does not match the pinned first-release CUDA runtime identity",
             ));
         }
         verify_file_sha256(
             &installation.retained_artifact_path,
             &installation.artifact_sha256,
             ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-        )
+        )?;
+        let manifest = fs::read_to_string(&installation.retained_artifact_path)
+            .map_err(runtime_io)?;
+        let environment_marker = format!(
+            "environment={}",
+            installation.environment.benchmark_id()
+        );
+        if !manifest.lines().any(|line| line == "format=gameengine-managed-runtime-v2")
+            || !manifest
+                .lines()
+                .any(|line| line == format!("tag={PINNED_LLAMA_CPP_TAG}"))
+            || !manifest
+                .lines()
+                .any(|line| line == format!("revision={PINNED_LLAMA_CPP_REVISION}"))
+            || !manifest.lines().any(|line| line == environment_marker)
+            || !manifest.lines().any(|line| line == "backend=cuda")
+        {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                "managed runtime provenance manifest does not match the pinned CUDA runtime identity",
+            ));
+        }
+
+        match installation.environment {
+            ManagedExecutionEnvironment::WindowsNative => {
+                let retained_root = installation
+                    .retained_artifact_path
+                    .parent()
+                    .ok_or_else(|| {
+                        ManagedLocalRuntimeError::new(
+                            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                            "managed Windows CUDA manifest has no runtime directory",
+                        )
+                    })?;
+                for asset_name in windows_cuda_asset_names() {
+                    let marker = format!("asset={asset_name} sha256=");
+                    let expected_sha256 = manifest
+                        .lines()
+                        .find_map(|line| line.strip_prefix(&marker))
+                        .filter(|digest| is_sha256_hex(digest))
+                        .ok_or_else(|| {
+                            ManagedLocalRuntimeError::new(
+                                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                                format!("managed Windows CUDA manifest is missing {asset_name}"),
+                            )
+                        })?;
+                    verify_file_sha256(
+                        &retained_root.join(asset_name),
+                        expected_sha256,
+                        ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                    )?;
+                }
+                if !Path::new(&installation.server_path).is_file() {
+                    return Err(ManagedLocalRuntimeError::new(
+                        ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                        "managed Windows CUDA llama-server executable is missing",
+                    ));
+                }
+            }
+            ManagedExecutionEnvironment::Wsl2Linux => {
+                let server_sha256 = manifest
+                    .lines()
+                    .find_map(|line| line.strip_prefix("server_sha256="))
+                    .filter(|digest| is_sha256_hex(digest))
+                    .ok_or_else(|| {
+                        ManagedLocalRuntimeError::new(
+                            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                            "managed WSL CUDA manifest is missing llama-server SHA-256",
+                        )
+                    })?;
+                let bench_sha256 = manifest
+                    .lines()
+                    .find_map(|line| line.strip_prefix("bench_sha256="))
+                    .filter(|digest| is_sha256_hex(digest))
+                    .ok_or_else(|| {
+                        ManagedLocalRuntimeError::new(
+                            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                            "managed WSL CUDA manifest is missing llama-bench SHA-256",
+                        )
+                    })?;
+                verify_wsl_sha256(&installation.server_path, server_sha256).map_err(|error| {
+                    ManagedLocalRuntimeError::new(
+                        ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                        error.to_string(),
+                    )
+                })?;
+                let bench_path = format!(
+                    "/var/lib/gameengine/local-ai/runtime/{PINNED_LLAMA_CPP_TAG}/llama-bench"
+                );
+                verify_wsl_sha256(&bench_path, bench_sha256).map_err(|error| {
+                    ManagedLocalRuntimeError::new(
+                        ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+                        error.to_string(),
+                    )
+                })?;
+            }
+        }
+        Ok(())
     }
 
     fn verify_registered_model(
@@ -1181,14 +1334,8 @@ impl ManagedLocalRuntime {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status(),
-            ManagedExecutionEnvironment::Wsl2Linux => Command::new("wsl.exe")
-                .args([
-                    "-d",
-                    MANAGED_WSL_DISTRIBUTION,
-                    "--",
-                    "kill",
-                    &state.process_id.to_string(),
-                ])
+            ManagedExecutionEnvironment::Wsl2Linux => managed_wsl_command()
+                .args(["kill", &state.process_id.to_string()])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status(),
@@ -1290,13 +1437,140 @@ fn managed_process_exited_before_health(endpoint_healthy: bool, process_alive: b
     !endpoint_healthy && !process_alive
 }
 
-fn pinned_asset_name(environment: ManagedExecutionEnvironment) -> &'static str {
-    match environment {
-        ManagedExecutionEnvironment::WindowsNative => "llama-b10336-bin-win-vulkan-x64.zip",
-        ManagedExecutionEnvironment::Wsl2Linux => {
-            "llama-b10336-bin-ubuntu-vulkan-x64.tar.gz"
-        }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WslCudaBuildProvenance {
+    revision: String,
+    toolkit_version: String,
+    server_sha256: String,
+    bench_sha256: String,
+}
+
+fn windows_cuda_asset_names() -> [&'static str; 2] {
+    [WINDOWS_CUDA_RUNTIME_ASSET, WINDOWS_CUDA_SUPPORT_ASSET]
+}
+
+fn runtime_manifest_sha256(path: &Path) -> Result<String, ManagedLocalRuntimeError> {
+    sha256_via_platform(path).map_err(|error| {
+        ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            error.to_string(),
+        )
+    })
+}
+
+fn verify_windows_cuda_runtime(root: &Path) -> Result<(), ManagedLocalRuntimeError> {
+    let bench = find_file_named(root, "llama-bench.exe").ok_or_else(|| {
+        ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            "verified CUDA llama.cpp archive does not contain llama-bench.exe",
+        )
+    })?;
+    let output = Command::new(&bench)
+        .arg("--list-devices")
+        .output()
+        .map_err(|error| {
+            ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::GpuOrBackendCapability,
+                format!("could not inspect the pinned Windows CUDA runtime: {error}"),
+            )
+        })?;
+    let devices = command_output_text(&output);
+    if !output.status.success() || !devices.to_ascii_lowercase().contains("cuda") {
+        return Err(ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::GpuOrBackendCapability,
+            format!("pinned Windows CUDA runtime did not report a CUDA device: {devices}"),
+        ));
     }
+    Ok(())
+}
+
+fn build_pinned_wsl_cuda_runtime() -> Result<WslCudaBuildProvenance, ManagedLocalRuntimeError> {
+    let bootstrap = format!(
+        "set -eu; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y --no-install-recommends ca-certificates curl gnupg git build-essential cmake ninja-build pkg-config libcurl4-openssl-dev; if ! dpkg-query -W -f='${{Status}}' {package} 2>/dev/null | grep -q 'ok installed'; then curl -fsSL {repository}/{keyring} -o /tmp/{keyring}; dpkg -i /tmp/{keyring}; rm -f /tmp/{keyring}; apt-get update; apt-get install -y --no-install-recommends {package}; fi; test -x /usr/local/cuda-12.4/bin/nvcc; test -e /dev/dxg",
+        package = WSL_CUDA_TOOLKIT_PACKAGE,
+        repository = WSL_CUDA_REPOSITORY_URL,
+        keyring = WSL_CUDA_KEYRING_ASSET,
+    );
+    wsl_shell(&bootstrap, ManagedDiagnosticLayer::GpuOrBackendCapability)?;
+
+    let build = format!(
+        "set -eu; root=/var/lib/gameengine/local-ai; src=\"$root/src/llama.cpp-{tag}\"; stage=\"$root/runtime/{tag}.staging\"; final=\"$root/runtime/{tag}\"; log=\"$root/logs/llama-build-{tag}.log\"; mkdir -p \"$root/src\" \"$root/runtime\" \"$root/logs\"; rm -rf \"$src\" \"$stage\"; {{ git clone --filter=blob:none --depth 1 --branch {tag} {repository} \"$src\"; revision=$(git -C \"$src\" rev-parse HEAD); case \"$revision\" in {revision}*) ;; *) echo \"unexpected llama.cpp revision: $revision\" >&2; exit 1;; esac; export PATH=/usr/local/cuda-12.4/bin:$PATH; cmake -S \"$src\" -B \"$src/build\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc; cmake --build \"$src/build\" --target llama-server llama-bench --parallel; mkdir -p \"$stage\"; cp -a \"$src/build/bin/.\" \"$stage/\"; test -x \"$stage/llama-server\"; test -x \"$stage/llama-bench\"; \"$stage/llama-server\" --version; devices=$(\"$stage/llama-bench\" --list-devices 2>&1); printf '%s\n' \"$devices\"; printf '%s\n' \"$devices\" | grep -qi cuda; server_sha=$(sha256sum \"$stage/llama-server\" | awk '{{print $1}}'); bench_sha=$(sha256sum \"$stage/llama-bench\" | awk '{{print $1}}'); toolkit_version=$(dpkg-query -W -f='${{Version}}' {package}); rm -rf \"$final\"; mv \"$stage\" \"$final\"; rm -rf \"$src\"; }} >\"$log\" 2>&1 || {{ tail -200 \"$log\" >&2; exit 1; }}; printf 'GAMEENGINE_REVISION=%s\nGAMEENGINE_TOOLKIT_VERSION=%s\nGAMEENGINE_SERVER_SHA256=%s\nGAMEENGINE_BENCH_SHA256=%s\n' \"$revision\" \"$toolkit_version\" \"$server_sha\" \"$bench_sha\"",
+        tag = PINNED_LLAMA_CPP_TAG,
+        revision = PINNED_LLAMA_CPP_REVISION,
+        repository = LLAMA_CPP_REPOSITORY_URL,
+        package = WSL_CUDA_TOOLKIT_PACKAGE,
+    );
+    let output = wsl_shell(&build, ManagedDiagnosticLayer::RuntimeArtifactIntegrity)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let marker = |prefix: &str| {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix(prefix))
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty())
+    };
+    let revision = marker("GAMEENGINE_REVISION=").ok_or_else(|| {
+        ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            "WSL CUDA source build did not report the exact llama.cpp revision",
+        )
+    })?;
+    if !revision.starts_with(PINNED_LLAMA_CPP_REVISION) {
+        return Err(ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            format!("WSL CUDA source build produced unexpected revision {revision}"),
+        ));
+    }
+    let toolkit_version = marker("GAMEENGINE_TOOLKIT_VERSION=").ok_or_else(|| {
+        ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            "WSL CUDA source build did not report the installed CUDA toolkit version",
+        )
+    })?;
+    let server_sha256 = marker("GAMEENGINE_SERVER_SHA256=").ok_or_else(|| {
+        ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            "WSL CUDA source build did not report llama-server SHA-256",
+        )
+    })?;
+    let bench_sha256 = marker("GAMEENGINE_BENCH_SHA256=").ok_or_else(|| {
+        ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            "WSL CUDA source build did not report llama-bench SHA-256",
+        )
+    })?;
+    if !is_sha256_hex(&server_sha256) || !is_sha256_hex(&bench_sha256) {
+        return Err(ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+            "WSL CUDA source build reported malformed binary SHA-256 provenance",
+        ));
+    }
+    Ok(WslCudaBuildProvenance {
+        revision,
+        toolkit_version,
+        server_sha256,
+        bench_sha256,
+    })
+}
+
+fn windows_cuda_runtime_manifest(assets: &[(String, String)]) -> String {
+    let mut manifest = format!(
+        "format=gameengine-managed-runtime-v2\nruntime=llama.cpp\ntag={PINNED_LLAMA_CPP_TAG}\nrevision={PINNED_LLAMA_CPP_REVISION}\nenvironment=windows_native\nbackend=cuda\ncuda_toolkit=12.4\n"
+    );
+    for (name, sha256) in assets {
+        manifest.push_str(&format!("asset={name} sha256={sha256}\n"));
+    }
+    manifest
+}
+
+fn wsl_cuda_runtime_manifest(provenance: &WslCudaBuildProvenance) -> String {
+    format!(
+        "format=gameengine-managed-runtime-v2\nruntime=llama.cpp\ntag={PINNED_LLAMA_CPP_TAG}\nrevision={PINNED_LLAMA_CPP_REVISION}\nenvironment=wsl2_linux\nbackend=cuda\ncuda_toolkit=12.4\ncuda_toolkit_package={WSL_CUDA_TOOLKIT_PACKAGE}\ncuda_toolkit_version={}\nsource={}\nsource_revision={}\nserver_sha256={}\nbench_sha256={}\n",
+        provenance.toolkit_version,
+        LLAMA_CPP_REPOSITORY_URL,
+        provenance.revision,
+        provenance.server_sha256,
+        provenance.bench_sha256,
+    )
 }
 
 fn fetch_release_asset(name: &str) -> Result<GithubReleaseAsset, ManagedLocalRuntimeError> {
@@ -1476,25 +1750,10 @@ fn find_file_named(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-fn install_archive_into_wsl(
-    archive_path: &Path,
-    expected_sha256: &str,
-) -> Result<(), ManagedLocalRuntimeError> {
-    let remote_archive = format!(
-        "/var/lib/gameengine/local-ai/cache/{}",
-        pinned_asset_name(ManagedExecutionEnvironment::Wsl2Linux)
-    );
-    stream_file_into_wsl(archive_path, &remote_archive)?;
-    verify_wsl_sha256(&remote_archive, expected_sha256)?;
-    let runtime_root = format!(
-        "/var/lib/gameengine/local-ai/runtime/{PINNED_LLAMA_CPP_TAG}"
-    );
-    let command = format!(
-        "rm -rf {root}.staging; mkdir -p {root}.staging; tar -xzf {archive} -C {root}.staging; server=$(find {root}.staging -type f -name llama-server -print -quit); test -n \"$server\"; chmod +x \"$server\"; rm -rf {root}; mv {root}.staging {root}; final=$(find {root} -type f -name llama-server -print -quit); test -n \"$final\"; if [ \"$final\" != {root}/llama-server ]; then cp \"$final\" {root}/llama-server; chmod +x {root}/llama-server; fi",
-        root = shell_quote(&runtime_root),
-        archive = shell_quote(&remote_archive),
-    );
-    wsl_shell(&command, ManagedDiagnosticLayer::RuntimeArtifactIntegrity).map(|_| ())
+fn managed_wsl_command() -> Command {
+    let mut command = Command::new("wsl.exe");
+    command.args(["-d", MANAGED_WSL_DISTRIBUTION, "-u", "root", "--"]);
+    command
 }
 
 fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRuntimeError> {
@@ -1511,11 +1770,8 @@ fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRu
         &format!("mkdir -p {}", shell_quote(&parent)),
         ManagedDiagnosticLayer::ModelTransferOrIntegrity,
     )?;
-    let mut child = Command::new("wsl.exe")
+    let mut child = managed_wsl_command()
         .args([
-            "-d",
-            MANAGED_WSL_DISTRIBUTION,
-            "--",
             "sh",
             "-lc",
             &format!("cat > {}", shell_quote(remote)),
@@ -1554,11 +1810,8 @@ fn wsl_model_path(content_sha256: &str) -> String {
 }
 
 fn wsl_file_exists(path: &str) -> Result<bool, ManagedLocalRuntimeError> {
-    let output = Command::new("wsl.exe")
+    let output = managed_wsl_command()
         .args([
-            "-d",
-            MANAGED_WSL_DISTRIBUTION,
-            "--",
             "sh",
             "-lc",
             &format!("test -f {}", shell_quote(path)),
@@ -1591,8 +1844,8 @@ fn wsl_shell(
     command: &str,
     layer: ManagedDiagnosticLayer,
 ) -> Result<std::process::Output, ManagedLocalRuntimeError> {
-    let output = Command::new("wsl.exe")
-        .args(["-d", MANAGED_WSL_DISTRIBUTION, "--", "sh", "-lc", command])
+    let output = managed_wsl_command()
+        .args(["sh", "-lc", command])
         .output()
         .map_err(|error| {
             ManagedLocalRuntimeError::new(layer, format!("could not invoke managed WSL: {error}"))
@@ -1652,11 +1905,8 @@ fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRun
         ManagedExecutionEnvironment::WindowsNative => Command::new("tasklist.exe")
             .args(["/FI", &format!("PID eq {}", state.process_id), "/FO", "CSV", "/NH"])
             .output(),
-        ManagedExecutionEnvironment::Wsl2Linux => Command::new("wsl.exe")
+        ManagedExecutionEnvironment::Wsl2Linux => managed_wsl_command()
             .args([
-                "-d",
-                MANAGED_WSL_DISTRIBUTION,
-                "--",
                 "sh",
                 "-lc",
                 &format!("kill -0 {}", state.process_id),
@@ -1948,10 +2198,60 @@ mod tests {
     }
 
     #[test]
-    fn pinned_asset_names_do_not_depend_on_user_distributions() {
-        assert!(pinned_asset_name(ManagedExecutionEnvironment::WindowsNative).contains("win-vulkan-x64"));
-        assert!(pinned_asset_name(ManagedExecutionEnvironment::Wsl2Linux).contains("ubuntu-vulkan-x64"));
+    fn pinned_cuda_runtime_plan_uses_two_windows_assets_and_wsl_source_build() {
+        assert_eq!(
+            windows_cuda_asset_names(),
+            [
+                "llama-b10336-bin-win-cuda-12.4-x64.zip",
+                "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            ]
+        );
+        assert_eq!(WINDOWS_CUDA_MANIFEST, "llama-b10336-win-cuda-12.4-manifest.txt");
+        assert_eq!(
+            WSL_CUDA_MANIFEST,
+            "llama-b10336-wsl-cuda-12.4-source-manifest.txt"
+        );
+        assert_eq!(WSL_CUDA_TOOLKIT_PACKAGE, "cuda-toolkit-12-4");
+        assert_eq!(STATE_SCHEMA_VERSION, 2);
         assert_eq!(MANAGED_WSL_DISTRIBUTION, "GameEngine-LocalAI");
+
+        let windows_manifest = windows_cuda_runtime_manifest(&[
+            (WINDOWS_CUDA_RUNTIME_ASSET.to_owned(), "a".repeat(64)),
+            (WINDOWS_CUDA_SUPPORT_ASSET.to_owned(), "b".repeat(64)),
+        ]);
+        assert!(windows_manifest.contains("environment=windows_native"));
+        assert!(windows_manifest.contains("backend=cuda"));
+        assert!(windows_manifest.contains(WINDOWS_CUDA_RUNTIME_ASSET));
+        assert!(windows_manifest.contains(WINDOWS_CUDA_SUPPORT_ASSET));
+
+        let wsl_manifest = wsl_cuda_runtime_manifest(&WslCudaBuildProvenance {
+            revision: format!("{PINNED_LLAMA_CPP_REVISION}deadbeef"),
+            toolkit_version: "12.4.1-1".to_owned(),
+            server_sha256: "c".repeat(64),
+            bench_sha256: "d".repeat(64),
+        });
+        assert!(wsl_manifest.contains("environment=wsl2_linux"));
+        assert!(wsl_manifest.contains("backend=cuda"));
+        assert!(wsl_manifest.contains("source_revision=f401bb1deadbeef"));
+    }
+
+    #[test]
+    fn managed_wsl_commands_bypass_first_launch_user_setup_as_root() {
+        let command = managed_wsl_command();
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                "-d".to_owned(),
+                MANAGED_WSL_DISTRIBUTION.to_owned(),
+                "-u".to_owned(),
+                "root".to_owned(),
+                "--".to_owned(),
+            ]
+        );
     }
 
     #[test]
