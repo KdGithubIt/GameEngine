@@ -108,6 +108,22 @@ class DispatcherRecoveryProtocolTests(unittest.TestCase):
         self.assertIn("verify-applied", workflow)
         self.assertIn("expected_head_sha=\"$PUSHED_HEAD_SHA\"", workflow)
 
+    def test_recovery_workflow_accepts_only_trusted_connector_issue_signal(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / "workflows"
+            / "gameengine-chatgpt-dispatcher-recovery.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("issues:\n    types: [opened]", workflow)
+        self.assertIn("issues: write", workflow)
+        self.assertIn("gameengine-chatgpt-dispatcher-recovery-v1", workflow)
+        self.assertIn("GameEngine ChatGPT Dispatcher Recovery: ", workflow)
+        self.assertIn("OWNER|MEMBER|COLLABORATOR", workflow)
+        self.assertIn('(keys | sort) == ["request_commit", "signal"]', workflow)
+        self.assertIn("Close successful recovery signal", workflow)
+        self.assertIn("Leave recovery failure diagnostic", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
