@@ -12,6 +12,7 @@ use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -56,6 +57,9 @@ impl ManagedExecutionEnvironment {
     }
 }
 
+// ADR 0155 defines the complete diagnostic vocabulary even when a specific
+// first-release machine never exercises every platform/resource failure layer.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedDiagnosticLayer {
     OperatingSystemPrerequisite,
@@ -184,6 +188,9 @@ pub(crate) enum ManagedSetupStatus {
     OperatingSystemPrerequisiteUnavailable(String),
 }
 
+// ADR 0155 freezes exact Download & Run approval semantics for ADR 0156 campaign
+// integration; the standalone setup UI intentionally does not auto-download weights.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionCandidate {
     pub(crate) candidate_id: String,
@@ -195,12 +202,18 @@ pub(crate) struct ManagedAcquisitionCandidate {
     pub(crate) storage_bytes: u64,
 }
 
+// Retained for the ADR 0156 frozen-campaign handoff; normal Local AI setup has no
+// implicit model-acquisition path.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionPlan {
     pub(crate) plan_id: String,
     pub(crate) candidates: Vec<ManagedAcquisitionCandidate>,
 }
 
+// Produced by ADR 0156 campaign review; retained here so transfer/storage approval
+// cannot be redefined by the later campaign UI.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionReview {
     pub(crate) candidate_count: usize,
@@ -208,12 +221,17 @@ pub(crate) struct ManagedAcquisitionReview {
     pub(crate) total_storage_bytes: u64,
 }
 
+// Approval tokens are consumed by ADR 0156 campaign execution, not by ordinary
+// single-model Local AI setup.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionApproval {
     plan_id: String,
     candidate_ids: BTreeSet<String>,
 }
 
+// ADR 0156 consumes these exact frozen-campaign review/approval helpers.
+#[allow(dead_code)]
 impl ManagedAcquisitionPlan {
     pub(crate) fn review(&self) -> ManagedAcquisitionReview {
         ManagedAcquisitionReview {
@@ -241,6 +259,8 @@ impl ManagedAcquisitionPlan {
     }
 }
 
+// ADR 0156 consumes this exact-approval check when executing a frozen campaign.
+#[allow(dead_code)]
 impl ManagedAcquisitionApproval {
     pub(crate) fn authorizes(
         &self,
@@ -260,6 +280,91 @@ impl ManagedAcquisitionApproval {
 #[derive(Debug, Clone)]
 pub(crate) struct ManagedLocalRuntime {
     root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ManagedSetupOperation {
+    InstallRuntime(ManagedExecutionEnvironment),
+    ProvisionWsl,
+    RegisterModel(PathBuf),
+    PrepareModel {
+        model_id: String,
+        environment: ManagedExecutionEnvironment,
+        duplicate_storage_approved: bool,
+    },
+    RemoveEnvironment(ManagedExecutionEnvironment),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ManagedSetupResult {
+    RuntimeInstalled(ManagedRuntimeInstallation),
+    WslProvisioned,
+    ModelRegistered(ManagedModelRegistration),
+    ModelPrepared(PathBuf),
+    EnvironmentRemoved(ManagedExecutionEnvironment),
+}
+
+pub(crate) struct ManagedSetupTask {
+    result: Receiver<Result<ManagedSetupResult, ManagedLocalRuntimeError>>,
+}
+
+impl ManagedSetupTask {
+    pub(crate) fn spawn(
+        manager: ManagedLocalRuntime,
+        operation: ManagedSetupOperation,
+    ) -> Result<Self, ManagedLocalRuntimeError> {
+        let (sender, result) = mpsc::channel();
+        thread::Builder::new()
+            .name("managed-local-ai-setup".to_owned())
+            .spawn(move || {
+                let outcome = match operation {
+                    ManagedSetupOperation::InstallRuntime(environment) => manager
+                        .install_pinned_runtime(environment)
+                        .map(ManagedSetupResult::RuntimeInstalled),
+                    ManagedSetupOperation::ProvisionWsl => manager
+                        .provision_managed_wsl_distribution()
+                        .map(|()| ManagedSetupResult::WslProvisioned),
+                    ManagedSetupOperation::RegisterModel(path) => manager
+                        .register_existing_gguf(&path, None)
+                        .map(ManagedSetupResult::ModelRegistered),
+                    ManagedSetupOperation::PrepareModel {
+                        model_id,
+                        environment,
+                        duplicate_storage_approved,
+                    } => manager
+                        .prepare_model_for_environment(
+                            &model_id,
+                            environment,
+                            duplicate_storage_approved,
+                        )
+                        .map(ManagedSetupResult::ModelPrepared),
+                    ManagedSetupOperation::RemoveEnvironment(environment) => manager
+                        .remove_environment(environment)
+                        .map(|()| ManagedSetupResult::EnvironmentRemoved(environment)),
+                };
+                let _ = sender.send(outcome);
+            })
+            .map_err(|error| {
+                ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::OperatingSystemPrerequisite,
+                    format!("could not start managed Local AI setup worker: {error}"),
+                )
+            })?;
+        Ok(Self { result })
+    }
+
+    pub(crate) fn poll(
+        &self,
+    ) -> Option<Result<ManagedSetupResult, ManagedLocalRuntimeError>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::OperatingSystemPrerequisite,
+                "managed Local AI setup worker disconnected unexpectedly",
+            ))),
+        }
+    }
 }
 
 impl ManagedLocalRuntime {
@@ -282,7 +387,18 @@ impl ManagedLocalRuntime {
         environment: ManagedExecutionEnvironment,
     ) -> ManagedSetupStatus {
         if self.restart_marker_path().is_file() {
-            return ManagedSetupStatus::RestartRequired;
+            let continuation_ready = cfg!(target_os = "windows")
+                && matches!(
+                    wsl_status(),
+                    Ok(WslStatus::Available {
+                        managed_distribution: true
+                    })
+                );
+            if continuation_ready {
+                let _ = self.clear_restart_required();
+            } else {
+                return ManagedSetupStatus::RestartRequired;
+            }
         }
         if !cfg!(target_os = "windows") {
             return ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
@@ -395,13 +511,12 @@ impl ManagedLocalRuntime {
         &self,
         environment: ManagedExecutionEnvironment,
     ) -> Result<ManagedRuntimeInstallation, ManagedLocalRuntimeError> {
-        if let Some(existing) = self.active_installation(environment)? {
-            if existing.runtime_tag == PINNED_LLAMA_CPP_TAG
-                && existing.runtime_revision == PINNED_LLAMA_CPP_REVISION
-                && self.verify_retained_runtime_artifact(&existing).is_ok()
-            {
-                return Ok(existing);
-            }
+        if let Some(existing) = self.active_installation(environment)?
+            && existing.runtime_tag == PINNED_LLAMA_CPP_TAG
+            && existing.runtime_revision == PINNED_LLAMA_CPP_REVISION
+            && self.verify_retained_runtime_artifact(&existing).is_ok()
+        {
+            return Ok(existing);
         }
         if !cfg!(target_os = "windows") {
             return Err(ManagedLocalRuntimeError::new(
@@ -768,14 +883,16 @@ impl ManagedLocalRuntime {
         manager.write_process_state(&state)?;
         let started = Instant::now();
         while started.elapsed() < STARTUP_TIMEOUT {
-            if endpoint_is_healthy(&endpoint) {
+            let endpoint_healthy = endpoint_is_healthy(&endpoint);
+            if endpoint_healthy {
                 return Ok(ManagedEndpoint {
                     url: endpoint,
                     process_id,
                     reused_process: false,
                 });
             }
-            if !process_is_alive(&state)? {
+            let process_alive = process_is_alive(&state)?;
+            if managed_process_exited_before_health(endpoint_healthy, process_alive) {
                 let _ = manager.clear_process_state();
                 return Err(ManagedLocalRuntimeError::new(
                     ManagedDiagnosticLayer::ManagedProcessStartup,
@@ -792,6 +909,57 @@ impl ManagedLocalRuntime {
             ManagedDiagnosticLayer::ManagedProcessStartup,
             "managed llama.cpp did not become healthy within the bounded startup interval",
         ))
+    }
+
+    pub(crate) fn remove_environment(
+        &self,
+        environment: ManagedExecutionEnvironment,
+    ) -> Result<(), ManagedLocalRuntimeError> {
+        if let Some(process) = self.read_process_state()?
+            && process.environment == environment
+        {
+            self.stop_process_state(&process)?;
+        }
+        if environment == ManagedExecutionEnvironment::Wsl2Linux
+            && matches!(
+                wsl_status(),
+                Ok(WslStatus::Available {
+                    managed_distribution: true
+                })
+            )
+        {
+            let output = Command::new("wsl.exe")
+                .args(["--unregister", MANAGED_WSL_DISTRIBUTION])
+                .output()
+                .map_err(|error| {
+                    ManagedLocalRuntimeError::new(
+                        ManagedDiagnosticLayer::WslDistributionProvisioning,
+                        format!("could not remove the dedicated managed WSL distribution: {error}"),
+                    )
+                })?;
+            if !output.status.success() {
+                return Err(ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::WslDistributionProvisioning,
+                    format!(
+                        "could not remove the dedicated managed WSL distribution: {}",
+                        command_output_text(&output)
+                    ),
+                ));
+            }
+        }
+        let runtime_root = self
+            .root
+            .join("runtime")
+            .join(environment.storage_key());
+        match fs::remove_dir_all(runtime_root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(runtime_io(error)),
+        }
+        if environment == ManagedExecutionEnvironment::Wsl2Linux {
+            self.clear_restart_required()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn stop_for_config(
@@ -837,16 +1005,7 @@ impl ManagedLocalRuntime {
             .map_err(runtime_io)?;
         let stderr = stdout.try_clone().map_err(runtime_io)?;
         let child = Command::new(&installation.server_path)
-            .args([
-                "--model",
-                config.model_path.to_string_lossy().as_ref(),
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--n-gpu-layers",
-                "999",
-            ])
+            .args(windows_server_arguments(&config.model_path, port))
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -1093,6 +1252,44 @@ enum WslStatus {
     Available { managed_distribution: bool },
 }
 
+fn classify_wsl_status(
+    status_success: bool,
+    status_message: &str,
+    distributions_success: bool,
+    distributions_text: &str,
+) -> WslStatus {
+    if !status_success {
+        return WslStatus::Unavailable(status_message.to_owned());
+    }
+    if !distributions_success {
+        return WslStatus::Unavailable(distributions_text.to_owned());
+    }
+    let managed_distribution = distributions_text
+        .lines()
+        .map(str::trim)
+        .any(|line| line == MANAGED_WSL_DISTRIBUTION);
+    WslStatus::Available {
+        managed_distribution,
+    }
+}
+
+fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
+    vec![
+        "--model".to_owned(),
+        model_path.to_string_lossy().into_owned(),
+        "--host".to_owned(),
+        "127.0.0.1".to_owned(),
+        "--port".to_owned(),
+        port.to_string(),
+        "--n-gpu-layers".to_owned(),
+        "999".to_owned(),
+    ]
+}
+
+fn managed_process_exited_before_health(endpoint_healthy: bool, process_alive: bool) -> bool {
+    !endpoint_healthy && !process_alive
+}
+
 fn pinned_asset_name(environment: ManagedExecutionEnvironment) -> &'static str {
     match environment {
         ManagedExecutionEnvironment::WindowsNative => "llama-b10336-bin-win-vulkan-x64.zip",
@@ -1169,9 +1366,25 @@ fn powershell_output(
     script: &str,
     arguments: &[&str],
 ) -> Result<std::process::Output, ManagedLocalRuntimeError> {
+    let mut argument_prelude = String::from("$args=@(");
+    for index in 0..arguments.len() {
+        if index > 0 {
+            argument_prelude.push(',');
+        }
+        argument_prelude.push_str(&format!("$env:GAMEENGINE_MANAGED_ARG_{index}"));
+    }
+    argument_prelude.push_str("); " );
+    argument_prelude.push_str(script);
     let mut command = Command::new("powershell.exe");
-    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-    command.args(arguments);
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &argument_prelude,
+    ]);
+    for (index, argument) in arguments.iter().enumerate() {
+        command.env(format!("GAMEENGINE_MANAGED_ARG_{index}"), argument);
+    }
     let output = command.output().map_err(|error| {
         ManagedLocalRuntimeError::new(
             ManagedDiagnosticLayer::OperatingSystemPrerequisite,
@@ -1188,12 +1401,13 @@ fn powershell_output(
 }
 
 fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> {
-    let path_text = path.to_string_lossy();
     #[cfg(target_os = "windows")]
-    let output = powershell_output(
-        "(Get-FileHash -Algorithm SHA256 -LiteralPath $args[0]).Hash",
-        &[&path_text],
-    )?;
+    let output = Command::new("certutil.exe")
+        .arg("-hashfile")
+        .arg(path)
+        .arg("SHA256")
+        .output()
+        .map_err(model_io)?;
     #[cfg(not(target_os = "windows"))]
     let output = Command::new("sha256sum")
         .arg(path)
@@ -1205,18 +1419,17 @@ fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> 
             format!("SHA-256 calculation failed: {}", command_output_text(&output)),
         ));
     }
-    let digest = String::from_utf8_lossy(&output.stdout)
+    let output_text = decode_windows_command_text(&output.stdout);
+    let digest = output_text
         .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if !is_sha256_hex(&digest) {
-        return Err(ManagedLocalRuntimeError::new(
-            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-            "SHA-256 calculation returned an invalid digest",
-        ));
-    }
+        .map(|token| token.trim().to_ascii_lowercase())
+        .find(|token| is_sha256_hex(token))
+        .ok_or_else(|| {
+            ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+                "SHA-256 calculation returned no valid digest",
+            )
+        })?;
     Ok(digest)
 }
 
@@ -1406,7 +1619,12 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
         )
     })?;
     if !status.status.success() {
-        return Ok(WslStatus::Unavailable(command_output_text(&status)));
+        return Ok(classify_wsl_status(
+            false,
+            &command_output_text(&status),
+            false,
+            "",
+        ));
     }
     let distributions = Command::new("wsl.exe")
         .args(["--list", "--quiet"])
@@ -1418,14 +1636,15 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
             )
         })?;
     if !distributions.status.success() {
-        return Ok(WslStatus::Unavailable(command_output_text(&distributions)));
+        return Ok(classify_wsl_status(
+            true,
+            "",
+            false,
+            &command_output_text(&distributions),
+        ));
     }
     let text = decode_windows_command_text(&distributions.stdout);
-    let managed_distribution = text
-        .lines()
-        .map(str::trim)
-        .any(|line| line == MANAGED_WSL_DISTRIBUTION);
-    Ok(WslStatus::Available { managed_distribution })
+    Ok(classify_wsl_status(true, "", true, &text))
 }
 
 fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRuntimeError> {
@@ -1575,7 +1794,7 @@ fn command_output_text(output: &std::process::Output) -> String {
 }
 
 fn decode_windows_command_text(bytes: &[u8]) -> String {
-    if bytes.len() >= 2 && bytes.len() % 2 == 0 {
+    if bytes.len() >= 2 && bytes.len().is_multiple_of(2) {
         let utf16 = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
@@ -1733,6 +1952,55 @@ mod tests {
         assert!(pinned_asset_name(ManagedExecutionEnvironment::WindowsNative).contains("win-vulkan-x64"));
         assert!(pinned_asset_name(ManagedExecutionEnvironment::Wsl2Linux).contains("ubuntu-vulkan-x64"));
         assert_eq!(MANAGED_WSL_DISTRIBUTION, "GameEngine-LocalAI");
+    }
+
+    #[test]
+    fn windows_launch_contract_uses_exact_model_loopback_and_gpu_arguments() {
+        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+        assert_eq!(
+            windows_server_arguments(model, 18443),
+            vec![
+                "--model".to_owned(),
+                model.to_string_lossy().into_owned(),
+                "--host".to_owned(),
+                "127.0.0.1".to_owned(),
+                "--port".to_owned(),
+                "18443".to_owned(),
+                "--n-gpu-layers".to_owned(),
+                "999".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wsl_status_classification_fails_closed_and_requires_exact_managed_distribution() {
+        assert_eq!(
+            classify_wsl_status(false, "WSL unavailable", false, ""),
+            WslStatus::Unavailable("WSL unavailable".to_owned())
+        );
+        assert_eq!(
+            classify_wsl_status(true, "", false, "distribution list failed"),
+            WslStatus::Unavailable("distribution list failed".to_owned())
+        );
+        assert_eq!(
+            classify_wsl_status(true, "", true, "Ubuntu-24.04\nGameEngine-LocalAI\n"),
+            WslStatus::Available {
+                managed_distribution: true,
+            }
+        );
+        assert_eq!(
+            classify_wsl_status(true, "", true, "GameEngine-LocalAI-copy\n"),
+            WslStatus::Available {
+                managed_distribution: false,
+            }
+        );
+    }
+
+    #[test]
+    fn startup_contract_never_treats_a_crashed_process_as_healthy() {
+        assert!(!managed_process_exited_before_health(true, false));
+        assert!(!managed_process_exited_before_health(false, true));
+        assert!(managed_process_exited_before_health(false, false));
     }
 
     #[test]
