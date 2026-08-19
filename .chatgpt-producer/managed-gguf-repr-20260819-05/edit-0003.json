@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        write_json(&self.model_registry_path(), &registry).map_err(model_io)?;\n        Ok(registration)\n    }\n\n    pub(crate) fn additional_storage_for_environment(",
+  "new": "        write_json(&self.model_registry_path(), &registry).map_err(model_io)?;\n        Ok(registration)\n    }\n\n    #[cfg(feature = \"visual-validation\")]\n    pub(crate) fn register_visual_validation_model(\n        &self,\n        path: &Path,\n    ) -> Result<ManagedModelRegistration, ManagedLocalRuntimeError> {\n        gguf::write_visual_validation_gguf(path).map_err(model_io)?;\n        self.register_existing_gguf(path, None)\n    }\n\n    pub(crate) fn additional_storage_for_environment("
+}
