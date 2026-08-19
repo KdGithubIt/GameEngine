@@ -1,0 +1,16 @@
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index 329cc83424dfcb95593cbe1fc9a667b8ccac4a10..7b0ec7879bdd73535e66aad4093bdad20f44c47a 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -514,6 +514,11 @@ fn execute_managed_resource_operation(
+     config: &ManagedLocalModelConfig,
+     operation: ModelResourceOperation,
+ ) -> Result<ModelResourceTransition, NativeAgentError> {
++    // Resource transitions run on the dedicated model-resource worker. Keep the
++    // ADR 0155 pre-operation integrity gate that previously happened during UI
++    // configuration resolution, but perform its full GGUF hash off the frame thread.
++    ManagedLocalRuntime::verify_frozen_configuration(config)
++        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;
+     let before = observe_managed_model(config);
+     let started = Instant::now();
+     match operation {
