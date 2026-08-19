@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/remote_ai_studio.rs","old":"button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px}","new":"button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px;max-width:100%;min-width:0}"}
