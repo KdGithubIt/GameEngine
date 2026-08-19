@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "    let startup_started = Instant::now();\n    let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)\n        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;",
+  "new": "    let startup_started = Instant::now();\n    // The UI freezes only the cached managed identity. Full ADR 0155 integrity\n    // verification, including the WSL2 GGUF SHA-256, runs here on the inference\n    // worker so pressing Send never blocks the Editor frame thread.\n    ManagedLocalRuntime::verify_frozen_configuration(config)\n        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;\n    if interrupted.load(Ordering::Acquire) {\n        return Err(NativeAgentError::Interrupted);\n    }\n    let managed_endpoint = ManagedLocalRuntime::ensure_endpoint(config)\n        .map_err(|error| NativeAgentError::BackendUnavailable(error.to_string()))?;"
+}
