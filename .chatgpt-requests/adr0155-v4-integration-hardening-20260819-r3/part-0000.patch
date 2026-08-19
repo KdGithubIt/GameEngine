@@ -1,0 +1,1245 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 66125de7bf3669ab7b514ea49f00af29e193b42d..96772ae473794dbe7d10340e99887f8ebb323cfb 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -25,11 +25,17 @@ use crate::external_agent_provider::{
+ use crate::hosted_model_backend;
+ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
++use crate::managed_local_runtime::{
++    ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
++    ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
++    PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
++};
+ use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
+ use crate::native_agent::{
+-    InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
+-    ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
+-    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
++    InstalledLocalModel, InstalledModelDiscoveryTask, InstalledModelInventory,
++    LocalModelConfig, LocalModelResourceConfig, ModelCapabilityProfile, ModelResourceTask,
++    NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask, QuestionMessage,
++    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+ };
+ use crate::native_agent_runtime::{mcp_write, NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
+ use crate::resource_arbitration::{
+@@ -64,6 +70,7 @@ const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
+ enum ModelBackendPreference {
+     #[default]
+     Local,
++    ManagedLocal,
+     HostedApi,
+     Enterprise,
+ }
+@@ -79,6 +86,10 @@ struct AiStudioPreferences {
+     external_agent_provider: ExternalAgentProviderKind,
+     #[serde(default)]
+     model_backend: ModelBackendPreference,
++    #[serde(default)]
++    managed_execution_environment: ManagedExecutionEnvironment,
++    #[serde(default)]
++    managed_model_id: String,
+     #[serde(default = "default_local_model_endpoint")]
+     local_model_endpoint: String,
+     #[serde(default)]
+@@ -97,6 +108,8 @@ impl Default for AiStudioPreferences {
+             confinement_requirement: AgentConfinementRequirement::default(),
+             external_agent_provider: ExternalAgentProviderKind::default(),
+             model_backend: ModelBackendPreference::Local,
++            managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
++            managed_model_id: String::new(),
+             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+             local_model_name: String::new(),
+             hosted_model_endpoint: String::new(),
+@@ -639,6 +652,10 @@ pub struct AiStudioPanel {
+     external_provider_kind: ExternalAgentProviderKind,
+     external_provider_status: ExternalAgentProviderStatus,
+     model_backend: ModelBackendPreference,
++    managed_local_runtime: ManagedLocalRuntime,
++    managed_execution_environment: ManagedExecutionEnvironment,
++    managed_model_id: String,
++    managed_setup_task: Option<ManagedSetupTask>,
+     local_model_endpoint: String,
+     local_model_name: String,
+     benchmark_store: BenchmarkStore,
+@@ -721,6 +738,8 @@ impl AiStudioPanel {
+         let preferences_path = data_root.join("preferences.json");
+         let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
+         let preferences = load_ai_studio_preferences(&preferences_path);
++        let managed_local_runtime = ManagedLocalRuntime::open(ai_root.join("managed-local"))
++            .map_err(|error| error.to_string())?;
+         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
+         let (benchmark_records, benchmark_status) = match benchmark_store.load() {
+             Ok(records) => (records, None),
+@@ -763,6 +782,10 @@ impl AiStudioPanel {
+                 preferences.external_agent_provider,
+             ),
+             model_backend: preferences.model_backend,
++            managed_local_runtime,
++            managed_execution_environment: preferences.managed_execution_environment,
++            managed_model_id: preferences.managed_model_id,
++            managed_setup_task: None,
+             local_model_endpoint: preferences.local_model_endpoint,
+             local_model_name: preferences.local_model_name,
+             benchmark_store,
+@@ -909,6 +932,32 @@ impl AiStudioPanel {
+         self.visual_external_provider_evidence = true;
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    /// Selects a deterministic managed-local setup state for ADR 0155 screenshot validation.
++    pub fn prepare_managed_local_visual_validation(&mut self) -> Result<(), String> {
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map_err(|error| error.to_string())?
++            .as_nanos();
++        let fixture_root = std::env::temp_dir().join(format!(
++            "gameengine-managed-local-visual-{}-{unique}",
++            std::process::id()
++        ));
++        self.managed_local_runtime =
++            ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
++        self.model_backend = ModelBackendPreference::ManagedLocal;
++        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
++        self.managed_model_id.clear();
++        self.managed_setup_task = None;
++        self.last_model_resource_telemetry = ModelResourceTelemetry::default();
++        self.external_provider_kind = ExternalAgentProviderKind::Generic;
++        self.external_provider_status =
++            ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
++        self.visual_scroll_offset = 0.0;
++        self.visual_external_provider_evidence = false;
++        Ok(())
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Returns whether the detached native viewport has completed two rendered frames.
+     pub fn detached_visual_validation_capture_ready(&self) -> bool {
+@@ -1259,6 +1308,7 @@ impl AiStudioPanel {
+         self.ensure_remote_gateway(context);
+         self.poll_remote_requests();
+         self.poll_model_discovery(context);
++        self.poll_managed_setup(context);
+         self.poll_native_question(context);
+         self.poll_model_resource_task(context);
+         self.poll_native_mcp(context);
+@@ -1391,9 +1441,15 @@ impl AiStudioPanel {
+                         if let Some(object) = snapshot.as_object_mut() {
+                             let posture = match self.model_backend {
+                                 ModelBackendPreference::Local => serde_json::json!({
+-                                    "kind": "local",
++                                    "kind": "external_local",
+                                     "remote_processing": false
+                                 }),
++                                ModelBackendPreference::ManagedLocal => serde_json::json!({
++                                    "kind": "managed_local",
++                                    "remote_processing": false,
++                                    "execution_environment": self.managed_execution_environment.benchmark_id(),
++                                    "runtime_family": "llama.cpp"
++                                }),
+                                 ModelBackendPreference::HostedApi => serde_json::json!({
+                                     "kind": "hosted_api",
+                                     "remote_processing": true,
+@@ -1775,15 +1831,21 @@ impl AiStudioPanel {
+                     let previous = self.model_backend;
+                     egui::ComboBox::from_id_salt("ai_studio_model_backend")
+                         .selected_text(match self.model_backend {
+-                            ModelBackendPreference::Local => "Local",
++                            ModelBackendPreference::Local => "External local (Ollama-compatible)",
++                            ModelBackendPreference::ManagedLocal => "Managed Local AI",
+                             ModelBackendPreference::HostedApi => "Hosted API",
+                             ModelBackendPreference::Enterprise => "Enterprise",
+                         })
+                         .show_ui(ui, |ui| {
++                            ui.selectable_value(
++                                &mut self.model_backend,
++                                ModelBackendPreference::ManagedLocal,
++                                "Managed Local AI",
++                            );
+                             ui.selectable_value(
+                                 &mut self.model_backend,
+                                 ModelBackendPreference::Local,
+-                                "Local",
++                                "External local (Ollama-compatible)",
+                             );
+                             ui.selectable_value(
+                                 &mut self.model_backend,
+@@ -1801,7 +1863,8 @@ impl AiStudioPanel {
+                     }
+                 });
+                 ui.small(match self.model_backend {
+-                    ModelBackendPreference::Local => "Processing posture: local machine only.",
++                    ModelBackendPreference::Local => "Processing posture: external loopback local runtime; existing Ollama-compatible settings retain their original meaning.",
++                    ModelBackendPreference::ManagedLocal => "Processing posture: GameEngine-managed llama.cpp on this machine; the inference server remains loopback-only and never gains authoring authority.",
+                     ModelBackendPreference::HostedApi => "Processing posture: selected task context is sent to the configured remote HTTPS provider only after Network access approval.",
+                     ModelBackendPreference::Enterprise => "Processing posture: selected task context is sent to the configured enterprise HTTPS endpoint only after Network access approval.",
+                 });
+@@ -1819,6 +1882,223 @@ impl AiStudioPanel {
+                     "Quality is a machine-local latency/reasoning preference. Remote GPU controls are never projected as local residency controls.",
+                 );
+                 match self.model_backend {
++                    ModelBackendPreference::ManagedLocal => {
++                        ui.horizontal_wrapped(|ui| {
++                            ui.label("Execution environment");
++                            let previous = self.managed_execution_environment;
++                            egui::ComboBox::from_id_salt("ai_studio_managed_environment")
++                                .selected_text(self.managed_execution_environment.label())
++                                .show_ui(ui, |ui| {
++                                    for environment in ManagedExecutionEnvironment::ALL {
++                                        ui.selectable_value(
++                                            &mut self.managed_execution_environment,
++                                            environment,
++                                            environment.label(),
++                                        );
++                                    }
++                                });
++                            if self.managed_execution_environment != previous {
++                                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
++                                self.save_preferences();
++                            }
++                        });
++                        ui.small(
++                            "Windows native is the ordinary first-release default. WSL2 is an advanced characterization/fallback environment and uses the dedicated GameEngine-LocalAI distribution only.",
++                        );
++                        let setup_status = self
++                            .managed_local_runtime
++                            .setup_status(self.managed_execution_environment);
++                        let setup_busy = self.managed_setup_task.is_some();
++                        ui.horizontal_wrapped(|ui| {
++                            ui.label("Runtime");
++                            ui.monospace(format!(
++                                "llama.cpp {PINNED_LLAMA_CPP_TAG} @ {PINNED_LLAMA_CPP_REVISION}"
++                            ));
++                            match &setup_status {
++                                ManagedSetupStatus::Ready => {
++                                    ui.strong("Ready");
++                                }
++                                ManagedSetupStatus::RuntimeNotInstalled => {
++                                    if ui
++                                        .add_enabled(
++                                            !setup_busy,
++                                            egui::Button::new("Set up Local AI"),
++                                        )
++                                        .clicked()
++                                    {
++                                        self.start_managed_setup(
++                                            ManagedSetupOperation::InstallRuntime(
++                                                self.managed_execution_environment,
++                                            ),
++                                            "Downloading and verifying the pinned GameEngine llama.cpp runtime...",
++                                        );
++                                    }
++                                }
++                                ManagedSetupStatus::WslDistributionMissing => {
++                                    if ui
++                                        .add_enabled(
++                                            !setup_busy,
++                                            egui::Button::new("Set up WSL2 Local AI"),
++                                        )
++                                        .clicked()
++                                    {
++                                        self.start_managed_setup(
++                                            ManagedSetupOperation::ProvisionWsl,
++                                            "Provisioning the dedicated GameEngine-LocalAI WSL environment. Windows may require explicit elevation or restart; GameEngine never bypasses either boundary.",
++                                        );
++                                    }
++                                }
++                                ManagedSetupStatus::RestartRequired => {
++                                    ui.strong("Restart required");
++                                }
++                                ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
++                                    message,
++                                ) => {
++                                    ui.strong("Unavailable");
++                                    ui.small(message);
++                                }
++                            }
++                            if setup_busy {
++                                ui.spinner();
++                            }
++                        });
++                        if matches!(&setup_status, ManagedSetupStatus::RestartRequired) {
++                            ui.small(
++                                "Windows reported that setup requires a restart. GameEngine persists only a machine-local continuation marker and does not reboot automatically. Reopen the Editor after the restart to continue.",
++                            );
++                        }
++                        if !matches!(
++                            &setup_status,
++                            ManagedSetupStatus::RuntimeNotInstalled
++                                | ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(_)
++                        ) {
++                            ui.horizontal_wrapped(|ui| {
++                                ui.small(
++                                    "Removal deletes GameEngine-owned runtime/cache state and unregisters only the dedicated GameEngine-LocalAI WSL distribution. User-owned GGUF source files are preserved.",
++                                );
++                                if ui
++                                    .add_enabled(
++                                        !setup_busy,
++                                        egui::Button::new("Remove managed environment"),
++                                    )
++                                    .clicked()
++                                {
++                                    self.start_managed_setup(
++                                        ManagedSetupOperation::RemoveEnvironment(
++                                            self.managed_execution_environment,
++                                        ),
++                                        "Removing the selected GameEngine-managed Local AI environment...",
++                                    );
++                                }
++                            });
++                        }
++                        ui.horizontal_wrapped(|ui| {
++                            ui.label("Managed GGUF");
++                            let models = self
++                                .managed_local_runtime
++                                .registered_models()
++                                .unwrap_or_default();
++                            egui::ComboBox::from_id_salt("ai_studio_managed_model")
++                                .selected_text(
++                                    models
++                                        .iter()
++                                        .find(|model| model.model_id == self.managed_model_id)
++                                        .map(|model| model.display_name.as_str())
++                                        .unwrap_or("Select registered GGUF"),
++                                )
++                                .width(260.0)
++                                .show_ui(ui, |ui| {
++                                    for model in &models {
++                                        if ui
++                                            .selectable_label(
++                                                self.managed_model_id == model.model_id,
++                                                &model.display_name,
++                                            )
++                                            .clicked()
++                                        {
++                                            self.managed_model_id = model.model_id.clone();
++                                            self.last_model_resource_telemetry =
++                                                ModelResourceTelemetry::default();
++                                            self.save_preferences();
++                                        }
++                                    }
++                                });
++                            if ui
++                                .add_enabled(
++                                    !setup_busy,
++                                    egui::Button::new("Register existing GGUF..."),
++                                )
++                                .clicked()
++                                && let Some(path) = rfd::FileDialog::new()
++                                    .add_filter("GGUF model", &["gguf"])
++                                    .pick_file()
++                            {
++                                self.start_managed_setup(
++                                    ManagedSetupOperation::RegisterModel(path),
++                                    "Hashing and registering the exact GGUF bytes without modifying the source file...",
++                                );
++                            }
++                        });
++                        let selected_model = self
++                            .managed_local_runtime
++                            .registered_models()
++                            .unwrap_or_default()
++                            .into_iter()
++                            .find(|model| model.model_id == self.managed_model_id);
++                        if let Some(model) = selected_model {
++                            ui.small(format!(
++                                "Representation: sha256={} · size={} · quantization={}",
++                                model.content_sha256,
++                                format_model_bytes(model.size_bytes),
++                                optional_text(model.quantization.as_deref()),
++                            ));
++                            if self.managed_execution_environment
++                                == ManagedExecutionEnvironment::Wsl2Linux
++                            {
++                                match self.managed_local_runtime.additional_storage_for_environment(
++                                    &model.model_id,
++                                    self.managed_execution_environment,
++                                ) {
++                                    Ok(0) => {
++                                        ui.small("Linux-native WSL model copy: verified/present.");
++                                    }
++                                    Ok(bytes) => {
++                                        ui.horizontal_wrapped(|ui| {
++                                            ui.small(format!(
++                                                "WSL2 needs an additional {} Linux-native copy of these same model bytes.",
++                                                format_model_bytes(bytes)
++                                            ));
++                                            if ui
++                                                .add_enabled(
++                                                    !setup_busy,
++                                                    egui::Button::new("Approve copy"),
++                                                )
++                                                .clicked()
++                                            {
++                                                self.start_managed_setup(
++                                                    ManagedSetupOperation::PrepareModel {
++                                                        model_id: model.model_id.clone(),
++                                                        environment: self.managed_execution_environment,
++                                                        duplicate_storage_approved: true,
++                                                    },
++                                                    "Copying the exact verified GGUF bytes into the dedicated Linux-native WSL model store...",
++                                                );
++                                            }
++                                        });
++                                    }
++                                    Err(error) => {
++                                        ui.small(format!(
++                                            "WSL model preparation unavailable: {error}"
++                                        ));
++                                    }
++                                }
++                            }
++                        } else {
++                            ui.small(
++                                "No managed model selected. Model weights are never downloaded merely because a model is recommended; register an existing GGUF or use an explicit future catalog acquisition action.",
++                            );
++                        }
++                    }
+                     ModelBackendPreference::Local => {
+                         ui.horizontal(|ui| {
+                             ui.label("Endpoint");
+@@ -1988,6 +2268,26 @@ impl AiStudioPanel {
+                         model: self.local_model_name.clone(),
+                     })
+                     .capability_profile(),
++                    ModelBackendPreference::ManagedLocal => self
++                        .managed_model_config()
++                        .map(NativeModelConfig::Managed)
++                        .map(|config| config.capability_profile())
++                        .unwrap_or_else(|_| {
++                            NativeModelConfig::Managed(ManagedLocalModelConfig {
++                                state_root: self.managed_local_runtime.root().to_path_buf(),
++                                environment: self.managed_execution_environment,
++                                model_id: self.managed_model_id.clone(),
++                                model_content_sha256: String::new(),
++                                model_path: PathBuf::new(),
++                                model_size_bytes: 0,
++                                quantization: None,
++                                runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
++                                runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
++                                runtime_artifact_sha256: String::new(),
++                                runtime_compatibility_version: "llama-server-openai-v1".to_owned(),
++                            })
++                            .capability_profile()
++                        }),
+                     ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
+                         NativeModelConfig::Hosted(HostedModelConfig {
+                             endpoint: self.hosted_model_endpoint.clone(),
+@@ -2023,7 +2323,10 @@ impl AiStudioPanel {
+                         "GameEngine status: Recommended · {labels} · corpus {BENCHMARK_CORPUS_VERSION}"
+                     ));
+                 }
+-                if self.model_backend == ModelBackendPreference::Local {
++                if matches!(
++                    self.model_backend,
++                    ModelBackendPreference::Local | ModelBackendPreference::ManagedLocal
++                ) {
+                     ui.small(format!(
+                         "Resource controls: unload/reload {} · CPU offload {} · GPU residency telemetry {} · memory telemetry {}",
+                         capability_label(profile.resource_capabilities.unload_reload),
+@@ -2216,6 +2519,112 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn start_managed_setup(&mut self, operation: ManagedSetupOperation, message: &str) {
++        if self.managed_setup_task.is_some() {
++            self.status = Some("A managed Local AI setup operation is already running.".to_owned());
++            return;
++        }
++        match ManagedSetupTask::spawn(self.managed_local_runtime.clone(), operation) {
++            Ok(task) => {
++                self.managed_setup_task = Some(task);
++                self.status = Some(message.to_owned());
++            }
++            Err(error) => self.status = Some(format!(
++                "Managed Local AI setup failed to start ({}): {error}",
++                error.layer().label()
++            )),
++        }
++    }
++
++    fn poll_managed_setup(&mut self, context: &egui::Context) {
++        let Some(task) = self.managed_setup_task.as_ref() else {
++            return;
++        };
++        let Some(result) = task.poll() else {
++            context.request_repaint_after(std::time::Duration::from_millis(100));
++            return;
++        };
++        self.managed_setup_task = None;
++        match result {
++            Ok(ManagedSetupResult::RuntimeInstalled(installation)) => {
++                self.status = Some(format!(
++                    "Managed Local AI runtime ready: llama.cpp {} @ {} · {}.",
++                    installation.runtime_tag,
++                    installation.runtime_revision,
++                    installation.environment.label()
++                ));
++            }
++            Ok(ManagedSetupResult::WslProvisioned) => {
++                self.status = Some(
++                    "Dedicated GameEngine-LocalAI WSL environment is provisioned. Install the pinned runtime next."
++                        .to_owned(),
++                );
++            }
++            Ok(ManagedSetupResult::ModelRegistered(model)) => {
++                self.managed_model_id = model.model_id.clone();
++                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
++                self.save_preferences();
++                self.status = Some(format!(
++                    "Registered existing GGUF without modifying its bytes: {} · sha256={}.",
++                    model.display_name, model.content_sha256
++                ));
++            }
++            Ok(ManagedSetupResult::ModelPrepared(path)) => {
++                self.status = Some(format!(
++                    "Verified managed model copy for {}: {}.",
++                    self.managed_execution_environment.label(),
++                    path.display()
++                ));
++            }
++            Ok(ManagedSetupResult::EnvironmentRemoved(environment)) => {
++                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
++                self.status = Some(format!(
++                    "Removed the GameEngine-managed {} runtime environment. Registered user-owned GGUF source files were not deleted.",
++                    environment.label()
++                ));
++            }
++            Err(error) => {
++                self.status = Some(format!(
++                    "Managed Local AI setup failed ({}): {error}",
++                    error.layer().label()
++                ));
++            }
++        }
++    }
++
++    fn managed_model_config(&self) -> Result<ManagedLocalModelConfig, String> {
++        if self.managed_model_id.trim().is_empty() {
++            return Err("Register or select a managed GGUF model before starting inference.".to_owned());
++        }
++        self.managed_local_runtime
++            .configuration_for(
++                &self.managed_model_id,
++                self.managed_execution_environment,
++            )
++            .map_err(|error| error.to_string())
++    }
++
++    fn managed_benchmark_inventory(
++        &self,
++        config: &ManagedLocalModelConfig,
++    ) -> InstalledModelInventory {
++        InstalledModelInventory {
++            endpoint: format!(
++                "managed://{}",
++                config.environment.benchmark_id()
++            ),
++            backend_version: Some(config.benchmark_runtime_identity()),
++            models: vec![InstalledLocalModel {
++                name: config.model_id.clone(),
++                digest: Some(config.model_content_sha256.clone()),
++                size_bytes: Some(config.model_size_bytes),
++                parameter_size: None,
++                quantization_level: config.quantization.clone(),
++                family: Some("managed llama.cpp GGUF".to_owned()),
++            }],
++        }
++    }
++
+     fn benchmark_task_record_available(&self) -> bool {
+         let Some(task) = benchmark_task(&self.benchmark_task_id) else {
+             return false;
+@@ -2363,13 +2772,16 @@ impl AiStudioPanel {
+         match self.model_backend {
+             ModelBackendPreference::Local => {
+                 if self.local_model_name.trim().is_empty() {
+-                    return Err("Set an installed local model before starting inference.".to_owned());
++                    return Err("Set an installed external local model before starting inference.".to_owned());
+                 }
+                 Ok(NativeModelConfig::Local(LocalModelConfig {
+                     endpoint: self.local_model_endpoint.clone(),
+                     model: self.local_model_name.clone(),
+                 }))
+             }
++            ModelBackendPreference::ManagedLocal => {
++                self.managed_model_config().map(NativeModelConfig::Managed)
++            }
+             ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
+                 if !self.hosted_model_endpoint.trim().starts_with("https://") {
+                     return Err("Hosted and enterprise model endpoints must use HTTPS.".to_owned());
+@@ -2504,10 +2916,10 @@ impl AiStudioPanel {
+             MemoryPressure::Unknown,
+             profile.resource_capabilities,
+         );
+-        let inventory = if matches!(&config, NativeModelConfig::Local(_)) {
+-            self.current_installed_inventory().cloned()
+-        } else {
+-            None
++        let inventory = match &config {
++            NativeModelConfig::Local(_) => self.current_installed_inventory().cloned(),
++            NativeModelConfig::Managed(config) => Some(self.managed_benchmark_inventory(config)),
++            NativeModelConfig::Hosted(_) => None,
+         };
+         self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
+             task_id: self.benchmark_task_id.clone(),
+@@ -2551,16 +2963,20 @@ impl AiStudioPanel {
+         }
+     }
+ 
+-    fn selected_local_resource_config(&self) -> Option<LocalModelConfig> {
+-        if self.model_backend != ModelBackendPreference::Local
+-            || self.local_model_name.trim().is_empty()
+-        {
+-            return None;
++    fn selected_local_resource_config(&self) -> Option<LocalModelResourceConfig> {
++        match self.model_backend {
++            ModelBackendPreference::Local if !self.local_model_name.trim().is_empty() => {
++                Some(LocalModelResourceConfig::Ollama(LocalModelConfig {
++                    endpoint: self.local_model_endpoint.clone(),
++                    model: self.local_model_name.clone(),
++                }))
++            }
++            ModelBackendPreference::ManagedLocal => self
++                .managed_model_config()
++                .ok()
++                .map(LocalModelResourceConfig::Managed),
++            _ => None,
+         }
+-        Some(LocalModelConfig {
+-            endpoint: self.local_model_endpoint.clone(),
+-            model: self.local_model_name.clone(),
+-        })
+     }
+ 
+     fn begin_model_reload_after_authoritative_inspection(
+@@ -2754,6 +3170,8 @@ impl AiStudioPanel {
+             confinement_requirement: self.confinement_requirement,
+             external_agent_provider: self.external_provider_kind,
+             model_backend: self.model_backend,
++            managed_execution_environment: self.managed_execution_environment,
++            managed_model_id: self.managed_model_id.clone(),
+             local_model_endpoint: self.local_model_endpoint.clone(),
+             local_model_name: self.local_model_name.clone(),
+             hosted_model_endpoint: self.hosted_model_endpoint.clone(),
+@@ -2804,7 +3222,10 @@ impl AiStudioPanel {
+                         policy,
+                     });
+                 }
+-                if self.model_backend == ModelBackendPreference::Local {
++                if matches!(
++                    self.model_backend,
++                    ModelBackendPreference::Local | ModelBackendPreference::ManagedLocal
++                ) {
+                     self.last_model_resource_telemetry = answer.resource_telemetry.clone();
+                 }
+                 let message = format_native_answer(&answer);
+@@ -3503,7 +3924,7 @@ impl AiStudioPanel {
+             }
+         });
+         ui.small(
+-            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Local, Hosted API, or Enterprise ModelBackend. External adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
++            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Managed Local, external local, Hosted API, or Enterprise ModelBackend. External and managed adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
+         );
+         let mut stop_requested = false;
+         let mut interrupt_requested = false;
+@@ -3829,10 +4250,12 @@ impl AiStudioPanel {
+             ..WorkloadSignals::default()
+         });
+         let native_benchmark_identity = native_config.as_ref().map(|config| {
+-            let inventory = if matches!(config, NativeModelConfig::Local(_)) {
+-                self.current_installed_inventory().cloned()
+-            } else {
+-                None
++            let inventory = match config {
++                NativeModelConfig::Local(_) => self.current_installed_inventory().cloned(),
++                NativeModelConfig::Managed(config) => {
++                    Some(self.managed_benchmark_inventory(config))
++                }
++                NativeModelConfig::Hosted(_) => None,
+             };
+             (config.backend_id().to_owned(), config.model_id(), inventory)
+         });
+@@ -5605,6 +6028,8 @@ mod tests {
+             confinement_requirement: AgentConfinementRequirement::default(),
+             external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
+             model_backend: ModelBackendPreference::HostedApi,
++            managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
++            managed_model_id: String::new(),
+             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+             local_model_name: String::new(),
+             hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
+@@ -5616,6 +6041,25 @@ mod tests {
+         assert!(!json.contains("protected_path"));
+     }
+ 
++    #[test]
++    fn legacy_external_local_preferences_are_not_silently_migrated_to_managed() {
++        let preferences: AiStudioPreferences = serde_json::from_str(
++            r#"{"schema_version":1,"model_backend":"local","local_model_endpoint":"http://127.0.0.1:11434","local_model_name":"legacy-model"}"#,
++        )
++        .expect("deserialize legacy external-local preferences");
++        assert_eq!(preferences.model_backend, ModelBackendPreference::Local);
++        assert_eq!(
++            preferences.managed_execution_environment,
++            ManagedExecutionEnvironment::WindowsNative
++        );
++        assert!(preferences.managed_model_id.is_empty());
++        assert_eq!(preferences.local_model_name, "legacy-model");
++        assert_eq!(
++            AiStudioPreferences::default().model_backend,
++            ModelBackendPreference::ManagedLocal
++        );
++    }
++
+     #[test]
+     fn hosted_model_config_requires_network_and_reports_implemented_capabilities() {
+         let config = NativeModelConfig::Hosted(HostedModelConfig {
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 1ea41015d946b990a6da8164b24bfe50bf7579e5..79ee07cefd58b6616a02a4949e5a8549fa8cd765 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -85,7 +85,11 @@ impl EditorShell {
+                 None => {
+                     let touches_ai_studio = visual_validation_touches_ai_studio();
+                     if touches_ai_studio {
+-                        ai_studio.prepare_hosted_backend_visual_validation();
++                        if visual_validation_touches_managed_local_runtime() {
++                            ai_studio.prepare_managed_local_visual_validation()?;
++                        } else {
++                            ai_studio.prepare_hosted_backend_visual_validation();
++                        }
+                     }
+                     touches_ai_studio
+                 }
+@@ -439,6 +443,24 @@ fn visual_validation_touches_ai_studio() -> bool {
+         .is_some_and(|output| !output.stdout.is_empty())
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn visual_validation_touches_managed_local_runtime() -> bool {
++    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
++    let base = format!("origin/{base_ref}...HEAD");
++    std::process::Command::new("git")
++        .args([
++            "diff",
++            "--name-only",
++            &base,
++            "--",
++            "crates/editor/src/managed_local_runtime.rs",
++        ])
++        .output()
++        .ok()
++        .filter(|output| output.status.success())
++        .is_some_and(|output| !output.stdout.is_empty())
++}
++
+ #[cfg(all(feature = "visual-validation", target_os = "windows"))]
+ fn capture_ai_studio_native_window(path: &Path) -> Result<(), String> {
+     const SCRIPT: &str = r#"
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index d76eb0e815bbb1ceba793396bda7b874020c4acb..8ce4654f6c12dbab87e63d389dd23f6848a37a37 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -12,6 +12,7 @@ use std::io::{self, Read, Write};
+ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Stdio};
++use std::sync::mpsc::{self, Receiver, TryRecvError};
+ use std::thread;
+ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ 
+@@ -56,6 +57,9 @@ impl ManagedExecutionEnvironment {
+     }
+ }
+ 
++// ADR 0155 defines the complete diagnostic vocabulary even when a specific
++// first-release machine never exercises every platform/resource failure layer.
++#[allow(dead_code)]
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum ManagedDiagnosticLayer {
+     OperatingSystemPrerequisite,
+@@ -184,6 +188,9 @@ pub(crate) enum ManagedSetupStatus {
+     OperatingSystemPrerequisiteUnavailable(String),
+ }
+ 
++// ADR 0155 freezes exact Download & Run approval semantics for ADR 0156 campaign
++// integration; the standalone setup UI intentionally does not auto-download weights.
++#[allow(dead_code)]
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct ManagedAcquisitionCandidate {
+     pub(crate) candidate_id: String,
+@@ -195,12 +202,18 @@ pub(crate) struct ManagedAcquisitionCandidate {
+     pub(crate) storage_bytes: u64,
+ }
+ 
++// Retained for the ADR 0156 frozen-campaign handoff; normal Local AI setup has no
++// implicit model-acquisition path.
++#[allow(dead_code)]
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct ManagedAcquisitionPlan {
+     pub(crate) plan_id: String,
+     pub(crate) candidates: Vec<ManagedAcquisitionCandidate>,
+ }
+ 
++// Produced by ADR 0156 campaign review; retained here so transfer/storage approval
++// cannot be redefined by the later campaign UI.
++#[allow(dead_code)]
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct ManagedAcquisitionReview {
+     pub(crate) candidate_count: usize,
+@@ -208,12 +221,17 @@ pub(crate) struct ManagedAcquisitionReview {
+     pub(crate) total_storage_bytes: u64,
+ }
+ 
++// Approval tokens are consumed by ADR 0156 campaign execution, not by ordinary
++// single-model Local AI setup.
++#[allow(dead_code)]
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct ManagedAcquisitionApproval {
+     plan_id: String,
+     candidate_ids: BTreeSet<String>,
+ }
+ 
++// ADR 0156 consumes these exact frozen-campaign review/approval helpers.
++#[allow(dead_code)]
+ impl ManagedAcquisitionPlan {
+     pub(crate) fn review(&self) -> ManagedAcquisitionReview {
+         ManagedAcquisitionReview {
+@@ -241,6 +259,8 @@ impl ManagedAcquisitionPlan {
+     }
+ }
+ 
++// ADR 0156 consumes this exact-approval check when executing a frozen campaign.
++#[allow(dead_code)]
+ impl ManagedAcquisitionApproval {
+     pub(crate) fn authorizes(
+         &self,
+@@ -262,6 +282,91 @@ pub(crate) struct ManagedLocalRuntime {
+     root: PathBuf,
+ }
+ 
++#[derive(Debug, Clone)]
++pub(crate) enum ManagedSetupOperation {
++    InstallRuntime(ManagedExecutionEnvironment),
++    ProvisionWsl,
++    RegisterModel(PathBuf),
++    PrepareModel {
++        model_id: String,
++        environment: ManagedExecutionEnvironment,
++        duplicate_storage_approved: bool,
++    },
++    RemoveEnvironment(ManagedExecutionEnvironment),
++}
++
++#[derive(Debug, Clone)]
++pub(crate) enum ManagedSetupResult {
++    RuntimeInstalled(ManagedRuntimeInstallation),
++    WslProvisioned,
++    ModelRegistered(ManagedModelRegistration),
++    ModelPrepared(PathBuf),
++    EnvironmentRemoved(ManagedExecutionEnvironment),
++}
++
++pub(crate) struct ManagedSetupTask {
++    result: Receiver<Result<ManagedSetupResult, ManagedLocalRuntimeError>>,
++}
++
++impl ManagedSetupTask {
++    pub(crate) fn spawn(
++        manager: ManagedLocalRuntime,
++        operation: ManagedSetupOperation,
++    ) -> Result<Self, ManagedLocalRuntimeError> {
++        let (sender, result) = mpsc::channel();
++        thread::Builder::new()
++            .name("managed-local-ai-setup".to_owned())
++            .spawn(move || {
++                let outcome = match operation {
++                    ManagedSetupOperation::InstallRuntime(environment) => manager
++                        .install_pinned_runtime(environment)
++                        .map(ManagedSetupResult::RuntimeInstalled),
++                    ManagedSetupOperation::ProvisionWsl => manager
++                        .provision_managed_wsl_distribution()
++                        .map(|()| ManagedSetupResult::WslProvisioned),
++                    ManagedSetupOperation::RegisterModel(path) => manager
++                        .register_existing_gguf(&path, None)
++                        .map(ManagedSetupResult::ModelRegistered),
++                    ManagedSetupOperation::PrepareModel {
++                        model_id,
++                        environment,
++                        duplicate_storage_approved,
++                    } => manager
++                        .prepare_model_for_environment(
++                            &model_id,
++                            environment,
++                            duplicate_storage_approved,
++                        )
++                        .map(ManagedSetupResult::ModelPrepared),
++                    ManagedSetupOperation::RemoveEnvironment(environment) => manager
++                        .remove_environment(environment)
++                        .map(|()| ManagedSetupResult::EnvironmentRemoved(environment)),
++                };
++                let _ = sender.send(outcome);
++            })
++            .map_err(|error| {
++                ManagedLocalRuntimeError::new(
++                    ManagedDiagnosticLayer::OperatingSystemPrerequisite,
++                    format!("could not start managed Local AI setup worker: {error}"),
++                )
++            })?;
++        Ok(Self { result })
++    }
++
++    pub(crate) fn poll(
++        &self,
++    ) -> Option<Result<ManagedSetupResult, ManagedLocalRuntimeError>> {
++        match self.result.try_recv() {
++            Ok(result) => Some(result),
++            Err(TryRecvError::Empty) => None,
++            Err(TryRecvError::Disconnected) => Some(Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::OperatingSystemPrerequisite,
++                "managed Local AI setup worker disconnected unexpectedly",
++            ))),
++        }
++    }
++}
++
+ impl ManagedLocalRuntime {
+     pub(crate) fn open(root: PathBuf) -> Result<Self, ManagedLocalRuntimeError> {
+         fs::create_dir_all(&root).map_err(|error| {
+@@ -282,7 +387,18 @@ impl ManagedLocalRuntime {
+         environment: ManagedExecutionEnvironment,
+     ) -> ManagedSetupStatus {
+         if self.restart_marker_path().is_file() {
+-            return ManagedSetupStatus::RestartRequired;
++            let continuation_ready = cfg!(target_os = "windows")
++                && matches!(
++                    wsl_status(),
++                    Ok(WslStatus::Available {
++                        managed_distribution: true
++                    })
++                );
++            if continuation_ready {
++                let _ = self.clear_restart_required();
++            } else {
++                return ManagedSetupStatus::RestartRequired;
++            }
+         }
+         if !cfg!(target_os = "windows") {
+             return ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
+@@ -395,13 +511,12 @@ impl ManagedLocalRuntime {
+         &self,
+         environment: ManagedExecutionEnvironment,
+     ) -> Result<ManagedRuntimeInstallation, ManagedLocalRuntimeError> {
+-        if let Some(existing) = self.active_installation(environment)? {
+-            if existing.runtime_tag == PINNED_LLAMA_CPP_TAG
+-                && existing.runtime_revision == PINNED_LLAMA_CPP_REVISION
+-                && self.verify_retained_runtime_artifact(&existing).is_ok()
+-            {
+-                return Ok(existing);
+-            }
++        if let Some(existing) = self.active_installation(environment)?
++            && existing.runtime_tag == PINNED_LLAMA_CPP_TAG
++            && existing.runtime_revision == PINNED_LLAMA_CPP_REVISION
++            && self.verify_retained_runtime_artifact(&existing).is_ok()
++        {
++            return Ok(existing);
+         }
+         if !cfg!(target_os = "windows") {
+             return Err(ManagedLocalRuntimeError::new(
+@@ -768,14 +883,16 @@ impl ManagedLocalRuntime {
+         manager.write_process_state(&state)?;
+         let started = Instant::now();
+         while started.elapsed() < STARTUP_TIMEOUT {
+-            if endpoint_is_healthy(&endpoint) {
++            let endpoint_healthy = endpoint_is_healthy(&endpoint);
++            if endpoint_healthy {
+                 return Ok(ManagedEndpoint {
+                     url: endpoint,
+                     process_id,
+                     reused_process: false,
+                 });
+             }
+-            if !process_is_alive(&state)? {
++            let process_alive = process_is_alive(&state)?;
++            if managed_process_exited_before_health(endpoint_healthy, process_alive) {
+                 let _ = manager.clear_process_state();
+                 return Err(ManagedLocalRuntimeError::new(
+                     ManagedDiagnosticLayer::ManagedProcessStartup,
+@@ -794,6 +911,57 @@ impl ManagedLocalRuntime {
+         ))
+     }
+ 
++    pub(crate) fn remove_environment(
++        &self,
++        environment: ManagedExecutionEnvironment,
++    ) -> Result<(), ManagedLocalRuntimeError> {
++        if let Some(process) = self.read_process_state()?
++            && process.environment == environment
++        {
++            self.stop_process_state(&process)?;
++        }
++        if environment == ManagedExecutionEnvironment::Wsl2Linux
++            && matches!(
++                wsl_status(),
++                Ok(WslStatus::Available {
++                    managed_distribution: true
++                })
++            )
++        {
++            let output = Command::new("wsl.exe")
++                .args(["--unregister", MANAGED_WSL_DISTRIBUTION])
++                .output()
++                .map_err(|error| {
++                    ManagedLocalRuntimeError::new(
++                        ManagedDiagnosticLayer::WslDistributionProvisioning,
++                        format!("could not remove the dedicated managed WSL distribution: {error}"),
++                    )
++                })?;
++            if !output.status.success() {
++                return Err(ManagedLocalRuntimeError::new(
++                    ManagedDiagnosticLayer::WslDistributionProvisioning,
++                    format!(
++                        "could not remove the dedicated managed WSL distribution: {}",
++                        command_output_text(&output)
++                    ),
++                ));
++            }
++        }
++        let runtime_root = self
++            .root
++            .join("runtime")
++            .join(environment.storage_key());
++        match fs::remove_dir_all(runtime_root) {
++            Ok(()) => {}
++            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
++            Err(error) => return Err(runtime_io(error)),
++        }
++        if environment == ManagedExecutionEnvironment::Wsl2Linux {
++            self.clear_restart_required()?;
++        }
++        Ok(())
++    }
++
+     pub(crate) fn stop_for_config(
+         config: &ManagedLocalModelConfig,
+     ) -> Result<(), ManagedLocalRuntimeError> {
+@@ -837,16 +1005,7 @@ impl ManagedLocalRuntime {
+             .map_err(runtime_io)?;
+         let stderr = stdout.try_clone().map_err(runtime_io)?;
+         let child = Command::new(&installation.server_path)
+-            .args([
+-                "--model",
+-                config.model_path.to_string_lossy().as_ref(),
+-                "--host",
+-                "127.0.0.1",
+-                "--port",
+-                &port.to_string(),
+-                "--n-gpu-layers",
+-                "999",
+-            ])
++            .args(windows_server_arguments(&config.model_path, port))
+             .stdin(Stdio::null())
+             .stdout(Stdio::from(stdout))
+             .stderr(Stdio::from(stderr))
+@@ -1093,6 +1252,44 @@ enum WslStatus {
+     Available { managed_distribution: bool },
+ }
+ 
++fn classify_wsl_status(
++    status_success: bool,
++    status_message: &str,
++    distributions_success: bool,
++    distributions_text: &str,
++) -> WslStatus {
++    if !status_success {
++        return WslStatus::Unavailable(status_message.to_owned());
++    }
++    if !distributions_success {
++        return WslStatus::Unavailable(distributions_text.to_owned());
++    }
++    let managed_distribution = distributions_text
++        .lines()
++        .map(str::trim)
++        .any(|line| line == MANAGED_WSL_DISTRIBUTION);
++    WslStatus::Available {
++        managed_distribution,
++    }
++}
++
++fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
++    vec![
++        "--model".to_owned(),
++        model_path.to_string_lossy().into_owned(),
++        "--host".to_owned(),
++        "127.0.0.1".to_owned(),
++        "--port".to_owned(),
++        port.to_string(),
++        "--n-gpu-layers".to_owned(),
++        "999".to_owned(),
++    ]
++}
++
++fn managed_process_exited_before_health(endpoint_healthy: bool, process_alive: bool) -> bool {
++    !endpoint_healthy && !process_alive
++}
++
+ fn pinned_asset_name(environment: ManagedExecutionEnvironment) -> &'static str {
+     match environment {
+         ManagedExecutionEnvironment::WindowsNative => "llama-b10336-bin-win-vulkan-x64.zip",
+@@ -1169,9 +1366,25 @@ fn powershell_output(
+     script: &str,
+     arguments: &[&str],
+ ) -> Result<std::process::Output, ManagedLocalRuntimeError> {
++    let mut argument_prelude = String::from("$args=@(");
++    for index in 0..arguments.len() {
++        if index > 0 {
++            argument_prelude.push(',');
++        }
++        argument_prelude.push_str(&format!("$env:GAMEENGINE_MANAGED_ARG_{index}"));
++    }
++    argument_prelude.push_str("); " );
++    argument_prelude.push_str(script);
+     let mut command = Command::new("powershell.exe");
+-    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+-    command.args(arguments);
++    command.args([
++        "-NoProfile",
++        "-NonInteractive",
++        "-Command",
++        &argument_prelude,
++    ]);
++    for (index, argument) in arguments.iter().enumerate() {
++        command.env(format!("GAMEENGINE_MANAGED_ARG_{index}"), argument);
++    }
+     let output = command.output().map_err(|error| {
+         ManagedLocalRuntimeError::new(
+             ManagedDiagnosticLayer::OperatingSystemPrerequisite,
+@@ -1188,12 +1401,13 @@ fn powershell_output(
+ }
+ 
+ fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> {
+-    let path_text = path.to_string_lossy();
+     #[cfg(target_os = "windows")]
+-    let output = powershell_output(
+-        "(Get-FileHash -Algorithm SHA256 -LiteralPath $args[0]).Hash",
+-        &[&path_text],
+-    )?;
++    let output = Command::new("certutil.exe")
++        .arg("-hashfile")
++        .arg(path)
++        .arg("SHA256")
++        .output()
++        .map_err(model_io)?;
+     #[cfg(not(target_os = "windows"))]
+     let output = Command::new("sha256sum")
+         .arg(path)
+@@ -1205,18 +1419,17 @@ fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError>
+             format!("SHA-256 calculation failed: {}", command_output_text(&output)),
+         ));
+     }
+-    let digest = String::from_utf8_lossy(&output.stdout)
++    let output_text = decode_windows_command_text(&output.stdout);
++    let digest = output_text
+         .split_whitespace()
+-        .next()
+-        .unwrap_or_default()
+-        .trim()
+-        .to_ascii_lowercase();
+-    if !is_sha256_hex(&digest) {
+-        return Err(ManagedLocalRuntimeError::new(
+-            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+-            "SHA-256 calculation returned an invalid digest",
+-        ));
+-    }
++        .map(|token| token.trim().to_ascii_lowercase())
++        .find(|token| is_sha256_hex(token))
++        .ok_or_else(|| {
++            ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
++                "SHA-256 calculation returned no valid digest",
++            )
++        })?;
+     Ok(digest)
+ }
+ 
+@@ -1406,7 +1619,12 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
+         )
+     })?;
+     if !status.status.success() {
+-        return Ok(WslStatus::Unavailable(command_output_text(&status)));
++        return Ok(classify_wsl_status(
++            false,
++            &command_output_text(&status),
++            false,
++            "",
++        ));
+     }
+     let distributions = Command::new("wsl.exe")
+         .args(["--list", "--quiet"])
+@@ -1418,14 +1636,15 @@ fn wsl_status() -> Result<WslStatus, ManagedLocalRuntimeError> {
+             )
+         })?;
+     if !distributions.status.success() {
+-        return Ok(WslStatus::Unavailable(command_output_text(&distributions)));
++        return Ok(classify_wsl_status(
++            true,
++            "",
++            false,
++            &command_output_text(&distributions),
++        ));
+     }
+     let text = decode_windows_command_text(&distributions.stdout);
+-    let managed_distribution = text
+-        .lines()
+-        .map(str::trim)
+-        .any(|line| line == MANAGED_WSL_DISTRIBUTION);
+-    Ok(WslStatus::Available { managed_distribution })
++    Ok(classify_wsl_status(true, "", true, &text))
+ }
+ 
+ fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRuntimeError> {
+@@ -1575,7 +1794,7 @@ fn command_output_text(output: &std::process::Output) -> String {
+ }
+ 
+ fn decode_windows_command_text(bytes: &[u8]) -> String {
+-    if bytes.len() >= 2 && bytes.len() % 2 == 0 {
++    if bytes.len() >= 2 && bytes.len().is_multiple_of(2) {
+         let utf16 = bytes
+             .chunks_exact(2)
+             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+@@ -1735,6 +1954,55 @@ mod tests {
+         assert_eq!(MANAGED_WSL_DISTRIBUTION, "GameEngine-LocalAI");
+     }
+ 
++    #[test]
++    fn windows_launch_contract_uses_exact_model_loopback_and_gpu_arguments() {
++        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
++        assert_eq!(
++            windows_server_arguments(model, 18443),
++            vec![
++                "--model".to_owned(),
++                model.to_string_lossy().into_owned(),
++                "--host".to_owned(),
++                "127.0.0.1".to_owned(),
++                "--port".to_owned(),
++                "18443".to_owned(),
++                "--n-gpu-layers".to_owned(),
++                "999".to_owned(),
++            ]
++        );
++    }
++
++    #[test]
++    fn wsl_status_classification_fails_closed_and_requires_exact_managed_distribution() {
++        assert_eq!(
++            classify_wsl_status(false, "WSL unavailable", false, ""),
++            WslStatus::Unavailable("WSL unavailable".to_owned())
++        );
++        assert_eq!(
++            classify_wsl_status(true, "", false, "distribution list failed"),
++            WslStatus::Unavailable("distribution list failed".to_owned())
++        );
++        assert_eq!(
++            classify_wsl_status(true, "", true, "Ubuntu-24.04\nGameEngine-LocalAI\n"),
++            WslStatus::Available {
