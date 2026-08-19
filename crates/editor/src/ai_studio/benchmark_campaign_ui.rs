@@ -24,7 +24,7 @@ use crate::benchmark_campaign::{
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRunOutcome, ENGINE_COMMIT_HEAD,
 };
-use crate::managed_local_runtime::ManagedAcquisitionPlan;
+use crate::managed_local_runtime::{ManagedAcquisitionPlan, ManagedModelRegistration};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -82,6 +82,16 @@ impl Default for BenchmarkCampaignPanel {
 }
 
 impl AiStudioPanel {
+    #[cfg(feature = "visual-validation")]
+    pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {
+        self.benchmark_campaign.execution_environment =
+            CampaignExecutionEnvironment::WindowsNative;
+        self.benchmark_campaign.selected_models.clear();
+        self.benchmark_campaign
+            .selected_models
+            .insert(model_id.to_owned());
+    }
+
     /// Draws the campaign launcher, download review, and progress matrix.
     pub(super) fn show_benchmark_campaign(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Benchmark campaign")
@@ -206,9 +216,7 @@ impl AiStudioPanel {
                 environment.label()
             ));
             for model in &models {
-                let exact = model.content_sha256.len() == 64
-                    && model.quantization.is_some()
-                    && model.size_bytes > 0;
+                let exact = managed_model_is_campaign_candidate(model);
                 let mut selected = self
                     .benchmark_campaign
                     .selected_models
@@ -231,9 +239,11 @@ impl AiStudioPanel {
                         self.benchmark_campaign.selected_models.remove(&model.model_id);
                     }
                 }
-                if !exact {
+                if let Some(representation) = model.exact_representation() {
+                    ui.small(format!("Representation: {representation}"));
+                } else {
                     ui.small(format!(
-                        "{} cannot be a candidate: its exact digest, quantization, or byte size is not measured.",
+                        "{} cannot be a candidate: its exact digest, GGUF-derived representation, or byte size is not measured. Re-register this GGUF once if it was registered by an older GameEngine build.",
                         model.display_name
                     ));
                 }
@@ -576,9 +586,15 @@ impl AiStudioPanel {
                 {
                     continue;
                 }
-                let quantization = model.quantization.clone().ok_or_else(|| {
-                    format!("model `{}` has no measured quantization", model.display_name)
-                })?;
+                let representation = model
+                    .exact_representation()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        format!(
+                            "model `{}` has no GGUF-derived exact representation",
+                            model.display_name
+                        )
+                    })?;
                 if model.size_bytes == 0 {
                     return Err(format!("model `{}` has no measured size", model.display_name));
                 }
@@ -587,7 +603,7 @@ impl AiStudioPanel {
                         backend_id: MANAGED_BACKEND_ID.to_owned(),
                         model_id: model.model_id,
                         model_version: model.content_sha256,
-                        quantization,
+                        quantization: representation,
                         representation_size_bytes: model.size_bytes,
                     },
                     source: CampaignCandidateSource::installed(),
@@ -825,7 +841,42 @@ impl AiStudioPanel {
     }
 }
 
+fn managed_model_is_campaign_candidate(model: &ManagedModelRegistration) -> bool {
+    model.has_exact_representation_identity()
+}
+
 fn read_campaign_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn managed_registration(representation: Option<&str>) -> ManagedModelRegistration {
+        ManagedModelRegistration {
+            model_id: "gguf:test".to_owned(),
+            display_name: "qwen3.8-27b-abliterated-3.69bpw.gguf".to_owned(),
+            content_sha256: "a".repeat(64),
+            source_path: PathBuf::from("model.gguf"),
+            size_bytes: 1024,
+            modified_unix_ms: Some(1),
+            quantization: None,
+            representation: representation.map(str::to_owned),
+            source: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn managed_candidate_eligibility_requires_exact_gguf_representation() {
+        let legacy = managed_registration(None);
+        assert!(!managed_model_is_campaign_candidate(&legacy));
+
+        let exact = managed_registration(Some(
+            "gguf-repr-v1;gguf=3;file_type=none;quantization_version=2;types=Q4_K:2,Q6_K:1",
+        ));
+        assert!(managed_model_is_campaign_candidate(&exact));
+    }
 }

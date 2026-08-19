@@ -434,14 +434,16 @@ impl ModelResourceBackend for OllamaResourceBackend {
 #[derive(Debug, Clone)]
 pub(crate) enum LocalModelResourceConfig {
     Ollama(LocalModelConfig),
-    Managed(ManagedLocalModelConfig),
+    Managed(Box<ManagedLocalModelConfig>),
 }
 
 impl LocalModelResourceConfig {
     pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
         match self {
             Self::Ollama(config) => config.capability_profile(),
-            Self::Managed(config) => NativeModelConfig::Managed(config.clone()).capability_profile(),
+            Self::Managed(config) => {
+                NativeModelConfig::Managed(config.as_ref().clone()).capability_profile()
+            }
         }
     }
 }
@@ -2212,7 +2214,7 @@ mod tests {
                     environment.benchmark_id()
                 ));
                 let _ = fs::remove_dir_all(&state_root);
-                let config = LocalModelResourceConfig::Managed(ManagedLocalModelConfig {
+                let config = LocalModelResourceConfig::Managed(Box::new(ManagedLocalModelConfig {
                     state_root: state_root.clone(),
                     environment,
                     model_id: "gguf:test".to_owned(),
@@ -2220,11 +2222,15 @@ mod tests {
                     model_path: state_root.join("missing-model.gguf"),
                     model_size_bytes: 1,
                     quantization: Some("Q4_K_M".to_owned()),
+                    model_representation: Some(
+                        "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:1"
+                            .to_owned(),
+                    ),
                     runtime_tag: "test-runtime".to_owned(),
                     runtime_revision: "test-revision".to_owned(),
                     runtime_artifact_sha256: "b".repeat(64),
                     runtime_compatibility_version: "test-compat".to_owned(),
-                });
+                }));
 
                 let task = ModelResourceTask::spawn(config, operation)
                     .expect("spawning a resource worker must not verify managed files inline");
@@ -2261,6 +2267,7 @@ mod tests {
                 model_path: state_root.join("missing-model.gguf"),
                 model_size_bytes: 1,
                 quantization: Some("Q4_K_M".to_owned()),
+                model_representation: None,
                 runtime_tag: "test-runtime".to_owned(),
                 runtime_revision: "test-revision".to_owned(),
                 runtime_artifact_sha256: "b".repeat(64),

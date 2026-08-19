@@ -1145,11 +1145,18 @@ impl AiStudioPanel {
             "gameengine-managed-local-visual-{}-{unique}",
             std::process::id()
         ));
+        let model_path = fixture_root.join("qwen3.8-27b-abliterated-3.69bpw.gguf");
         self.managed_local_runtime =
             ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
         self.model_backend = ModelBackendPreference::ManagedLocal;
         self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
-        self.managed_model_id.clear();
+        let model_id = self
+            .managed_local_runtime
+            .register_visual_validation_model(&model_path)
+            .map_err(|error| error.to_string())?
+            .model_id;
+        self.prepare_managed_campaign_visual_validation(&model_id);
+        self.managed_model_id = model_id;
         self.managed_setup_task = None;
         self.managed_probe_task = None;
         self.managed_probe_requested = false;
@@ -1162,7 +1169,7 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::Generic;
         self.external_provider_status =
             ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
-        self.visual_scroll_offset = 0.0;
+        self.visual_scroll_offset = 2_400.0;
         self.visual_external_provider_evidence = false;
         Ok(())
     }
@@ -2592,6 +2599,7 @@ impl AiStudioPanel {
                                 model_path: PathBuf::new(),
                                 model_size_bytes: 0,
                                 quantization: None,
+                                model_representation: None,
                                 runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
                                 runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
                                 runtime_artifact_sha256: String::new(),
@@ -3018,7 +3026,10 @@ impl AiStudioPanel {
                 digest: Some(config.model_content_sha256.clone()),
                 size_bytes: Some(config.model_size_bytes),
                 parameter_size: None,
-                quantization_level: config.quantization.clone(),
+                quantization_level: config
+                    .model_representation
+                    .clone()
+                    .or_else(|| config.quantization.clone()),
                 family: Some("managed llama.cpp GGUF".to_owned()),
             }],
         }
@@ -3373,7 +3384,7 @@ impl AiStudioPanel {
             ModelBackendPreference::ManagedLocal => self
                 .described_managed_model_config()
                 .ok()
-                .map(LocalModelResourceConfig::Managed),
+                .map(|config| LocalModelResourceConfig::Managed(Box::new(config))),
             _ => None,
         }
     }
