@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "    fn log_path(&self, environment: ManagedExecutionEnvironment) -> PathBuf {\n        self.root\n            .join(\"logs\")\n            .join(format!(\"llama-server-{}.log\", environment.storage_key()))\n    }\n",
+  "new": "    fn log_path(&self, environment: ManagedExecutionEnvironment) -> PathBuf {\n        match environment {\n            ManagedExecutionEnvironment::WindowsNative => self\n                .root\n                .join(\"logs\")\n                .join(format!(\"llama-server-{}.log\", environment.storage_key())),\n            ManagedExecutionEnvironment::Wsl2Linux => {\n                PathBuf::from(wsl_server_log_path(environment))\n            }\n        }\n    }\n"
+}
