@@ -13,6 +13,7 @@ use crate::agent_benchmark::{
     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
     CuratedModelCatalog, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
 };
+use crate::ai_studio_theme as theme;
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
     AgentConfinementRequirement, AgentEventKind, AgentHost, AgentHostError, AgentProposal,
@@ -1568,6 +1569,11 @@ impl AiStudioPanel {
         let mut detach_requested = false;
         egui::Window::new("AI Studio")
             .id(egui::Id::new("gameengine_ai_studio"))
+            .frame(
+                egui::Frame::window(&context.global_style())
+                    .fill(theme::BACKGROUND)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER)),
+            )
             .open(&mut open)
             .default_pos(egui::pos2(940.0, 84.0))
             .default_size(egui::vec2(600.0, 760.0))
@@ -1604,6 +1610,10 @@ impl AiStudioPanel {
                 close_requested = ui.input(|input| input.viewport().close_requested());
                 #[cfg(feature = "visual-validation")]
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+                // A detached OS window has no Editor chrome behind it, so it
+                // paints the studio ground itself.
+                ui.painter()
+                    .rect_filled(ui.max_rect(), 0.0_f32, theme::BACKGROUND);
                 ui.horizontal(|ui| {
                     if ui.button("Reattach").clicked() {
                         reattach_requested = true;
@@ -1917,31 +1927,50 @@ impl AiStudioPanel {
     }
 
     fn show_contents(&mut self, ui: &mut egui::Ui) {
+        // Scoped to this Ui and its children, so the surrounding Editor chrome
+        // keeps the style installed by `crate::ui::chrome`.
+        theme::apply_studio_style(ui);
         self.show_remote_companion(ui);
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Conversation-first project agent");
-            ui.separator();
-            ui.label("Structured authoring stays on the Editor MCP host.");
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Conversation-first project agent");
+            theme::hint(ui, "Structured authoring stays on the Editor MCP host.");
+            theme::hint(
+                ui,
+                "External agent processes are application-level integrations, not an OS sandbox. Code is prepared in an isolated managed workspace and must be reviewed before apply.",
+            );
         });
-        ui.small(
-            "External agent processes are application-level integrations, not an OS sandbox. Code is prepared in an isolated managed workspace and must be reviewed before apply.",
-        );
-        ui.separator();
-
-        self.show_session_header(ui);
-        self.show_conversation(ui);
-        ui.separator();
-        self.show_proposal(ui);
-        ui.separator();
-        self.show_provider(ui);
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Session");
+            self.show_session_header(ui);
+            self.show_conversation(ui);
+        });
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Proposal");
+            self.show_proposal(ui);
+        });
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Provider");
+            self.show_provider(ui);
+        });
         self.show_permission_prompt(ui);
-        self.show_code_changes(ui);
-        self.show_run_timeline(ui);
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Code changes");
+            self.show_code_changes(ui);
+        });
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Run timeline");
+            self.show_run_timeline(ui);
+        });
 
-        if let Some(status) = &self.status {
-            ui.separator();
-            ui.label(status);
+        if let Some(status) = self.status.clone() {
+            // The status line is the studio's one running narration, so it keeps
+            // a tinted border instead of dissolving into the cards above it.
+            theme::attention_card(ui, theme::ACCENT, |ui| {
+                ui.horizontal(|ui| {
+                    theme::status_dot(ui, theme::ACCENT_TEXT);
+                    ui.label(status);
+                });
+            });
         }
     }
 

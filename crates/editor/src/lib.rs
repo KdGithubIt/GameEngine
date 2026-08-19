@@ -31,6 +31,7 @@ mod native_2d_editor;
 mod remote_ai_studio;
 mod resource_arbitration;
 pub mod ai_studio;
+mod ai_studio_theme;
 pub mod anim_ux;
 mod animation_set_editor;
 pub mod asset_browser;
