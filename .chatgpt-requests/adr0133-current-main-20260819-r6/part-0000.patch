@@ -1,0 +1,783 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 66125de7bf3669ab7b514ea49f00af29e193b42d..a348fd3c8ceb22e6befccf6057ead70cec1f93b8 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -909,6 +909,172 @@ impl AiStudioPanel {
+         self.visual_external_provider_evidence = true;
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    /// Seeds deterministic host-owned state for Remote AI Studio browser screenshot validation.
++    pub fn prepare_remote_companion_visual_validation(&mut self) -> Result<(), String> {
++        let session_id = self.selected_session.clone();
++        self.host
++            .append_message(
++                &session_id,
++                ConversationRole::User,
++                "Build a compact playable sample and verify the result from the managed Game View.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .append_message(
++                &session_id,
++                ConversationRole::Assistant,
++                "I will keep the proposal version exact, report progress, and request permission before the next managed frame capture.",
++            )
++            .map_err(|error| error.to_string())?;
++
++        let mut proposal = self
++            .host
++            .session(&session_id)
++            .map_err(|error| error.to_string())?
++            .proposal
++            .clone();
++        proposal.goal = "Complete the Remote AI Studio visual-validation sample.".to_owned();
++        proposal.requirements = vec![
++            "Keep the authoritative project inside the Editor Agent Host.".to_owned(),
++            "Preserve reconnect-safe progress and exact proposal authorization.".to_owned(),
++        ];
++        proposal.acceptance_criteria = vec![
++            "Go and Stop remain available without exposing raw MCP or process controls.".to_owned(),
++            "Captured frame review stays readable at responsive browser widths.".to_owned(),
++        ];
++        proposal.validation_plan = vec![
++            "Validate the managed source changes.".to_owned(),
++            "Review the captured Game View frame.".to_owned(),
++        ];
++        proposal.playtest_plan =
++            vec!["Launch managed Play and capture one Game View frame.".to_owned()];
++        proposal.requested_capabilities =
++            [AgentCapability::RuntimeLaunch, AgentCapability::FrameCapture]
++                .into_iter()
++                .collect();
++        let proposal_version = self
++            .host
++            .update_proposal(&session_id, proposal)
++            .map_err(|error| error.to_string())?;
++        self.proposal_draft = self
++            .host
++            .session(&session_id)
++            .map_err(|error| error.to_string())?
++            .proposal
++            .clone();
++
++        let run_id = self
++            .host
++            .start_run_authorized(&session_id, proposal_version, "visual-validation")
++            .map_err(|error| error.to_string())?;
++        self.active_run_id = Some(run_id.clone());
++        self.host
++            .transition_run(
++                &run_id,
++                AgentRunState::Planning,
++                "Authoritative snapshot loaded; planning the managed change.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .transition_run(
++                &run_id,
++                AgentRunState::Executing,
++                "Executing through the normal Agent Host path.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .record_semantic_progress(
++                &run_id,
++                "Reconnect ready",
++                "Authoritative snapshot and ordered event cursor are synchronized.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .transition_run(
++                &run_id,
++                AgentRunState::Validating,
++                "Managed source validation is represented by deterministic visual evidence.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .transition_run(
++                &run_id,
++                AgentRunState::Playtesting,
++                "Managed Play launched for deterministic frame review.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .record_playtest_result(
++                &run_id,
++                true,
++                Some(true),
++                "Managed Play launched and the scripted interaction completed.",
++            )
++            .map_err(|error| error.to_string())?;
++
++        let width = 640_u32;
++        let height = 360_u32;
++        let mut rgba = vec![0_u8; (width * height * 4) as usize];
++        for y in 0..height {
++            for x in 0..width {
++                let offset = ((y * width + x) * 4) as usize;
++                let checker = ((x / 80) + (y / 60)) % 2;
++                rgba[offset] = if checker == 0 { 42 } else { 28 };
++                rgba[offset + 1] = if checker == 0 { 112 } else { 76 };
++                rgba[offset + 2] = if checker == 0 { 176 } else { 126 };
++                rgba[offset + 3] = 255;
++            }
++        }
++        let mut png_bytes = Vec::new();
++        {
++            let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
++            encoder.set_color(png::ColorType::Rgba);
++            encoder.set_depth(png::BitDepth::Eight);
++            let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
++            writer
++                .write_image_data(&rgba)
++                .map_err(|error| error.to_string())?;
++            writer.finish().map_err(|error| error.to_string())?;
++        }
++        self.host
++            .store_captured_frame_artifact(&run_id, width, height, &png_bytes)
++            .map_err(|error| error.to_string())?;
++        self.host
++            .record_completion_gate(
++                &run_id,
++                "acceptance_criteria",
++                CompletionStatus::Passed,
++                "Acceptance criteria are represented in the deterministic browser fixture.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .record_completion_gate(
++                &run_id,
++                "authoring_validation",
++                CompletionStatus::Passed,
++                "Authoring validation is represented in the deterministic browser fixture.",
++            )
++            .map_err(|error| error.to_string())?;
++        self.host
++            .record_completion_gate(
++                &run_id,
++                "visual_evaluation",
++                CompletionStatus::Passed,
++                "Captured Game View frame is ready for visual review.",
++            )
++            .map_err(|error| error.to_string())?;
++
++        self.pending_permission = Some(PendingPermission {
++            run_id,
++            capability: AgentCapability::FrameCapture,
++            action: PendingPermissionAction::CaptureFrame,
++        });
++        self.status =
++            Some("Remote AI Studio browser visual-validation fixture is ready.".to_owned());
++        Ok(())
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Returns whether the detached native viewport has completed two rendered frames.
+     pub fn detached_visual_validation_capture_ready(&self) -> bool {
+@@ -1356,6 +1522,29 @@ impl AiStudioPanel {
+         }
+         match RemoteAiStudioServer::start(context.clone()) {
+             Ok((server, requests)) => {
++                #[cfg(feature = "visual-validation")]
++                if let Some(path) = std::env::var_os("GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO") {
++                    let path = PathBuf::from(path);
++                    match self.prepare_remote_companion_visual_validation() {
++                        Ok(()) => {
++                            if let Err(error) = fs::write(&path, server.companion_url()) {
++                                let message = format!(
++                                    "Remote AI Studio visual-validation URL could not be published: {error}"
++                                );
++                                eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
++                                self.status = Some(message);
++                            }
++                        }
++                        Err(error) => {
++                            let message = format!(
++                                "Remote AI Studio visual-validation fixture failed: {error}"
++                            );
++                            eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
++                            self.status = Some(message.clone());
++                            let _ = fs::write(&path, format!("ERROR: {message}"));
++                        }
++                    }
++                }
+                 self.remote_server = Some(server);
+                 self.remote_requests = Some(requests);
+             }
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 1ea41015d946b990a6da8164b24bfe50bf7579e5..6db1c299b499ff461884a333d2c2cb4aec173104 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -68,11 +68,12 @@ impl EditorShell {
+             ),
+         )?;
+         #[cfg(feature = "visual-validation")]
+-        let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
++        let visual_scenario = visual_authoring_tool_scenario();
+         #[cfg(feature = "visual-validation")]
+         let (ai_studio, visual_ai_studio_detached_capture) = {
+             let mut ai_studio = ai_studio;
+             let detached_capture = match visual_scenario.as_deref() {
++                Some("ADR 0133 Remote AI Studio") => false,
+                 Some("ADR 0143 Model Resources") => {
+                     ai_studio.prepare_local_model_resources_visual_validation();
+                     true
+@@ -144,7 +145,7 @@ impl EditorShell {
+             _mcp_server: mcp_server,
+             mcp_requests,
+             #[cfg(feature = "visual-validation")]
+-            visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO").map(PathBuf::from),
++            visual_capture_path: visual_screenshot_path(visual_scenario.as_deref()),
+             #[cfg(feature = "visual-validation")]
+             visual_capture_requested_at: None,
+             #[cfg(feature = "visual-validation")]
+@@ -385,10 +386,12 @@ impl eframe::App for EditorShell {
+         self.ai_studio.show(&context);
+         #[cfg(feature = "visual-validation")]
+         {
+-            let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
++            let visual_scenario = visual_authoring_tool_scenario();
+             let ai_studio_scenario = matches!(
+                 visual_scenario.as_deref(),
+-                Some("ADR 0143 Model Resources") | Some("ADR 0145 External Agent")
++                Some("ADR 0133 Remote AI Studio")
++                    | Some("ADR 0143 Model Resources")
++                    | Some("ADR 0145 External Agent")
+             );
+             if !self.visual_behavior_debug_capture
+                 && (visual_scenario.is_none() || ai_studio_scenario)
+@@ -403,6 +406,27 @@ impl eframe::App for EditorShell {
+     }
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn visual_authoring_tool_scenario() -> Option<String> {
++    std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
++        .ok()
++        .map(|value| value.trim().to_owned())
++        .filter(|value| !value.is_empty())
++}
++
++#[cfg(feature = "visual-validation")]
++fn visual_screenshot_path(visual_scenario: Option<&str>) -> Option<PathBuf> {
++    if visual_scenario == Some("ADR 0133 Remote AI Studio") {
++        return None;
++    }
++    let value = std::env::var_os("GAMEENGINE_SCREENSHOT_TO")?;
++    if value.to_string_lossy().trim().is_empty() {
++        None
++    } else {
++        Some(PathBuf::from(value))
++    }
++}
++
+ #[cfg(feature = "visual-validation")]
+ fn visual_validation_touches_behavior_debug() -> bool {
+     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index 140940e32d27653f3cb6b0cf452c0079678a15f5..bfcd2f83bcf359cd16666ab97be72faff696da20 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -352,89 +352,6 @@ fn show_adr0154_visual_validation_evidence(ui: &mut egui::Ui) {
+     );
+ }
+ 
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    fn skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
+-        engine::asset::SkeletonRecord {
+-            id: id.as_str().to_owned(),
+-            identity,
+-            next_bone_id: 0,
+-            bones: Vec::new(),
+-        }
+-    }
+-
+-    #[test]
+-    fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
+-        let source_id = AssetId::generate();
+-        let candidate_id = AssetId::generate();
+-        let source_skeleton = AssetId::generate();
+-        let other_skeleton = AssetId::generate();
+-        let mut manifest = engine::AssetManifest::default();
+-        manifest.insert(
+-            source_id,
+-            engine::ManifestEntry {
+-                path: "models/source.glb".to_owned(),
+-                name: Some("source".to_owned()),
+-                import_settings: engine::ImportSettings {
+-                    sub_assets: vec![engine::ImportedSubAsset {
+-                        id: candidate_id.as_str().to_owned(),
+-                        kind: engine::ImportedSubAssetKind::Animation,
+-                        name: "Walk".to_owned(),
+-                        index: 0,
+-                        target_model_source: None,
+-                    }],
+-                    skeleton_records: vec![skeleton_record(&source_skeleton, 7)],
+-                    ..engine::ImportSettings::default()
+-                },
+-            },
+-        );
+-        let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
+-
+-        let native = preview_motion_route(
+-            &manifest,
+-            None,
+-            None,
+-            &candidate,
+-            &source_skeleton,
+-        )
+-        .expect("registered Animation candidate must produce a route");
+-        let failed = preview_motion_route(
+-            &manifest,
+-            None,
+-            None,
+-            &candidate,
+-            &other_skeleton,
+-        )
+-        .expect("registered Animation candidate must produce a route");
+-
+-        assert_eq!(native.badge(), "Native");
+-        assert_eq!(failed.badge(), "Failed");
+-    }
+-
+-    #[test]
+-    fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
+-        let first_animation = AssetId::generate();
+-        let second_animation = AssetId::generate();
+-        let first_skeleton = AssetId::generate();
+-        let second_skeleton = AssetId::generate();
+-        let animations = [
+-            (first_animation.as_str(), 1_usize),
+-            (second_animation.as_str(), 0_usize),
+-        ];
+-        let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
+-
+-        let resolved = animation_source_skeleton_from_parts(
+-            first_animation.as_str(),
+-            animations,
+-            |skin_index| skeletons.get(skin_index).cloned(),
+-        );
+-
+-        assert_eq!(resolved, Some(second_skeleton));
+-    }
+-}
+-
+ fn humanoid_motion_choices(
+     manifest: &engine::AssetManifest,
+     assets_root: Option<&std::path::Path>,
+@@ -1501,5 +1418,87 @@ impl EditorApp {
+             }
+         }
+     }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
++        engine::asset::SkeletonRecord {
++            id: id.as_str().to_owned(),
++            identity,
++            next_bone_id: 0,
++            bones: Vec::new(),
++        }
++    }
++
++    #[test]
++    fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
++        let source_id = AssetId::generate();
++        let candidate_id = AssetId::generate();
++        let source_skeleton = AssetId::generate();
++        let other_skeleton = AssetId::generate();
++        let mut manifest = engine::AssetManifest::default();
++        manifest.insert(
++            source_id,
++            engine::ManifestEntry {
++                path: "models/source.glb".to_owned(),
++                name: Some("source".to_owned()),
++                import_settings: engine::ImportSettings {
++                    sub_assets: vec![engine::ImportedSubAsset {
++                        id: candidate_id.as_str().to_owned(),
++                        kind: engine::ImportedSubAssetKind::Animation,
++                        name: "Walk".to_owned(),
++                        index: 0,
++                        target_model_source: None,
++                    }],
++                    skeleton_records: vec![skeleton_record(&source_skeleton, 7)],
++                    ..engine::ImportSettings::default()
++                },
++            },
++        );
++        let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
+ 
++        let native = preview_motion_route(
++            &manifest,
++            None,
++            None,
++            &candidate,
++            &source_skeleton,
++        )
++        .expect("registered Animation candidate must produce a route");
++        let failed = preview_motion_route(
++            &manifest,
++            None,
++            None,
++            &candidate,
++            &other_skeleton,
++        )
++        .expect("registered Animation candidate must produce a route");
++
++        assert_eq!(native.badge(), "Native");
++        assert_eq!(failed.badge(), "Failed");
++    }
++
++    #[test]
++    fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
++        let first_animation = AssetId::generate();
++        let second_animation = AssetId::generate();
++        let first_skeleton = AssetId::generate();
++        let second_skeleton = AssetId::generate();
++        let animations = [
++            (first_animation.as_str(), 1_usize),
++            (second_animation.as_str(), 0_usize),
++        ];
++        let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
++
++        let resolved = animation_source_skeleton_from_parts(
++            first_animation.as_str(),
++            animations,
++            |skin_index| skeletons.get(skin_index).cloned(),
++        );
++
++        assert_eq!(resolved, Some(second_skeleton));
++    }
+ }
+diff --git a/docs/EDITOR_VISUAL_VALIDATION.md b/docs/EDITOR_VISUAL_VALIDATION.md
+index 472742dac3a91f6df3a3acf94b27b023d90f133f..98e1290883ff1fe5f6c4f76a5cb9fb8f686bcc48 100644
+--- a/docs/EDITOR_VISUAL_VALIDATION.md
++++ b/docs/EDITOR_VISUAL_VALIDATION.md
+@@ -73,6 +73,43 @@ state that additionally requires a specific asset or document to be loaded
+ still requires a separate explicit document scenario; opening an authoring tool
+ alone is not evidence for document-dependent controls that are not visible yet.
+ 
++### Remote AI Studio browser scenario
++
++A PR that needs responsive Remote AI Studio browser evidence MAY add this
++secondary marker alongside an explicit `editor` or `both` target:
++
++```text
++<!-- gameengine-visual-validation: editor -->
++<!-- gameengine-visual-remote-ai-studio: browser -->
++```
++
++The secondary marker does not broaden the workflow trust boundary. The normal
++same-repository `chatgpt/gameengine-*` pull-request checks must select the
++Windows Editor capture job first. The checked-out validation script then starts
++the exact-head Editor with its non-default `visual-validation` feature, seeds a
++deterministic project-scoped Agent Host fixture after the loopback gateway is
++running, and receives the real companion URL from that production gateway.
++
++Microsoft Edge on the Windows runner opens the production HTTP/JavaScript
++companion directly. The script captures desktop (`1440x1000`), narrow
++(`720x1000`), and mobile (`390x844`) viewport evidence plus a taller image at
++each width so controls, progress, permission state, and captured-frame review
++below the initial fold can be inspected. The fixture is compiled only for
++`visual-validation`; it does not duplicate the companion DOM or bypass Agent
++Host, sanitized DTO, HTTP/SSE, permission, or run-state contracts.
++
++The Remote helper launch clears inherited authoring-tool and screenshot
++environment variables, then selects the explicit `ADR 0133 Remote AI Studio`
++scenario before starting the second Editor process. That scenario is excluded
++from the native screenshot lifecycle because browser capture owns its lifetime.
++The Editor also treats empty or whitespace-only authoring-tool and native
++screenshot values as absent, so ambient CI variables cannot accidentally select
++an invalid visual scenario or an invalid capture path.
++
++If deterministic fixture preparation fails, the Editor remains alive and the
++validation marker reports the concrete fixture error to the runner instead of
++turning a fallible screenshot fixture into an Editor startup failure.
++
+ ## Workflow and execution boundary
+ 
+ `.github/workflows/gameengine-editor-visual-validation.yml` uses the ordinary
+diff --git a/scripts/ci/Invoke-EditorVisualValidation.ps1 b/scripts/ci/Invoke-EditorVisualValidation.ps1
+index 5dbc830ea68829e4d554eddf0dfeba73c00cc4c2..197e7a909f32ed6f3576857a482230123dc1a4c9 100644
+--- a/scripts/ci/Invoke-EditorVisualValidation.ps1
++++ b/scripts/ci/Invoke-EditorVisualValidation.ps1
+@@ -197,11 +197,253 @@ function Invoke-DesktopScreenshot {
+     }
+ }
+ 
++function Test-RemoteAiStudioBrowserVisualRequested {
++    if ($env:GAMEENGINE_VISUAL_REMOTE_AI_STUDIO -eq "1") {
++        return $true
++    }
++
++    $eventPath = $env:GITHUB_EVENT_PATH
++    if (-not $eventPath -or -not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
++        return $false
++    }
++
++    $eventPayload = Get-Content -Raw -LiteralPath $eventPath -Encoding utf8 | ConvertFrom-Json
++    $body = [string]$eventPayload.pull_request.body
++    if (-not $body) {
++        return $false
++    }
++
++    $pattern = '<!--\s*gameengine-visual-remote-ai-studio:\s*browser\s*-->'
++    $markerMatches = [regex]::Matches(
++        $body,
++        $pattern,
++        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
++    )
++    if ($markerMatches.Count -gt 1) {
++        throw "PR body may contain at most one Remote AI Studio browser visual-validation marker."
++    }
++    return $markerMatches.Count -eq 1
++}
++
++function Resolve-EdgeExecutable {
++    $candidates = @()
++    if (${env:ProgramFiles(x86)}) {
++        $candidates += Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
++    }
++    if ($env:ProgramFiles) {
++        $candidates += Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
++    }
++    $command = Get-Command "msedge.exe" -ErrorAction SilentlyContinue
++    if ($command) {
++        $candidates += $command.Source
++    }
++
++    foreach ($candidate in $candidates | Select-Object -Unique) {
++        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
++            return (Resolve-Path -LiteralPath $candidate).Path
++        }
++    }
++    throw "Remote AI Studio browser visual validation requires Microsoft Edge on the Windows runner."
++}
++
++function Invoke-RemoteBrowserScreenshot {
++    param(
++        [Parameter(Mandatory = $true)][string]$Name,
++        [Parameter(Mandatory = $true)][string]$EdgeExecutable,
++        [Parameter(Mandatory = $true)][string]$Url,
++        [Parameter(Mandatory = $true)][int]$Width,
++        [Parameter(Mandatory = $true)][int]$Height
++    )
++
++    $outputPath = Join-Path $OutputDirectory "$Name.png"
++    Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
++    $profileRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
++        "gameengine-edge-visual-" + [Guid]::NewGuid().ToString("N")
++    )
++    New-Item -ItemType Directory -Force -Path $profileRoot | Out-Null
++    $arguments = @(
++        "--headless=new",
++        "--disable-gpu",
++        "--hide-scrollbars",
++        "--no-first-run",
++        "--disable-default-apps",
++        "--user-data-dir=$profileRoot",
++        "--window-size=$Width,$Height",
++        "--virtual-time-budget=4500",
++        "--screenshot=$outputPath",
++        $Url
++    )
++    Write-Host "==> Edge Remote AI Studio capture $Name (${Width}x${Height})"
++    & $EdgeExecutable @arguments | Out-Host
++    if ($LASTEXITCODE -ne 0) {
++        throw "Microsoft Edge screenshot '$Name' failed with exit code $LASTEXITCODE."
++    }
++
++    # Edge child processes can retain their profile briefly after the headless
++    # parent exits. Each capture uses a unique runner-temp profile, so cleanup is
++    # intentionally delegated to the ephemeral CI runner instead of racing it.
++    if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
++        throw "Remote AI Studio browser screenshot was not produced: $outputPath"
++    }
++    $file = Get-Item -LiteralPath $outputPath
++    if ($file.Length -le 0) {
++        throw "Remote AI Studio browser screenshot is empty: $outputPath"
++    }
++
++    return [ordered]@{
++        name = $Name
++        package = "engine-editor"
++        surface = "remote-ai-studio-browser"
++        viewport_width = $Width
++        viewport_height = $Height
++        path = $file.Name
++        bytes = $file.Length
++        sha256 = (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash.ToLowerInvariant()
++    }
++}
++
++function Invoke-RemoteAiStudioBrowserScreenshots {
++    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
++
++    $urlPath = Join-Path $OutputDirectory "remote-ai-studio-url.txt"
++    $editorStdoutPath = Join-Path $OutputDirectory "remote-ai-studio-editor.stdout.log"
++    $editorStderrPath = Join-Path $OutputDirectory "remote-ai-studio-editor.stderr.log"
++    Remove-Item -LiteralPath $urlPath -Force -ErrorAction SilentlyContinue
++    Remove-Item -LiteralPath $editorStdoutPath -Force -ErrorAction SilentlyContinue
++    Remove-Item -LiteralPath $editorStderrPath -Force -ErrorAction SilentlyContinue
++
++    $previousUrlPath = [Environment]::GetEnvironmentVariable(
++        "GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO",
++        [EnvironmentVariableTarget]::Process
++    )
++    $isolatedEnvironment = [ordered]@{
++        GAMEENGINE_VISUAL_AUTHORING_TOOL = [Environment]::GetEnvironmentVariable(
++            "GAMEENGINE_VISUAL_AUTHORING_TOOL",
++            [EnvironmentVariableTarget]::Process
++        )
++        GAMEENGINE_SCREENSHOT_TO = [Environment]::GetEnvironmentVariable(
++            "GAMEENGINE_SCREENSHOT_TO",
++            [EnvironmentVariableTarget]::Process
++        )
++        GAMEENGINE_LAUNCHER_SCREENSHOT_TO = [Environment]::GetEnvironmentVariable(
++            "GAMEENGINE_LAUNCHER_SCREENSHOT_TO",
++            [EnvironmentVariableTarget]::Process
++        )
++    }
++    $editorProcess = $null
++    try {
++        Invoke-CargoChecked -Arguments @(
++            "build",
++            "--locked",
++            "-p",
++            "engine-editor",
++            "--features",
++            "visual-validation"
++        )
++
++        $targetRoot = if ($env:CARGO_TARGET_DIR) {
++            [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
++        } else {
++            Join-Path $workspace "target"
++        }
++        $editorExecutable = Join-Path $targetRoot "debug\engine-editor.exe"
++        if (-not (Test-Path -LiteralPath $editorExecutable -PathType Leaf)) {
++            throw "Visual-validation Editor executable was not produced: $editorExecutable"
++        }
++
++        [Environment]::SetEnvironmentVariable(
++            "GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO",
++            $urlPath,
++            [EnvironmentVariableTarget]::Process
++        )
++        foreach ($name in $isolatedEnvironment.Keys) {
++            [Environment]::SetEnvironmentVariable(
++                $name,
++                $null,
++                [EnvironmentVariableTarget]::Process
++            )
++        }
++        [Environment]::SetEnvironmentVariable(
++            "GAMEENGINE_VISUAL_AUTHORING_TOOL",
++            "ADR 0133 Remote AI Studio",
++            [EnvironmentVariableTarget]::Process
++        )
++
++        $editorProcess = Start-Process `
++            -FilePath $editorExecutable `
++            -ArgumentList @("--project", "`"$ProjectRoot`"") `
++            -RedirectStandardOutput $editorStdoutPath `
++            -RedirectStandardError $editorStderrPath `
++            -PassThru
++
++        $companionUrl = ""
++        for ($attempt = 0; $attempt -lt 300; $attempt++) {
++            if (Test-Path -LiteralPath $urlPath -PathType Leaf) {
++                $companionUrl = (Get-Content -Raw -LiteralPath $urlPath -Encoding utf8).Trim()
++                if ($companionUrl) {
++                    break
++                }
++            }
++            if ($editorProcess.HasExited) {
++                $stderr = if (Test-Path -LiteralPath $editorStderrPath -PathType Leaf) {
++                    (Get-Content -Raw -LiteralPath $editorStderrPath -Encoding utf8).Trim()
++                } else {
++                    ""
++                }
++                $detail = if ($stderr) { " stderr: $stderr" } else { "" }
++                throw "Editor exited before publishing the Remote AI Studio visual-validation URL (exit $($editorProcess.ExitCode)).$detail"
++            }
++            Start-Sleep -Milliseconds 100
++        }
++        if (-not $companionUrl) {
++            throw "Editor did not publish the Remote AI Studio visual-validation URL within 30 seconds."
++        }
++        if ($companionUrl.StartsWith("ERROR:", [System.StringComparison]::Ordinal)) {
++            throw $companionUrl.Substring(6).Trim()
++        }
++        $companionUri = $null
++        if (-not [Uri]::TryCreate($companionUrl, [UriKind]::Absolute, [ref]$companionUri) -or
++            ($companionUri.Scheme -ne "http" -and $companionUri.Scheme -ne "https")) {
++            throw "Editor published an invalid Remote AI Studio visual-validation URL."
++        }
++
++        $edge = Resolve-EdgeExecutable
++        $captures = @()
++        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-desktop" -EdgeExecutable $edge -Url $companionUrl -Width 1440 -Height 1000
++        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-desktop-full" -EdgeExecutable $edge -Url $companionUrl -Width 1440 -Height 1900
++        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-narrow" -EdgeExecutable $edge -Url $companionUrl -Width 720 -Height 1000
++        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-narrow-full" -EdgeExecutable $edge -Url $companionUrl -Width 720 -Height 2300
++        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-mobile" -EdgeExecutable $edge -Url $companionUrl -Width 390 -Height 844
++        $captures += Invoke-RemoteBrowserScreenshot -Name "remote-ai-studio-mobile-full" -EdgeExecutable $edge -Url $companionUrl -Width 390 -Height 3200
++        return $captures
++    } finally {
++        [Environment]::SetEnvironmentVariable(
++            "GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO",
++            $previousUrlPath,
++            [EnvironmentVariableTarget]::Process
++        )
++        foreach ($name in $isolatedEnvironment.Keys) {
++            [Environment]::SetEnvironmentVariable(
++                $name,
++                $isolatedEnvironment[$name],
++                [EnvironmentVariableTarget]::Process
++            )
++        }
++        if ($editorProcess -and -not $editorProcess.HasExited) {
++            & taskkill.exe /PID $editorProcess.Id /T /F | Out-Null
++        }
++    }
++}
++
+ Push-Location $workspace
+ try {
+     $projectRoot = $null
+     $projectSource = $null
+     $captures = @()
++    $remoteAiStudioBrowserRequested = Test-RemoteAiStudioBrowserVisualRequested
++    if ($remoteAiStudioBrowserRequested -and $Target -eq "launcher") {
++        throw "Remote AI Studio browser visual validation requires an Editor capture target."
++    }
+ 
+     if ($Target -eq "editor" -or $Target -eq "both") {
+         if ($ProjectPath) {
+@@ -216,6 +458,9 @@ try {
+             -Package "engine-editor" `
+             -ProgramArguments @("--project", $projectRoot) `
+             -RequestedAuthoringTool $AuthoringTool
++        if ($remoteAiStudioBrowserRequested) {
++            $captures += Invoke-RemoteAiStudioBrowserScreenshots -ProjectRoot $projectRoot
++        }
+     }
+ 
+     if ($Target -eq "launcher" -or $Target -eq "both") {
+@@ -230,6 +475,7 @@ try {
+         target = $Target
+         project_source = $projectSource
+         authoring_tool = if ($AuthoringTool) { $AuthoringTool } else { $null }
++        remote_ai_studio_browser = $remoteAiStudioBrowserRequested
+         generated_utc = [DateTime]::UtcNow.ToString("o")
+         screenshots = @($captures)
+     }
