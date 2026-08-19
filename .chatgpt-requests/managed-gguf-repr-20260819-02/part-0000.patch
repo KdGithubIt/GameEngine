@@ -1,0 +1,27 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 234f311748c41c3da22bc9b4782fa6ceceff9142..fc5d5334a6878894beed87b8164ba8dae3441a06 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -2592,6 +2592,7 @@ impl AiStudioPanel {
+                                 model_path: PathBuf::new(),
+                                 model_size_bytes: 0,
+                                 quantization: None,
++                                model_representation: None,
+                                 runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
+                                 runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
+                                 runtime_artifact_sha256: String::new(),
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index 80084aaefbe9f14173b2895c6cc5b9535f9aaef7..6a24160fea3df70f3bfe15f8d9979dc5d57d3f07 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -2220,6 +2220,10 @@ mod tests {
+                     model_path: state_root.join("missing-model.gguf"),
+                     model_size_bytes: 1,
+                     quantization: Some("Q4_K_M".to_owned()),
++                    model_representation: Some(
++                        "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:1"
++                            .to_owned(),
++                    ),
+                     runtime_tag: "test-runtime".to_owned(),
+                     runtime_revision: "test-revision".to_owned(),
+                     runtime_artifact_sha256: "b".repeat(64),
