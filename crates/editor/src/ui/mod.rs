@@ -4,23 +4,23 @@ use crate::animation_set_editor::AnimationSetEditorState;
 use crate::asset_browser::{AssetBrowser, AssetKind};
 use crate::asset_import::{AssetImportManager, AssetImportResult};
 use crate::build::{
-    find_player_binary, package_project, package_project_with_game_module, BuildConfig,
+    BuildConfig, find_player_binary, package_project, package_project_with_game_module,
 };
-use crate::canvas::{show_graph_canvas, GraphCanvasAction, GraphCanvasState};
+use crate::canvas::{GraphCanvasAction, GraphCanvasState, show_graph_canvas};
 use crate::component_source_index::ComponentSourceIndex;
 use crate::component_source_viewer::ReadOnlySourceDocument;
 use crate::console::ConsolePanel;
 use crate::drag_drop::DragPayload;
 use crate::filesystem_sync::{FileSyncArea, FileSyncEvent, FileSyncKind, ProjectFileWatcher};
 use crate::game_build::{
-    engine_sdk_root, latest_shadow_module, prepare_cargo_sdk_config, GameBuildKind,
-    GameBuildManager, GameBuildResult, GameBuildState,
+    GameBuildKind, GameBuildManager, GameBuildResult, GameBuildState, engine_sdk_root,
+    latest_shadow_module, prepare_cargo_sdk_config,
 };
-use crate::material_editor::{show_material_editor_panel, MaterialEditorPanel};
+use crate::material_editor::{MaterialEditorPanel, show_material_editor_panel};
 use crate::preferences::{EditorPreferences, PlayModeView};
 use crate::preview_residency::ProjectAssetResidency;
 use crate::problems::ProblemsPanel;
-use crate::project_settings_panel::{show_project_settings_panel, ProjectSettingsPanel};
+use crate::project_settings_panel::{ProjectSettingsPanel, show_project_settings_panel};
 use crate::runtime::{
     EditorMode, FrameCapture, PlayError, PlayTickError, RuntimeAnimationDebugSnapshot,
     RuntimeDiagnosticKind, RuntimeInputDebugSnapshot, RuntimePlayState,
@@ -31,8 +31,8 @@ use crate::scene_view::{
 };
 use crate::session::{EditorPersistError, EditorSession, GraphNodeInsertKind};
 use crate::session::{SceneAlignment, SceneAxis};
-use crate::systems_panel::{show_systems_panel, SystemsPanel};
-use crate::ui_builder::{show_ui_builder, show_ui_builder_inspector, UiBuilderState};
+use crate::systems_panel::{SystemsPanel, show_systems_panel};
+use crate::ui_builder::{UiBuilderState, show_ui_builder, show_ui_builder_inspector};
 use crate::view_aspect::ViewAspect;
 use crate::working_copy::{capture_authoring_overlay, graph_working_copy};
 use crate::workspace::{DocumentWorkspace, WorkspaceDocumentKind, WorkspaceTabId};
@@ -40,23 +40,23 @@ use eframe::{egui, egui_wgpu};
 use engine::{InputCommand, InputSource, KeyCode};
 use engine_authoring::id::{AssetId, StableId};
 use engine_authoring::{
-    replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
-    EdgeId, EntityId, NodeId, ProjectRoot, ProjectSettings, PropertyPathSegment, RustScriptKind,
-    RustScriptSchedule, Transaction, Value,
+    AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId, EdgeId, EntityId, NodeId,
+    ProjectRoot, ProjectSettings, PropertyPathSegment, RustScriptKind, RustScriptSchedule,
+    Transaction, Value, replace_file_contents,
 };
 use std::sync::Arc;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-mod animation_graph_parameters;
 #[cfg(feature = "visual-validation")]
 mod adr_visual_scenarios;
-mod audio_authoring;
-mod behavior_debug;
+mod animation_graph_parameters;
 mod animation_preview;
 mod asset_inspector;
 mod assets;
+mod audio_authoring;
+mod behavior_debug;
 mod chrome;
 mod data_assets;
 mod documents;
@@ -68,9 +68,9 @@ mod mcp;
 mod navigation_workspace;
 mod play;
 mod presentation;
-mod viewport;
 #[cfg(feature = "visual-validation")]
 mod vfx_visual_validation;
+mod viewport;
 
 pub use mcp::EditorMcpCallFailure;
 
@@ -90,10 +90,10 @@ struct MaterialTextureChoicesCache {
 }
 
 use animation_preview::*;
-use audio_authoring::*;
-use behavior_debug::*;
 use asset_inspector::*;
 use assets::*;
+use audio_authoring::*;
+use behavior_debug::*;
 use chrome::*;
 use documents::*;
 use game_tools::*;
@@ -664,9 +664,8 @@ impl Default for EditorApp {
         };
         // Problem suppressions are editor-local and apply before project-scoped
         // state is loaded, so a recurring import notice stays hidden on startup.
-        app.problems_panel.set_suppressed_codes(
-            preferences.suppressed_problem_codes.iter().cloned(),
-        );
+        app.problems_panel
+            .set_suppressed_codes(preferences.suppressed_problem_codes.iter().cloned());
         app.preferences = preferences;
         app
     }
@@ -866,28 +865,29 @@ impl eframe::App for EditorApp {
                 inspector_maximum_width,
                 inspector_scroll_request,
                 |ui| {
-                self.show_data_asset_tools(ui);
-                ui.separator();
-                // The three inspector surfaces replace one another inside this
-                // panel, so each needs its own scope rather than the panel's.
-                let showed_asset_inspector = ui
-                    .push_id(dock_surface_id("asset_inspector", active_tab), |ui| {
-                        self.show_asset_inspector(ui)
-                    })
-                    .inner;
-                if !showed_asset_inspector {
-                    if self.session.is_animation_graph() {
-                        ui.push_id(
-                            dock_surface_id("animation_graph_inspector", active_tab),
-                            |ui| self.show_animation_graph_parameter_inspector(ui),
-                        );
-                    } else {
-                        ui.push_id(dock_surface_id("entity_inspector", active_tab), |ui| {
-                            self.show_inspector(ui)
-                        });
+                    self.show_data_asset_tools(ui);
+                    ui.separator();
+                    // The three inspector surfaces replace one another inside this
+                    // panel, so each needs its own scope rather than the panel's.
+                    let showed_asset_inspector = ui
+                        .push_id(dock_surface_id("asset_inspector", active_tab), |ui| {
+                            self.show_asset_inspector(ui)
+                        })
+                        .inner;
+                    if !showed_asset_inspector {
+                        if self.session.is_animation_graph() {
+                            ui.push_id(
+                                dock_surface_id("animation_graph_inspector", active_tab),
+                                |ui| self.show_animation_graph_parameter_inspector(ui),
+                            );
+                        } else {
+                            ui.push_id(dock_surface_id("entity_inspector", active_tab), |ui| {
+                                self.show_inspector(ui)
+                            });
+                        }
                     }
-                }
-            });
+                },
+            );
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -1050,7 +1050,8 @@ impl EditorApp {
             return;
         }
         self.scene_validation_deadline = None;
-        let (Some(scene), Some(project)) = (self.session.scene(), self.project_root.as_ref()) else {
+        let (Some(scene), Some(project)) = (self.session.scene(), self.project_root.as_ref())
+        else {
             return;
         };
         let scene = scene.clone();
@@ -1081,8 +1082,7 @@ impl EditorApp {
                     scene_path.as_deref(),
                 ));
                 let _ = sender.send(diagnostics);
-            })
-        {
+            }) {
             Ok(_) => {
                 self.scene_validation_job = Some(SceneFilesystemValidationJob {
                     generation,

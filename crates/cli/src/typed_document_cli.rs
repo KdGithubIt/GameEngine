@@ -1,11 +1,11 @@
 //! Thin file-oriented CLI adapter for ADR 0121 typed-document authoring.
 
-use super::{to_json, CliError, CliRunResult};
+use super::{CliError, CliRunResult, to_json};
 use engine_authoring::{
-    replace_file_contents, AnimationSet, AuthoringPermission, AuthoringPermissions, Diagnostic,
-    MaterialAsset, ProjectRoot, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument,
-    TileMapDocument, TileSetDocument, TypedAuthoringDocument, TypedDocumentAuthoringError,
-    TypedDocumentAuthoringService, TypedDocumentAuthoringState,
+    AnimationSet, AuthoringPermission, AuthoringPermissions, Diagnostic, MaterialAsset,
+    ProjectRoot, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
+    TileSetDocument, TypedAuthoringDocument, TypedDocumentAuthoringError,
+    TypedDocumentAuthoringService, TypedDocumentAuthoringState, replace_file_contents,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -13,14 +13,10 @@ use std::path::{Path, PathBuf};
 
 pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
     match args {
-        [domain, command, project, relative]
-            if domain == "material" && command == "inspect" =>
-        {
+        [domain, command, project, relative] if domain == "material" && command == "inspect" => {
             Some(material_inspect(Path::new(project), relative))
         }
-        [domain, command, project, relative]
-            if domain == "material" && command == "validate" =>
-        {
+        [domain, command, project, relative] if domain == "material" && command == "validate" => {
             Some(material_validate(Path::new(project), relative))
         }
         [domain, command, project, relative, replacement]
@@ -33,19 +29,14 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
                 command == "apply",
             ))
         }
-        [domain, command, project]
-            if domain == "project_settings" && command == "inspect" =>
-        {
+        [domain, command, project] if domain == "project_settings" && command == "inspect" => {
             Some(project_settings_inspect(Path::new(project)))
         }
-        [domain, command, project]
-            if domain == "project_settings" && command == "validate" =>
-        {
+        [domain, command, project] if domain == "project_settings" && command == "validate" => {
             Some(project_settings_validate(Path::new(project)))
         }
         [domain, command, project, replacement]
-            if domain == "project_settings"
-                && (command == "preview" || command == "apply") =>
+            if domain == "project_settings" && (command == "preview" || command == "apply") =>
         {
             Some(project_settings_mutate(
                 Path::new(project),
@@ -64,8 +55,7 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
             Some(animation_set_validate(Path::new(project), relative))
         }
         [domain, command, project, relative, replacement]
-            if domain == "animation_set"
-                && (command == "preview" || command == "apply") =>
+            if domain == "animation_set" && (command == "preview" || command == "apply") =>
         {
             Some(animation_set_mutate(
                 Path::new(project),
@@ -77,7 +67,12 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
         [domain, command, project, relative]
             if is_native_2d_domain(domain) && (command == "inspect" || command == "validate") =>
         {
-            Some(native_2d_read(domain, command, Path::new(project), relative))
+            Some(native_2d_read(
+                domain,
+                command,
+                Path::new(project),
+                relative,
+            ))
         }
         [domain, command, project, relative, replacement]
             if is_native_2d_domain(domain) && (command == "preview" || command == "apply") =>
@@ -95,9 +90,12 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
                 || value == "project_settings"
                 || value == "animation_set"
                 || is_native_2d_domain(value)
-        }) => Some(Err(CliError::UnknownCommand {
-            args: args.join(" "),
-        })),
+        }) =>
+        {
+            Some(Err(CliError::UnknownCommand {
+                args: args.join(" "),
+            }))
+        }
         _ => None,
     }
 }
@@ -144,10 +142,9 @@ fn project_settings_mutate(
     let (root, document) = load_project_settings(project)?;
     let replacement: ProjectSettings = load_json(replacement_path)?;
     mutate(document, replacement, persist, |document| {
-        document.save(root.path()).map_err(|error| authoring_message(
-            "project_settings.save_failed",
-            error.to_string(),
-        ))
+        document
+            .save(root.path())
+            .map_err(|error| authoring_message("project_settings.save_failed", error.to_string()))
     })
 }
 
@@ -312,7 +309,10 @@ fn validate<T: TypedAuthoringDocument>(document: T) -> Result<CliRunResult, CliE
     let output = TypedDocumentAuthoringService::new()
         .validate(&document, &state, &read_permissions())
         .map_err(authoring_error)?;
-    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
 }
 
 fn mutate<T, F>(
@@ -354,7 +354,10 @@ where
     if persist && output.success && !output.diff.is_empty() {
         persist_document(&document)?;
     }
-    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
 }
 
 fn load_material(project: &Path, relative: &str) -> Result<(PathBuf, MaterialAsset), CliError> {
@@ -368,10 +371,7 @@ fn load_material(project: &Path, relative: &str) -> Result<(PathBuf, MaterialAss
     Ok((path, document))
 }
 
-fn load_animation_set(
-    project: &Path,
-    relative: &str,
-) -> Result<(PathBuf, AnimationSet), CliError> {
+fn load_animation_set(project: &Path, relative: &str) -> Result<(PathBuf, AnimationSet), CliError> {
     let root = open_project(project)?;
     let path = root
         .resolve_asset(relative)
@@ -384,9 +384,8 @@ fn load_animation_set(
 
 fn load_project_settings(project: &Path) -> Result<(ProjectRoot, ProjectSettings), CliError> {
     let root = open_project(project)?;
-    let document = ProjectSettings::load(root.path()).map_err(|error| {
-        authoring_message("project_settings.load_failed", error.to_string())
-    })?;
+    let document = ProjectSettings::load(root.path())
+        .map_err(|error| authoring_message("project_settings.load_failed", error.to_string()))?;
     Ok((root, document))
 }
 

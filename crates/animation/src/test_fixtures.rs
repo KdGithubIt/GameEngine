@@ -84,10 +84,8 @@ fn connect_states(
         PortRef::new(to.clone(), domain.state_in_port().clone()),
     );
     if !condition.is_empty() {
-        edge.annotations.insert(
-            "condition".to_owned(),
-            Value::String(condition.to_owned()),
-        );
+        edge.annotations
+            .insert("condition".to_owned(), Value::String(condition.to_owned()));
     }
     graph.edges.insert(id, edge);
 }

@@ -7,29 +7,29 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
-/// Format-independent model intermediate representation.
-pub mod model_ir;
-/// Format-independent runtime-asset builder.
-pub mod model_import;
-/// Humanoid profiles and portable motion variants derived from canonical Native model data.
-pub mod humanoid_import;
+/// FBX parser and importer.
+#[cfg(all(feature = "fbx-import", not(target_arch = "wasm32")))]
+pub mod fbx_import;
 /// glTF / GLB parser and importer.
 pub mod gltf_import;
 /// Imported-model prefab generation.
 pub mod gltf_prefab;
-/// FBX parser and importer.
-#[cfg(all(feature = "fbx-import", not(target_arch = "wasm32")))]
-pub mod fbx_import;
+/// Humanoid profiles and portable motion variants derived from canonical Native model data.
+pub mod humanoid_import;
+/// Format-independent runtime-asset builder.
+pub mod model_import;
+/// Format-independent model intermediate representation.
+pub mod model_ir;
 /// PMX model parser and importer.
 #[cfg(all(feature = "mmd-import", not(target_arch = "wasm32")))]
 pub mod pmx_import;
-/// VMD motion parser and bake pipeline.
-#[cfg(all(feature = "mmd-import", not(target_arch = "wasm32")))]
-pub mod vmd_import;
 /// Cross-crate acceptance fixtures, compiled only for tests or opt-in test consumers.
 #[cfg(any(test, feature = "test-fixtures"))]
 #[doc(hidden)]
 pub mod test_fixtures;
+/// VMD motion parser and bake pipeline.
+#[cfg(all(feature = "mmd-import", not(target_arch = "wasm32")))]
+pub mod vmd_import;
 
 /// Compatibility namespace for animation contracts used by importers.
 #[doc(hidden)]

@@ -537,7 +537,6 @@ impl CommandsExt for Commands {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +576,4 @@ mod tests {
         assert_eq!(spec.mask, 8);
         assert_eq!(spec.knockback, Some(Vec3::Z));
     }
-
 }

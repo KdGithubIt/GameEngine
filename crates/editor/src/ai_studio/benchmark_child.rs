@@ -1,6 +1,6 @@
 use super::*;
 use crate::benchmark_experiment::{
-    BenchmarkExperimentResult, BenchmarkRunFailureKind, BenchmarkRunOutcome, BenchmarkRoutingMode,
+    BenchmarkExperimentResult, BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
 };
 use crate::benchmark_process::BenchmarkChildRunSpec;
 use std::path::Path;
@@ -165,7 +165,10 @@ impl AiStudioPanel {
             match self.host.complete_run(&run_id) {
                 Ok(()) | Err(AgentHostError::CompletionPending) => {}
                 Err(error) => {
-                    self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, error.to_string());
+                    self.write_benchmark_child_failure(
+                        BenchmarkRunFailureKind::Harness,
+                        error.to_string(),
+                    );
                     return;
                 }
             }
@@ -173,7 +176,10 @@ impl AiStudioPanel {
         let Ok(run) = self.host.run(&run_id).cloned() else {
             return;
         };
-        if !matches!(run.state, AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled) {
+        if !matches!(
+            run.state,
+            AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+        ) {
             return;
         }
         let Some(identity) = self.native_run_benchmark_context.clone() else {
@@ -196,7 +202,9 @@ impl AiStudioPanel {
             },
         ) {
             Ok(record) => self.write_benchmark_child_record(record, identity.routed),
-            Err(error) => self.write_benchmark_child_failure(BenchmarkRunFailureKind::CompletionGate, error),
+            Err(error) => {
+                self.write_benchmark_child_failure(BenchmarkRunFailureKind::CompletionGate, error)
+            }
         }
     }
 
@@ -226,7 +234,9 @@ impl AiStudioPanel {
             child.started = true;
             child.started_unix_ms = unix_ms();
         }
-        self.status = Some(format!("Benchmark child starting {task_id} on exact model {model_id}."));
+        self.status = Some(format!(
+            "Benchmark child starting {task_id} on exact model {model_id}."
+        ));
         // A campaign supplies the candidate-visible contract. Only that side of
         // the fixture exists in this process, so no prompt path can reach the
         // host-owned evaluation material even by mistake.
@@ -355,13 +365,21 @@ fn benchmark_proposal(task_id: &str) -> Result<AgentProposal, String> {
             proposal.validation_plan = vec!["all".to_owned()];
         }
         "typed_authoring_mutation_v1" => {
-            proposal.planned_project_changes = vec!["Create BenchmarkAgentEntity in the authoritative scene through typed authoring.".to_owned()];
+            proposal.planned_project_changes = vec![
+                "Create BenchmarkAgentEntity in the authoritative scene through typed authoring."
+                    .to_owned(),
+            ];
         }
         "runtime_interaction_v1" => {
-            proposal.playtest_plan = vec!["Send Space pressed through runtime_input and verify the managed interaction.".to_owned()];
+            proposal.playtest_plan = vec![
+                "Send Space pressed through runtime_input and verify the managed interaction."
+                    .to_owned(),
+            ];
         }
         "visual_evaluation_v1" => {
-            proposal.playtest_plan = vec!["Capture and visually evaluate the actual managed Game View frame.".to_owned()];
+            proposal.playtest_plan = vec![
+                "Capture and visually evaluate the actual managed Game View frame.".to_owned(),
+            ];
         }
         _ => {}
     }

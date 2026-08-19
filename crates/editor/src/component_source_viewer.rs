@@ -101,9 +101,11 @@ mod tests {
             document.relative_path,
             Path::new("crates/engine/src/scene_bridge.rs")
         );
-        assert!(document
-            .source
-            .as_deref()
-            .is_some_and(|source| source.contains("engine.transform")));
+        assert!(
+            document
+                .source
+                .as_deref()
+                .is_some_and(|source| source.contains("engine.transform"))
+        );
     }
 }

@@ -14,22 +14,7 @@ mod agent_asset_acquisition;
 mod agent_benchmark;
 // ADR 0156 owns machine-local campaign identity above the ADR 0142 record primitives.
 mod agent_benchmark_campaign;
-mod benchmark_campaign;
-mod benchmark_comparison;
-mod benchmark_experiment;
-mod benchmark_process;
-pub mod benchmark_runner;
 mod agent_host;
-mod external_agent_provider;
-mod hosted_model_backend;
-mod live_observation;
-mod managed_local_runtime;
-mod model_router;
-mod native_agent;
-mod native_agent_runtime;
-mod native_2d_editor;
-mod remote_ai_studio;
-mod resource_arbitration;
 pub mod ai_studio;
 mod ai_studio_theme;
 pub mod anim_ux;
@@ -39,6 +24,11 @@ pub mod asset_import;
 pub mod asset_management;
 pub mod authoring_tools;
 pub mod authoring_windows;
+mod benchmark_campaign;
+mod benchmark_comparison;
+mod benchmark_experiment;
+mod benchmark_process;
+pub mod benchmark_runner;
 pub mod build;
 pub mod canvas;
 pub mod component_source_index;
@@ -48,11 +38,19 @@ pub mod document;
 pub mod drag_drop;
 mod editor_fonts;
 pub mod environment;
+mod external_agent_provider;
 pub mod filesystem_sync;
 pub mod game_build;
 pub mod geometry;
 pub mod gizmo;
+mod hosted_model_backend;
+mod live_observation;
+mod managed_local_runtime;
 pub mod material_editor;
+mod model_router;
+mod native_2d_editor;
+mod native_agent;
+mod native_agent_runtime;
 #[path = "navmesh_shared.rs"]
 pub mod navmesh_bake;
 pub mod prefab_workflow;
@@ -60,6 +58,8 @@ pub mod preferences;
 mod preview_residency;
 pub mod problems;
 pub mod project_settings_panel;
+mod remote_ai_studio;
+mod resource_arbitration;
 pub mod runtime;
 pub mod runtime_debug;
 pub mod scene_view;
@@ -76,29 +76,29 @@ mod workspace;
 
 pub use ai_studio::{AiStudioConnection, AiStudioPanel};
 pub use anim_ux::{
+    ResolvedBonePair, ResolvedChainPair, RetargetMapInspectorAction, RetargetMapInspectorModel,
+    SkeletonBindReport, SkeletonBindReportRow, SkeletonBoneStatus, UnresolvedTargetBone,
     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,
     retarget_map_file_name, show_contact_bones_editor, show_retarget_map_inspector,
-    show_skeleton_bind_report, synthetic_skeleton_asset, ResolvedBonePair, ResolvedChainPair,
-    RetargetMapInspectorAction, RetargetMapInspectorModel, SkeletonBindReport,
-    SkeletonBindReportRow, SkeletonBoneStatus, UnresolvedTargetBone,
+    show_skeleton_bind_report, synthetic_skeleton_asset,
 };
 pub use asset_browser::{AssetBrowser, AssetEntry, AssetFolder, AssetKind};
 pub use asset_import::{
     AssetImportManager, AssetImportProgress, AssetImportResult, AssetImportStartError,
 };
 pub use asset_management::{
-    create_asset_folder, import_external_asset_files, is_registerable_asset_path, move_asset,
-    move_asset_batch, move_asset_path, move_asset_paths_to_trash, move_asset_to_trash,
     AssetManagementError, AssetMoveReport, BatchAssetMoveReport, ExternalAssetImportFailure,
     ExternalAssetImportFailureKind, ExternalAssetImportReport, ImportedExternalAsset,
+    create_asset_folder, import_external_asset_files, is_registerable_asset_path, move_asset,
+    move_asset_batch, move_asset_path, move_asset_paths_to_trash, move_asset_to_trash,
 };
 pub use authoring_tools::AuthoringTool;
 pub use authoring_windows::AuthoringWindows;
 pub use build::{
-    analyze_build, find_player_binary, package_project, package_project_with_game_module,
-    plan_package, BuildConfig, BuildDiagnostic, BuildDiagnosticKind, BuildReport, PackageCopy,
-    PackageError, PackagePlan,
+    BuildConfig, BuildDiagnostic, BuildDiagnosticKind, BuildReport, PackageCopy, PackageError,
+    PackagePlan, analyze_build, find_player_binary, package_project,
+    package_project_with_game_module, plan_package,
 };
 pub use component_source_index::{ComponentSourceIndex, ComponentSourceLocation};
 pub use component_source_viewer::ReadOnlySourceDocument;
@@ -108,18 +108,18 @@ pub use editor_fonts::install_editor_fonts;
 pub use environment::EnvironmentSettings;
 pub use filesystem_sync::{FileSyncArea, FileSyncEvent, FileSyncKind, ProjectFileWatcher};
 pub use game_build::{
-    latest_shadow_module, GameBuildDiagnostic, GameBuildKind, GameBuildManager, GameBuildResult,
-    GameBuildStartError, GameBuildState,
+    GameBuildDiagnostic, GameBuildKind, GameBuildManager, GameBuildResult, GameBuildStartError,
+    GameBuildState, latest_shadow_module,
 };
 pub use material_editor::MaterialEditorPanel;
 pub use navmesh_bake::{
-    bake_scene_navmesh, NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult,
-    NavMeshBakeSettings,
+    NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult, NavMeshBakeSettings,
+    bake_scene_navmesh,
 };
 pub use prefab_workflow::{
+    EDITOR_PREFAB_INSTANCE_COMPONENT, PrefabInstanceInfo, PrefabWorkflowError,
     apply_prefab_overrides, create_prefab_from_selection, inspect_prefab_instance,
     instantiate_prefab, prefab_dependencies, revert_prefab_instance, unpack_prefab_instance,
-    PrefabInstanceInfo, PrefabWorkflowError, EDITOR_PREFAB_INSTANCE_COMPONENT,
 };
 pub use project_settings_panel::ProjectSettingsPanel;
 pub use runtime::{
@@ -130,8 +130,8 @@ pub use session::{
     SceneAxis,
 };
 pub use skinned_model_bake::{
-    bake_skinned_model, SkinnedModelBakeError, SkinnedModelBakeResult, BONE_ATTACHMENT_DIAGNOSTIC,
-    CONFIGURED_CONTROLLER_DIAGNOSTIC,
+    BONE_ATTACHMENT_DIAGNOSTIC, CONFIGURED_CONTROLLER_DIAGNOSTIC, SkinnedModelBakeError,
+    SkinnedModelBakeResult, bake_skinned_model,
 };
 pub use systems_panel::{SystemsPanel, SystemsSaveState};
 pub use ui::EditorApp;

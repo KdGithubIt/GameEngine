@@ -1,9 +1,7 @@
 //! Background work used by the modeless VFX Builder.
 
 use eframe::egui;
-use engine_authoring::{
-    replace_file_contents, VfxAuthoringService, VfxCompilation, VfxEffect,
-};
+use engine_authoring::{VfxAuthoringService, VfxCompilation, VfxEffect, replace_file_contents};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -13,9 +11,18 @@ struct VfxCompileJob {
 }
 
 pub(super) enum VfxIoCompletion {
-    Open { path: PathBuf, result: Result<VfxEffect, String> },
-    Save { result: Result<(), String> },
-    Create { path: PathBuf, effect: VfxEffect, result: Result<(), String> },
+    Open {
+        path: PathBuf,
+        result: Result<VfxEffect, String>,
+    },
+    Save {
+        result: Result<(), String>,
+    },
+    Create {
+        path: PathBuf,
+        effect: VfxEffect,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Default)]
@@ -43,7 +50,10 @@ impl VfxBackgroundTasks {
                 let _ = sender.send(compilation);
                 repaint.request_repaint();
             });
-            self.compile_job = Some(VfxCompileJob { effect: requested, receiver });
+            self.compile_job = Some(VfxCompileJob {
+                effect: requested,
+                receiver,
+            });
         }
         if self.compiled_effect.as_ref() == Some(effect) {
             self.compilation.clone()
@@ -53,7 +63,9 @@ impl VfxBackgroundTasks {
     }
 
     fn poll_compile(&mut self, current_effect: &VfxEffect) {
-        let Some(job) = self.compile_job.as_ref() else { return; };
+        let Some(job) = self.compile_job.as_ref() else {
+            return;
+        };
         match job.receiver.try_recv() {
             Ok(compilation) => {
                 let compiled_effect = job.effect.clone();
@@ -68,16 +80,24 @@ impl VfxBackgroundTasks {
         }
     }
 
-    pub(super) fn io_busy(&self) -> bool { self.io_job.is_some() }
+    pub(super) fn io_busy(&self) -> bool {
+        self.io_job.is_some()
+    }
 
     pub(super) fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
-        if self.io_busy() { return; }
+        if self.io_busy() {
+            return;
+        }
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let result = std::fs::read_to_string(&path)
                 .map_err(|error| error.to_string())
-                .and_then(|json| VfxAuthoringService::new().effect_from_json(&json).map_err(|error| error.to_string()));
+                .and_then(|json| {
+                    VfxAuthoringService::new()
+                        .effect_from_json(&json)
+                        .map_err(|error| error.to_string())
+                });
             let _ = sender.send(VfxIoCompletion::Open { path, result });
             repaint.request_repaint();
         });
@@ -85,7 +105,9 @@ impl VfxBackgroundTasks {
     }
 
     pub(super) fn save(&mut self, path: PathBuf, json: String, ctx: &egui::Context) {
-        if self.io_busy() { return; }
+        if self.io_busy() {
+            return;
+        }
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
@@ -103,12 +125,18 @@ impl VfxBackgroundTasks {
         json: String,
         ctx: &egui::Context,
     ) {
-        if self.io_busy() { return; }
+        if self.io_busy() {
+            return;
+        }
         let repaint = ctx.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let result = replace_file_contents(&path, &json).map_err(|error| error.to_string());
-            let _ = sender.send(VfxIoCompletion::Create { path, effect, result });
+            let _ = sender.send(VfxIoCompletion::Create {
+                path,
+                effect,
+                result,
+            });
             repaint.request_repaint();
         });
         self.io_job = Some(receiver);
@@ -117,7 +145,10 @@ impl VfxBackgroundTasks {
     pub(super) fn take_io_completion(&mut self) -> Option<VfxIoCompletion> {
         let receiver = self.io_job.as_ref()?;
         match receiver.try_recv() {
-            Ok(completion) => { self.io_job = None; Some(completion) }
+            Ok(completion) => {
+                self.io_job = None;
+                Some(completion)
+            }
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 self.io_job = None;

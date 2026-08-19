@@ -5,8 +5,8 @@
 //! `engine::navigation_bake` and `engine-physics`.
 
 pub use engine::navigation_bake::{
-    bake_scene_navmesh, collect_navigation_source, is_scene_navmesh_stale, prepare_scene_navmesh,
-    NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult, NavMeshBakeSettings,
-    NavigationBakeOutput, NavigationBakeService, NavigationBakeServiceError, NavigationBakeStats,
-    NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
+    NAVMESH_BAKE_SCHEMA_VERSION, NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult,
+    NavMeshBakeSettings, NavigationBakeOutput, NavigationBakeService, NavigationBakeServiceError,
+    NavigationBakeStats, NavigationSource, bake_scene_navmesh, collect_navigation_source,
+    is_scene_navmesh_stale, prepare_scene_navmesh,
 };

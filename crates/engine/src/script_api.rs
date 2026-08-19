@@ -555,9 +555,10 @@ pub(crate) fn script_audio_effect_system(
     for queued in effects.audio.drain(..) {
         if matches!(queued.command, ScriptApiCommand::StopBackgroundMusic) {
             if let Some(audio) = audio_system.as_deref_mut()
-                && let Err(error) = audio.stop_bgm() {
-                    log::error!("script stop_bgm failed: {error}");
-                }
+                && let Err(error) = audio.stop_bgm()
+            {
+                log::error!("script stop_bgm failed: {error}");
+            }
             continue;
         }
 
@@ -1041,11 +1042,12 @@ mod tests {
         app.update()
             .expect("missing optional audio resources must not fail the schedule");
 
-        assert!(app
-            .world()
-            .get_resource::<PendingScriptEffects>()
-            .expect("effects must remain present")
-            .audio
-            .is_empty());
+        assert!(
+            app.world()
+                .get_resource::<PendingScriptEffects>()
+                .expect("effects must remain present")
+                .audio
+                .is_empty()
+        );
     }
 }

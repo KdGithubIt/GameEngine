@@ -8,7 +8,7 @@ use crate::agent_host::{
     AgentCapability, AgentHost, AgentHostError, AgentWorkClaim, AssetAcquisitionRecord,
     PermissionCheck,
 };
-use crate::asset_management::{import_external_asset_files, AssetManagementError};
+use crate::asset_management::{AssetManagementError, import_external_asset_files};
 use engine::AssetManifest;
 use engine_authoring::ProjectRoot;
 use std::collections::BTreeSet;
@@ -16,8 +16,8 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PROVIDER_ARTIFACTS: usize = 32;
@@ -308,23 +308,21 @@ impl fmt::Display for AssetAcquisitionError {
             Self::PermissionDenied(capability) => {
                 write!(formatter, "permission denied: {}", capability.label())
             }
-            Self::ExplicitUserDecisionRequired => formatter.write_str(
-                "the provider operation requires an additional explicit user decision",
-            ),
+            Self::ExplicitUserDecisionRequired => formatter
+                .write_str("the provider operation requires an additional explicit user decision"),
             Self::InvalidRequest(reason) => {
                 write!(formatter, "invalid acquisition request: {reason}")
             }
-            Self::IdempotencyConflict => formatter.write_str(
-                "the acquisition request identity was already used for different work",
-            ),
+            Self::IdempotencyConflict => formatter
+                .write_str("the acquisition request identity was already used for different work"),
             Self::Cancelled => formatter.write_str("asset acquisition was cancelled"),
             Self::Provider(kind) => write!(formatter, "asset provider failed as {}", kind.label()),
             Self::ArtifactRejected(reason) => {
                 write!(formatter, "provider artifact was rejected: {reason}")
             }
-            Self::ImportRejected => formatter.write_str(
-                "provider artifacts did not produce a registered project asset",
-            ),
+            Self::ImportRejected => {
+                formatter.write_str("provider artifacts did not produce a registered project asset")
+            }
             Self::Import(error) => write!(formatter, "asset import failed: {error}"),
             Self::StagingIo(error) => write!(formatter, "asset staging failed: {error}"),
         }
@@ -369,9 +367,9 @@ impl AgentAssetAcquisitionService {
         }
         let requirements = provider.search_requirements();
         require_permissions(host, run_id, requirements.requires_network)?;
-        let results = provider.search(request, context).map_err(|failure| {
-            AssetAcquisitionError::Provider(failure.kind)
-        })?;
+        let results = provider
+            .search(request, context)
+            .map_err(|failure| AssetAcquisitionError::Provider(failure.kind))?;
         if context.cancellation().is_cancelled() {
             return Err(AssetAcquisitionError::Cancelled);
         }
@@ -392,7 +390,10 @@ impl AgentAssetAcquisitionService {
         host.record_tool_action(
             run_id,
             "asset.search",
-            format!("Managed provider search returned {} result(s).", sanitized.len()),
+            format!(
+                "Managed provider search returned {} result(s).",
+                sanitized.len()
+            ),
             Some(true),
         )?;
         Ok(sanitized)
@@ -594,11 +595,11 @@ fn validate_output(output: &AssetProviderOutput) -> Result<(), AssetAcquisitionE
                 "provider artifact size is outside the supported bounds",
             ));
         }
-        total = total
-            .checked_add(artifact.bytes.len())
-            .ok_or(AssetAcquisitionError::ArtifactRejected(
+        total = total.checked_add(artifact.bytes.len()).ok_or(
+            AssetAcquisitionError::ArtifactRejected(
                 "provider artifact size overflowed the acquisition bound",
-            ))?;
+            ),
+        )?;
         if total > MAX_ACQUISITION_BYTES {
             return Err(AssetAcquisitionError::ArtifactRejected(
                 "provider artifacts exceeded the total acquisition size limit",
@@ -620,9 +621,9 @@ fn validate_artifact_file_name(file_name: &str) -> Result<(), AssetAcquisitionEr
         || file_name.contains(':')
         || file_name == "."
         || file_name == ".."
-        || Path::new(file_name).components().any(|component| {
-            !matches!(component, Component::Normal(_))
-        })
+        || Path::new(file_name)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(AssetAcquisitionError::ArtifactRejected(
             "artifact filename must be one normal path component",
@@ -647,7 +648,10 @@ fn stage_artifacts(
 
 fn sanitize_provenance(provenance: AssetProviderProvenance) -> AssetProviderProvenance {
     AssetProviderProvenance {
-        provider_asset_id: provenance.provider_asset_id.as_deref().map(sanitize_metadata),
+        provider_asset_id: provenance
+            .provider_asset_id
+            .as_deref()
+            .map(sanitize_metadata),
         source_reference: provenance
             .source_reference
             .as_deref()
@@ -1009,12 +1013,8 @@ mod tests {
             ))
         ));
         assert_eq!(provider.calls, 0);
-        host.resolve_permission(
-            &run,
-            AgentCapability::NetworkAccess,
-            ApprovalScope::Run,
-        )
-        .expect("network permission");
+        host.resolve_permission(&run, AgentCapability::NetworkAccess, ApprovalScope::Run)
+            .expect("network permission");
         AgentAssetAcquisitionService::execute(
             &mut host,
             &run,
@@ -1071,14 +1071,18 @@ mod tests {
         ));
         assert_eq!(provider.calls, 0);
         let waiter = host.run(&waiter_run).expect("waiter run");
-        assert!(waiter
-            .events
-            .iter()
-            .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkConflict));
-        assert!(waiter
-            .events
-            .iter()
-            .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkWait));
+        assert!(
+            waiter
+                .events
+                .iter()
+                .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkConflict)
+        );
+        assert!(
+            waiter
+                .events
+                .iter()
+                .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkWait)
+        );
     }
 
     #[test]
@@ -1103,8 +1107,7 @@ mod tests {
         assert_eq!(result.assets.len(), 1);
         assert!(project.assets_root().join(&result.assets[0].path).is_file());
         assert!(manifest.iter().any(|(id, entry)| {
-            id.as_str() == result.assets[0].asset_id
-                && entry.path == "textures/generated.png"
+            id.as_str() == result.assets[0].asset_id && entry.path == "textures/generated.png"
         }));
         assert!(provider.saw_credential);
         let session_file = fs::read_to_string(

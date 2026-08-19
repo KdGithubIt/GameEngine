@@ -163,10 +163,7 @@ impl AiStudioPanel {
                     .desired_width(200.0),
             );
             let addable = !self.benchmark_experiment.custom_model.trim().is_empty();
-            if ui
-                .add_enabled(addable, egui::Button::new("Add"))
-                .clicked()
-            {
+            if ui.add_enabled(addable, egui::Button::new("Add")).clicked() {
                 let model = self.benchmark_experiment.custom_model.trim().to_owned();
                 self.benchmark_experiment.selected_models.insert(model);
                 self.benchmark_experiment.custom_model.clear();
@@ -214,9 +211,7 @@ impl AiStudioPanel {
     fn show_experiment_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Repetitions");
-            ui.add(
-                egui::DragValue::new(&mut self.benchmark_experiment.repeat_count).range(1..=20),
-            );
+            ui.add(egui::DragValue::new(&mut self.benchmark_experiment.repeat_count).range(1..=20));
             ui.checkbox(
                 &mut self.benchmark_experiment.stop_on_failure,
                 "Stop on first failure",
@@ -395,9 +390,7 @@ impl AiStudioPanel {
 
     fn spawn_benchmark_experiment(&mut self) -> Result<RunningSuite, String> {
         if ENGINE_COMMIT_HEAD.is_empty() {
-            return Err(
-                "this Editor build carries no exact GameEngine commit identity".to_owned()
-            );
+            return Err("this Editor build carries no exact GameEngine commit identity".to_owned());
         }
         let panel = &self.benchmark_experiment;
         let mut spec = BenchmarkExperimentSpec::local_single_model_comparison(
@@ -580,7 +573,10 @@ mod tests {
     #[test]
     fn planned_runs_multiply_models_tasks_and_repetitions() {
         let panel = BenchmarkExperimentPanel {
-            selected_models: ["a", "b", "c", "d"].into_iter().map(str::to_owned).collect(),
+            selected_models: ["a", "b", "c", "d"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
             repeat_count: 3,
             ..BenchmarkExperimentPanel::default()
         };

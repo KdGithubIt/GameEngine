@@ -466,7 +466,7 @@ impl StaticTriangleMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::navmesh::{bake_from_obstacles, NavMeshSettings};
+    use crate::navmesh::{NavMeshSettings, bake_from_obstacles};
 
     fn floor(height: f32) -> NavMesh {
         let settings = NavMeshSettings {
@@ -551,9 +551,10 @@ mod tests {
         )
         .expect("layered NavMesh must validate");
 
-        assert!(nav
-            .find_path(Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 3.0, 0.0))
-            .is_some());
+        assert!(
+            nav.find_path(Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 3.0, 0.0))
+                .is_some()
+        );
     }
 
     #[test]

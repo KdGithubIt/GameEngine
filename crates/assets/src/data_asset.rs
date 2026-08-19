@@ -194,7 +194,9 @@ impl DataAssetRef {
         match fields.get("asset") {
             Some(Value::AssetRef(asset)) => Ok(Self::new(asset.clone())),
             Some(Value::Null) => Ok(Self::unassigned()),
-            Some(_) => Err("data asset reference `asset` must be an asset reference or null".to_owned()),
+            Some(_) => {
+                Err("data asset reference `asset` must be an asset reference or null".to_owned())
+            }
             None => Err("data asset reference is missing `asset`".to_owned()),
         }
     }
@@ -259,7 +261,11 @@ impl fmt::Display for DataAssetError {
                 write!(formatter, "data asset value `{path}` must be finite")
             }
             Self::MissingAsset(asset) => {
-                write!(formatter, "data asset `{}` is not registered", asset.as_str())
+                write!(
+                    formatter,
+                    "data asset `{}` is not registered",
+                    asset.as_str()
+                )
             }
             Self::WrongAssetKind { asset, path } => write!(
                 formatter,
@@ -268,7 +274,11 @@ impl fmt::Display for DataAssetError {
                 path.display()
             ),
             Self::Io { path, source } => {
-                write!(formatter, "failed to read data asset {}: {source}", path.display())
+                write!(
+                    formatter,
+                    "failed to read data asset {}: {source}",
+                    path.display()
+                )
             }
         }
     }
@@ -356,11 +366,8 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let path = temporary.path().join("enemy.data.json");
         let document = DataAssetDocument::new("Enemy");
-        std::fs::write(
-            &path,
-            document.to_canonical_json().expect("serialize"),
-        )
-        .expect("document must be written");
+        std::fs::write(&path, document.to_canonical_json().expect("serialize"))
+            .expect("document must be written");
         let asset = AssetId::generate();
         let mut manifest = AssetManifest::default();
         manifest.insert(

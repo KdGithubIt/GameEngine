@@ -29,11 +29,7 @@ impl EnvironmentUniform {
         has_skybox: bool,
     ) -> Self {
         let finite = |value: f32, fallback: f32| {
-            if value.is_finite() {
-                value
-            } else {
-                fallback
-            }
+            if value.is_finite() { value } else { fallback }
         };
         Self {
             diffuse_color: [
@@ -360,7 +356,12 @@ impl EnvironmentGpuState {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         source: &Texture,
-    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Texture, wgpu::TextureView) {
+    ) -> (
+        wgpu::Texture,
+        wgpu::TextureView,
+        wgpu::Texture,
+        wgpu::TextureView,
+    ) {
         use wgpu::util::DeviceExt;
 
         let diffuse_texture = make_render_texture(
@@ -460,7 +461,12 @@ impl EnvironmentGpuState {
         }
 
         queue.submit(Some(encoder.finish()));
-        (diffuse_texture, diffuse_view, specular_texture, specular_view)
+        (
+            diffuse_texture,
+            diffuse_view,
+            specular_texture,
+            specular_view,
+        )
     }
 }
 

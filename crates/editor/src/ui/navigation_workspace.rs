@@ -1,18 +1,16 @@
 //! Non-blocking Editor workflow for the shared production navigation bake service.
 
 use crate::workspace::WorkspaceTabId;
-use engine::navigation_bake::{
-    bake_scene_navmesh, NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult,
-    NavigationBakeServiceError,
-};
 use engine::AssetManifest;
-use engine_authoring::{
-    replace_file_contents, AuthoringScene, ComponentTypeId, ProjectRoot,
+use engine::navigation_bake::{
+    NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult, NavigationBakeServiceError,
+    bake_scene_navmesh,
 };
+use engine_authoring::{AuthoringScene, ComponentTypeId, ProjectRoot, replace_file_contents};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 use std::thread;
 
 fn scene_uses_navigation(scene: &AuthoringScene) -> bool {
@@ -161,7 +159,9 @@ fn visual_navigation_component_value(
         .ok_or_else(|| format!("missing built-in component schema `{type_id}`"))?;
     let mut value = definition.schema.default_value();
     let engine_authoring::Value::Object(fields) = &mut value else {
-        return Err(format!("built-in component `{type_id}` is not object-valued"));
+        return Err(format!(
+            "built-in component `{type_id}` is not object-valued"
+        ));
     };
     for (field, replacement) in overrides {
         fields.insert(field.to_owned(), replacement);
@@ -188,10 +188,9 @@ impl super::EditorApp {
     fn prepare_navigation_visual_validation_fixture(&mut self) -> Result<(), String> {
         use engine_authoring::Value;
 
-        let project = self
-            .project_root
-            .clone()
-            .ok_or_else(|| "open a project before preparing navigation visual validation".to_owned())?;
+        let project = self.project_root.clone().ok_or_else(|| {
+            "open a project before preparing navigation visual validation".to_owned()
+        })?;
         std::fs::create_dir_all(project.assets_root().join("navigation"))
             .map_err(|error| error.to_string())?;
 
@@ -301,22 +300,15 @@ impl super::EditorApp {
         document.source_fingerprint = None;
         let mut manifest = self.asset_manifest.clone();
         let cancelled = AtomicBool::new(false);
-        let result = bake_scene_navmesh(
-            &scene,
-            &project,
-            &mut manifest,
-            &mut document,
-            &cancelled,
-        )
-        .map_err(|error| error.to_string())?;
+        let result = bake_scene_navmesh(&scene, &project, &mut manifest, &mut document, &cancelled)
+            .map_err(|error| error.to_string())?;
         let document_json = document
             .to_canonical_json()
             .map_err(|error| error.to_string())?;
         if let Some(parent) = document_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        replace_file_contents(&document_path, &document_json)
-            .map_err(|error| error.to_string())?;
+        replace_file_contents(&document_path, &document_json).map_err(|error| error.to_string())?;
         self.asset_manifest = manifest;
 
         let surface = self
@@ -352,9 +344,13 @@ impl super::EditorApp {
     }
 
     fn reload_navigation_settings_for_ui(&mut self) {
-        let result = self.project_root.as_ref().ok_or_else(|| "open a project first".to_owned()).and_then(|project| {
-            load_navigation_document_for_ui(project, self.session.current_document_path())
-        });
+        let result = self
+            .project_root
+            .as_ref()
+            .ok_or_else(|| "open a project first".to_owned())
+            .and_then(|project| {
+                load_navigation_document_for_ui(project, self.session.current_document_path())
+            });
         match result {
             Ok((document, path)) => {
                 self.navigation_workspace.settings_document = Some(document);
@@ -385,9 +381,10 @@ impl super::EditorApp {
             .show(context, |ui| {
                 ui.heading("Production NavMesh");
                 let uses_navigation = self.session.scene().is_some_and(scene_uses_navigation);
-                let stale = self.filesystem_scene_problems.iter().any(|problem| {
-                    problem.code == "editor.navigation_bake_not_current"
-                });
+                let stale = self
+                    .filesystem_scene_problems
+                    .iter()
+                    .any(|problem| problem.code == "editor.navigation_bake_not_current");
                 let status = if self.navigation_bake.is_cancelling() {
                     "Cancelling..."
                 } else if self.navigation_bake.is_running() {
@@ -403,19 +400,26 @@ impl super::EditorApp {
                     ui.strong("Bake status:");
                     ui.label(status);
                 });
-                ui.label("Scene View overlay: polygons, edges, off-mesh links, agents, and tested path.");
+                ui.label(
+                    "Scene View overlay: polygons, edges, off-mesh links, agents, and tested path.",
+                );
                 ui.horizontal(|ui| {
                     bake = ui
                         .add_enabled(
                             self.session.scene().is_some()
                                 && !self.is_playing()
                                 && !self.navigation_bake.is_running(),
-                            eframe::egui::Button::new(if stale { "Rebuild NavMesh" } else { "Bake NavMesh" }),
+                            eframe::egui::Button::new(if stale {
+                                "Rebuild NavMesh"
+                            } else {
+                                "Bake NavMesh"
+                            }),
                         )
                         .clicked();
                     cancel = ui
                         .add_enabled(
-                            self.navigation_bake.is_running() && !self.navigation_bake.is_cancelling(),
+                            self.navigation_bake.is_running()
+                                && !self.navigation_bake.is_cancelling(),
                             eframe::egui::Button::new("Cancel Bake"),
                         )
                         .clicked();
@@ -429,7 +433,10 @@ impl super::EditorApp {
                 if let Some(document) = &mut self.navigation_workspace.settings_document {
                     ui.horizontal(|ui| {
                         ui.label("Tile size");
-                        ui.add(eframe::egui::DragValue::new(&mut document.settings.tile_size).range(0.1..=1024.0));
+                        ui.add(
+                            eframe::egui::DragValue::new(&mut document.settings.tile_size)
+                                .range(0.1..=1024.0),
+                        );
                     });
                     for profile in &mut document.settings.profiles {
                         let title = format!("{} ({})", profile.name, profile.id.as_str());
@@ -444,22 +451,33 @@ impl super::EditorApp {
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Radius");
-                                ui.add(eframe::egui::DragValue::new(&mut profile.radius).speed(0.05));
+                                ui.add(
+                                    eframe::egui::DragValue::new(&mut profile.radius).speed(0.05),
+                                );
                                 ui.label("Height");
-                                ui.add(eframe::egui::DragValue::new(&mut profile.height).speed(0.05));
+                                ui.add(
+                                    eframe::egui::DragValue::new(&mut profile.height).speed(0.05),
+                                );
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Max slope");
-                                ui.add(eframe::egui::DragValue::new(&mut profile.max_slope_degrees).speed(1.0));
+                                ui.add(
+                                    eframe::egui::DragValue::new(&mut profile.max_slope_degrees)
+                                        .speed(1.0),
+                                );
                                 ui.label("Max step");
-                                ui.add(eframe::egui::DragValue::new(&mut profile.max_climb).speed(0.05));
+                                ui.add(
+                                    eframe::egui::DragValue::new(&mut profile.max_climb)
+                                        .speed(0.05),
+                                );
                             });
                         });
                     }
                     if ui.button("Add Agent Profile").clicked() {
                         let mut profile = engine::navmesh::NavigationAgentProfile::default();
                         let suffix = document.settings.profiles.len() + 1;
-                        profile.id = engine::navmesh::NavigationProfileId::new(format!("profile_{suffix}"));
+                        profile.id =
+                            engine::navmesh::NavigationProfileId::new(format!("profile_{suffix}"));
                         profile.name = format!("Profile {suffix}");
                         document.settings.profiles.push(profile);
                     }
@@ -519,8 +537,7 @@ impl super::EditorApp {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                 }
                 replace_file_contents(path, &json).map_err(|error| error.to_string())
-            })
-        {
+            }) {
             Ok(()) => {
                 self.navigation_workspace.settings_error = None;
                 self.refresh_scene_problems();
@@ -532,11 +549,12 @@ impl super::EditorApp {
     fn run_navigation_path_test(&mut self) {
         self.navigation_workspace.path_waypoints.clear();
         let result = (|| -> Result<(String, Vec<engine::glam::Vec3>), String> {
-            let project = self.project_root.as_ref().ok_or_else(|| "open a project first".to_owned())?;
-            let (document, _) = load_navigation_document_for_ui(
-                project,
-                self.session.current_document_path(),
-            )?;
+            let project = self
+                .project_root
+                .as_ref()
+                .ok_or_else(|| "open a project first".to_owned())?;
+            let (document, _) =
+                load_navigation_document_for_ui(project, self.session.current_document_path())?;
             let nav_mesh_path = project.assets_root().join(&document.output_asset);
             let nav_mesh = engine::navmesh::load_navmesh(&nav_mesh_path)
                 .map_err(|error| format!("could not load {}: {error}", nav_mesh_path.display()))?;
@@ -678,13 +696,8 @@ fn run_navigation_bake(
     document_path: PathBuf,
     cancelled: &AtomicBool,
 ) -> NavigationBakeCompletion {
-    let result = match bake_scene_navmesh(
-        &scene,
-        &project,
-        &mut manifest,
-        &mut document,
-        cancelled,
-    ) {
+    let result = match bake_scene_navmesh(&scene, &project, &mut manifest, &mut document, cancelled)
+    {
         Ok(result) => result,
         Err(NavMeshBakeError::Shared(NavigationBakeServiceError::Cancelled)) => {
             return NavigationBakeCompletion::Cancelled { tab_id };

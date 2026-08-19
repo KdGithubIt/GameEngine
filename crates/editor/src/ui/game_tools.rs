@@ -161,41 +161,43 @@ impl EditorApp {
             self.session.push_diagnostic(diagnostic);
         }
         let mut loaded = false;
-        if success && kind == GameBuildKind::Build
-            && let Some(path) = module_path.as_ref() {
-                match engine::game_module::GameModule::load(path) {
-                    Ok(module) => {
-                        self.game_module = Some(Arc::new(module));
-                        if let Some(project) = self.project_root.as_ref() {
-                            self.systems_panel.open_project(
-                                project,
-                                self.game_module.as_ref().map(Arc::clone),
-                                None,
-                            );
-                        }
-                        loaded = true;
-                        if let Some(generation) = self.running_game_code_generation {
-                            self.built_game_code_generation = generation;
-                        }
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::info(
-                                "editor.game_build.succeeded",
-                                format!("game module built and loaded from {}", path.display()),
-                            ));
+        if success
+            && kind == GameBuildKind::Build
+            && let Some(path) = module_path.as_ref()
+        {
+            match engine::game_module::GameModule::load(path) {
+                Ok(module) => {
+                    self.game_module = Some(Arc::new(module));
+                    if let Some(project) = self.project_root.as_ref() {
+                        self.systems_panel.open_project(
+                            project,
+                            self.game_module.as_ref().map(Arc::clone),
+                            None,
+                        );
                     }
-                    Err(error) => {
-                        if let Some(project) = self.project_root.as_ref() {
-                            self.systems_panel
-                                .open_project(project, None, Some(error.to_string()));
-                        }
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::error(
-                                "editor.game_module_load_failed",
-                                error.to_string(),
-                            ))
+                    loaded = true;
+                    if let Some(generation) = self.running_game_code_generation {
+                        self.built_game_code_generation = generation;
                     }
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::info(
+                            "editor.game_build.succeeded",
+                            format!("game module built and loaded from {}", path.display()),
+                        ));
+                }
+                Err(error) => {
+                    if let Some(project) = self.project_root.as_ref() {
+                        self.systems_panel
+                            .open_project(project, None, Some(error.to_string()));
+                    }
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::error(
+                            "editor.game_module_load_failed",
+                            error.to_string(),
+                        ))
                 }
             }
+        }
         if success && kind == GameBuildKind::Check {
             self.session
                 .push_diagnostic(engine_authoring::Diagnostic::info(
@@ -240,38 +242,39 @@ impl EditorApp {
                 ui.text_edit_singleline(&mut self.new_rhai_script_name);
                 control_row(ui, |ui| {
                     if ui.button("Create").clicked()
-                        && let Some(project) = self.project_root.clone() {
-                            let folder = self
-                                .asset_browser
-                                .selected_folder()
-                                .strip_prefix("scripts/rhai")
-                                .unwrap_or(Path::new(""));
-                            match engine_authoring::create_rhai_script_in(
-                                &project,
-                                folder,
-                                self.new_rhai_script_name.trim(),
-                            ) {
-                                Ok(path) => {
-                                    self.asset_browser.refresh(&project.assets_root());
-                                    if let Ok(relative) = path.strip_prefix(project.assets_root()) {
-                                        self.asset_browser.select_relative_path(relative);
-                                    }
-                                    self.session.push_diagnostic(
-                                        engine_authoring::Diagnostic::info(
-                                            "editor.rhai_script_created",
-                                            format!("created {}", path.display()),
-                                        ),
-                                    );
-                                    self.show_new_rhai_script = false;
+                        && let Some(project) = self.project_root.clone()
+                    {
+                        let folder = self
+                            .asset_browser
+                            .selected_folder()
+                            .strip_prefix("scripts/rhai")
+                            .unwrap_or(Path::new(""));
+                        match engine_authoring::create_rhai_script_in(
+                            &project,
+                            folder,
+                            self.new_rhai_script_name.trim(),
+                        ) {
+                            Ok(path) => {
+                                self.asset_browser.refresh(&project.assets_root());
+                                if let Ok(relative) = path.strip_prefix(project.assets_root()) {
+                                    self.asset_browser.select_relative_path(relative);
                                 }
-                                Err(error) => self.session.push_diagnostic(
-                                    engine_authoring::Diagnostic::error(
+                                self.session
+                                    .push_diagnostic(engine_authoring::Diagnostic::info(
+                                        "editor.rhai_script_created",
+                                        format!("created {}", path.display()),
+                                    ));
+                                self.show_new_rhai_script = false;
+                            }
+                            Err(error) => {
+                                self.session
+                                    .push_diagnostic(engine_authoring::Diagnostic::error(
                                         "editor.rhai_script_create_failed",
                                         error.to_string(),
-                                    ),
-                                ),
+                                    ))
                             }
                         }
+                    }
                     if ui.button("Cancel").clicked() {
                         self.show_new_rhai_script = false;
                     }
@@ -344,46 +347,47 @@ impl EditorApp {
                 }
                 control_row(ui, |ui| {
                     if ui.button("Create").clicked()
-                        && let Some(project) = self.project_root.clone() {
-                            // Folders below the Rust root are free-form, so the
-                            // browser's working folder wins and the recommended
-                            // folder for the kind is only the fallback.
-                            let script_folder = self
-                                .asset_browser
-                                .selected_folder()
-                                .strip_prefix("scripts/rust")
-                                .map(Path::to_path_buf)
-                                .unwrap_or_else(|_| {
-                                    PathBuf::from(self.new_rust_script_kind.recommended_folder())
-                                });
-                            match engine_authoring::create_rust_script_in(
-                                &project,
-                                self.new_rust_script_kind,
-                                &script_folder,
-                                &self.new_rust_script_name,
-                                self.new_rust_script_schedule,
-                            ) {
-                                Ok(path) => {
-                                    self.session.push_diagnostic(
-                                        engine_authoring::Diagnostic::info(
-                                            "editor.rust_script_created",
-                                            format!("created {}", path.display()),
-                                        ),
-                                    );
-                                    self.refresh_game_code_browser(Some(&path));
-                                    self.bottom_panel_tab = BottomPanelTab::Assets;
-                                    self.bottom_panel_open = true;
-                                    self.request_game_build_after_edit();
-                                    self.show_new_rust_script = false;
-                                }
-                                Err(error) => self.session.push_diagnostic(
-                                    engine_authoring::Diagnostic::error(
+                        && let Some(project) = self.project_root.clone()
+                    {
+                        // Folders below the Rust root are free-form, so the
+                        // browser's working folder wins and the recommended
+                        // folder for the kind is only the fallback.
+                        let script_folder = self
+                            .asset_browser
+                            .selected_folder()
+                            .strip_prefix("scripts/rust")
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|_| {
+                                PathBuf::from(self.new_rust_script_kind.recommended_folder())
+                            });
+                        match engine_authoring::create_rust_script_in(
+                            &project,
+                            self.new_rust_script_kind,
+                            &script_folder,
+                            &self.new_rust_script_name,
+                            self.new_rust_script_schedule,
+                        ) {
+                            Ok(path) => {
+                                self.session
+                                    .push_diagnostic(engine_authoring::Diagnostic::info(
+                                        "editor.rust_script_created",
+                                        format!("created {}", path.display()),
+                                    ));
+                                self.refresh_game_code_browser(Some(&path));
+                                self.bottom_panel_tab = BottomPanelTab::Assets;
+                                self.bottom_panel_open = true;
+                                self.request_game_build_after_edit();
+                                self.show_new_rust_script = false;
+                            }
+                            Err(error) => {
+                                self.session
+                                    .push_diagnostic(engine_authoring::Diagnostic::error(
                                         "editor.rust_script_create_failed",
                                         error.to_string(),
-                                    ),
-                                ),
+                                    ))
                             }
                         }
+                    }
                     if ui.button("Cancel").clicked() {
                         self.show_new_rust_script = false;
                     }
@@ -437,9 +441,13 @@ impl EditorApp {
                 let Some(location) = self.component_source_index.resolve(&component_id).cloned()
                 else {
                     let message = if self.component_source_index.is_ambiguous(&component_id) {
-                        format!("component ID `{component_id}` is ambiguous; resolve duplicate declarations first")
+                        format!(
+                            "component ID `{component_id}` is ambiguous; resolve duplicate declarations first"
+                        )
                     } else {
-                        format!("no sidecar-backed GameComponent source was indexed for `{component_id}`")
+                        format!(
+                            "no sidecar-backed GameComponent source was indexed for `{component_id}`"
+                        )
                     };
                     self.session
                         .push_diagnostic(engine_authoring::Diagnostic::error(
@@ -553,10 +561,11 @@ impl EditorApp {
                     engine::scene_bridge::NAV_MESH_SURFACE_COMPONENT,
                 );
                 let Some(session) = self.session.tab_session_mut(tab_id) else {
-                    self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
-                        "editor.navmesh_bake_tab_closed",
-                        "navigation bake completed after its source scene tab was closed",
-                    ));
+                    self.session
+                        .push_diagnostic(engine_authoring::Diagnostic::warning(
+                            "editor.navmesh_bake_tab_closed",
+                            "navigation bake completed after its source scene tab was closed",
+                        ));
                     return;
                 };
                 let existing_surface = session.scene().and_then(|scene| {
@@ -609,10 +618,8 @@ impl EditorApp {
                 }
             }
             NavigationBakeCompletion::Failed { tab_id, error } => {
-                let diagnostic = engine_authoring::Diagnostic::error(
-                    "editor.navmesh_bake_failed",
-                    error,
-                );
+                let diagnostic =
+                    engine_authoring::Diagnostic::error("editor.navmesh_bake_failed", error);
                 if let Some(session) = self.session.tab_session_mut(tab_id) {
                     session.push_diagnostic(diagnostic);
                 } else {

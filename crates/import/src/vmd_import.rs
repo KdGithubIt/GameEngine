@@ -109,9 +109,7 @@
 //! channels and report that their scene channels were ignored (ADR 0098).
 
 use crate::animation::{AnimChannel, AnimProperty, AnimationClip, Keyframe, MorphChannel};
-use crate::asset::{
-    imported_motion_sub_asset_id, imported_sub_asset_id, ImportedSubAssetKind,
-};
+use crate::asset::{ImportedSubAssetKind, imported_motion_sub_asset_id, imported_sub_asset_id};
 use crate::derived_cache::{CacheKey, DerivedCache};
 use crate::model_import::GltfImportResult;
 use crate::pmx_import::{convert_position, convert_rotation};
@@ -120,11 +118,11 @@ use engine_authoring::diagnostic::Diagnostic;
 use engine_authoring::id::AssetId;
 use glam::{Quat, Vec3};
 use mmd_anim_format::pmx::{
-    import_pmx_runtime, parse_pmx_model, PmxParsedBone, PmxParsedModel, PmxRuntimeImport,
+    PmxParsedBone, PmxParsedModel, PmxRuntimeImport, import_pmx_runtime, parse_pmx_model,
 };
 use mmd_anim_format::vmd::{
-    build_mmd_registered_pair_clip, parse_vmd_shared_context, VmdImportResult as MmdMotion,
-    VmdParsedAnimation, VmdParsedMorphFrame, VmdSharedContextSummary,
+    VmdImportResult as MmdMotion, VmdParsedAnimation, VmdParsedMorphFrame, VmdSharedContextSummary,
+    build_mmd_registered_pair_clip, parse_vmd_shared_context,
 };
 use mmd_anim_runtime::{BoneIndex, ModelArena, MorphIndex, RuntimeInstance};
 use serde::{Deserialize, Serialize};
@@ -195,8 +193,8 @@ pub fn classify_vmd_summary(summary: &VmdSharedContextSummary) -> VmdContentKind
 
 /// Parses and classifies one VMD without constructing a model-bound clip.
 pub fn classify_vmd_bytes(bytes: &[u8]) -> Result<VmdContentKind, VmdImportError> {
-    let context =
-        parse_vmd_shared_context(bytes).map_err(|error| VmdImportError::Parse(error.to_string()))?;
+    let context = parse_vmd_shared_context(bytes)
+        .map_err(|error| VmdImportError::Parse(error.to_string()))?;
     Ok(classify_vmd_summary(context.summary()))
 }
 
@@ -214,8 +212,8 @@ pub fn classify_vmd_path(path: &Path) -> Result<VmdContentKind, VmdImportError> 
 /// can make the pairing decision with the information the file provides.
 pub fn vmd_recorded_model_name_path(path: &Path) -> Result<String, VmdImportError> {
     let bytes = std::fs::read(path).map_err(VmdImportError::Io)?;
-    let context =
-        parse_vmd_shared_context(&bytes).map_err(|error| VmdImportError::Parse(error.to_string()))?;
+    let context = parse_vmd_shared_context(&bytes)
+        .map_err(|error| VmdImportError::Parse(error.to_string()))?;
     Ok(context.parsed_animation().metadata.model_name.clone())
 }
 
@@ -244,8 +242,7 @@ impl VmdPmxCompatibilitySummary {
     /// Returns the exact-name compatibility percentage, or `None` when the
     /// VMD has no meaningful tracks in this domain.
     pub fn compatibility_percent(self) -> Option<f32> {
-        (self.used_tracks != 0)
-            .then(|| self.unique_tracks as f32 * 100.0 / self.used_tracks as f32)
+        (self.used_tracks != 0).then(|| self.unique_tracks as f32 * 100.0 / self.used_tracks as f32)
     }
 
     /// Returns whether every meaningful track has exactly one PMX match.
@@ -334,12 +331,8 @@ pub fn check_vmd_pmx_compatibility_bytes(
 ) -> Result<VmdPmxCompatibilityReport, VmdImportError> {
     let vmd = parse_vmd_shared_context(vmd_bytes)
         .map_err(|error| VmdImportError::Parse(error.to_string()))?;
-    let pmx = parse_pmx_model(pmx_bytes)
-        .map_err(|error| VmdImportError::Rig(error.to_string()))?;
-    Ok(analyze_vmd_pmx_compatibility(
-        vmd.parsed_animation(),
-        &pmx,
-    ))
+    let pmx = parse_pmx_model(pmx_bytes).map_err(|error| VmdImportError::Rig(error.to_string()))?;
+    Ok(analyze_vmd_pmx_compatibility(vmd.parsed_animation(), &pmx))
 }
 
 fn analyze_vmd_pmx_compatibility(
@@ -922,14 +915,19 @@ fn bind_bone_targets(
     // the n-th PMX bone of a repeated name takes the n-th skeleton bone.
     let mut by_name: HashMap<&str, std::collections::VecDeque<usize>> = HashMap::new();
     for (index, bone) in skeleton.bones.iter().enumerate() {
-        by_name.entry(bone.name.as_str()).or_default().push_back(index);
+        by_name
+            .entry(bone.name.as_str())
+            .or_default()
+            .push_back(index);
     }
 
     let mut unbound = Vec::new();
     let targets: Vec<Option<BoneId>> = bone_names
         .iter()
         .map(|name| {
-            let bone_index = by_name.get_mut(name.as_str()).and_then(|queue| queue.pop_front());
+            let bone_index = by_name
+                .get_mut(name.as_str())
+                .and_then(|queue| queue.pop_front());
             match bone_index {
                 Some(index) => Some(skeleton.bones[index].id),
                 None => {
@@ -959,7 +957,10 @@ fn bind_bone_targets(
 /// Unbound bones get an identity entry that is never read, keeping this list
 /// index-aligned with `bone_targets` instead of needing a second lookup in
 /// the sampling loop.
-fn collect_bone_rest(bone_targets: &[Option<BoneId>], skeleton: &SkeletonAsset) -> Vec<(Vec3, Quat)> {
+fn collect_bone_rest(
+    bone_targets: &[Option<BoneId>],
+    skeleton: &SkeletonAsset,
+) -> Vec<(Vec3, Quat)> {
     bone_targets
         .iter()
         .map(|target| {
@@ -1095,8 +1096,8 @@ pub fn import_vmd_bytes(
     rig: &VmdBakeRig,
     options: &VmdBakeOptions,
 ) -> Result<VmdImportResult, VmdImportError> {
-    let context =
-        parse_vmd_shared_context(bytes).map_err(|error| VmdImportError::Parse(error.to_string()))?;
+    let context = parse_vmd_shared_context(bytes)
+        .map_err(|error| VmdImportError::Parse(error.to_string()))?;
     let content_kind = classify_vmd_summary(context.summary());
     match content_kind {
         VmdContentKind::Scene => return Err(VmdImportError::SceneMotionUnsupported),
@@ -1294,11 +1295,7 @@ impl VmdImportResult {
     /// the same VMD to coexist in one manifest.
     pub fn bind_model_source(&mut self, motion_source: &AssetId, model_source: &AssetId) {
         for clip in &mut self.clips {
-            clip.id = imported_motion_sub_asset_id(
-                motion_source,
-                model_source,
-                clip.source_index,
-            );
+            clip.id = imported_motion_sub_asset_id(motion_source, model_source, clip.source_index);
         }
         self.model_source = Some(model_source.clone());
     }
@@ -1469,7 +1466,6 @@ fn report_unbound_curves(rig: &VmdBakeRig, motion: &MmdMotion, diagnostics: &mut
             ),
         ));
     }
-
 }
 
 /// Converts decoded VMD morph records into deterministic scalar channels.
@@ -1698,10 +1694,16 @@ fn reduce_track<T: Copy>(
     sample_time: impl Fn(usize) -> f32,
 ) -> Option<Vec<Keyframe>> {
     let first = *samples.first()?;
-    if samples.iter().all(|sample| difference(*sample, rest) <= epsilon) {
+    if samples
+        .iter()
+        .all(|sample| difference(*sample, rest) <= epsilon)
+    {
         return None;
     }
-    if samples.iter().all(|sample| difference(*sample, first) <= epsilon) {
+    if samples
+        .iter()
+        .all(|sample| difference(*sample, first) <= epsilon)
+    {
         // Constant but not at rest: one keyframe holds for the whole clip.
         return Some(vec![Keyframe {
             time: sample_time(0),
@@ -1724,7 +1726,12 @@ fn reduce_track<T: Copy>(
 /// so one broken motion cannot produce a multi-megabyte log line.
 fn summarize_names(names: &[String]) -> String {
     const VISIBLE: usize = 8;
-    let shown = names.iter().take(VISIBLE).cloned().collect::<Vec<_>>().join(", ");
+    let shown = names
+        .iter()
+        .take(VISIBLE)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     if names.len() > VISIBLE {
         format!("{shown}, ... ({} more)", names.len() - VISIBLE)
     } else {
@@ -1906,17 +1913,17 @@ pub fn resolve_or_bake_vmd_path(
 mod tests {
     use super::*;
     use crate::animation::lerp_channel;
-    use crate::pmx_import::{import_pmx_bytes, PMX_TO_METERS};
+    use crate::pmx_import::{PMX_TO_METERS, import_pmx_bytes};
     use mmd_anim_format::pmx::{
-        export_pmx_model, PmxParsedAppendTransform, PmxParsedBone, PmxParsedBoneFlags,
-        PmxParsedCounts, PmxParsedGeometry, PmxParsedIk, PmxParsedIkLimit, PmxParsedIkLink,
-        PmxParsedIndexSizes, PmxParsedLocalAxis, PmxParsedMaterial, PmxParsedMaterialFlags,
-        PmxParsedMetadata, PmxParsedModel, PmxParsedMorph, PmxParsedQdef, PmxParsedSdef,
-        PmxParsedSkeleton,
+        PmxParsedAppendTransform, PmxParsedBone, PmxParsedBoneFlags, PmxParsedCounts,
+        PmxParsedGeometry, PmxParsedIk, PmxParsedIkLimit, PmxParsedIkLink, PmxParsedIndexSizes,
+        PmxParsedLocalAxis, PmxParsedMaterial, PmxParsedMaterialFlags, PmxParsedMetadata,
+        PmxParsedModel, PmxParsedMorph, PmxParsedQdef, PmxParsedSdef, PmxParsedSkeleton,
+        export_pmx_model,
     };
     use mmd_anim_format::vmd::{
-        export_vmd_animation, VmdParsedAnimation, VmdParsedBoneFrame, VmdParsedCounts,
-        VmdParsedMetadata,
+        VmdParsedAnimation, VmdParsedBoneFrame, VmdParsedCounts, VmdParsedMetadata,
+        export_vmd_animation,
     };
     use std::f32::consts::FRAC_PI_2;
 
@@ -2001,8 +2008,7 @@ mod tests {
                 && issue.name == BONE_ARM
         }));
         assert!(report.issues.iter().any(|issue| {
-            issue.kind == VmdPmxCompatibilityIssueKind::AmbiguousBone
-                && issue.name == "ambiguous"
+            issue.kind == VmdPmxCompatibilityIssueKind::AmbiguousBone && issue.name == "ambiguous"
         }));
         assert!(report.issues.iter().any(|issue| {
             issue.kind == VmdPmxCompatibilityIssueKind::MissingBone && issue.name == "missing"
@@ -2131,8 +2137,7 @@ mod tests {
         // opposite local X operation axis, but both PMX files declare the
         // same actual IK link angle limit and therefore must bake the same
         // deformation.
-        let (baseline_rig, baseline_skeleton) =
-            rig_from(rigged_pmx_fixture_with_knee_limit(false));
+        let (baseline_rig, baseline_skeleton) = rig_from(rigged_pmx_fixture_with_knee_limit(false));
         let (local_axis_rig, local_axis_skeleton) =
             rig_from(rigged_pmx_fixture_with_knee_limit(true));
 
@@ -2152,8 +2157,7 @@ mod tests {
 
         // The fixture must actually bend the constrained link; otherwise the
         // comparison would not prove that the IK limit path was exercised.
-        let baseline_rotation =
-            local_rotation(&baseline_skeleton, baseline_clip, end, BONE_LOWER);
+        let baseline_rotation = local_rotation(&baseline_skeleton, baseline_clip, end, BONE_LOWER);
         assert!(
             quat_angle(baseline_rotation) > 0.1,
             "the regression fixture must bend its knee-like lower link"
@@ -2161,14 +2165,9 @@ mod tests {
 
         // Local-axis operation metadata must not alter the baked FK rotation.
         // This is the direct regression assertion for backwards knees.
-        let local_axis_rotation = local_rotation(
-            &local_axis_skeleton,
-            local_axis_clip,
-            end,
-            BONE_LOWER,
-        );
-        let rotation_delta =
-            (baseline_rotation.inverse() * local_axis_rotation).normalize();
+        let local_axis_rotation =
+            local_rotation(&local_axis_skeleton, local_axis_clip, end, BONE_LOWER);
+        let rotation_delta = (baseline_rotation.inverse() * local_axis_rotation).normalize();
         assert!(
             quat_angle(rotation_delta) < 1.0e-4,
             "PMX local-axis operation metadata changed the baked IK result"
@@ -2176,10 +2175,8 @@ mod tests {
 
         // Compare the observable model-space endpoint as well as the channel
         // quaternion so the test covers the final pose consumed by animation.
-        let baseline_tip =
-            model_position(&baseline_skeleton, baseline_clip, end, BONE_TIP);
-        let local_axis_tip =
-            model_position(&local_axis_skeleton, local_axis_clip, end, BONE_TIP);
+        let baseline_tip = model_position(&baseline_skeleton, baseline_clip, end, BONE_TIP);
+        let local_axis_tip = model_position(&local_axis_skeleton, local_axis_clip, end, BONE_TIP);
         assert!(
             (baseline_tip - local_axis_tip).length() < 1.0e-5,
             "PMX local-axis metadata changed the baked IK endpoint"
@@ -2292,7 +2289,11 @@ mod tests {
         assert_eq!(clip.skeleton_identity, Some(skeleton.identity));
         assert!(clip.validate().is_none(), "the baked clip must validate");
         // 30 VMD frames at MMD's 30 Hz is exactly one second.
-        assert!((clip.duration - 1.0).abs() < 1.0e-6, "got {}", clip.duration);
+        assert!(
+            (clip.duration - 1.0).abs() < 1.0e-6,
+            "got {}",
+            clip.duration
+        );
     }
 
     #[test]
@@ -2413,7 +2414,10 @@ mod tests {
             [1.0, 0.5, 0.0],
             IDENTITY_ROTATION,
         )]);
-        assert!(has_diagnostic(&bake(&rig, &motion), "vmd.rest_pose_mismatch"));
+        assert!(has_diagnostic(
+            &bake(&rig, &motion),
+            "vmd.rest_pose_mismatch"
+        ));
     }
 
     #[test]
@@ -2490,10 +2494,15 @@ mod tests {
         )
         .expect("fixture must bake");
 
-        let coarse_keys = channel(&coarse.clips[0].clip, &rig, BONE_ARM, AnimProperty::Rotation)
-            .expect("the animated bone must emit a rotation channel")
-            .keyframes
-            .len();
+        let coarse_keys = channel(
+            &coarse.clips[0].clip,
+            &rig,
+            BONE_ARM,
+            AnimProperty::Rotation,
+        )
+        .expect("the animated bone must emit a rotation channel")
+        .keyframes
+        .len();
         let fine_keys = channel(&fine.clips[0].clip, &rig, BONE_ARM, AnimProperty::Rotation)
             .expect("the animated bone must emit a rotation channel")
             .keyframes
@@ -2551,7 +2560,8 @@ mod tests {
             [0.0; 3],
             z_rotation(FRAC_PI_2),
         )]);
-        let default_key = cache_key_for_baked_vmd(&motion, "dance", &rig, &VmdBakeOptions::default());
+        let default_key =
+            cache_key_for_baked_vmd(&motion, "dance", &rig, &VmdBakeOptions::default());
         let doubled_key = cache_key_for_baked_vmd(
             &motion,
             "dance",
@@ -2635,7 +2645,10 @@ mod tests {
         // The clip must declare the skeleton the *model's* import produced,
         // not a second identity minted from the motion's own source ID.
         let model_skeleton = skeleton_for(&model_source, &rigged_pmx_fixture());
-        assert_eq!(baked.clips[0].clip.skeleton.as_ref(), Some(&model_skeleton.id));
+        assert_eq!(
+            baked.clips[0].clip.skeleton.as_ref(),
+            Some(&model_skeleton.id)
+        );
         assert_eq!(
             baked.clips[0].clip.skeleton_identity,
             Some(model_skeleton.identity)
@@ -2699,9 +2712,14 @@ mod tests {
             baked.clips[0].id,
             imported_motion_sub_asset_id(&motion_source, &target_model, 0)
         );
-        assert_eq!(baked.clips[0].clip.skeleton.as_ref(), Some(&target_skeleton.id));
         assert_eq!(
-            baked.imported_sub_assets()[0].target_model_source.as_deref(),
+            baked.clips[0].clip.skeleton.as_ref(),
+            Some(&target_skeleton.id)
+        );
+        assert_eq!(
+            baked.imported_sub_assets()[0]
+                .target_model_source
+                .as_deref(),
             Some(target_model.as_str())
         );
     }
@@ -2876,7 +2894,9 @@ mod tests {
         let index = skeleton.bone_index(id).expect("bone must be in skeleton");
         clip.channels
             .iter()
-            .find(|channel| channel.target_bone == Some(id) && channel.property == AnimProperty::Rotation)
+            .find(|channel| {
+                channel.target_bone == Some(id) && channel.property == AnimProperty::Rotation
+            })
             .and_then(|channel| lerp_channel(channel, time))
             .map(Quat::from_array)
             .unwrap_or(skeleton.bones[index].rest_rotation)
@@ -3061,8 +3081,8 @@ mod tests {
     /// an operation-local X axis pointing toward -X. This descriptor must not
     /// reverse the coordinate frame of the stored IK angle limit.
     fn rigged_pmx_fixture_with_knee_limit(has_local_axis: bool) -> Vec<u8> {
-        let mut model = parse_pmx_model(&rigged_pmx_fixture())
-            .expect("base knee regression PMX must parse");
+        let mut model =
+            parse_pmx_model(&rigged_pmx_fixture()).expect("base knee regression PMX must parse");
 
         {
             // Attach the optional local-axis descriptor to the constrained

@@ -3,16 +3,14 @@
 //! Edits the contact-bone overrides stored on an imported source, plus the
 //! paired-model picker shown for a `*.vmd` motion source.
 
-use crate::ui::*;
 use super::humanoid_profile_editor::{
-    humanoid_profile_editor_states, persisted_humanoid_profiles, show_humanoid_profiles_editor,
-    HumanoidProfileEditorState,
+    HumanoidProfileEditorState, humanoid_profile_editor_states, persisted_humanoid_profiles,
+    show_humanoid_profiles_editor,
 };
 use super::manifest::save_asset_manifest;
-use super::motion_pairing::{
-    motion_humanoid_source_is_valid, show_motion_pairing_editor,
-};
+use super::motion_pairing::{motion_humanoid_source_is_valid, show_motion_pairing_editor};
 use super::retarget_window::{pmx_model_paths, pmx_model_sources, registered_model_retarget_pairs};
+use crate::ui::*;
 
 impl EditorApp {
     /// Opens the Import Settings window for a registered glTF/GLB source row
@@ -34,74 +32,80 @@ impl EditorApp {
             .get(&source_id)
             .map(|entry| humanoid_profile_editor_states(&entry.import_settings))
             .unwrap_or_default();
-        let motion_pairing = engine::asset_path_matches_kind(
-            engine::AssetKind::MotionSource,
-            &entry.relative_path,
-        )
-        .then(|| MotionPairingState {
-            motion_path: self
-                .project_root
-                .as_ref()
-                .map(|project| project.assets_root().join(&entry.relative_path)),
-            original: self
-                .asset_manifest
-                .get(&source_id)
-                .and_then(|entry| entry.import_settings.motion_original_model_source.as_deref())
-                .and_then(|original| {
-                    AssetId::from_stable_id(engine_authoring::StableId::new(original)).ok()
-                }),
-            selected: self
-                .asset_manifest
-                .get(&source_id)
-                .map(|entry| {
-                    entry
-                        .import_settings
-                        .resolved_motion_model_sources()
-                        .into_iter()
-                        .filter_map(|paired| {
-                            AssetId::from_stable_id(engine_authoring::StableId::new(paired)).ok()
+        let motion_pairing =
+            engine::asset_path_matches_kind(engine::AssetKind::MotionSource, &entry.relative_path)
+                .then(|| MotionPairingState {
+                    motion_path: self
+                        .project_root
+                        .as_ref()
+                        .map(|project| project.assets_root().join(&entry.relative_path)),
+                    original: self
+                        .asset_manifest
+                        .get(&source_id)
+                        .and_then(|entry| {
+                            entry
+                                .import_settings
+                                .motion_original_model_source
+                                .as_deref()
                         })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            candidates: pmx_model_sources(&self.asset_manifest),
-            humanoid_source: self
-                .asset_manifest
-                .get(&source_id)
-                .and_then(|entry| {
-                    entry
-                        .import_settings
-                        .motion_humanoid_source_model
-                        .as_deref()
-                })
-                .and_then(|source| {
-                    AssetId::from_stable_id(engine_authoring::StableId::new(source)).ok()
-                }),
-            humanoid_capable_models: humanoid_capable_pmx_models(&self.asset_manifest),
-            candidate_paths: self
-                .project_root
-                .as_ref()
-                .map(|project| pmx_model_paths(&self.asset_manifest, &project.assets_root()))
-                .unwrap_or_default(),
-            retarget_pairs: self
-                .project_root
-                .as_ref()
-                .map(|project| {
-                    registered_model_retarget_pairs(
-                        &self.asset_manifest,
-                        &project.assets_root(),
-                    )
-                })
-                .unwrap_or_default(),
-            recorded_model_name: self.project_root.as_ref().and_then(|project| {
-                engine::vmd_recorded_model_name_path(
-                    &project.assets_root().join(&entry.relative_path),
-                )
-                .ok()
-                    .filter(|name| !name.trim().is_empty())
-            }),
-            compatibility_reports: Vec::new(),
-        });
+                        .and_then(|original| {
+                            AssetId::from_stable_id(engine_authoring::StableId::new(original)).ok()
+                        }),
+                    selected: self
+                        .asset_manifest
+                        .get(&source_id)
+                        .map(|entry| {
+                            entry
+                                .import_settings
+                                .resolved_motion_model_sources()
+                                .into_iter()
+                                .filter_map(|paired| {
+                                    AssetId::from_stable_id(engine_authoring::StableId::new(paired))
+                                        .ok()
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    candidates: pmx_model_sources(&self.asset_manifest),
+                    humanoid_source: self
+                        .asset_manifest
+                        .get(&source_id)
+                        .and_then(|entry| {
+                            entry
+                                .import_settings
+                                .motion_humanoid_source_model
+                                .as_deref()
+                        })
+                        .and_then(|source| {
+                            AssetId::from_stable_id(engine_authoring::StableId::new(source)).ok()
+                        }),
+                    humanoid_capable_models: humanoid_capable_pmx_models(&self.asset_manifest),
+                    candidate_paths: self
+                        .project_root
+                        .as_ref()
+                        .map(|project| {
+                            pmx_model_paths(&self.asset_manifest, &project.assets_root())
+                        })
+                        .unwrap_or_default(),
+                    retarget_pairs: self
+                        .project_root
+                        .as_ref()
+                        .map(|project| {
+                            registered_model_retarget_pairs(
+                                &self.asset_manifest,
+                                &project.assets_root(),
+                            )
+                        })
+                        .unwrap_or_default(),
+                    recorded_model_name: self.project_root.as_ref().and_then(|project| {
+                        engine::vmd_recorded_model_name_path(
+                            &project.assets_root().join(&entry.relative_path),
+                        )
+                        .ok()
+                        .filter(|name| !name.trim().is_empty())
+                    }),
+                    compatibility_reports: Vec::new(),
+                });
         self.import_settings_editor = Some(ImportSettingsEditorState {
             source_id,
             relative_path: entry.relative_path.clone(),
@@ -203,12 +207,10 @@ impl EditorApp {
                 .map(|id| id.as_str().to_owned())
                 .collect::<Vec<_>>()
         });
-        let motion_original_model_source = state.motion_pairing.as_ref().and_then(|pairing| {
-            pairing
-                .original
-                .as_ref()
-                .map(|id| id.as_str().to_owned())
-        });
+        let motion_original_model_source = state
+            .motion_pairing
+            .as_ref()
+            .and_then(|pairing| pairing.original.as_ref().map(|id| id.as_str().to_owned()));
         let motion_humanoid_source_model = state.motion_pairing.as_ref().and_then(|pairing| {
             pairing
                 .humanoid_source
@@ -249,23 +251,24 @@ impl EditorApp {
                 ),
             ));
     }
-
 }
 
-fn humanoid_capable_pmx_models(
-    manifest: &engine::AssetManifest,
-) -> Vec<(AssetId, String)> {
+fn humanoid_capable_pmx_models(manifest: &engine::AssetManifest) -> Vec<(AssetId, String)> {
     pmx_model_sources(manifest)
         .into_iter()
         .filter(|(id, _)| {
             manifest.get(id).is_some_and(|entry| {
-                entry.import_settings.humanoid_profiles.iter().any(|profile| {
-                    entry
-                        .import_settings
-                        .skeleton_records
-                        .iter()
-                        .any(|record| profile.is_structurally_usable_with_record(record))
-                })
+                entry
+                    .import_settings
+                    .humanoid_profiles
+                    .iter()
+                    .any(|profile| {
+                        entry
+                            .import_settings
+                            .skeleton_records
+                            .iter()
+                            .any(|record| profile.is_structurally_usable_with_record(record))
+                    })
             })
         })
         .collect()

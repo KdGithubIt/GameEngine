@@ -117,7 +117,10 @@ pub(crate) fn apply_studio_style(ui: &mut egui::Ui) {
 /// endpoint, an identifier, a path. Losing the ability to copy those costs more
 /// than the pointer flicker they reintroduce, and they are a small enough part
 /// of the surface that the flicker stays local to them.
-pub(crate) fn selectable_text(ui: &mut egui::Ui, text: impl Into<egui::RichText>) -> egui::Response {
+pub(crate) fn selectable_text(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::RichText>,
+) -> egui::Response {
     ui.add(egui::Label::new(text.into()).selectable(true))
 }
 
@@ -132,7 +135,9 @@ pub(crate) fn card_frame() -> egui::Frame {
 
 /// Draws a card with the shared surface treatment.
 pub(crate) fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    card_frame().show(ui, |ui| full_width(ui, add_contents)).inner
+    card_frame()
+        .show(ui, |ui| full_width(ui, add_contents))
+        .inner
 }
 
 /// Makes a card span the panel instead of shrinking to its contents.
@@ -175,8 +180,11 @@ pub(crate) fn card_header(ui: &mut egui::Ui, text: &str) {
     caption(ui, text);
     ui.add_space(1.0);
     let rule = ui.available_rect_before_wrap();
-    ui.painter()
-        .hline(rule.x_range(), rule.top(), egui::Stroke::new(1.0_f32, BORDER));
+    ui.painter().hline(
+        rule.x_range(),
+        rule.top(),
+        egui::Stroke::new(1.0_f32, BORDER),
+    );
     ui.add_space(7.0);
 }
 
@@ -190,4 +198,3 @@ pub(crate) fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 3.5, color);
 }
-

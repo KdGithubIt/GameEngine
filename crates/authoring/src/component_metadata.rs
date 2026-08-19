@@ -6,7 +6,7 @@
 //! prefabs for the lifetime of the logical component type.
 
 use crate::id::ComponentTypeId;
-use crate::persist::{replace_file_contents, PersistError};
+use crate::persist::{PersistError, replace_file_contents};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -196,7 +196,11 @@ impl fmt::Display for ComponentMetadataError {
                 write!(formatter, "could not read {}: {source}", path.display())
             }
             Self::Json { path, source } => {
-                write!(formatter, "invalid component metadata {}: {source}", path.display())
+                write!(
+                    formatter,
+                    "invalid component metadata {}: {source}",
+                    path.display()
+                )
             }
             Self::UnsupportedVersion {
                 path,

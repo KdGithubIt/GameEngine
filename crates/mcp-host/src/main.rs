@@ -1,4 +1,4 @@
-use engine_mcp_host::transport::{McpHostResult, McpServer, McpServerInfo, MCP_PROTOCOL_VERSION};
+use engine_mcp_host::transport::{MCP_PROTOCOL_VERSION, McpHostResult, McpServer, McpServerInfo};
 use engine_mcp_host::{HeadlessAuthoringHost, HeadlessProjectSelection};
 use serde_json::json;
 use std::env;
@@ -106,16 +106,24 @@ impl Options {
 
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
-                "--project" => project = Some(PathBuf::from(require_value(&mut arguments, "--project")?)),
+                "--project" => {
+                    project = Some(PathBuf::from(require_value(&mut arguments, "--project")?))
+                }
                 "--read-only" => read_only = true,
                 "--scene" => scene = Some(require_value(&mut arguments, "--scene")?),
                 "--graph" => graph = Some(require_value(&mut arguments, "--graph")?),
                 "--graph-view" => graph_view = Some(require_value(&mut arguments, "--graph-view")?),
                 "--ui" => ui = Some(require_value(&mut arguments, "--ui")?),
                 "--material" => material = Some(require_value(&mut arguments, "--material")?),
-                "--animation-set" => animation_set = Some(require_value(&mut arguments, "--animation-set")?),
-                "--sprite-atlas" => sprite_atlas = Some(require_value(&mut arguments, "--sprite-atlas")?),
-                "--sprite-animation" => sprite_animation = Some(require_value(&mut arguments, "--sprite-animation")?),
+                "--animation-set" => {
+                    animation_set = Some(require_value(&mut arguments, "--animation-set")?)
+                }
+                "--sprite-atlas" => {
+                    sprite_atlas = Some(require_value(&mut arguments, "--sprite-atlas")?)
+                }
+                "--sprite-animation" => {
+                    sprite_animation = Some(require_value(&mut arguments, "--sprite-animation")?)
+                }
                 "--tile-set" => tile_set = Some(require_value(&mut arguments, "--tile-set")?),
                 "--tile-map" => tile_map = Some(require_value(&mut arguments, "--tile-map")?),
                 "--help" | "-h" => return Err(usage()),
@@ -141,8 +149,13 @@ impl Options {
     }
 }
 
-fn require_value(arguments: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
-    arguments.next().ok_or_else(|| format!("{flag} requires a value"))
+fn require_value(
+    arguments: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<String, String> {
+    arguments
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 fn usage() -> String {
@@ -157,7 +170,8 @@ mod tests {
     fn writer_is_default_and_read_only_is_explicit() {
         let writer = Options::parse(["--project".into(), "demo".into()]).expect("writer options");
         assert!(!writer.read_only);
-        let read_only = Options::parse(["--project".into(), "demo".into(), "--read-only".into()]).expect("read-only options");
+        let read_only = Options::parse(["--project".into(), "demo".into(), "--read-only".into()])
+            .expect("read-only options");
         assert!(read_only.read_only);
     }
 }

@@ -8,16 +8,14 @@
 use glam::Vec3;
 use hashbrown::HashMap;
 use rapier3d::prelude::{
-    ColliderBuilder, Group, InteractionGroups, InteractionTestMode, PhysicsWorld,
-    RigidBodyBuilder, RigidBodyHandle, RigidBodyType, Vector,
+    ColliderBuilder, Group, InteractionGroups, InteractionTestMode, PhysicsWorld, RigidBodyBuilder,
+    RigidBodyHandle, RigidBodyType, Vector,
 };
 
 use engine_ecs::{Entity, Query, Res, ResMut};
 
 use crate::character_controller::KinematicCharacterController;
-use crate::collision::{
-    Collider, CollisionEvents, CollisionLayers, PhysicsBody, TriggerVolume,
-};
+use crate::collision::{Collider, CollisionEvents, CollisionLayers, PhysicsBody, TriggerVolume};
 use crate::time::FixedTime;
 use crate::transform::Transform;
 
@@ -120,8 +118,10 @@ pub fn velocity_system(
     world.integration_parameters.dt = fixed_time.fixed_delta.max(f32::EPSILON);
     let mut entity_bodies = HashMap::new();
 
-    for (entity, (body_kind, collider, transform, velocity, gravity_scale, controller, trigger, layers)) in
-        query.iter_mut()
+    for (
+        entity,
+        (body_kind, collider, transform, velocity, gravity_scale, controller, trigger, layers),
+    ) in query.iter_mut()
     {
         let pose = pose(transform);
         let rigid_body_type = match body_kind {
@@ -271,8 +271,22 @@ mod tests {
         app.add_system(velocity_system);
         app.update().expect("Rapier step");
 
-        assert!(app.world().get_component::<Transform>(entity).unwrap().translation.y < 2.0);
-        assert!(app.world().get_component::<Velocity>(entity).unwrap().linear.y < 0.0);
+        assert!(
+            app.world()
+                .get_component::<Transform>(entity)
+                .unwrap()
+                .translation
+                .y
+                < 2.0
+        );
+        assert!(
+            app.world()
+                .get_component::<Velocity>(entity)
+                .unwrap()
+                .linear
+                .y
+                < 0.0
+        );
         assert_eq!(
             app.world()
                 .get_resource::<GameplayPhysicsWorld>()

@@ -1,22 +1,23 @@
 //! Cross-domain Native 2D physics composition (ADR 0127).
 
 pub use engine_animation::sprite_2d::{
-    SpriteAnimationRuntimeError, SpriteAnimationState2d, SpriteAnimatorRuntime2d, SpriteFrameEvent2d,
+    SpriteAnimationRuntimeError, SpriteAnimationState2d, SpriteAnimatorRuntime2d,
+    SpriteFrameEvent2d,
 };
 pub use engine_assets::native_2d::{
-    compile_sprite_atlas, compile_tile_map, compile_tile_set, CompiledSpriteAtlas,
-    CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileLayer, CompiledTileMap,
-    CompiledTileSet, Native2dCompileError,
+    CompiledSpriteAtlas, CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileLayer,
+    CompiledTileMap, CompiledTileSet, Native2dCompileError, compile_sprite_atlas, compile_tile_map,
+    compile_tile_set,
+};
+pub use engine_authoring::{
+    SpriteBlendMode, SpriteRef, SpriteRenderer2d, TileLayerId, TileMapDocument, TileSetDocument,
 };
 pub use engine_physics::native_2d::*;
 pub use engine_render_runtime::native_2d::{
-    cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
-    Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, ResolvedTileCell2d,
-    ResolvedTileChunkRender2d, ResolvedTileMap2d, SpriteBatch2d, SpriteInstance2d,
-    TileChunkBounds2d, TileMap2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
-};
-pub use engine_authoring::{
-    SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
+    Camera2d, Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d,
+    ResolvedTileCell2d, ResolvedTileChunkRender2d, ResolvedTileMap2d, SpriteBatch2d,
+    SpriteInstance2d, TileChunkBounds2d, TileMap2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
+    cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform,
 };
 
 use crate::transform::{GlobalTransform, Parent, Transform};
@@ -310,7 +311,11 @@ pub fn physics_2d_fixed_system(
             .world
             .body(key)
             .map(|entry| entry.pose.translation)
-            .or_else(|| project_planar_transform(global.matrix()).ok().map(|pose| pose.translation));
+            .or_else(|| {
+                project_planar_transform(global.matrix())
+                    .ok()
+                    .map(|pose| pose.translation)
+            });
         let Some(start) = start else {
             continue;
         };
@@ -423,18 +428,21 @@ pub fn sprite_animation_2d_fixed_system(
     let seconds = f64::from(fixed_time.fixed_delta.max(0.0));
     for (entity, (animator, renderer)) in query.iter_mut() {
         let clip = animator.clip.clone();
-        let emitted = animator
-            .state
-            .advance_fixed_seconds(clip.as_ref(), seconds, animator.looping_override);
+        let emitted =
+            animator
+                .state
+                .advance_fixed_seconds(clip.as_ref(), seconds, animator.looping_override);
         if let Some(sprite) = animator.state.current_sprite(clip.as_ref()) {
             renderer.sprite = sprite.clone();
         }
-        events.events.extend(emitted.into_iter().map(|event| SpriteAnimationEvent2d {
-            entity,
-            clip: animator.clip_asset.clone(),
-            frame_index: event.frame_index,
-            name: event.name,
-        }));
+        events
+            .events
+            .extend(emitted.into_iter().map(|event| SpriteAnimationEvent2d {
+                entity,
+                clip: animator.clip_asset.clone(),
+                frame_index: event.frame_index,
+                name: event.name,
+            }));
     }
 }
 

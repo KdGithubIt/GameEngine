@@ -37,8 +37,8 @@ use crate::collision::CollisionEvents;
 use crate::input::{Input, KeyCode};
 use crate::save::{SaveData, SaveStore};
 use crate::scripting::{
-    apply_save_commands, arc_collision_snapshot, build_input_snapshot, ScriptComponent,
-    ScriptEngine,
+    ScriptComponent, ScriptEngine, apply_save_commands, arc_collision_snapshot,
+    build_input_snapshot,
 };
 use crate::time::Time;
 use crate::transform::Transform;
@@ -1158,9 +1158,10 @@ fn draw_node(
             let text = resolve_or_placeholder(label, cx.bindings, cx.diagnostics);
             let response = ui.button(text);
             if response.clicked()
-                && let Some(events) = cx.events {
-                    events.push(event.clone());
-                }
+                && let Some(events) = cx.events
+            {
+                events.push(event.clone());
+            }
             response.rect
         }
         UiNodeKind::Spacer { size } => {

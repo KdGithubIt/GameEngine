@@ -137,7 +137,6 @@ impl NavMeshBakeDocument {
     }
 }
 
-
 /// Engine-neutral scene source collected by a host adapter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct NavigationSource {
@@ -253,14 +252,22 @@ impl NavigationBakeService {
         }
         let stats = NavigationBakeStats {
             profile_count: nav_mesh.profiles.len(),
-            tile_count: nav_mesh.profiles.iter().map(|profile| profile.tiles.len()).sum(),
+            tile_count: nav_mesh
+                .profiles
+                .iter()
+                .map(|profile| profile.tiles.len())
+                .sum(),
             polygon_count: nav_mesh
                 .profiles
                 .iter()
                 .flat_map(|profile| &profile.tiles)
                 .map(|tile| tile.polygons.len())
                 .sum(),
-            link_count: nav_mesh.profiles.iter().map(|profile| profile.links.len()).sum(),
+            link_count: nav_mesh
+                .profiles
+                .iter()
+                .map(|profile| profile.links.len())
+                .sum(),
             elapsed: started.elapsed(),
         };
         Ok(NavigationBakeOutput {
@@ -333,7 +340,10 @@ fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("navmesh");
-    path.with_file_name(format!(".{file_name}.{suffix}.{}-{sequence}", std::process::id()))
+    path.with_file_name(format!(
+        ".{file_name}.{suffix}.{}-{sequence}",
+        std::process::id()
+    ))
 }
 
 fn replace_preserving_previous(
@@ -414,7 +424,10 @@ impl fmt::Display for NavigationBakeServiceError {
         match self {
             Self::Json(error) => write!(formatter, "navigation bake JSON error: {error}"),
             Self::UnsupportedVersion(version) => {
-                write!(formatter, "unsupported navigation bake schema version {version}")
+                write!(
+                    formatter,
+                    "unsupported navigation bake schema version {version}"
+                )
             }
             Self::InvalidSettings => formatter.write_str("invalid navigation bake settings"),
             Self::Bake(error) => write!(formatter, "navigation production bake failed: {error}"),
@@ -490,8 +503,14 @@ mod tests {
         let mut second = first.clone();
         second.links.reverse();
         assert_eq!(
-            service.prepare(&first, &document).unwrap().source_fingerprint,
-            service.prepare(&second, &document).unwrap().source_fingerprint
+            service
+                .prepare(&first, &document)
+                .unwrap()
+                .source_fingerprint,
+            service
+                .prepare(&second, &document)
+                .unwrap()
+                .source_fingerprint
         );
     }
 

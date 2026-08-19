@@ -8,10 +8,10 @@ use crate::asset::{AssetManifest, AssetServer, Assets};
 use crate::transform::GlobalTransform;
 use engine_authoring::{AssetId, StableId};
 use engine_ecs::{Entity, Query, Res, ResMut};
+use engine_platform::spatial_audio::spatial_stereo_gains;
 pub use engine_platform::spatial_audio::{
     AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
 };
-use engine_platform::spatial_audio::spatial_stereo_gains;
 
 /// Validated spatial policy for one project Rust sound request.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,13 +235,18 @@ pub const MAX_GAME_AUDIO_COMMANDS: usize = 256;
 /// One validated audio request queued by a project Rust callback.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum GameAudioCommand {
-    PlaySoundEffect { asset_id: String },
+    PlaySoundEffect {
+        asset_id: String,
+    },
     PlaySpatialSoundEffect {
         asset_id: String,
         source: Entity,
         options: GameSpatialAudioOptions,
     },
-    PlayBackgroundMusic { asset_id: String, fade_seconds: f32 },
+    PlayBackgroundMusic {
+        asset_id: String,
+        fade_seconds: f32,
+    },
     StopBackgroundMusic,
     SetMasterVolume(f32),
     SetBackgroundMusicVolume(f32),

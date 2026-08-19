@@ -299,7 +299,10 @@ impl<E: fmt::Display> fmt::Display for BehaviorTreeRuntimeError<E> {
                 "behavior tree {kind:?} leaf must not have children, found {count}"
             ),
             Self::MissingBehaviorId { kind, .. } => {
-                write!(formatter, "behavior tree {kind:?} node is missing behavior id")
+                write!(
+                    formatter,
+                    "behavior tree {kind:?} node is missing behavior id"
+                )
             }
             Self::EmptyComposite { kind, .. } => write!(
                 formatter,
@@ -381,7 +384,8 @@ fn prepare_node(
         parent,
     });
     if depth > MAX_BEHAVIOR_TREE_RUNTIME_DEPTH {
-        plan.max_depth_node.get_or_insert_with(|| node.source.clone());
+        plan.max_depth_node
+            .get_or_insert_with(|| node.source.clone());
         return index;
     }
     let children = node
@@ -716,12 +720,14 @@ impl BehaviorTreeRunner {
                 .active_path
                 .iter()
                 .filter_map(|index| {
-                    self.executor.plan.nodes.get(*index).map(|node| {
-                        BehaviorActiveNodeSnapshot {
+                    self.executor
+                        .plan
+                        .nodes
+                        .get(*index)
+                        .map(|node| BehaviorActiveNodeSnapshot {
                             node: node.source.clone(),
                             elapsed_seconds: self.instance.node_state[*index].elapsed_seconds,
-                        }
-                    })
+                        })
                 })
                 .collect(),
             running_node: self
@@ -780,7 +786,8 @@ impl BehaviorTreeRunner {
         self.executor = BehaviorTreeExecutor::new(tree);
         self.instance = self.executor.create_instance();
         self.instance.execution_generation = previous_generation;
-        self.instance.record_reset(BehaviorResetReason::TreeReplaced);
+        self.instance
+            .record_reset(BehaviorResetReason::TreeReplaced);
         self.tree_generation = self.tree_generation.saturating_add(1);
         self.last_status = None;
         self.last_error = None;
@@ -916,10 +923,11 @@ impl BehaviorTreeContext for BehaviorTreeBehaviorRegistry {
     type Error = BehaviorTreeRegistryError;
 
     fn action_enter(&mut self, node: &NodeId, behavior_id: &str) -> Result<(), Self::Error> {
-        self.lifecycle_calls.push(BehaviorTreeLifecycleEvent::Enter {
-            node: node.clone(),
-            behavior_id: behavior_id.to_owned(),
-        });
+        self.lifecycle_calls
+            .push(BehaviorTreeLifecycleEvent::Enter {
+                node: node.clone(),
+                behavior_id: behavior_id.to_owned(),
+            });
         Ok(())
     }
 
@@ -956,11 +964,12 @@ impl BehaviorTreeContext for BehaviorTreeBehaviorRegistry {
         behavior_id: &str,
         reason: BehaviorResetReason,
     ) -> Result<(), Self::Error> {
-        self.lifecycle_calls.push(BehaviorTreeLifecycleEvent::Abort {
-            node: node.clone(),
-            behavior_id: behavior_id.to_owned(),
-            reason,
-        });
+        self.lifecycle_calls
+            .push(BehaviorTreeLifecycleEvent::Abort {
+                node: node.clone(),
+                behavior_id: behavior_id.to_owned(),
+                reason,
+            });
         Ok(())
     }
 
@@ -1333,7 +1342,10 @@ fn parse_decorator<E>(
         return Ok(PreparedDecorator::Inverter);
     }
     for (prefix, make) in [
-        (WAIT_BEHAVIOR_PREFIX, PreparedDecorator::Wait as fn(f64) -> PreparedDecorator),
+        (
+            WAIT_BEHAVIOR_PREFIX,
+            PreparedDecorator::Wait as fn(f64) -> PreparedDecorator,
+        ),
         (TIMEOUT_BEHAVIOR_PREFIX, PreparedDecorator::Timeout),
         (COOLDOWN_BEHAVIOR_PREFIX, PreparedDecorator::Cooldown),
     ] {
@@ -1582,7 +1594,9 @@ fn abort_actions_in_subtree<C: BehaviorTreeContext>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_authoring::{BehaviorTreeDomain, EdgeId, Graph, GraphCommand, GraphDomain, GraphTransaction};
+    use engine_authoring::{
+        BehaviorTreeDomain, EdgeId, Graph, GraphCommand, GraphDomain, GraphTransaction,
+    };
 
     fn node(
         kind: BehaviorTreeNodeKind,
@@ -1630,10 +1644,8 @@ mod tests {
         registry
             .set_condition("ready", BehaviorStatus::Success)
             .set_action("work", BehaviorStatus::Running);
-        let mut runner = BehaviorTreeRunner::new(tree(sequence(vec![
-            condition("ready"),
-            action("work"),
-        ])));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(sequence(vec![condition("ready"), action("work")])));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
         registry.clear_calls();
@@ -1654,10 +1666,8 @@ mod tests {
         registry
             .set_condition("visible", BehaviorStatus::Failure)
             .set_action("search", BehaviorStatus::Running);
-        let mut runner = BehaviorTreeRunner::new(tree(selector(vec![
-            condition("visible"),
-            action("search"),
-        ])));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(selector(vec![condition("visible"), action("search")])));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
         registry.clear_calls();
@@ -1717,10 +1727,8 @@ mod tests {
     fn inverter_flips_terminal_status() {
         let mut registry = BehaviorTreeBehaviorRegistry::default();
         registry.set_condition("ready", BehaviorStatus::Success);
-        let mut runner = BehaviorTreeRunner::new(tree(decorator(
-            INVERTER_BEHAVIOR,
-            condition("ready"),
-        )));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(decorator(INVERTER_BEHAVIOR, condition("ready"))));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Failure);
     }
@@ -1731,10 +1739,8 @@ mod tests {
         registry
             .set_delta_seconds(0.25)
             .set_action("work", BehaviorStatus::Success);
-        let mut runner = BehaviorTreeRunner::new(tree(decorator(
-            "engine.wait:0.5",
-            action("work"),
-        )));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(decorator("engine.wait:0.5", action("work"))));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
         assert!(registry.calls().is_empty());
@@ -1749,10 +1755,8 @@ mod tests {
         registry
             .set_delta_seconds(0.25)
             .set_action("work", BehaviorStatus::Running);
-        let mut runner = BehaviorTreeRunner::new(tree(decorator(
-            "engine.timeout:0.5",
-            action("work"),
-        )));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(decorator("engine.timeout:0.5", action("work"))));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
         registry.clear_calls();
@@ -1772,10 +1776,8 @@ mod tests {
         registry
             .set_delta_seconds(0.25)
             .set_action("fire", BehaviorStatus::Success);
-        let mut runner = BehaviorTreeRunner::new(tree(decorator(
-            "engine.cooldown:0.5",
-            action("fire"),
-        )));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(decorator("engine.cooldown:0.5", action("fire"))));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
         registry.clear_calls();
@@ -1832,12 +1834,21 @@ mod tests {
             .set_condition("ready", BehaviorStatus::Success)
             .set_action("work", BehaviorStatus::Running);
 
-        assert_eq!(first.tick(&mut first_registry).unwrap(), BehaviorStatus::Running);
+        assert_eq!(
+            first.tick(&mut first_registry).unwrap(),
+            BehaviorStatus::Running
+        );
         first_registry.clear_calls();
-        assert_eq!(first.tick(&mut first_registry).unwrap(), BehaviorStatus::Running);
+        assert_eq!(
+            first.tick(&mut first_registry).unwrap(),
+            BehaviorStatus::Running
+        );
         assert_eq!(first_registry.calls().len(), 1);
 
-        assert_eq!(second.tick(&mut second_registry).unwrap(), BehaviorStatus::Running);
+        assert_eq!(
+            second.tick(&mut second_registry).unwrap(),
+            BehaviorStatus::Running
+        );
         assert_eq!(second_registry.calls().len(), 2);
     }
 
@@ -1845,10 +1856,8 @@ mod tests {
     fn inverter_flips_failure_to_success() {
         let mut registry = BehaviorTreeBehaviorRegistry::default();
         registry.set_condition("ready", BehaviorStatus::Failure);
-        let mut runner = BehaviorTreeRunner::new(tree(decorator(
-            INVERTER_BEHAVIOR,
-            condition("ready"),
-        )));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(decorator(INVERTER_BEHAVIOR, condition("ready"))));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
     }
@@ -1859,10 +1868,8 @@ mod tests {
         registry
             .set_delta_seconds(0.25)
             .set_action("work", BehaviorStatus::Success);
-        let mut runner = BehaviorTreeRunner::new(tree(decorator(
-            "engine.wait:0.5",
-            action("work"),
-        )));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(decorator("engine.wait:0.5", action("work"))));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
         runner
@@ -1884,10 +1891,8 @@ mod tests {
         registry
             .set_delta_seconds(0.25)
             .set_action("fire", BehaviorStatus::Success);
-        let mut runner = BehaviorTreeRunner::new(tree(decorator(
-            "engine.cooldown:10",
-            action("fire"),
-        )));
+        let mut runner =
+            BehaviorTreeRunner::new(tree(decorator("engine.cooldown:10", action("fire"))));
 
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
         assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Failure);

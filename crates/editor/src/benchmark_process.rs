@@ -13,7 +13,7 @@ use crate::benchmark_experiment::{
     BenchmarkFixtureSandbox, BenchmarkPlannedRun, BenchmarkRoutingMode, BenchmarkRunFailureKind,
     BenchmarkRunOutcome,
 };
-use crate::managed_local_runtime::{ManagedExecutionEnvironment, MANAGED_BACKEND_ID};
+use crate::managed_local_runtime::{MANAGED_BACKEND_ID, ManagedExecutionEnvironment};
 use crate::resource_arbitration::QualityPreference;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -51,7 +51,10 @@ pub(crate) struct BenchmarkChildRunSpec {
 impl BenchmarkChildRunSpec {
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.schema_version != BENCHMARK_CHILD_SCHEMA_VERSION {
-            return Err(format!("unsupported benchmark child schema {}", self.schema_version));
+            return Err(format!(
+                "unsupported benchmark child schema {}",
+                self.schema_version
+            ));
         }
         if self.experiment_id.trim().is_empty()
             || self.backend_id.trim().is_empty()
@@ -62,23 +65,36 @@ impl BenchmarkChildRunSpec {
         }
         if self.backend_id == MANAGED_BACKEND_ID {
             if self.managed_execution_environment.is_none() {
-                return Err("managed benchmark child requires an exact execution environment".to_owned());
+                return Err(
+                    "managed benchmark child requires an exact execution environment".to_owned(),
+                );
             }
         } else {
             if self.endpoint.trim().is_empty() {
-                return Err("compatible-backend benchmark child requires a local endpoint".to_owned());
+                return Err(
+                    "compatible-backend benchmark child requires a local endpoint".to_owned(),
+                );
             }
             if self.managed_execution_environment.is_some() {
-                return Err("compatible-backend benchmark child cannot carry managed runtime identity".to_owned());
+                return Err(
+                    "compatible-backend benchmark child cannot carry managed runtime identity"
+                        .to_owned(),
+                );
             }
         }
         if self.engine_commit_head.len() != 40
-            || !self.engine_commit_head.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !self
+                .engine_commit_head
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
         {
             return Err("benchmark child requires an exact 40-character engine SHA".to_owned());
         }
         if self.routing_mode != BenchmarkRoutingMode::SingleModel {
-            return Err("first-release benchmark child executes only strict single-model baselines".to_owned());
+            return Err(
+                "first-release benchmark child executes only strict single-model baselines"
+                    .to_owned(),
+            );
         }
         if self.result_path.as_os_str().is_empty() {
             return Err("benchmark child requires an explicit result destination".to_owned());
@@ -115,9 +131,20 @@ impl BenchmarkChildRunSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BenchmarkCoordinatorState {
     Idle,
-    Running { completed: usize, total: usize, current: BenchmarkPlannedRun },
-    Complete { completed: usize, total: usize },
-    Failed { completed: usize, total: usize, message: String },
+    Running {
+        completed: usize,
+        total: usize,
+        current: BenchmarkPlannedRun,
+    },
+    Complete {
+        completed: usize,
+        total: usize,
+    },
+    Failed {
+        completed: usize,
+        total: usize,
+        message: String,
+    },
 }
 
 /// One running benchmark child, viewed only through what the coordinator needs.
@@ -246,7 +273,9 @@ impl BenchmarkExperimentCoordinator {
     ) -> Result<Self, String> {
         spec.validate()?;
         if spec.routing_mode != BenchmarkRoutingMode::SingleModel {
-            return Err("single-model benchmark coordinator cannot execute a routed experiment".to_owned());
+            return Err(
+                "single-model benchmark coordinator cannot execute a routed experiment".to_owned(),
+            );
         }
         if spec.backend_id != MANAGED_BACKEND_ID && endpoint.trim().is_empty() {
             return Err("benchmark compatible-backend endpoint must be non-empty".to_owned());
@@ -285,7 +314,10 @@ impl BenchmarkExperimentCoordinator {
             };
         }
         if self.queue.is_empty() {
-            BenchmarkCoordinatorState::Complete { completed: self.results.len(), total }
+            BenchmarkCoordinatorState::Complete {
+                completed: self.results.len(),
+                total,
+            }
         } else {
             BenchmarkCoordinatorState::Idle
         }
@@ -370,7 +402,9 @@ impl BenchmarkExperimentCoordinator {
     }
 
     fn spawn_run(&self, run: BenchmarkPlannedRun) -> Result<ActiveChild, String> {
-        let project_root = self.sandbox.reset_run(&self.spec.experiment_id, run.ordinal)?;
+        let project_root = self
+            .sandbox
+            .reset_run(&self.spec.experiment_id, run.ordinal)?;
         if run.task_id == "validation_repair_v1" {
             inject_validation_repair_fault(&project_root)?;
         }
@@ -413,9 +447,9 @@ impl BenchmarkExperimentCoordinator {
                 .cloned(),
         };
         child_spec.write(&child_spec_path)?;
-        let process = self
-            .launcher
-            .launch(&self.editor_executable, &project_root, &child_spec_path)?;
+        let process =
+            self.launcher
+                .launch(&self.editor_executable, &project_root, &child_spec_path)?;
         Ok(ActiveChild {
             process,
             run,
@@ -445,8 +479,11 @@ fn inject_validation_repair_fault(project_root: &Path) -> Result<(), String> {
     if source.matches(baseline).count() != 1 {
         return Err("validation-repair fixture baseline is not the expected version".to_owned());
     }
-    fs::write(&path, source.replace(baseline, "assert_eq!(fixture_score(4), 999);"))
-        .map_err(|error| error.to_string())
+    fs::write(
+        &path,
+        source.replace(baseline, "assert_eq!(fixture_score(4), 999);"),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn safe_component(value: &str) -> String {
@@ -460,7 +497,11 @@ fn safe_component(value: &str) -> String {
             }
         })
         .collect::<String>();
-    if value.is_empty() { "experiment".to_owned() } else { value }
+    if value.is_empty() {
+        "experiment".to_owned()
+    } else {
+        value
+    }
 }
 
 #[cfg(test)]
@@ -501,8 +542,8 @@ mod tests {
 mod coordinator_tests {
     use super::*;
     use crate::benchmark_experiment::{
-        BenchmarkExperimentResult, BenchmarkRunFailureKind, BenchmarkRunOutcome,
-        BENCHMARK_FIXTURE_VERSION,
+        BENCHMARK_FIXTURE_VERSION, BenchmarkExperimentResult, BenchmarkRunFailureKind,
+        BenchmarkRunOutcome,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -662,7 +703,8 @@ mod coordinator_tests {
             }
             if matches!(
                 coordinator.state(),
-                BenchmarkCoordinatorState::Complete { .. } | BenchmarkCoordinatorState::Failed { .. }
+                BenchmarkCoordinatorState::Complete { .. }
+                    | BenchmarkCoordinatorState::Failed { .. }
             ) {
                 break;
             }
@@ -676,7 +718,12 @@ mod coordinator_tests {
     #[test]
     fn every_run_starts_from_the_same_freshly_reset_fixture() {
         let root = tempfile::tempdir().expect("root");
-        let spec = experiment(root.path(), &["model-a", "model-b"], &["read_question_v1"], 3);
+        let spec = experiment(
+            root.path(),
+            &["model-a", "model-b"],
+            &["read_question_v1"],
+            3,
+        );
         let (outcome, launches, results, state) = drive(spec, root.path(), Vec::new());
         outcome.expect("suite ran");
         assert_eq!(launches.len(), 6);
@@ -699,7 +746,12 @@ mod coordinator_tests {
     #[test]
     fn one_model_never_inherits_the_workspace_of_another() {
         let root = tempfile::tempdir().expect("root");
-        let spec = experiment(root.path(), &["model-a", "model-b"], &["code_implementation_v1"], 1);
+        let spec = experiment(
+            root.path(),
+            &["model-a", "model-b"],
+            &["code_implementation_v1"],
+            1,
+        );
         let (outcome, launches, _, _) = drive(spec, root.path(), Vec::new());
         outcome.expect("suite ran");
         let second = launches
@@ -759,7 +811,10 @@ mod coordinator_tests {
         let (outcome, launches, results, state) = drive(
             spec,
             root.path(),
-            vec![Some(BenchmarkRunOutcome::Passed), Some(BenchmarkRunOutcome::Failed)],
+            vec![
+                Some(BenchmarkRunOutcome::Passed),
+                Some(BenchmarkRunOutcome::Failed),
+            ],
         );
         outcome.expect("suite ran");
         assert_eq!(launches.len(), 2);
@@ -777,11 +832,16 @@ mod coordinator_tests {
         let result = results.first().expect("the dead run was still recorded");
         assert_eq!(result.outcome, BenchmarkRunOutcome::Failed);
         assert_eq!(result.failure_kind, Some(BenchmarkRunFailureKind::Harness));
-        assert!(result.record.is_none(), "a dead run carries no measurements");
-        assert!(result
-            .harness_message
-            .as_ref()
-            .is_some_and(|message| message.contains("without a valid result")));
+        assert!(
+            result.record.is_none(),
+            "a dead run carries no measurements"
+        );
+        assert!(
+            result
+                .harness_message
+                .as_ref()
+                .is_some_and(|message| message.contains("without a valid result"))
+        );
         assert!(matches!(state, BenchmarkCoordinatorState::Complete { .. }));
     }
 
@@ -823,7 +883,11 @@ mod coordinator_tests {
             !launch.target_source.contains(BASELINE),
             "the repair task must not start from an already passing fixture"
         );
-        assert!(launch.target_source.contains("assert_eq!(fixture_score(4), 999);"));
+        assert!(
+            launch
+                .target_source
+                .contains("assert_eq!(fixture_score(4), 999);")
+        );
     }
 
     #[test]

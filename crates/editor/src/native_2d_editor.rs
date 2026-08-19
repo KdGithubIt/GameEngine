@@ -3,8 +3,8 @@
 
 use eframe::egui;
 use engine_authoring::{
-    replace_file_contents, AuthoringPermission, AuthoringPermissions, ProjectRoot, SpriteRef,
-    TypedAuthoringDocument, TypedDocumentAuthoringService, TypedDocumentAuthoringState,
+    AuthoringPermission, AuthoringPermissions, ProjectRoot, SpriteRef, TypedAuthoringDocument,
+    TypedDocumentAuthoringService, TypedDocumentAuthoringState, replace_file_contents,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -133,7 +133,9 @@ impl<T: Native2dDocument> LoadedTyped<T> {
             self.draft = self.document.clone();
             return Ok(());
         }
-        let json = replacement.canonical_json().map_err(|error| error.to_string())?;
+        let json = replacement
+            .canonical_json()
+            .map_err(|error| error.to_string())?;
         replace_file_contents(&self.path, &json).map_err(|error| error.to_string())?;
         let before = self.document.clone();
         let applied = service
@@ -239,7 +241,10 @@ impl LoadedTileMap {
     }
 
     fn commit_gesture(&mut self) -> Result<(), String> {
-        let commit = self.service.commit_gesture().map_err(|error| error.to_string())?;
+        let commit = self
+            .service
+            .commit_gesture()
+            .map_err(|error| error.to_string())?;
         self.gesture_active = false;
         self.gesture_start = None;
         self.affected_chunks = commit.affected_chunks;
@@ -249,7 +254,9 @@ impl LoadedTileMap {
 
     fn cancel_gesture(&mut self) -> Result<(), String> {
         if self.gesture_active {
-            self.service.cancel_gesture().map_err(|error| error.to_string())?;
+            self.service
+                .cancel_gesture()
+                .map_err(|error| error.to_string())?;
         }
         self.gesture_active = false;
         self.gesture_start = None;
@@ -388,7 +395,10 @@ fn document_picker(
         .width(ui.available_width().min(420.0))
         .show_ui(ui, |ui| {
             for path in paths {
-                if ui.selectable_label(current == Some(path.as_path()), path.display().to_string()).clicked() {
+                if ui
+                    .selectable_label(current == Some(path.as_path()), path.display().to_string())
+                    .clicked()
+                {
                     selected = Some(path.clone());
                 }
             }
@@ -406,16 +416,25 @@ fn typed_document_toolbar<T: Native2dDocument>(
         if document.is_dirty() {
             ui.colored_label(egui::Color32::YELLOW, "Modified");
         }
-        if ui.add_enabled(document.is_dirty(), egui::Button::new("Apply")).clicked() {
+        if ui
+            .add_enabled(document.is_dirty(), egui::Button::new("Apply"))
+            .clicked()
+        {
             status = Some(match document.apply_draft() {
                 Ok(()) => "Applied validated canonical document".to_owned(),
                 Err(error) => format!("Apply failed: {error}"),
             });
         }
-        if ui.add_enabled(document.is_dirty(), egui::Button::new("Revert")).clicked() {
+        if ui
+            .add_enabled(document.is_dirty(), egui::Button::new("Revert"))
+            .clicked()
+        {
             document.revert_draft();
         }
-        if ui.add_enabled(!document.undo.is_empty(), egui::Button::new("Undo")).clicked() {
+        if ui
+            .add_enabled(!document.undo.is_empty(), egui::Button::new("Undo"))
+            .clicked()
+        {
             status = Some(match document.undo() {
                 Ok(true) => "Undid one typed-document transaction".to_owned(),
                 Ok(false) => "Nothing to undo".to_owned(),
@@ -457,11 +476,10 @@ impl Native2dEditorState {
                 .max_height(360.0)
                 .show(&mut columns[0], |ui| {
                     for (index, region) in loaded.draft.regions.iter().enumerate() {
-                        let response = ui
-                            .selectable_label(
-                                self.atlas_region == index,
-                                format!("{}  {}", region.name, region.id.as_str()),
-                            );
+                        let response = ui.selectable_label(
+                            self.atlas_region == index,
+                            format!("{}  {}", region.name, region.id.as_str()),
+                        );
                         if response.clicked() {
                             self.atlas_region = index;
                         }
@@ -480,7 +498,7 @@ impl Native2dEditorState {
             {
                 let source = loaded.draft.regions
                     [self.atlas_region.min(loaded.draft.regions.len() - 1)]
-                    .clone();
+                .clone();
                 let mut slice = source;
                 slice.id = engine_authoring::SpriteId::generate();
                 slice.name = format!("{} Copy", slice.name);
@@ -508,11 +526,25 @@ impl Native2dEditorState {
             });
             columns[1].horizontal(|ui| {
                 ui.label("Pivot");
-                ui.add(egui::DragValue::new(&mut region.pivot[0]).range(0.0..=1.0).speed(0.01));
-                ui.add(egui::DragValue::new(&mut region.pivot[1]).range(0.0..=1.0).speed(0.01));
+                ui.add(
+                    egui::DragValue::new(&mut region.pivot[0])
+                        .range(0.0..=1.0)
+                        .speed(0.01),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut region.pivot[1])
+                        .range(0.0..=1.0)
+                        .speed(0.01),
+                );
             });
-            let mut use_project_ppu = matches!(region.pixels_per_unit, engine_authoring::PixelsPerUnit::ProjectDefault);
-            if columns[1].checkbox(&mut use_project_ppu, "Use project pixels/unit").changed() {
+            let mut use_project_ppu = matches!(
+                region.pixels_per_unit,
+                engine_authoring::PixelsPerUnit::ProjectDefault
+            );
+            if columns[1]
+                .checkbox(&mut use_project_ppu, "Use project pixels/unit")
+                .changed()
+            {
                 region.pixels_per_unit = if use_project_ppu {
                     engine_authoring::PixelsPerUnit::ProjectDefault
                 } else {
@@ -520,7 +552,11 @@ impl Native2dEditorState {
                 };
             }
             if let engine_authoring::PixelsPerUnit::Override(value) = &mut region.pixels_per_unit {
-                columns[1].add(egui::DragValue::new(value).range(0.001..=100_000.0).prefix("Pixels/unit "));
+                columns[1].add(
+                    egui::DragValue::new(value)
+                        .range(0.001..=100_000.0)
+                        .prefix("Pixels/unit "),
+                );
             }
             columns[1].horizontal(|ui| {
                 ui.label("Filtering");
@@ -541,7 +577,9 @@ impl Native2dEditorState {
                     .range(0..=32)
                     .prefix("Extrusion "),
             );
-            columns[1].small("Drag a region row into 2D Scene View to create Transform + SpriteRenderer2D.");
+            columns[1].small(
+                "Drag a region row into 2D Scene View to create Transform + SpriteRenderer2D.",
+            );
         });
     }
 }
@@ -562,7 +600,9 @@ impl Native2dEditorState {
             self.open_animation(project, &path);
         }
         let Some(loaded) = self.animation.as_mut() else {
-            ui.label("Register and select a *.spriteanim.json asset to author deterministic frames.");
+            ui.label(
+                "Register and select a *.spriteanim.json asset to author deterministic frames.",
+            );
             return;
         };
         if let Some(status) = typed_document_toolbar(ui, loaded) {
@@ -590,7 +630,11 @@ impl Native2dEditorState {
                 if columns[0]
                     .selectable_label(
                         self.animation_frame == index,
-                        format!("#{index} · {} ticks · {}", frame.duration_ticks, frame.sprite.sprite.as_str()),
+                        format!(
+                            "#{index} · {} ticks · {}",
+                            frame.duration_ticks,
+                            frame.sprite.sprite.as_str()
+                        ),
                     )
                     .clicked()
                 {
@@ -603,8 +647,7 @@ impl Native2dEditorState {
                 loaded.draft.frames.insert(index + 1, frame);
                 self.animation_frame = index + 1;
             }
-            if loaded.draft.frames.len() > 1
-                && columns[0].button("Remove selected frame").clicked()
+            if loaded.draft.frames.len() > 1 && columns[0].button("Remove selected frame").clicked()
             {
                 let index = self.animation_frame.min(loaded.draft.frames.len() - 1);
                 loaded.draft.frames.remove(index);
@@ -617,8 +660,10 @@ impl Native2dEditorState {
             if let Some(frame) = loaded.draft.frames.get_mut(self.animation_frame) {
                 columns[1].strong(format!("Frame {}", self.animation_frame));
                 columns[1].label(format!("Atlas: {}", frame.sprite.atlas.as_str()));
-                let sprite_drop = columns[1].label(format!("Sprite: {}", frame.sprite.sprite.as_str()));
-                if let Some(payload) = sprite_drop.dnd_release_payload::<SpriteRegionDragPayload>() {
+                let sprite_drop =
+                    columns[1].label(format!("Sprite: {}", frame.sprite.sprite.as_str()));
+                if let Some(payload) = sprite_drop.dnd_release_payload::<SpriteRegionDragPayload>()
+                {
                     frame.sprite = payload.sprite.clone();
                 }
                 columns[1].add(
@@ -630,7 +675,9 @@ impl Native2dEditorState {
                 if columns[1].text_edit_singleline(&mut event).changed() {
                     frame.event = (!event.trim().is_empty()).then_some(event);
                 }
-                columns[1].small("Drop a Sprite Atlas region on the Sprite row to replace the stable SpriteRef.");
+                columns[1].small(
+                    "Drop a Sprite Atlas region on the Sprite row to replace the stable SpriteRef.",
+                );
             }
         });
 
@@ -648,8 +695,7 @@ impl Native2dEditorState {
             if ui.button("Step tick").clicked()
                 && self.animation_preview.frame_index < loaded.draft.frames.len()
             {
-                self.animation_preview
-                    .advance_ticks(&loaded.draft, 1, None);
+                self.animation_preview.advance_ticks(&loaded.draft, 1, None);
             }
             ui.label(format!(
                 "Runtime preview: frame {} · tick {}",
@@ -741,7 +787,7 @@ impl Native2dEditorState {
                 tile.sprite = payload.sprite.clone();
             }
             columns[1].checkbox(&mut tile.one_way, "One-way platform surface");
-            let mut tags = tile.tags.join(", " );
+            let mut tags = tile.tags.join(", ");
             columns[1].horizontal(|ui| {
                 ui.label("Tags");
                 if ui.text_edit_singleline(&mut tags).changed() {
@@ -767,12 +813,24 @@ impl Native2dEditorState {
                     match shape {
                         engine_authoring::TileCollisionShape::Box { half_extents } => {
                             ui.label("Box");
-                            ui.add(egui::DragValue::new(&mut half_extents[0]).range(0.001..=1000.0).prefix("Half X "));
-                            ui.add(egui::DragValue::new(&mut half_extents[1]).range(0.001..=1000.0).prefix("Half Y "));
+                            ui.add(
+                                egui::DragValue::new(&mut half_extents[0])
+                                    .range(0.001..=1000.0)
+                                    .prefix("Half X "),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut half_extents[1])
+                                    .range(0.001..=1000.0)
+                                    .prefix("Half Y "),
+                            );
                         }
                         engine_authoring::TileCollisionShape::Circle { radius } => {
                             ui.label("Circle");
-                            ui.add(egui::DragValue::new(radius).range(0.001..=1000.0).prefix("Radius "));
+                            ui.add(
+                                egui::DragValue::new(radius)
+                                    .range(0.001..=1000.0)
+                                    .prefix("Radius "),
+                            );
                         }
                         engine_authoring::TileCollisionShape::Polygon { points } => {
                             ui.label(format!("Polygon · {} vertices", points.len()));
@@ -792,17 +850,20 @@ impl Native2dEditorState {
             }
             columns[1].horizontal_wrapped(|ui| {
                 if ui.button("Add Box").clicked() {
-                    tile.collision.push(engine_authoring::TileCollisionShape::Box {
-                        half_extents: [0.5, 0.5],
-                    });
+                    tile.collision
+                        .push(engine_authoring::TileCollisionShape::Box {
+                            half_extents: [0.5, 0.5],
+                        });
                 }
                 if ui.button("Add Circle").clicked() {
-                    tile.collision.push(engine_authoring::TileCollisionShape::Circle { radius: 0.5 });
+                    tile.collision
+                        .push(engine_authoring::TileCollisionShape::Circle { radius: 0.5 });
                 }
                 if ui.button("Add Polygon").clicked() {
-                    tile.collision.push(engine_authoring::TileCollisionShape::Polygon {
-                        points: vec![[-0.5, -0.5], [0.5, -0.5], [0.0, 0.5]],
-                    });
+                    tile.collision
+                        .push(engine_authoring::TileCollisionShape::Polygon {
+                            points: vec![[-0.5, -0.5], [0.5, -0.5], [0.0, 0.5]],
+                        });
                 }
             });
         });
@@ -857,7 +918,10 @@ impl Native2dEditorState {
             if loaded.dirty {
                 ui.colored_label(egui::Color32::YELLOW, "Modified");
             }
-            if ui.add_enabled(loaded.dirty, egui::Button::new("Save")).clicked() {
+            if ui
+                .add_enabled(loaded.dirty, egui::Button::new("Save"))
+                .clicked()
+            {
                 self.status = Some(match loaded.save() {
                     Ok(()) => "Saved canonical Tile Map".to_owned(),
                     Err(error) => format!("Tile Map save failed: {error}"),
@@ -894,11 +958,7 @@ impl Native2dEditorState {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Palette");
             for tile in &loaded.tiles.tiles {
-                ui.selectable_value(
-                    &mut loaded.selected_tile,
-                    Some(tile.id.clone()),
-                    &tile.name,
-                );
+                ui.selectable_value(&mut loaded.selected_tile, Some(tile.id.clone()), &tile.name);
             }
         });
         ui.horizontal_wrapped(|ui| {
@@ -1045,11 +1105,17 @@ fn show_tile_map_canvas(
     let origin_x = rect.left() + (-MIN_X) as f32 * cell_size.x;
     let origin_y = rect.top() + (MAX_Y + 1) as f32 * cell_size.y;
     painter.line_segment(
-        [egui::pos2(origin_x, rect.top()), egui::pos2(origin_x, rect.bottom())],
+        [
+            egui::pos2(origin_x, rect.top()),
+            egui::pos2(origin_x, rect.bottom()),
+        ],
         egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(190, 80, 80)),
     );
     painter.line_segment(
-        [egui::pos2(rect.left(), origin_y), egui::pos2(rect.right(), origin_y)],
+        [
+            egui::pos2(rect.left(), origin_y),
+            egui::pos2(rect.right(), origin_y),
+        ],
         egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(80, 190, 100)),
     );
 
@@ -1112,10 +1178,9 @@ fn tile_cell_from_pointer(
 }
 
 fn tile_color(tile: &engine_authoring::TileId) -> egui::Color32 {
-    let hash = tile
-        .as_str()
-        .bytes()
-        .fold(0_u32, |state, byte| state.wrapping_mul(33).wrapping_add(u32::from(byte)));
+    let hash = tile.as_str().bytes().fold(0_u32, |state, byte| {
+        state.wrapping_mul(33).wrapping_add(u32::from(byte))
+    });
     egui::Color32::from_rgb(
         70 + (hash & 63) as u8,
         90 + ((hash >> 6) & 63) as u8,

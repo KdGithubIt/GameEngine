@@ -4,8 +4,8 @@
 //! Deleting a model therefore has to clear surviving references instead of
 //! leaving a dangling one that would block scene validation and saving.
 
-use super::errors::EditorSessionError;
 use super::EditorSession;
+use super::errors::EditorSessionError;
 use engine_authoring::{AuthoringCommand, ComponentTypeId, EntityId, Value};
 
 impl EditorSession {
@@ -14,7 +14,10 @@ impl EditorSession {
     /// Renderers outside the deleted hierarchy remain valid scene entities in
     /// a recoverable unassigned state instead of retaining a dangling
     /// `EntityRef` that would block scene validation and saving.
-    pub(super) fn renderer_model_detach_commands(&self, deleted: &[EntityId]) -> Vec<AuthoringCommand> {
+    pub(super) fn renderer_model_detach_commands(
+        &self,
+        deleted: &[EntityId],
+    ) -> Vec<AuthoringCommand> {
         let Some(scene) = self.scene() else {
             return Vec::new();
         };
@@ -190,11 +193,13 @@ mod tests {
             .remove_scene_component(model.clone(), model_type.clone())
             .expect("remove model and detach renderer");
 
-        assert!(!session
-            .scene_entity(&model)
-            .expect("model entity remains")
-            .components
-            .contains_key(&model_type));
+        assert!(
+            !session
+                .scene_entity(&model)
+                .expect("model entity remains")
+                .components
+                .contains_key(&model_type)
+        );
         let Value::Object(renderer_fields) = session
             .scene_entity(&renderer)
             .expect("renderer remains")

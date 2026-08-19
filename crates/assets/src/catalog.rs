@@ -257,8 +257,7 @@ fn source_file_exists(project: &ProjectRoot, relative: &str) -> Result<bool, Ass
 }
 
 fn matches_query<'a>(query: &str, mut values: impl Iterator<Item = &'a str>) -> bool {
-    query.is_empty()
-        || values.any(|value| value.to_ascii_lowercase().contains(query))
+    query.is_empty() || values.any(|value| value.to_ascii_lowercase().contains(query))
 }
 
 fn imported_kind_name(kind: ImportedSubAssetKind) -> &'static str {
@@ -278,8 +277,8 @@ fn imported_kind_name(kind: ImportedSubAssetKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asset::{imported_sub_asset_id, ManifestEntry};
-    use engine_authoring::{ProjectConfig, PROJECT_SCHEMA_VERSION};
+    use crate::asset::{ManifestEntry, imported_sub_asset_id};
+    use engine_authoring::{PROJECT_SCHEMA_VERSION, ProjectConfig};
     use std::fs;
 
     fn project() -> (tempfile::TempDir, ProjectRoot) {

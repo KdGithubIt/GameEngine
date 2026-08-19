@@ -40,7 +40,10 @@ pub(super) fn handle(
                 let Some(cell) = pointer_cell else {
                     return Ok(());
                 };
-                loaded.service.begin_gesture().map_err(|error| error.to_string())?;
+                loaded
+                    .service
+                    .begin_gesture()
+                    .map_err(|error| error.to_string())?;
                 loaded.gesture_active = true;
                 loaded.gesture_start = Some(cell);
                 if let Err(error) = loaded.service.fill_bounded(
@@ -57,7 +60,9 @@ pub(super) fn handle(
             }
         }
         TileTool2d::Eyedropper => {
-            if response.clicked_by(primary) && let Some(cell) = pointer_cell {
+            if response.clicked_by(primary)
+                && let Some(cell) = pointer_cell
+            {
                 loaded.selected_tile = loaded.service.eyedropper(layer, cell);
             }
         }
@@ -108,7 +113,10 @@ fn paint_brush_cell(
     } else {
         None
     };
-    loaded.service.paint(layer, cell, tile).map_err(|error| error.to_string())?;
+    loaded
+        .service
+        .paint(layer, cell, tile)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -160,13 +168,9 @@ fn apply_shape(
             work_budget,
         )
     } else {
-        loaded.service.line(
-            layer,
-            start,
-            end,
-            loaded.selected_tile.clone(),
-            work_budget,
-        )
+        loaded
+            .service
+            .line(layer, start, end, loaded.selected_tile.clone(), work_budget)
     };
     if let Err(error) = result {
         loaded.cancel_gesture()?;
@@ -189,16 +193,16 @@ fn handle_select_stamp(
         }
         if response.drag_stopped_by(primary) {
             if let (Some(start), Some(end)) = (loaded.gesture_start.take(), pointer_cell) {
-                loaded.stamp = loaded.service.copy_stamp(
-                    layer,
-                    engine_authoring::TileRect::from_corners(start, end),
-                );
+                loaded.stamp = loaded
+                    .service
+                    .copy_stamp(layer, engine_authoring::TileRect::from_corners(start, end));
             }
-        } else if response.clicked_by(primary) && let Some(cell) = pointer_cell {
-            loaded.stamp = loaded.service.copy_stamp(
-                layer,
-                engine_authoring::TileRect::from_corners(cell, cell),
-            );
+        } else if response.clicked_by(primary)
+            && let Some(cell) = pointer_cell
+        {
+            loaded.stamp = loaded
+                .service
+                .copy_stamp(layer, engine_authoring::TileRect::from_corners(cell, cell));
         }
         return Ok(());
     }
@@ -209,7 +213,10 @@ fn handle_select_stamp(
         };
         let stamp = loaded.stamp.clone();
         begin(loaded, Some(origin))?;
-        if let Err(error) = loaded.service.paste_stamp(layer, origin, &stamp, work_budget) {
+        if let Err(error) = loaded
+            .service
+            .paste_stamp(layer, origin, &stamp, work_budget)
+        {
             loaded.cancel_gesture()?;
             return Err(error.to_string());
         }
@@ -222,7 +229,10 @@ fn begin(
     loaded: &mut LoadedTileMap,
     start: Option<engine_authoring::TileCell>,
 ) -> Result<(), String> {
-    loaded.service.begin_gesture().map_err(|error| error.to_string())?;
+    loaded
+        .service
+        .begin_gesture()
+        .map_err(|error| error.to_string())?;
     loaded.gesture_active = true;
     loaded.gesture_start = start;
     Ok(())

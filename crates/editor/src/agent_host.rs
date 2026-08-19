@@ -56,8 +56,14 @@ impl fmt::Display for AgentHostError {
         match self {
             Self::SessionNotFound(id) => write!(formatter, "agent session `{id}` was not found"),
             Self::RunNotFound(id) => write!(formatter, "agent run `{id}` was not found"),
-            Self::InvalidWorkClaim(message) => write!(formatter, "invalid agent work claim: {message}"),
-            Self::WorkClaimConflict { requested, owner_run_id, owner_claim } => write!(
+            Self::InvalidWorkClaim(message) => {
+                write!(formatter, "invalid agent work claim: {message}")
+            }
+            Self::WorkClaimConflict {
+                requested,
+                owner_run_id,
+                owner_claim,
+            } => write!(
                 formatter,
                 "work claim `{requested}` conflicts with `{owner_claim}` owned by agent run `{owner_run_id}`"
             ),
@@ -66,14 +72,21 @@ impl fmt::Display for AgentHostError {
                 "proposal version {expected} was authorized, but current proposal version is {current}"
             ),
             Self::InvalidTransition { from, to } => {
-                write!(formatter, "agent run cannot transition from {from:?} to {to:?}")
+                write!(
+                    formatter,
+                    "agent run cannot transition from {from:?} to {to:?}"
+                )
             }
             Self::CompletionPending => write!(
                 formatter,
                 "agent run cannot complete while required completion checks are unresolved"
             ),
             Self::InvalidRelativePath(path) => {
-                write!(formatter, "path `{}` is outside the managed code scope", path.display())
+                write!(
+                    formatter,
+                    "path `{}` is outside the managed code scope",
+                    path.display()
+                )
             }
             Self::UnsupportedCodeDeletion(path) => write!(
                 formatter,
@@ -86,7 +99,11 @@ impl fmt::Display for AgentHostError {
                 path.display()
             ),
             Self::NonUtf8CodeFile(path) => {
-                write!(formatter, "managed code file `{}` is not UTF-8 text", path.display())
+                write!(
+                    formatter,
+                    "managed code file `{}` is not UTF-8 text",
+                    path.display()
+                )
             }
             Self::Serialization(error) => write!(formatter, "agent state JSON error: {error}"),
             Self::Io(error) => write!(formatter, "agent state I/O error: {error}"),
@@ -413,12 +430,7 @@ impl PermissionBroker {
         PermissionCheck::RequiresApproval
     }
 
-    fn resolve(
-        &mut self,
-        run_id: &str,
-        capability: AgentCapability,
-        scope: ApprovalScope,
-    ) {
+    fn resolve(&mut self, run_id: &str, capability: AgentCapability, scope: ApprovalScope) {
         let key = (run_id.to_owned(), capability);
         match scope {
             ApprovalScope::Once => {
@@ -478,41 +490,68 @@ pub(crate) struct AgentWorkClaim {
 impl AgentWorkClaim {
     #[allow(dead_code)]
     pub(crate) fn authoring_document(key: impl Into<String>) -> Self {
-        Self { kind: AgentWorkClaimKind::AuthoringDocument, key: key.into() }
+        Self {
+            kind: AgentWorkClaimKind::AuthoringDocument,
+            key: key.into(),
+        }
     }
 
     pub(crate) fn code_path(key: impl Into<String>) -> Self {
-        Self { kind: AgentWorkClaimKind::CodePath, key: key.into() }
+        Self {
+            kind: AgentWorkClaimKind::CodePath,
+            key: key.into(),
+        }
     }
 
     #[allow(dead_code)]
     pub(crate) fn asset_target(key: impl Into<String>) -> Self {
-        Self { kind: AgentWorkClaimKind::AssetTarget, key: key.into() }
+        Self {
+            kind: AgentWorkClaimKind::AssetTarget,
+            key: key.into(),
+        }
     }
 
     #[allow(dead_code)]
     pub(crate) fn shared_resource(key: impl Into<String>) -> Self {
-        Self { kind: AgentWorkClaimKind::SharedResource, key: key.into() }
+        Self {
+            kind: AgentWorkClaimKind::SharedResource,
+            key: key.into(),
+        }
     }
 
     fn normalized(&self) -> Result<Self, AgentHostError> {
         let key = self.key.trim();
         if key.is_empty() || key.contains('\0') {
-            return Err(AgentHostError::InvalidWorkClaim("claim key must be non-empty text".to_owned()));
+            return Err(AgentHostError::InvalidWorkClaim(
+                "claim key must be non-empty text".to_owned(),
+            ));
         }
-        let key = if matches!(self.kind, AgentWorkClaimKind::CodePath | AgentWorkClaimKind::AssetTarget) {
+        let key = if matches!(
+            self.kind,
+            AgentWorkClaimKind::CodePath | AgentWorkClaimKind::AssetTarget
+        ) {
             if key.starts_with('/') || key.contains('\\') || key.contains(':') {
-                return Err(AgentHostError::InvalidWorkClaim(format!("path claim `{key}` must be project-relative and use `/` separators")));
+                return Err(AgentHostError::InvalidWorkClaim(format!(
+                    "path claim `{key}` must be project-relative and use `/` separators"
+                )));
             }
             let segments = key.split('/').collect::<Vec<_>>();
-            if segments.iter().any(|segment| segment.is_empty() || matches!(*segment, "." | "..")) {
-                return Err(AgentHostError::InvalidWorkClaim(format!("path claim `{key}` contains an invalid segment")));
+            if segments
+                .iter()
+                .any(|segment| segment.is_empty() || matches!(*segment, "." | ".."))
+            {
+                return Err(AgentHostError::InvalidWorkClaim(format!(
+                    "path claim `{key}` contains an invalid segment"
+                )));
             }
             segments.join("/")
         } else {
             key.to_owned()
         };
-        Ok(Self { kind: self.kind, key })
+        Ok(Self {
+            kind: self.kind,
+            key,
+        })
     }
 
     fn conflicts_with(&self, other: &Self) -> bool {
@@ -544,8 +583,12 @@ impl fmt::Display for AgentWorkClaim {
 
 fn hierarchical_claim_keys_overlap(left: &str, right: &str) -> bool {
     left == right
-        || left.strip_prefix(right).is_some_and(|suffix| suffix.starts_with('/'))
-        || right.strip_prefix(left).is_some_and(|suffix| suffix.starts_with('/'))
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -583,7 +626,6 @@ impl Default for AgentProposal {
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AuthoritativeStateSnapshot {
@@ -732,11 +774,28 @@ pub(crate) enum AgentEventKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "evidence", rename_all = "snake_case")]
 pub(crate) enum AgentEventEvidence {
-    Progress { step: String, detail: String },
-    ToolAction { tool: String, action: String, success: Option<bool> },
-    Playtest { launched: bool, interactions_passed: Option<bool> },
-    CapturedFrame { artifact_id: String, width: u32, height: u32 },
-    CompletionGate { gate: String, status: CompletionStatus },
+    Progress {
+        step: String,
+        detail: String,
+    },
+    ToolAction {
+        tool: String,
+        action: String,
+        success: Option<bool>,
+    },
+    Playtest {
+        launched: bool,
+        interactions_passed: Option<bool>,
+    },
+    CapturedFrame {
+        artifact_id: String,
+        width: u32,
+        height: u32,
+    },
+    CompletionGate {
+        gate: String,
+        status: CompletionStatus,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -917,7 +976,12 @@ impl CompletionReport {
             self.interaction_scenarios,
         ]
         .into_iter()
-        .all(|status| matches!(status, CompletionStatus::Passed | CompletionStatus::NotApplicable))
+        .all(|status| {
+            matches!(
+                status,
+                CompletionStatus::Passed | CompletionStatus::NotApplicable
+            )
+        })
     }
 }
 
@@ -1033,7 +1097,10 @@ pub(crate) struct AgentHost {
 }
 
 impl AgentHost {
-    pub(crate) fn open(project_root: PathBuf, storage_root: PathBuf) -> Result<Self, AgentHostError> {
+    pub(crate) fn open(
+        project_root: PathBuf,
+        storage_root: PathBuf,
+    ) -> Result<Self, AgentHostError> {
         fs::create_dir_all(storage_root.join("sessions"))?;
         let policy_path = storage_root.join("permissions.json");
         let permissions = PermissionBroker::load(&policy_path)?;
@@ -1117,7 +1184,10 @@ impl AgentHost {
         Ok(())
     }
 
-    pub(crate) fn create_session(&mut self, title: impl Into<String>) -> Result<String, AgentHostError> {
+    pub(crate) fn create_session(
+        &mut self,
+        title: impl Into<String>,
+    ) -> Result<String, AgentHostError> {
         let session = AgentSession::new(title.into());
         let id = session.id.clone();
         self.sessions.insert(id.clone(), session);
@@ -1138,10 +1208,16 @@ impl AgentHost {
             text: text.clone(),
             created_unix_ms: unix_ms(),
         });
-        if let Some(run) = session.runs.last_mut().filter(|run| !run.state.is_terminal()) {
+        if let Some(run) = session
+            .runs
+            .last_mut()
+            .filter(|run| !run.state.is_terminal())
+        {
             let kind = match role {
                 ConversationRole::User => AgentEventKind::UserMessage,
-                ConversationRole::Assistant | ConversationRole::System => AgentEventKind::AssistantMessage,
+                ConversationRole::Assistant | ConversationRole::System => {
+                    AgentEventKind::AssistantMessage
+                }
             };
             push_event(run, kind, text);
         }
@@ -1340,7 +1416,10 @@ impl AgentHost {
         self.record_event(run_id, AgentEventKind::Reconciliation, detail)
     }
 
-    fn normalize_work_claims<I>(&self, claims: I) -> Result<BTreeSet<AgentWorkClaim>, AgentHostError>
+    fn normalize_work_claims<I>(
+        &self,
+        claims: I,
+    ) -> Result<BTreeSet<AgentWorkClaim>, AgentHostError>
     where
         I: IntoIterator<Item = AgentWorkClaim>,
     {
@@ -1521,7 +1600,10 @@ impl AgentHost {
         ) {
             (AgentRunState::Repairing, ResumeDisposition::RepairRequired)
         } else {
-            (AgentRunState::Inspecting, ResumeDisposition::ReinspectRequired)
+            (
+                AgentRunState::Inspecting,
+                ResumeDisposition::ReinspectRequired,
+            )
         };
         run.working_state.authoritative_snapshot_before_interrupt = None;
         run.working_state.interrupted_from = None;
@@ -1652,7 +1734,8 @@ impl AgentHost {
                 run.audit.authoring_operations = run.audit.authoring_operations.saturating_add(1);
             }
             if tool == "workspace.raw" {
-                run.audit.raw_workspace_operations = run.audit.raw_workspace_operations.saturating_add(1);
+                run.audit.raw_workspace_operations =
+                    run.audit.raw_workspace_operations.saturating_add(1);
             }
             if tool == "command.custom" {
                 run.audit.custom_commands = run.audit.custom_commands.saturating_add(1);
@@ -1663,7 +1746,11 @@ impl AgentHost {
             AgentEventKind::ToolAction,
             format!("{tool}: {action}"),
             None,
-            Some(AgentEventEvidence::ToolAction { tool, action, success }),
+            Some(AgentEventEvidence::ToolAction {
+                tool,
+                action,
+                success,
+            }),
         );
         self.persist_session(&session_id)
     }
@@ -1734,10 +1821,12 @@ impl AgentHost {
                 "acceptance_criteria" => run.completion.acceptance_criteria = status,
                 "authoring_validation" => run.completion.authoring_validation = status,
                 "visual_evaluation" => run.completion.visual_evaluation = status,
-                _ => return Err(AgentHostError::Io(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("completion gate `{gate}` is not provider-reportable"),
-                ))),
+                _ => {
+                    return Err(AgentHostError::Io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("completion gate `{gate}` is not provider-reportable"),
+                    )));
+                }
             }
             push_event_with_evidence(
                 run,
@@ -1773,7 +1862,9 @@ impl AgentHost {
         push_event_with_evidence(
             run,
             AgentEventKind::ToolAction,
-            format!("Managed runtime input queued through the AI Agent virtual-input source: {command}."),
+            format!(
+                "Managed runtime input queued through the AI Agent virtual-input source: {command}."
+            ),
             None,
             Some(AgentEventEvidence::ToolAction {
                 tool: "runtime.input".to_owned(),
@@ -1806,7 +1897,10 @@ impl AgentHost {
             );
         }
         self.persist_session(&session_id)?;
-        if matches!(state, AgentRunState::Playtesting | AgentRunState::Evaluating) {
+        if matches!(
+            state,
+            AgentRunState::Playtesting | AgentRunState::Evaluating
+        ) {
             self.transition_run(
                 run_id,
                 AgentRunState::Repairing,
@@ -1826,13 +1920,21 @@ impl AgentHost {
         let (session_id, state) = self.run_location(run_id)?;
         {
             let run = self.run_mut_in_session(&session_id, run_id)?;
-            run.completion.play_launch = if launched { CompletionStatus::Passed } else { CompletionStatus::Failed };
+            run.completion.play_launch = if launched {
+                CompletionStatus::Passed
+            } else {
+                CompletionStatus::Failed
+            };
             run.completion.interaction_scenarios = match interactions_passed {
-                Some(true) if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
+                Some(true) if run.proposal_snapshot.playtest_plan.is_empty() => {
+                    CompletionStatus::NotApplicable
+                }
                 Some(true) if run.audit.managed_runtime_inputs > 0 => CompletionStatus::Passed,
                 Some(true) => CompletionStatus::Pending,
                 Some(false) => CompletionStatus::Failed,
-                None if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
+                None if run.proposal_snapshot.playtest_plan.is_empty() => {
+                    CompletionStatus::NotApplicable
+                }
                 None => CompletionStatus::Pending,
             };
             push_event_with_evidence(
@@ -1840,12 +1942,18 @@ impl AgentHost {
                 AgentEventKind::Playtest,
                 message.into(),
                 None,
-                Some(AgentEventEvidence::Playtest { launched, interactions_passed }),
+                Some(AgentEventEvidence::Playtest {
+                    launched,
+                    interactions_passed,
+                }),
             );
         }
         self.persist_session(&session_id)?;
         if (!launched || interactions_passed == Some(false))
-            && matches!(state, AgentRunState::Playtesting | AgentRunState::Evaluating)
+            && matches!(
+                state,
+                AgentRunState::Playtesting | AgentRunState::Evaluating
+            )
         {
             self.transition_run(
                 run_id,
@@ -1873,7 +1981,11 @@ impl AgentHost {
                 AgentEventKind::CapturedFrame,
                 format!("Captured managed Play frame {artifact_id} ({width}x{height})."),
                 None,
-                Some(AgentEventEvidence::CapturedFrame { artifact_id, width, height }),
+                Some(AgentEventEvidence::CapturedFrame {
+                    artifact_id,
+                    width,
+                    height,
+                }),
             );
         }
         self.persist_session(&session_id)?;
@@ -1986,7 +2098,8 @@ impl AgentHost {
                 run,
                 format!(
                     "Managed validation attempt started with {} allow-listed gate(s); {} plan item(s) require another capability.",
-                    gates.len(), unmanaged_plan_items
+                    gates.len(),
+                    unmanaged_plan_items
                 ),
                 ManagedValidationEvent::Started {
                     attempt_id: attempt_id.clone(),
@@ -2004,10 +2117,7 @@ impl AgentHost {
         self.spawn_validation_gate(run_id, &attempt_id, 0)
     }
 
-    pub(crate) fn poll_managed_validation(
-        &mut self,
-        run_id: &str,
-    ) -> Result<bool, AgentHostError> {
+    pub(crate) fn poll_managed_validation(&mut self, run_id: &str) -> Result<bool, AgentHostError> {
         let Some(process) = self.active_validation.as_mut() else {
             return Ok(false);
         };
@@ -2071,7 +2181,9 @@ impl AgentHost {
                     ManagedValidationFailure {
                         kind: ManagedValidationFailureKind::Poll,
                         exit_code: None,
-                        message: format!("Managed validation process status could not be read: {error}"),
+                        message: format!(
+                            "Managed validation process status could not be read: {error}"
+                        ),
                     },
                 )?;
                 Ok(false)
@@ -2083,7 +2195,11 @@ impl AgentHost {
         if !self.run(run_id)?.completion.is_complete() {
             return Err(AgentHostError::CompletionPending);
         }
-        self.transition_run(run_id, AgentRunState::Completed, "Completion contract satisfied.")?;
+        self.transition_run(
+            run_id,
+            AgentRunState::Completed,
+            "Completion contract satisfied.",
+        )?;
         self.record_event(run_id, AgentEventKind::Completion, "Run completed.")
     }
 
@@ -2189,7 +2305,8 @@ impl AgentHost {
                 run,
                 format!(
                     "Managed validation gate `{}` finished as {:?}.",
-                    event_result.gate.label(), event_result.status
+                    event_result.gate.label(),
+                    event_result.status
                 ),
                 ManagedValidationEvent::GateFinished {
                     attempt_id: attempt_id.to_owned(),
@@ -2328,7 +2445,11 @@ impl AgentHost {
             run.completion.interaction_scenarios = CompletionStatus::NotApplicable;
             self.persist_session(&session_id)?;
         }
-        let next = if playtest_required { AgentRunState::Playtesting } else { AgentRunState::Evaluating };
+        let next = if playtest_required {
+            AgentRunState::Playtesting
+        } else {
+            AgentRunState::Evaluating
+        };
         self.transition_run(
             run_id,
             next,
@@ -2382,7 +2503,8 @@ impl AgentHost {
         self.run(run_id)?;
         self.permissions.resolve(run_id, capability, scope);
         if matches!(scope, ApprovalScope::Project) {
-            self.permissions.save(&self.storage_root.join("permissions.json"))?;
+            self.permissions
+                .save(&self.storage_root.join("permissions.json"))?;
         }
         self.record_event(
             run_id,
@@ -2391,13 +2513,17 @@ impl AgentHost {
         )
     }
 
-    pub(crate) fn export_shared_session(&mut self, session_id: &str) -> Result<PathBuf, AgentHostError> {
+    pub(crate) fn export_shared_session(
+        &mut self,
+        session_id: &str,
+    ) -> Result<PathBuf, AgentHostError> {
         let mut portable = self.session(session_id)?.clone();
         portable.shared_with_project = true;
         for run in &mut portable.runs {
             for event in &mut run.events {
                 if event.kind == AgentEventKind::ProviderOutput {
-                    event.message = "[provider output omitted from project-shared history]".to_owned();
+                    event.message =
+                        "[provider output omitted from project-shared history]".to_owned();
                 }
             }
         }
@@ -2525,7 +2651,10 @@ impl AgentHost {
 
     fn persist_session(&self, id: &str) -> Result<(), AgentHostError> {
         let session = self.session(id)?;
-        let path = self.storage_root.join("sessions").join(format!("{id}.json"));
+        let path = self
+            .storage_root
+            .join("sessions")
+            .join(format!("{id}.json"));
         write_json_atomic(&path, session)
     }
 }
@@ -2605,11 +2734,7 @@ fn push_event_with_evidence(
     }
 }
 
-fn push_validation_event(
-    run: &mut AgentRun,
-    message: String,
-    validation: ManagedValidationEvent,
-) {
+fn push_validation_event(run: &mut AgentRun, message: String, validation: ManagedValidationEvent) {
     push_event_with_evidence(
         run,
         AgentEventKind::Validation,
@@ -2712,7 +2837,9 @@ fn recover_persisted_runs(
                         push_event(
                             run,
                             AgentEventKind::WorkClaimReleased,
-                            format!("Recovered stale terminal work claim `{claim}` after Editor restart."),
+                            format!(
+                                "Recovered stale terminal work claim `{claim}` after Editor restart."
+                            ),
                         );
                     }
                     recovered_sessions.insert(session_id.clone());
@@ -3055,7 +3182,8 @@ fn copy_code_tree(
         let entry = entry?;
         let child_relative = relative.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            if entry.file_name() == OsStr::new("target") || entry.file_name() == OsStr::new(".git") {
+            if entry.file_name() == OsStr::new("target") || entry.file_name() == OsStr::new(".git")
+            {
                 continue;
             }
             copy_code_tree(project_root, workspace_root, &child_relative, baseline)?;
@@ -3100,7 +3228,8 @@ fn collect_files_recursive(
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            if entry.file_name() == OsStr::new("target") || entry.file_name() == OsStr::new(".git") {
+            if entry.file_name() == OsStr::new("target") || entry.file_name() == OsStr::new(".git")
+            {
                 continue;
             }
             collect_files_recursive(workspace_root, &entry.path(), paths)?;
@@ -3118,10 +3247,12 @@ fn collect_files_recursive(
     Ok(())
 }
 
-
 fn is_managed_code_file(path: &Path) -> bool {
     let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
-    if matches!(file_name, "Cargo.toml" | "Cargo.lock" | "build.rs" | "config.toml") {
+    if matches!(
+        file_name,
+        "Cargo.toml" | "Cargo.lock" | "build.rs" | "config.toml"
+    ) {
         return true;
     }
     matches!(
@@ -3132,9 +3263,12 @@ fn is_managed_code_file(path: &Path) -> bool {
 
 fn validate_code_relative_path(path: &Path) -> Result<(), AgentHostError> {
     if path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
     {
         return Err(AgentHostError::InvalidRelativePath(path.to_path_buf()));
     }
@@ -3260,9 +3394,7 @@ pub(crate) trait AgentProcessConfinementProvider {
 #[derive(Debug)]
 pub(crate) enum AgentProcessLaunchError {
     InvalidConfinementRequest(String),
-    RequiredConfinementUnavailable {
-        profile: AgentConfinementProfile,
-    },
+    RequiredConfinementUnavailable { profile: AgentConfinementProfile },
     Io(io::Error),
 }
 
@@ -3284,7 +3416,10 @@ impl fmt::Display for AgentProcessLaunchError {
                 "required provider/OS confinement is unavailable: {}",
                 profile.summary()
             ),
-            Self::Io(error) => write!(formatter, "could not launch external agent process: {error}"),
+            Self::Io(error) => write!(
+                formatter,
+                "could not launch external agent process: {error}"
+            ),
         }
     }
 }
@@ -3293,8 +3428,9 @@ impl std::error::Error for AgentProcessLaunchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidConfinementRequest(_)
-            | Self::RequiredConfinementUnavailable { .. } => None,
+            Self::InvalidConfinementRequest(_) | Self::RequiredConfinementUnavailable { .. } => {
+                None
+            }
         }
     }
 }
@@ -3491,10 +3627,7 @@ mod tests {
         let profile = AgentConfinementProfile::application_policy_only(
             AgentConfinementNetworkPolicy::LoopbackOnly,
         );
-        assert_eq!(
-            profile.layer,
-            AgentConfinementLayer::ApplicationPolicyOnly
-        );
+        assert_eq!(profile.layer, AgentConfinementLayer::ApplicationPolicyOnly);
         assert_eq!(
             profile.filesystem_guarantee,
             AgentConfinementGuarantee::Unavailable
@@ -3503,9 +3636,7 @@ mod tests {
             profile.credential_secrecy_guarantee,
             AgentConfinementGuarantee::Unavailable
         );
-        assert!(!profile.satisfies(
-            AgentConfinementRequirement::RequireProviderOrOsConfinement
-        ));
+        assert!(!profile.satisfies(AgentConfinementRequirement::RequireProviderOrOsConfinement));
         assert!(profile.summary().starts_with("Application policy only"));
     }
 
@@ -3520,13 +3651,9 @@ mod tests {
             credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
             requested_network_policy: AgentConfinementNetworkPolicy::LoopbackOnly,
         };
-        assert!(!profile.satisfies(
-            AgentConfinementRequirement::RequireProviderOrOsConfinement
-        ));
+        assert!(!profile.satisfies(AgentConfinementRequirement::RequireProviderOrOsConfinement));
         profile.credential_secrecy_guarantee = AgentConfinementGuarantee::Enforced;
-        assert!(profile.satisfies(
-            AgentConfinementRequirement::RequireProviderOrOsConfinement
-        ));
+        assert!(profile.satisfies(AgentConfinementRequirement::RequireProviderOrOsConfinement));
     }
 
     #[test]
@@ -3586,12 +3713,9 @@ mod tests {
             .clone();
         host.record_confinement_profile(&run, profile)
             .expect("record profile");
-        let persisted = fs::read_to_string(
-            storage
-                .join("sessions")
-                .join(format!("{session}.json")),
-        )
-        .expect("persisted session");
+        let persisted =
+            fs::read_to_string(storage.join("sessions").join(format!("{session}.json")))
+                .expect("persisted session");
         assert!(persisted.contains("confinement_profile"));
         assert!(persisted.contains("unavailable"));
         assert!(!persisted.contains("SECRET_ENDPOINT_MATERIAL"));
@@ -3643,7 +3767,10 @@ mod tests {
         proposal.goal = "Second".to_owned();
         host.update_proposal(&session, proposal).expect("proposal");
         assert_eq!(snapshot.goal, "First");
-        assert_ne!(snapshot.version, host.session(&session).expect("session").proposal.version);
+        assert_ne!(
+            snapshot.version,
+            host.session(&session).expect("session").proposal.version
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -3661,12 +3788,14 @@ mod tests {
         first_proposal
             .work_claims
             .insert(AgentWorkClaim::authoring_document("scene:main"));
-        host.update_proposal(&first, first_proposal).expect("first proposal");
+        host.update_proposal(&first, first_proposal)
+            .expect("first proposal");
         let mut second_proposal = host.session(&second).expect("second").proposal.clone();
         second_proposal
             .work_claims
             .insert(AgentWorkClaim::authoring_document("scene:menu"));
-        host.update_proposal(&second, second_proposal).expect("second proposal");
+        host.update_proposal(&second, second_proposal)
+            .expect("second proposal");
 
         let first_run = host.start_run(&first, "test").expect("first run");
         let second_run = host.start_run(&second, "test").expect("second run");
@@ -3759,16 +3888,18 @@ mod tests {
                 .expect("resume second"),
             ResumeDisposition::ReinspectRequired
         );
-        assert!(host
-            .run(&first_run)
-            .expect("first run")
-            .work_claims
-            .contains(&AgentWorkClaim::authoring_document("scene:main")));
-        assert!(host
-            .run(&second_run)
-            .expect("second run")
-            .work_claims
-            .contains(&AgentWorkClaim::authoring_document("scene:menu")));
+        assert!(
+            host.run(&first_run)
+                .expect("first run")
+                .work_claims
+                .contains(&AgentWorkClaim::authoring_document("scene:main"))
+        );
+        assert!(
+            host.run(&second_run)
+                .expect("second run")
+                .work_claims
+                .contains(&AgentWorkClaim::authoring_document("scene:menu"))
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -3784,30 +3915,32 @@ mod tests {
         let first_run = host.start_run(&first, "test").expect("first run");
         let second_run = host.start_run(&second, "test").expect("second run");
 
-        host.acquire_work_claims(
-            &first_run,
-            [AgentWorkClaim::code_path("game/src")],
-        )
-        .expect("first claim");
-        let conflict = host.acquire_work_claims(
-            &second_run,
-            [AgentWorkClaim::code_path("game/src/lib.rs")],
-        );
+        host.acquire_work_claims(&first_run, [AgentWorkClaim::code_path("game/src")])
+            .expect("first claim");
+        let conflict =
+            host.acquire_work_claims(&second_run, [AgentWorkClaim::code_path("game/src/lib.rs")]);
         assert!(matches!(
             conflict,
             Err(AgentHostError::WorkClaimConflict { owner_run_id, .. })
                 if owner_run_id == first_run
         ));
         let waiting = host.run(&second_run).expect("second run");
-        assert!(waiting.events.iter().any(|event| event.kind == AgentEventKind::WorkConflict));
-        assert!(waiting.events.iter().any(|event| event.kind == AgentEventKind::WorkWait));
+        assert!(
+            waiting
+                .events
+                .iter()
+                .any(|event| event.kind == AgentEventKind::WorkConflict)
+        );
+        assert!(
+            waiting
+                .events
+                .iter()
+                .any(|event| event.kind == AgentEventKind::WorkWait)
+        );
 
         host.cancel_run(&first_run).expect("cancel first");
-        host.acquire_work_claims(
-            &second_run,
-            [AgentWorkClaim::code_path("game/src/lib.rs")],
-        )
-        .expect("claim after cancellation");
+        host.acquire_work_claims(&second_run, [AgentWorkClaim::code_path("game/src/lib.rs")])
+            .expect("claim after cancellation");
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -3842,17 +3975,24 @@ mod tests {
                 .expect("first run")
                 .work_claims
                 .insert(AgentWorkClaim::authoring_document("scene:stale"));
-            host.persist_session(&session_id).expect("persist stale fixture");
+            host.persist_session(&session_id)
+                .expect("persist stale fixture");
         }
 
         let host = AgentHost::open(project.clone(), storage.clone()).expect("reopened host");
         assert_eq!(host.active_writer_run_ids(), vec![second_run.clone()]);
-        assert!(host.run(&first_run).expect("first run").work_claims.is_empty());
-        assert!(host
-            .run(&second_run)
-            .expect("second run")
-            .work_claims
-            .contains(&AgentWorkClaim::authoring_document("scene:menu")));
+        assert!(
+            host.run(&first_run)
+                .expect("first run")
+                .work_claims
+                .is_empty()
+        );
+        assert!(
+            host.run(&second_run)
+                .expect("second run")
+                .work_claims
+                .contains(&AgentWorkClaim::authoring_document("scene:menu"))
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -3873,11 +4013,17 @@ mod tests {
             .completion
             .acceptance_criteria = CompletionStatus::Passed;
         assert_eq!(
-            host.run(&first_run).expect("first run").completion.acceptance_criteria,
+            host.run(&first_run)
+                .expect("first run")
+                .completion
+                .acceptance_criteria,
             CompletionStatus::Passed
         );
         assert_eq!(
-            host.run(&second_run).expect("second run").completion.acceptance_criteria,
+            host.run(&second_run)
+                .expect("second run")
+                .completion
+                .acceptance_criteria,
             CompletionStatus::Pending
         );
         let _ = fs::remove_dir_all(project);
@@ -3909,7 +4055,10 @@ mod tests {
         let run = host
             .start_run_authorized(&session, current, "test")
             .expect("authorized run");
-        assert_eq!(host.run(&run).expect("run").proposal_snapshot.version, current);
+        assert_eq!(
+            host.run(&run).expect("run").proposal_snapshot.version,
+            current
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -3937,25 +4086,28 @@ mod tests {
         let workspace = temp_path("reopen-workspace");
         let baseline = temp_path("reopen-workspace-baseline.json");
         fs::create_dir_all(project.join("game/src")).expect("project tree");
-        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n")
-            .expect("base file");
+        fs::write(
+            project.join("game/src/lib.rs"),
+            "pub fn value() -> u32 { 1 }\n",
+        )
+        .expect("base file");
         {
-            let code = CodeWorkspace::open_or_create(
-                &project,
-                workspace.clone(),
-                baseline.clone(),
-            )
-            .expect("workspace");
+            let code = CodeWorkspace::open_or_create(&project, workspace.clone(), baseline.clone())
+                .expect("workspace");
             fs::write(
                 code.root().join("game/src/lib.rs"),
                 "pub fn value() -> u32 { 2 }\n",
             )
             .expect("workspace edit");
         }
-        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 3 }\n")
-            .expect("human edit");
-        let mut reopened = CodeWorkspace::open_or_create(&project, workspace.clone(), baseline.clone())
-            .expect("reopened workspace");
+        fs::write(
+            project.join("game/src/lib.rs"),
+            "pub fn value() -> u32 { 3 }\n",
+        )
+        .expect("human edit");
+        let mut reopened =
+            CodeWorkspace::open_or_create(&project, workspace.clone(), baseline.clone())
+                .expect("reopened workspace");
         let changes = reopened.collect_changes().expect("changes");
         assert!(matches!(
             reopened.apply_changes(&changes),
@@ -3971,8 +4123,11 @@ mod tests {
         let project = temp_path("code-project");
         let workspace = temp_path("code-workspace");
         fs::create_dir_all(project.join("game/src")).expect("project tree");
-        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n")
-            .expect("base file");
+        fs::write(
+            project.join("game/src/lib.rs"),
+            "pub fn value() -> u32 { 1 }\n",
+        )
+        .expect("base file");
         let mut code = CodeWorkspace::create(&project, workspace.clone()).expect("workspace");
         fs::write(
             workspace.join("game/src/lib.rs"),
@@ -3980,8 +4135,11 @@ mod tests {
         )
         .expect("workspace edit");
         let changes = code.collect_changes().expect("changes");
-        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 3 }\n")
-            .expect("concurrent edit");
+        fs::write(
+            project.join("game/src/lib.rs"),
+            "pub fn value() -> u32 { 3 }\n",
+        )
+        .expect("concurrent edit");
         assert!(matches!(
             code.apply_changes(&changes),
             Err(AgentHostError::StaleCodeFile(_))
@@ -3995,13 +4153,24 @@ mod tests {
         let project = temp_path("code-idempotent-project");
         let workspace = temp_path("code-idempotent-workspace");
         fs::create_dir_all(project.join("game/src")).expect("project tree");
-        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n").expect("base file");
+        fs::write(
+            project.join("game/src/lib.rs"),
+            "pub fn value() -> u32 { 1 }\n",
+        )
+        .expect("base file");
         let mut code = CodeWorkspace::create(&project, workspace.clone()).expect("workspace");
-        fs::write(workspace.join("game/src/lib.rs"), "pub fn value() -> u32 { 2 }\n").expect("workspace edit");
+        fs::write(
+            workspace.join("game/src/lib.rs"),
+            "pub fn value() -> u32 { 2 }\n",
+        )
+        .expect("workspace edit");
         let changes = code.collect_changes().expect("changes");
         code.apply_changes(&changes).expect("first apply");
         code.apply_changes(&changes).expect("idempotent retry");
-        assert_eq!(fs::read_to_string(project.join("game/src/lib.rs")).expect("live file"), "pub fn value() -> u32 { 2 }\n");
+        assert_eq!(
+            fs::read_to_string(project.join("game/src/lib.rs")).expect("live file"),
+            "pub fn value() -> u32 { 2 }\n"
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(workspace);
     }
@@ -4015,11 +4184,16 @@ mod tests {
         let session = host.create_session("Events").expect("session");
         let run = host.start_run(&session, "test").expect("run");
         for index in 0..(MAX_PERSISTED_EVENTS_PER_RUN + 25) {
-            host.record_semantic_progress(&run, "step", format!("event {index}")).expect("event");
+            host.record_semantic_progress(&run, "step", format!("event {index}"))
+                .expect("event");
         }
         let events = &host.run(&run).expect("run").events;
         assert_eq!(events.len(), MAX_PERSISTED_EVENTS_PER_RUN);
-        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
         assert!(events.first().expect("first").sequence > 1);
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
@@ -4040,7 +4214,10 @@ mod tests {
         host.record_playtest_result(&run, true, Some(true), "provider claim")
             .expect("provider claim");
         assert_eq!(
-            host.run(&run).expect("run").completion.interaction_scenarios,
+            host.run(&run)
+                .expect("run")
+                .completion
+                .interaction_scenarios,
             CompletionStatus::Pending
         );
 
@@ -4072,10 +4249,15 @@ mod tests {
         let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
         let session = host.create_session("Frame").expect("session");
         let run = host.start_run(&session, "test").expect("run");
-        host.transition_run(&run, AgentRunState::Executing, "execute").expect("executing");
-        host.transition_run(&run, AgentRunState::Validating, "validate").expect("validating");
-        host.transition_run(&run, AgentRunState::Playtesting, "playtest").expect("playtesting");
-        let (artifact_id, path) = host.store_captured_frame_artifact(&run, 2, 2, b"png").expect("artifact");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+        host.transition_run(&run, AgentRunState::Validating, "validate")
+            .expect("validating");
+        host.transition_run(&run, AgentRunState::Playtesting, "playtest")
+            .expect("playtesting");
+        let (artifact_id, path) = host
+            .store_captured_frame_artifact(&run, 2, 2, b"png")
+            .expect("artifact");
         assert!(path.is_file());
         let run_state = host.run(&run).expect("run");
         assert_eq!(run_state.completion.frame_capture, CompletionStatus::Passed);
@@ -4099,14 +4281,15 @@ mod tests {
         host.transition_run(&run, AgentRunState::Executing, "execute")
             .expect("executing");
 
-        assert!(host
-            .record_completion_gate(
+        assert!(
+            host.record_completion_gate(
                 &run,
                 "visual_evaluation",
                 CompletionStatus::Passed,
                 "provider preclaim",
             )
-            .is_err());
+            .is_err()
+        );
         assert_eq!(
             host.run(&run).expect("run").completion.visual_evaluation,
             CompletionStatus::Pending
@@ -4197,9 +4380,16 @@ mod tests {
             .expect("managed validation");
         let run_state = host.run(&run).expect("run");
         assert_eq!(run_state.state, AgentRunState::AwaitingUser);
-        assert_eq!(run_state.completion.source_validation, CompletionStatus::Pending);
         assert_eq!(
-            run_state.validation_attempts.last().expect("attempt").unmanaged_plan_items,
+            run_state.completion.source_validation,
+            CompletionStatus::Pending
+        );
+        assert_eq!(
+            run_state
+                .validation_attempts
+                .last()
+                .expect("attempt")
+                .unmanaged_plan_items,
             1
         );
         let _ = fs::remove_dir_all(project);
@@ -4224,19 +4414,21 @@ mod tests {
             let run_state = host
                 .run_mut_in_session(&session_id, &run)
                 .expect("mutable run");
-            run_state.validation_attempts.push(ManagedValidationAttempt {
-                id: attempt_id.clone(),
-                gate_results: vec![ManagedValidationGateResult {
-                    gate: ManagedValidationGate::Check,
-                    status: ManagedValidationGateStatus::Running,
-                    exit_code: None,
-                    failure: None,
-                }],
-                unmanaged_plan_items: 0,
-                status: ManagedValidationAttemptStatus::Running,
-                started_unix_ms: unix_ms(),
-                finished_unix_ms: None,
-            });
+            run_state
+                .validation_attempts
+                .push(ManagedValidationAttempt {
+                    id: attempt_id.clone(),
+                    gate_results: vec![ManagedValidationGateResult {
+                        gate: ManagedValidationGate::Check,
+                        status: ManagedValidationGateStatus::Running,
+                        exit_code: None,
+                        failure: None,
+                    }],
+                    unmanaged_plan_items: 0,
+                    status: ManagedValidationAttemptStatus::Running,
+                    started_unix_ms: unix_ms(),
+                    finished_unix_ms: None,
+                });
         }
         host.fail_managed_validation(
             &run,
@@ -4251,8 +4443,14 @@ mod tests {
         .expect("failure handling");
         let run_state = host.run(&run).expect("run");
         assert_eq!(run_state.state, AgentRunState::Repairing);
-        assert_eq!(run_state.completion.source_validation, CompletionStatus::Failed);
-        assert!(matches!(host.complete_run(&run), Err(AgentHostError::CompletionPending)));
+        assert_eq!(
+            run_state.completion.source_validation,
+            CompletionStatus::Failed
+        );
+        assert!(matches!(
+            host.complete_run(&run),
+            Err(AgentHostError::CompletionPending)
+        ));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -4274,19 +4472,21 @@ mod tests {
             let run_state = host
                 .run_mut_in_session(&session_id, &run)
                 .expect("mutable run");
-            run_state.validation_attempts.push(ManagedValidationAttempt {
-                id: "validation_persisted".to_owned(),
-                gate_results: vec![ManagedValidationGateResult {
-                    gate: ManagedValidationGate::Check,
-                    status: ManagedValidationGateStatus::Running,
-                    exit_code: None,
-                    failure: None,
-                }],
-                unmanaged_plan_items: 0,
-                status: ManagedValidationAttemptStatus::Running,
-                started_unix_ms: unix_ms(),
-                finished_unix_ms: None,
-            });
+            run_state
+                .validation_attempts
+                .push(ManagedValidationAttempt {
+                    id: "validation_persisted".to_owned(),
+                    gate_results: vec![ManagedValidationGateResult {
+                        gate: ManagedValidationGate::Check,
+                        status: ManagedValidationGateStatus::Running,
+                        exit_code: None,
+                        failure: None,
+                    }],
+                    unmanaged_plan_items: 0,
+                    status: ManagedValidationAttemptStatus::Running,
+                    started_unix_ms: unix_ms(),
+                    finished_unix_ms: None,
+                });
             host.persist_session(&session_id).expect("persist");
         }
         let host = AgentHost::open(project.clone(), storage.clone()).expect("reopen");
@@ -4298,7 +4498,11 @@ mod tests {
             .expect("run");
         assert_eq!(run_state.state, AgentRunState::Repairing);
         assert_eq!(
-            run_state.validation_attempts.last().expect("attempt").status,
+            run_state
+                .validation_attempts
+                .last()
+                .expect("attempt")
+                .status,
             ManagedValidationAttemptStatus::Interrupted
         );
         assert!(host.active_validation.is_none());
@@ -4314,8 +4518,12 @@ mod tests {
         let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
         let session = host.create_session("Shared").expect("session");
         let run = host.start_run(&session, "test").expect("run");
-        host.record_event(&run, AgentEventKind::ProviderOutput, "secret-looking output")
-            .expect("event");
+        host.record_event(
+            &run,
+            AgentEventKind::ProviderOutput,
+            "secret-looking output",
+        )
+        .expect("event");
         let path = host.export_shared_session(&session).expect("export");
         let text = fs::read_to_string(path).expect("shared JSON");
         assert!(!text.contains("secret-looking output"));

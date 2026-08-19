@@ -9,9 +9,8 @@ use engine_authoring::material_asset::{
 };
 use engine_authoring::{
     AssetId, AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,
-    TypedDocumentAuthoringMutation,
-    TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot, TypedDocumentAuthoringState,
-    TypedDocumentAuthoringValidation,
+    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
+    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -51,7 +50,8 @@ impl MaterialEditorPanel {
         }
         self.authoring
             .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
-        self.clean_materials.insert(rel_path.clone(), material.clone());
+        self.clean_materials
+            .insert(rel_path.clone(), material.clone());
         self.undo.insert(rel_path.clone(), Vec::new());
         self.redo.insert(rel_path.clone(), Vec::new());
         self.materials.insert(rel_path, material);
@@ -59,7 +59,9 @@ impl MaterialEditorPanel {
 
     /// Returns whether one open material differs from its last successfully saved value.
     pub fn is_dirty(&self, path: &Path) -> bool {
-        self.materials.get(path).zip(self.clean_materials.get(path))
+        self.materials
+            .get(path)
+            .zip(self.clean_materials.get(path))
             .is_some_and(|(current, clean)| current != clean)
     }
 
@@ -90,7 +92,8 @@ impl MaterialEditorPanel {
         }
         self.materials.insert(path.to_path_buf(), material.clone());
         self.clean_materials.insert(path.to_path_buf(), material);
-        self.authoring.insert(path.to_path_buf(), TypedDocumentAuthoringState::new());
+        self.authoring
+            .insert(path.to_path_buf(), TypedDocumentAuthoringState::new());
         self.undo.insert(path.to_path_buf(), Vec::new());
         self.redo.insert(path.to_path_buf(), Vec::new());
         true
@@ -98,7 +101,9 @@ impl MaterialEditorPanel {
 
     /// Returns revision/generation metadata for one open material.
     pub fn revision_generation(&self, path: &Path) -> Option<(u64, u64)> {
-        self.authoring.get(path).map(|state| (state.revision(), state.generation()))
+        self.authoring
+            .get(path)
+            .map(|state| (state.revision(), state.generation()))
     }
 
     /// Returns the currently active material, if any.
@@ -119,7 +124,8 @@ impl MaterialEditorPanel {
     pub fn structured_inspect(
         &self,
         permissions: &AuthoringPermissions,
-    ) -> Result<Option<TypedDocumentAuthoringSnapshot<MaterialAsset>>, TypedDocumentAuthoringError> {
+    ) -> Result<Option<TypedDocumentAuthoringSnapshot<MaterialAsset>>, TypedDocumentAuthoringError>
+    {
         let Some(key) = self.active.as_ref() else {
             return Ok(None);
         };
@@ -160,7 +166,8 @@ impl MaterialEditorPanel {
         expected_revision: u64,
         expected_generation: u64,
         replacement: MaterialAsset,
-    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
+    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError>
+    {
         let Some(key) = self.active.as_ref() else {
             return Ok(None);
         };
@@ -189,7 +196,8 @@ impl MaterialEditorPanel {
         expected_revision: u64,
         expected_generation: u64,
         replacement: MaterialAsset,
-    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
+    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError>
+    {
         let Some(key) = self.active.clone() else {
             return Ok(None);
         };
@@ -294,8 +302,8 @@ impl MaterialEditorPanel {
         };
         let revision = state.revision();
         let generation = state.generation();
-        let permissions = AuthoringPermissions::read_only()
-            .with(AuthoringPermission::ProjectDataWrite);
+        let permissions =
+            AuthoringPermissions::read_only().with(AuthoringPermission::ProjectDataWrite);
         let mutation = TypedDocumentAuthoringService::new().apply(
             document,
             state,
@@ -315,7 +323,6 @@ impl MaterialEditorPanel {
         history.push(snapshot);
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // egui rendering
@@ -487,24 +494,44 @@ pub fn show_material_editor_panel(
 
     if mat.shading_model == MaterialShadingModel::ToonLit {
         changed |= texture_picker(ui, "Toon ramp", &mut mat.toon.ramp_texture, texture_choices);
-        changed |= texture_picker(ui, "Sphere map", &mut mat.toon.sphere_texture, texture_choices);
+        changed |= texture_picker(
+            ui,
+            "Sphere map",
+            &mut mat.toon.sphere_texture,
+            texture_choices,
+        );
         ui.horizontal(|ui| {
             ui.label("Specular power");
-            changed |= ui.add(eframe::egui::DragValue::new(&mut mat.toon.specular_power).range(0.0..=256.0)).changed();
+            changed |= ui
+                .add(eframe::egui::DragValue::new(&mut mat.toon.specular_power).range(0.0..=256.0))
+                .changed();
         });
         ui.horizontal(|ui| {
             ui.label("Rim intensity");
-            changed |= ui.add(eframe::egui::Slider::new(&mut mat.toon.rim_intensity, 0.0..=4.0)).changed();
+            changed |= ui
+                .add(eframe::egui::Slider::new(
+                    &mut mat.toon.rim_intensity,
+                    0.0..=4.0,
+                ))
+                .changed();
         });
     }
 
     changed |= ui.checkbox(&mut mat.cast_shadow, "Cast shadow").changed();
-    changed |= ui.checkbox(&mut mat.receive_shadow, "Receive shadow").changed();
+    changed |= ui
+        .checkbox(&mut mat.receive_shadow, "Receive shadow")
+        .changed();
     changed |= ui.checkbox(&mut mat.outline.enabled, "Outline").changed();
     if mat.outline.enabled {
         ui.horizontal(|ui| {
             ui.label("Outline width");
-            changed |= ui.add(eframe::egui::DragValue::new(&mut mat.outline.width).speed(0.001).range(0.0..=1.0)).changed();
+            changed |= ui
+                .add(
+                    eframe::egui::DragValue::new(&mut mat.outline.width)
+                        .speed(0.001)
+                        .range(0.0..=1.0),
+                )
+                .changed();
         });
     }
 
@@ -522,12 +549,7 @@ pub fn show_material_editor_panel(
             .with(AuthoringPermission::ProjectDataWrite);
         if let Ok(Some(base)) = panel.structured_inspect(&permissions) {
             return panel
-                .structured_apply(
-                    &permissions,
-                    base.revision,
-                    base.generation,
-                    replacement,
-                )
+                .structured_apply(&permissions, base.revision, base.generation, replacement)
                 .ok()
                 .flatten()
                 .is_some_and(|mutation| mutation.success && !mutation.diff.is_empty());

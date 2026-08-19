@@ -3,14 +3,14 @@
 //! This module owns HTTP/JSON-RPC framing and authentication only. Authoring
 //! requests are dispatched to the application host through a channel.
 
-use engine_mcp::{authoring_tool_descriptors, McpToolDescriptor};
-use serde_json::{json, Value};
+use engine_mcp::{McpToolDescriptor, authoring_tool_descriptors};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -93,9 +93,17 @@ impl fmt::Display for McpServerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bind(error) => write!(formatter, "could not bind MCP loopback endpoint: {error}"),
-            Self::Configure(error) => write!(formatter, "could not configure MCP loopback endpoint: {error}"),
-            Self::Random(error) => write!(formatter, "could not create MCP session credential: {error}"),
-            Self::Thread(error) => write!(formatter, "could not start MCP listener thread: {error}"),
+            Self::Configure(error) => write!(
+                formatter,
+                "could not configure MCP loopback endpoint: {error}"
+            ),
+            Self::Random(error) => write!(
+                formatter,
+                "could not create MCP session credential: {error}"
+            ),
+            Self::Thread(error) => {
+                write!(formatter, "could not start MCP listener thread: {error}")
+            }
         }
     }
 }
@@ -244,18 +252,39 @@ fn handle_connection(
 
     let request = match read_http_request(&mut stream) {
         Ok(request) => request,
-        Err(HttpReadError::RequestTooLarge) => return write_http_response(&mut stream, 413, "text/plain", b"request too large"),
-        Err(HttpReadError::LengthRequired) => return write_http_response(&mut stream, 411, "text/plain", b"content length required"),
-        Err(HttpReadError::UnsupportedTransferEncoding) => return write_http_response(&mut stream, 501, "text/plain", b"transfer encoding is not supported"),
-        Err(HttpReadError::BadRequest) => return write_http_response(&mut stream, 400, "text/plain", b"bad request"),
+        Err(HttpReadError::RequestTooLarge) => {
+            return write_http_response(&mut stream, 413, "text/plain", b"request too large");
+        }
+        Err(HttpReadError::LengthRequired) => {
+            return write_http_response(&mut stream, 411, "text/plain", b"content length required");
+        }
+        Err(HttpReadError::UnsupportedTransferEncoding) => {
+            return write_http_response(
+                &mut stream,
+                501,
+                "text/plain",
+                b"transfer encoding is not supported",
+            );
+        }
+        Err(HttpReadError::BadRequest) => {
+            return write_http_response(&mut stream, 400, "text/plain", b"bad request");
+        }
         Err(HttpReadError::Io(error)) => return Err(error),
     };
 
-    let path = request.path.split('?').next().unwrap_or(request.path.as_str());
+    let path = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or(request.path.as_str());
     if path != MCP_PATH {
         return write_http_response(&mut stream, 404, "text/plain", b"not found");
     }
-    if request.headers.get("origin").is_some_and(|origin| !origin_is_loopback(origin)) {
+    if request
+        .headers
+        .get("origin")
+        .is_some_and(|origin| !origin_is_loopback(origin))
+    {
         return write_http_response(&mut stream, 403, "text/plain", b"forbidden origin");
     }
     let expected_authorization = format!("Bearer {authorization_token}");
@@ -263,33 +292,88 @@ fn handle_connection(
         return write_http_response(&mut stream, 401, "text/plain", b"unauthorized");
     }
     match request.method.as_str() {
-        "GET" => return write_http_response(&mut stream, 405, "text/plain", b"server-sent event stream is not enabled"),
+        "GET" => {
+            return write_http_response(
+                &mut stream,
+                405,
+                "text/plain",
+                b"server-sent event stream is not enabled",
+            );
+        }
         "POST" => {}
         _ => return write_http_response(&mut stream, 405, "text/plain", b"method not allowed"),
     }
-    if !request.headers.get("content-type").is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json")) {
-        return write_http_response(&mut stream, 415, "text/plain", b"application/json is required");
+    if !request
+        .headers
+        .get("content-type")
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+    {
+        return write_http_response(
+            &mut stream,
+            415,
+            "text/plain",
+            b"application/json is required",
+        );
     }
-    let accepts = request.headers.get("accept").map(|value| value.to_ascii_lowercase()).unwrap_or_default();
+    let accepts = request
+        .headers
+        .get("accept")
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
     if !accepts.contains("application/json") || !accepts.contains("text/event-stream") {
-        return write_http_response(&mut stream, 406, "text/plain", b"accept must include application/json and text/event-stream");
+        return write_http_response(
+            &mut stream,
+            406,
+            "text/plain",
+            b"accept must include application/json and text/event-stream",
+        );
     }
 
     let message: Value = match serde_json::from_slice(&request.body) {
         Ok(Value::Object(message)) => Value::Object(message),
-        Ok(_) => return write_json_rpc_error(&mut stream, Value::Null, -32600, "invalid JSON-RPC request"),
+        Ok(_) => {
+            return write_json_rpc_error(
+                &mut stream,
+                Value::Null,
+                -32600,
+                "invalid JSON-RPC request",
+            );
+        }
         Err(_) => return write_json_rpc_error(&mut stream, Value::Null, -32700, "parse error"),
     };
-    let object = message.as_object().expect("JSON object was checked before dispatch");
+    let object = message
+        .as_object()
+        .expect("JSON object was checked before dispatch");
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-        return write_json_rpc_error(&mut stream, object.get("id").cloned().unwrap_or(Value::Null), -32600, "jsonrpc must be 2.0");
+        return write_json_rpc_error(
+            &mut stream,
+            object.get("id").cloned().unwrap_or(Value::Null),
+            -32600,
+            "jsonrpc must be 2.0",
+        );
     }
     let Some(method) = object.get("method").and_then(Value::as_str) else {
-        return write_json_rpc_error(&mut stream, object.get("id").cloned().unwrap_or(Value::Null), -32600, "method is required");
+        return write_json_rpc_error(
+            &mut stream,
+            object.get("id").cloned().unwrap_or(Value::Null),
+            -32600,
+            "method is required",
+        );
     };
     let id = object.get("id").cloned();
-    if method != "initialize" && request.headers.get("mcp-protocol-version").map(String::as_str) != Some(MCP_PROTOCOL_VERSION) {
-        return write_http_response(&mut stream, 400, "text/plain", b"missing or unsupported MCP-Protocol-Version");
+    if method != "initialize"
+        && request
+            .headers
+            .get("mcp-protocol-version")
+            .map(String::as_str)
+            != Some(MCP_PROTOCOL_VERSION)
+    {
+        return write_http_response(
+            &mut stream,
+            400,
+            "text/plain",
+            b"missing or unsupported MCP-Protocol-Version",
+        );
     }
     if id.is_none() {
         return write_http_response(&mut stream, 202, "text/plain", b"");
@@ -302,14 +386,39 @@ fn handle_connection(
         "tools/list" => tools_list_result(),
         "tools/call" => {
             let params = object.get("params").and_then(Value::as_object);
-            let Some(name) = params.and_then(|params| params.get("name")).and_then(Value::as_str) else {
-                return write_json_rpc_error(&mut stream, id, -32602, "tools/call requires a tool name");
+            let Some(name) = params
+                .and_then(|params| params.get("name"))
+                .and_then(Value::as_str)
+            else {
+                return write_json_rpc_error(
+                    &mut stream,
+                    id,
+                    -32602,
+                    "tools/call requires a tool name",
+                );
             };
-            let arguments = params.and_then(|params| params.get("arguments")).cloned().unwrap_or_else(|| json!({}));
+            let arguments = params
+                .and_then(|params| params.get("arguments"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             match dispatch_tool_call(name, arguments, request_sender, wake_host) {
                 Ok(result) => result,
-                Err(DispatchError::HostDisconnected) => return write_json_rpc_error(&mut stream, id, -32603, "authoring host is unavailable"),
-                Err(DispatchError::Timeout) => return write_json_rpc_error(&mut stream, id, -32603, "authoring host timed out"),
+                Err(DispatchError::HostDisconnected) => {
+                    return write_json_rpc_error(
+                        &mut stream,
+                        id,
+                        -32603,
+                        "authoring host is unavailable",
+                    );
+                }
+                Err(DispatchError::Timeout) => {
+                    return write_json_rpc_error(
+                        &mut stream,
+                        id,
+                        -32603,
+                        "authoring host timed out",
+                    );
+                }
             }
         }
         _ => return write_json_rpc_error(&mut stream, id, -32601, "method not found"),
@@ -340,7 +449,10 @@ fn tool_descriptor_json(descriptor: McpToolDescriptor) -> Value {
     })
 }
 
-enum DispatchError { HostDisconnected, Timeout }
+enum DispatchError {
+    HostDisconnected,
+    Timeout,
+}
 
 fn dispatch_tool_call(
     name: &str,
@@ -349,16 +461,20 @@ fn dispatch_tool_call(
     wake_host: &Arc<dyn Fn() + Send + Sync>,
 ) -> Result<Value, DispatchError> {
     let (response_sender, response_receiver) = mpsc::sync_channel(1);
-    request_sender.send(McpRequest {
-        name: name.to_owned(),
-        arguments,
-        response: response_sender,
-    }).map_err(|_| DispatchError::HostDisconnected)?;
+    request_sender
+        .send(McpRequest {
+            name: name.to_owned(),
+            arguments,
+            response: response_sender,
+        })
+        .map_err(|_| DispatchError::HostDisconnected)?;
     wake_host();
-    let response = response_receiver.recv_timeout(HOST_RESPONSE_TIMEOUT).map_err(|error| match error {
-        mpsc::RecvTimeoutError::Timeout => DispatchError::Timeout,
-        mpsc::RecvTimeoutError::Disconnected => DispatchError::HostDisconnected,
-    })?;
+    let response = response_receiver
+        .recv_timeout(HOST_RESPONSE_TIMEOUT)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => DispatchError::Timeout,
+            mpsc::RecvTimeoutError::Disconnected => DispatchError::HostDisconnected,
+        })?;
     Ok(match response {
         McpHostResult::Success(value) => json!({
             "content": [{"type": "text", "text": serde_json::to_string(&value).unwrap_or_else(|_| "{\"error\":\"result serialization failed\"}".into())}],
@@ -380,62 +496,104 @@ struct HttpRequest {
 }
 
 enum HttpReadError {
-    Io(io::Error), BadRequest, RequestTooLarge, LengthRequired, UnsupportedTransferEncoding,
+    Io(io::Error),
+    BadRequest,
+    RequestTooLarge,
+    LengthRequired,
+    UnsupportedTransferEncoding,
 }
 
 impl From<io::Error> for HttpReadError {
-    fn from(error: io::Error) -> Self { Self::Io(error) }
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpReadError> {
     let mut buffer = Vec::with_capacity(4096);
     let header_end = loop {
-        if buffer.len() > MAX_HEADER_BYTES { return Err(HttpReadError::RequestTooLarge); }
-        if let Some(position) = find_bytes(&buffer, b"\r\n\r\n") { break position + 4; }
+        if buffer.len() > MAX_HEADER_BYTES {
+            return Err(HttpReadError::RequestTooLarge);
+        }
+        if let Some(position) = find_bytes(&buffer, b"\r\n\r\n") {
+            break position + 4;
+        }
         let mut chunk = [0_u8; 4096];
         let read = stream.read(&mut chunk)?;
-        if read == 0 { return Err(HttpReadError::BadRequest); }
+        if read == 0 {
+            return Err(HttpReadError::BadRequest);
+        }
         buffer.extend_from_slice(&chunk[..read]);
     };
-    let header_text = std::str::from_utf8(&buffer[..header_end - 4]).map_err(|_| HttpReadError::BadRequest)?;
+    let header_text =
+        std::str::from_utf8(&buffer[..header_end - 4]).map_err(|_| HttpReadError::BadRequest)?;
     let mut lines = header_text.split("\r\n");
     let request_line = lines.next().ok_or(HttpReadError::BadRequest)?;
     let mut request_parts = request_line.split_whitespace();
-    let method = request_parts.next().ok_or(HttpReadError::BadRequest)?.to_owned();
-    let path = request_parts.next().ok_or(HttpReadError::BadRequest)?.to_owned();
-    if request_parts.next().is_none() || request_parts.next().is_some() { return Err(HttpReadError::BadRequest); }
+    let method = request_parts
+        .next()
+        .ok_or(HttpReadError::BadRequest)?
+        .to_owned();
+    let path = request_parts
+        .next()
+        .ok_or(HttpReadError::BadRequest)?
+        .to_owned();
+    if request_parts.next().is_none() || request_parts.next().is_some() {
+        return Err(HttpReadError::BadRequest);
+    }
     let mut headers = BTreeMap::new();
     for line in lines {
         let (name, value) = line.split_once(':').ok_or(HttpReadError::BadRequest)?;
         headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
     }
-    if headers.contains_key("transfer-encoding") { return Err(HttpReadError::UnsupportedTransferEncoding); }
+    if headers.contains_key("transfer-encoding") {
+        return Err(HttpReadError::UnsupportedTransferEncoding);
+    }
     let content_length = match headers.get("content-length") {
-        Some(value) => value.parse::<usize>().map_err(|_| HttpReadError::BadRequest)?,
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| HttpReadError::BadRequest)?,
         None if method == "POST" => return Err(HttpReadError::LengthRequired),
         None => 0,
     };
-    if content_length > MAX_BODY_BYTES { return Err(HttpReadError::RequestTooLarge); }
+    if content_length > MAX_BODY_BYTES {
+        return Err(HttpReadError::RequestTooLarge);
+    }
     let mut body = buffer[header_end..].to_vec();
     while body.len() < content_length {
         let remaining = content_length - body.len();
         let mut chunk = vec![0_u8; remaining.min(4096)];
         let read = stream.read(&mut chunk)?;
-        if read == 0 { return Err(HttpReadError::BadRequest); }
+        if read == 0 {
+            return Err(HttpReadError::BadRequest);
+        }
         body.extend_from_slice(&chunk[..read]);
     }
     body.truncate(content_length);
-    Ok(HttpRequest { method, path, headers, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn origin_is_loopback(origin: &str) -> bool {
-    let authority = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://"));
-    let Some(authority) = authority else { return false; };
-    if authority.contains('/') || authority.contains('@') { return false; }
+    let authority = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"));
+    let Some(authority) = authority else {
+        return false;
+    };
+    if authority.contains('/') || authority.contains('@') {
+        return false;
+    }
     authority == "localhost"
         || authority.starts_with("localhost:")
         || authority == "127.0.0.1"
@@ -450,21 +608,45 @@ fn write_json_rpc_result(stream: &mut TcpStream, id: Value, result: Value) -> io
     write_http_response(stream, 200, "application/json", &body)
 }
 
-fn write_json_rpc_error(stream: &mut TcpStream, id: Value, code: i64, message: &str) -> io::Result<()> {
+fn write_json_rpc_error(
+    stream: &mut TcpStream,
+    id: Value,
+    code: i64,
+    message: &str,
+) -> io::Result<()> {
     let body = serde_json::to_vec(&json!({
         "jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}
-    })).expect("JSON-RPC error values are serializable");
+    }))
+    .expect("JSON-RPC error values are serializable");
     write_http_response(stream, 200, "application/json", &body)
 }
 
-fn write_http_response(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) -> io::Result<()> {
+fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> io::Result<()> {
     let reason = match status {
-        200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized",
-        403 => "Forbidden", 404 => "Not Found", 405 => "Method Not Allowed",
-        406 => "Not Acceptable", 411 => "Length Required", 413 => "Content Too Large",
-        415 => "Unsupported Media Type", 501 => "Not Implemented", _ => "Error",
+        200 => "OK",
+        202 => "Accepted",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        411 => "Length Required",
+        413 => "Content Too Large",
+        415 => "Unsupported Media Type",
+        501 => "Not Implemented",
+        _ => "Error",
     };
-    write!(stream, "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", body.len())?;
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
     stream.write_all(body)?;
     stream.flush()
 }
@@ -474,13 +656,18 @@ mod tests {
     use super::*;
 
     fn start() -> (McpServer, mpsc::Receiver<McpRequest>) {
-        McpServer::start(McpServerInfo::new("gameengine-test", "saved-file test host"), || {})
-            .expect("MCP server must bind")
+        McpServer::start(
+            McpServerInfo::new("gameengine-test", "saved-file test host"),
+            || {},
+        )
+        .expect("MCP server must bind")
     }
 
     fn exchange(server: &McpServer, request: &str) -> String {
         let mut stream = TcpStream::connect(server.local_addr).expect("loopback connect");
-        stream.set_read_timeout(Some(Duration::from_secs(2))).expect("read timeout");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
         stream.write_all(request.as_bytes()).expect("request write");
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("response read");
@@ -490,7 +677,10 @@ mod tests {
     fn post(server: &McpServer, body: &str, extra_headers: &str) -> String {
         let request = format!(
             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n{}\r\n{}",
-            server.authorization_token(), body.len(), extra_headers, body
+            server.authorization_token(),
+            body.len(),
+            extra_headers,
+            body
         );
         exchange(server, &request)
     }
@@ -501,7 +691,9 @@ mod tests {
         assert!(server.endpoint().starts_with("http://127.0.0.1:"));
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
         let request = format!(
-            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{}", body.len(), body
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
         );
         assert!(exchange(&server, &request).starts_with("HTTP/1.1 401"));
     }
@@ -510,7 +702,9 @@ mod tests {
     fn hostile_browser_origin_is_rejected() {
         let (server, _requests) = start();
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-        assert!(post(&server, body, "Origin: https://example.invalid\r\n").starts_with("HTTP/1.1 403"));
+        assert!(
+            post(&server, body, "Origin: https://example.invalid\r\n").starts_with("HTTP/1.1 403")
+        );
     }
 
     #[test]
@@ -529,7 +723,9 @@ mod tests {
     fn tool_call_is_routed_to_host_channel() {
         let (server, requests) = start();
         let host = thread::spawn(move || {
-            let request = requests.recv_timeout(Duration::from_secs(2)).expect("tool request");
+            let request = requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("tool request");
             assert_eq!(request.name(), "project.describe");
             request.respond(McpHostResult::Success(json!({"project": "ok"})));
         });

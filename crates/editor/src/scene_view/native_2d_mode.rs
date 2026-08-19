@@ -66,8 +66,7 @@ pub(crate) fn handle_input(camera_state: &mut EditorViewCamera, response: &egui:
     }
     let pointer = response.hover_pos().unwrap_or(rect.center());
     let before = screen_to_xy(pointer, rect, view_projection(camera_state, rect));
-    camera_state.distance =
-        (camera_state.distance * (1.0 - scroll * 0.002)).clamp(0.5, 500.0);
+    camera_state.distance = (camera_state.distance * (1.0 - scroll * 0.002)).clamp(0.5, 500.0);
     let after = screen_to_xy(pointer, rect, view_projection(camera_state, rect));
     if let (Some(before), Some(after)) = (before, after) {
         camera_state.target.x += before.x - after.x;
@@ -105,7 +104,10 @@ pub(crate) fn draw_grid(lines: &mut DebugLines, camera_state: &EditorViewCamera)
 pub(crate) const fn axis_allowed(mode: GizmoMode, axis: crate::gizmo::GizmoAxis) -> bool {
     match mode {
         GizmoMode::Translate | GizmoMode::Scale => {
-            matches!(axis, crate::gizmo::GizmoAxis::X | crate::gizmo::GizmoAxis::Y)
+            matches!(
+                axis,
+                crate::gizmo::GizmoAxis::X | crate::gizmo::GizmoAxis::Y
+            )
         }
         GizmoMode::Rotate => matches!(axis, crate::gizmo::GizmoAxis::Z),
     }
@@ -135,15 +137,23 @@ mod tests {
         let transform = transform(&state);
         assert_eq!(transform.translation.x, state.target.x);
         assert_eq!(transform.translation.y, state.target.y);
-        assert!(camera(&state)
-            .view_projection_matrix(&transform, [1280, 720])
-            .is_ok());
+        assert!(
+            camera(&state)
+                .view_projection_matrix(&transform, [1280, 720])
+                .is_ok()
+        );
     }
 
     #[test]
     fn planar_gizmo_contract_allows_xy_and_z_rotation_only() {
-        assert!(axis_allowed(GizmoMode::Translate, crate::gizmo::GizmoAxis::X));
-        assert!(!axis_allowed(GizmoMode::Translate, crate::gizmo::GizmoAxis::Z));
+        assert!(axis_allowed(
+            GizmoMode::Translate,
+            crate::gizmo::GizmoAxis::X
+        ));
+        assert!(!axis_allowed(
+            GizmoMode::Translate,
+            crate::gizmo::GizmoAxis::Z
+        ));
         assert!(axis_allowed(GizmoMode::Rotate, crate::gizmo::GizmoAxis::Z));
         assert!(!axis_allowed(GizmoMode::Rotate, crate::gizmo::GizmoAxis::X));
     }

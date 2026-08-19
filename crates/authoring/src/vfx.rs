@@ -120,7 +120,10 @@ impl fmt::Display for VfxIdError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WrongPrefix { expected, actual } => {
-                write!(formatter, "expected VFX ID prefix `{expected}_`, got `{actual}`")
+                write!(
+                    formatter,
+                    "expected VFX ID prefix `{expected}_`, got `{actual}`"
+                )
             }
             Self::InvalidSuffix { actual } => write!(
                 formatter,
@@ -244,9 +247,7 @@ impl VfxVectorValue {
         match self {
             Self::Constant { value } => finite3(*value),
             Self::Range { min, max, .. } => {
-                finite3(*min)
-                    && finite3(*max)
-                    && min.iter().zip(max).all(|(min, max)| min <= max)
+                finite3(*min) && finite3(*max) && min.iter().zip(max).all(|(min, max)| min <= max)
             }
         }
     }
@@ -1177,7 +1178,12 @@ impl VfxAuthoringService {
     /// Returns the deterministic VFX module schema catalog.
     pub fn schemas(&self) -> VfxSchemaCatalog {
         let modules = [
-            ("engine.vfx.spawn_rate", "Spawn Rate", "Emission", VfxPhase::Spawn),
+            (
+                "engine.vfx.spawn_rate",
+                "Spawn Rate",
+                "Emission",
+                VfxPhase::Spawn,
+            ),
             ("engine.vfx.burst", "Burst", "Emission", VfxPhase::Spawn),
             ("engine.vfx.shape", "Shape", "Spawn", VfxPhase::Spawn),
             ("engine.vfx.lifetime", "Lifetime", "Spawn", VfxPhase::Spawn),
@@ -1587,9 +1593,9 @@ fn validate_operation(
         VfxModuleOperation::SizeOverLife { curve }
         | VfxModuleOperation::RotationOverLife { curve } => curve.is_valid(),
         VfxModuleOperation::Billboard { texture_sheet, .. }
-        | VfxModuleOperation::Mesh { texture_sheet, .. } => texture_sheet
-            .as_ref()
-            .is_none_or(VfxTextureSheet::is_valid),
+        | VfxModuleOperation::Mesh { texture_sheet, .. } => {
+            texture_sheet.as_ref().is_none_or(VfxTextureSheet::is_valid)
+        }
     };
     if !valid {
         diagnostics.push(VfxDiagnostic::error(
@@ -1614,7 +1620,9 @@ fn estimate_capacity(emitter: &VfxEmitter) -> u32 {
             VfxModuleOperation::SpawnRate {
                 particles_per_second,
             } if particles_per_second.is_finite() => rate += particles_per_second.max(0.0),
-            VfxModuleOperation::Burst { count, .. } => burst = burst.saturating_add(u64::from(*count)),
+            VfxModuleOperation::Burst { count, .. } => {
+                burst = burst.saturating_add(u64::from(*count))
+            }
             VfxModuleOperation::Lifetime { value } if value.validate() => {
                 lifetime = lifetime.max(value.maximum().max(0.0));
             }
@@ -1622,9 +1630,7 @@ fn estimate_capacity(emitter: &VfxEmitter) -> u32 {
         }
     }
     let continuous = (rate * lifetime).ceil().max(0.0) as u64;
-    continuous
-        .saturating_add(burst)
-        .min(u64::from(u32::MAX)) as u32
+    continuous.saturating_add(burst).min(u64::from(u32::MAX)) as u32
 }
 
 fn update_attribute_layout(layout: &mut VfxAttributeLayout, operation: &VfxModuleOperation) {
@@ -1639,7 +1645,8 @@ fn update_attribute_layout(layout: &mut VfxAttributeLayout, operation: &VfxModul
         VfxModuleOperation::InitialSize { .. } | VfxModuleOperation::SizeOverLife { .. } => {
             layout.size = true;
         }
-        VfxModuleOperation::InitialRotation { .. } | VfxModuleOperation::RotationOverLife { .. } => {
+        VfxModuleOperation::InitialRotation { .. }
+        | VfxModuleOperation::RotationOverLife { .. } => {
             layout.rotation = true;
         }
         _ => {}
@@ -1731,7 +1738,10 @@ fn operation_gradient_mut(operation: &mut VfxModuleOperation) -> Option<&mut Vfx
     }
 }
 
-fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxCommand, VfxDiagnostic> {
+fn apply_command(
+    effect: &mut VfxEffect,
+    command: &VfxCommand,
+) -> Result<VfxCommand, VfxDiagnostic> {
     match command {
         VfxCommand::SetEffectName { name } => {
             let previous = std::mem::replace(&mut effect.name, name.clone());
@@ -2033,14 +2043,20 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
                     Some(module),
                 ));
             }
-            let previous = std::mem::replace(&mut target.modules[index].operation, operation.clone());
+            let previous =
+                std::mem::replace(&mut target.modules[index].operation, operation.clone());
             Ok(VfxCommand::ReplaceModuleOperation {
                 emitter: emitter.clone(),
                 module: module.clone(),
                 operation: previous,
             })
         }
-        VfxCommand::InsertCurveKey { emitter, module, key, index } => {
+        VfxCommand::InsertCurveKey {
+            emitter,
+            module,
+            key,
+            index,
+        } => {
             let target = module_mut(effect, emitter, module)?;
             let curve = operation_curve_mut(&mut target.operation).ok_or_else(|| {
                 edit_error(
@@ -2073,34 +2089,10 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
                 key: key.id.clone(),
             })
         }
-        VfxCommand::RemoveCurveKey { emitter, module, key } => {
-            let target = module_mut(effect, emitter, module)?;
-            let curve = operation_curve_mut(&mut target.operation).ok_or_else(|| {
-                edit_error(
-                    "vfx.edit.curve_not_found",
-                    "target module does not expose a scalar curve",
-                    Some(emitter),
-                    Some(module),
-                )
-            })?;
-            let index = curve.keys.iter().position(|entry| &entry.id == key).ok_or_else(|| {
-                edit_error(
-                    "vfx.edit.curve_key_not_found",
-                    format!("curve key `{key}` was not found"),
-                    Some(emitter),
-                    Some(module),
-                )
-            })?;
-            let removed = curve.keys.remove(index);
-            Ok(VfxCommand::InsertCurveKey {
-                emitter: emitter.clone(),
-                module: module.clone(),
-                key: removed,
-                index,
-            })
-        }
-        VfxCommand::SetCurveKey {
-            emitter, module, key, time, value, interpolation,
+        VfxCommand::RemoveCurveKey {
+            emitter,
+            module,
+            key,
         } => {
             let target = module_mut(effect, emitter, module)?;
             let curve = operation_curve_mut(&mut target.operation).ok_or_else(|| {
@@ -2111,14 +2103,55 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
                     Some(module),
                 )
             })?;
-            let entry = curve.keys.iter_mut().find(|entry| &entry.id == key).ok_or_else(|| {
+            let index = curve
+                .keys
+                .iter()
+                .position(|entry| &entry.id == key)
+                .ok_or_else(|| {
+                    edit_error(
+                        "vfx.edit.curve_key_not_found",
+                        format!("curve key `{key}` was not found"),
+                        Some(emitter),
+                        Some(module),
+                    )
+                })?;
+            let removed = curve.keys.remove(index);
+            Ok(VfxCommand::InsertCurveKey {
+                emitter: emitter.clone(),
+                module: module.clone(),
+                key: removed,
+                index,
+            })
+        }
+        VfxCommand::SetCurveKey {
+            emitter,
+            module,
+            key,
+            time,
+            value,
+            interpolation,
+        } => {
+            let target = module_mut(effect, emitter, module)?;
+            let curve = operation_curve_mut(&mut target.operation).ok_or_else(|| {
                 edit_error(
-                    "vfx.edit.curve_key_not_found",
-                    format!("curve key `{key}` was not found"),
+                    "vfx.edit.curve_not_found",
+                    "target module does not expose a scalar curve",
                     Some(emitter),
                     Some(module),
                 )
             })?;
+            let entry = curve
+                .keys
+                .iter_mut()
+                .find(|entry| &entry.id == key)
+                .ok_or_else(|| {
+                    edit_error(
+                        "vfx.edit.curve_key_not_found",
+                        format!("curve key `{key}` was not found"),
+                        Some(emitter),
+                        Some(module),
+                    )
+                })?;
             let inverse = VfxCommand::SetCurveKey {
                 emitter: emitter.clone(),
                 module: module.clone(),
@@ -2132,7 +2165,12 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
             entry.interpolation = *interpolation;
             Ok(inverse)
         }
-        VfxCommand::InsertGradientKey { emitter, module, key, index } => {
+        VfxCommand::InsertGradientKey {
+            emitter,
+            module,
+            key,
+            index,
+        } => {
             let target = module_mut(effect, emitter, module)?;
             let gradient = operation_gradient_mut(&mut target.operation).ok_or_else(|| {
                 edit_error(
@@ -2165,7 +2203,11 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
                 key: key.id.clone(),
             })
         }
-        VfxCommand::RemoveGradientKey { emitter, module, key } => {
+        VfxCommand::RemoveGradientKey {
+            emitter,
+            module,
+            key,
+        } => {
             let target = module_mut(effect, emitter, module)?;
             let gradient = operation_gradient_mut(&mut target.operation).ok_or_else(|| {
                 edit_error(
@@ -2175,14 +2217,18 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
                     Some(module),
                 )
             })?;
-            let index = gradient.keys.iter().position(|entry| &entry.id == key).ok_or_else(|| {
-                edit_error(
-                    "vfx.edit.gradient_key_not_found",
-                    format!("gradient key `{key}` was not found"),
-                    Some(emitter),
-                    Some(module),
-                )
-            })?;
+            let index = gradient
+                .keys
+                .iter()
+                .position(|entry| &entry.id == key)
+                .ok_or_else(|| {
+                    edit_error(
+                        "vfx.edit.gradient_key_not_found",
+                        format!("gradient key `{key}` was not found"),
+                        Some(emitter),
+                        Some(module),
+                    )
+                })?;
             let removed = gradient.keys.remove(index);
             Ok(VfxCommand::InsertGradientKey {
                 emitter: emitter.clone(),
@@ -2191,7 +2237,13 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
                 index,
             })
         }
-        VfxCommand::SetGradientKey { emitter, module, key, time, color } => {
+        VfxCommand::SetGradientKey {
+            emitter,
+            module,
+            key,
+            time,
+            color,
+        } => {
             let target = module_mut(effect, emitter, module)?;
             let gradient = operation_gradient_mut(&mut target.operation).ok_or_else(|| {
                 edit_error(
@@ -2201,14 +2253,18 @@ fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxComm
                     Some(module),
                 )
             })?;
-            let entry = gradient.keys.iter_mut().find(|entry| &entry.id == key).ok_or_else(|| {
-                edit_error(
-                    "vfx.edit.gradient_key_not_found",
-                    format!("gradient key `{key}` was not found"),
-                    Some(emitter),
-                    Some(module),
-                )
-            })?;
+            let entry = gradient
+                .keys
+                .iter_mut()
+                .find(|entry| &entry.id == key)
+                .ok_or_else(|| {
+                    edit_error(
+                        "vfx.edit.gradient_key_not_found",
+                        format!("gradient key `{key}` was not found"),
+                        Some(emitter),
+                        Some(module),
+                    )
+                })?;
             let inverse = VfxCommand::SetGradientKey {
                 emitter: emitter.clone(),
                 module: module.clone(),
@@ -2235,7 +2291,10 @@ fn spark_template() -> VfxEffect {
     let mut effect = VfxEffect::new("spark", 1024);
     let mut emitter = base_emitter("sparks", 512);
     emitter.modules = vec![
-        module(VfxModuleOperation::Burst { time: 0.0, count: 48 }),
+        module(VfxModuleOperation::Burst {
+            time: 0.0,
+            count: 48,
+        }),
         module(VfxModuleOperation::Shape {
             shape: VfxShape::Cone {
                 direction: [0.0, 1.0, 0.0],
@@ -2351,7 +2410,10 @@ fn burst_template() -> VfxEffect {
     let mut effect = VfxEffect::new("burst", 1024);
     let mut emitter = base_emitter("burst", 512);
     emitter.modules = vec![
-        module(VfxModuleOperation::Burst { time: 0.0, count: 96 }),
+        module(VfxModuleOperation::Burst {
+            time: 0.0,
+            count: 96,
+        }),
         module(VfxModuleOperation::Shape {
             shape: VfxShape::Sphere { radius: 0.1 },
         }),
@@ -2454,7 +2516,9 @@ mod tests {
             .effect_to_canonical_json(&effect)
             .expect("template must serialize");
         assert!(json.ends_with('\n'));
-        let loaded = service.effect_from_json(&json).expect("serialized effect must load");
+        let loaded = service
+            .effect_from_json(&json)
+            .expect("serialized effect must load");
         assert_eq!(loaded, effect);
     }
 
@@ -2473,9 +2537,11 @@ mod tests {
         assert!(VfxEmitterId::generate().as_str().starts_with("vfxemitter_"));
         assert!(VfxModuleId::generate().as_str().starts_with("vfxmodule_"));
         assert!(VfxCurveKeyId::generate().as_str().starts_with("vfxkey_"));
-        assert!(VfxGradientKeyId::generate()
-            .as_str()
-            .starts_with("vfxgradient_"));
+        assert!(
+            VfxGradientKeyId::generate()
+                .as_str()
+                .starts_with("vfxgradient_")
+        );
     }
 
     #[test]
@@ -2594,7 +2660,10 @@ mod tests {
             module(VfxModuleOperation::SpawnRate {
                 particles_per_second: 10.0,
             }),
-            module(VfxModuleOperation::Burst { time: 0.0, count: 4 }),
+            module(VfxModuleOperation::Burst {
+                time: 0.0,
+                count: 4,
+            }),
             module(VfxModuleOperation::Lifetime {
                 value: VfxScalarValue::Constant { value: 2.0 },
             }),
@@ -2611,10 +2680,12 @@ mod tests {
             compilation.compiled_effect.as_ref().unwrap().emitters[0].estimated_capacity,
             24
         );
-        assert!(compilation
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "vfx.emitter_budget_exceeded"));
+        assert!(
+            compilation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "vfx.emitter_budget_exceeded")
+        );
     }
 
     #[test]

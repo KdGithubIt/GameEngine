@@ -19,7 +19,9 @@ impl RuntimeAssetId {
     fn generate() -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let id = COUNTER
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
             .expect("runtime asset ID space must not be exhausted");
         Self(id)
     }
@@ -62,7 +64,12 @@ impl<T> Hash for Handle<T> {
 }
 impl<T> fmt::Debug for Handle<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "Handle<{}>({:?})", std::any::type_name::<T>(), self.id)
+        write!(
+            formatter,
+            "Handle<{}>({:?})",
+            std::any::type_name::<T>(),
+            self.id
+        )
     }
 }
 
@@ -74,7 +81,9 @@ pub struct Assets<T> {
 impl<T> Assets<T> {
     /// Creates an empty asset store.
     pub fn new() -> Self {
-        Self { store: HashMap::new() }
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     /// Adds an asset and returns a typed handle to it.
@@ -85,7 +94,10 @@ impl<T> Assets<T> {
     pub fn add(&mut self, asset: T) -> Handle<T> {
         let id = RuntimeAssetId::generate();
         self.store.insert(id, asset);
-        Handle { id, marker: PhantomData }
+        Handle {
+            id,
+            marker: PhantomData,
+        }
     }
 
     /// Returns the asset referenced by `handle`.
@@ -100,7 +112,10 @@ impl<T> Assets<T> {
 
     /// Returns a typed handle for an existing runtime asset ID.
     pub fn handle(&self, id: RuntimeAssetId) -> Option<Handle<T>> {
-        self.store.contains_key(&id).then_some(Handle { id, marker: PhantomData })
+        self.store.contains_key(&id).then_some(Handle {
+            id,
+            marker: PhantomData,
+        })
     }
 
     /// Removes and returns the asset referenced by `handle`.
@@ -261,7 +276,10 @@ pub struct ImportSettings {
 impl ImportSettings {
     /// Returns the effective model targets for a motion source.
     pub fn resolved_motion_model_sources(&self) -> Vec<&str> {
-        self.motion_model_sources.iter().map(String::as_str).collect()
+        self.motion_model_sources
+            .iter()
+            .map(String::as_str)
+            .collect()
     }
 
     /// Returns `true` when all fields are at their default values.
@@ -573,10 +591,7 @@ pub fn imported_humanoid_motion_sub_asset_id(native_clip: &AssetId) -> AssetId {
 ///
 /// Unlike [`imported_motion_sub_asset_id`], this deliberately excludes any VMD
 /// output model or Humanoid provenance model from the derivation (ADR 0154).
-pub fn imported_logical_humanoid_motion_sub_asset_id(
-    source: &AssetId,
-    index: usize,
-) -> AssetId {
+pub fn imported_logical_humanoid_motion_sub_asset_id(source: &AssetId, index: usize) -> AssetId {
     let logical_native = imported_sub_asset_id(source, ImportedSubAssetKind::Animation, index);
     imported_humanoid_motion_sub_asset_id(&logical_native)
 }
@@ -615,10 +630,12 @@ pub fn expected_imported_sub_asset_id(
     }
 
     if let Some(target) = &sub_asset.target_model_source {
-        let target_id = AssetId::from_stable_id(engine_authoring::StableId::new(target))
-            .map_err(|source| AssetManifestError::InvalidAssetId {
-                id: target.clone(),
-                source,
+        let target_id =
+            AssetId::from_stable_id(engine_authoring::StableId::new(target)).map_err(|source| {
+                AssetManifestError::InvalidAssetId {
+                    id: target.clone(),
+                    source,
+                }
             })?;
         Ok(imported_motion_sub_asset_id(
             source_id,
@@ -924,7 +941,9 @@ mod tests {
                 import_settings: ImportSettings::default(),
             },
         );
-        let json = manifest.to_canonical_json().expect("manifest must serialize");
+        let json = manifest
+            .to_canonical_json()
+            .expect("manifest must serialize");
         let parsed = AssetManifest::from_json(&json).expect("manifest must parse");
         assert_eq!(parsed.get(&id), manifest.get(&id));
     }
@@ -1006,7 +1025,9 @@ mod tests {
                 },
             },
         );
-        let json = manifest.to_canonical_json().expect("fixture must serialize");
+        let json = manifest
+            .to_canonical_json()
+            .expect("fixture must serialize");
         assert!(matches!(
             AssetManifest::from_json(&json),
             Err(AssetManifestError::ImportedSubAssetIdMismatch { .. })

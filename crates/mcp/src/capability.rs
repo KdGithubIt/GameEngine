@@ -19,7 +19,7 @@ use engine_authoring::{
     AuthoringPermissions,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt;
 
 /// Tool name for registry-driven capability discovery.
@@ -589,7 +589,10 @@ mod tests {
             let capability = registry
                 .require(&AuthoringCapabilityId::new(descriptor.name.clone()))
                 .unwrap_or_else(|_| {
-                    panic!("advertised tool `{}` is not a registered capability", descriptor.name)
+                    panic!(
+                        "advertised tool `{}` is not a registered capability",
+                        descriptor.name
+                    )
                 });
             assert_eq!(
                 descriptor.description, capability.description,

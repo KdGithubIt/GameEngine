@@ -14,50 +14,49 @@ use winit::{
 
 use crate::asset::{AssetServer, Assets};
 use crate::audio::{
-    game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
+    AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime, game_audio_effect_system,
 };
-use crate::camera::{camera_aspect_system, ViewportSize};
+use crate::camera::{ViewportSize, camera_aspect_system};
 use crate::game_module::{
     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
 };
-use crate::game_prefab::{process_game_prefab_requests, GamePrefabEvents, GamePrefabSpawnQueue};
-use crate::game_timer::{game_timer_update_system, GameTimerEvents, GameTimers};
+use crate::game_prefab::{GamePrefabEvents, GamePrefabSpawnQueue, process_game_prefab_requests};
+use crate::game_timer::{GameTimerEvents, GameTimers, game_timer_update_system};
 use crate::input::{
     GamepadAxisState, GamepadButton, GamepadConnectionState, Input, KeyCode, MouseButton,
     MouseInput, VirtualInputQueue,
 };
-use crate::light::{light_resource_mirror_system, AmbientLight, DirectionalLight};
+use crate::light::{AmbientLight, DirectionalLight, light_resource_mirror_system};
 use crate::lock_on::TargetLock;
-use crate::lod::{lod_selection_system, InstanceStats};
+use crate::lod::{InstanceStats, lod_selection_system};
 use crate::material::{Material, Texture};
 use crate::mesh::{GpuMeshCache, Mesh};
+use crate::morph::{material_morph_system, morph_blend_system};
 use crate::particles::particle_update_system;
-use crate::vfx::vfx_update_system;
 use crate::physics::{GameplayPhysicsWorld, Gravity};
 use crate::player::PlayerMovementIntents;
 use crate::postprocess::PostProcessSettings;
 use crate::render::{
-    RenderFrameError, RenderStateError, ToneMapPass, WorldRenderer, MAIN_PASS_SAMPLE_COUNT,
+    MAIN_PASS_SAMPLE_COUNT, RenderFrameError, RenderStateError, ToneMapPass, WorldRenderer,
 };
-use crate::save::{game_save_effect_system, GameSaveCommandQueue, SaveData};
-use crate::scene_manager::{process_scene_switch, SceneManager, SceneSwitchState};
+use crate::save::{GameSaveCommandQueue, SaveData, game_save_effect_system};
+use crate::scene_manager::{SceneManager, SceneSwitchState, process_scene_switch};
 use crate::script_api::{
-    process_script_world_commands, script_animation_effect_system, script_api_collect_system,
-    script_api_command_dispatch_system, script_api_snapshot_system, script_audio_effect_system,
-    script_core_effect_system, PendingScriptEffects, ScriptCommandQueue, ScriptEventBus,
-    ScriptTimers, ScriptWorldCommandQueue,
+    PendingScriptEffects, ScriptCommandQueue, ScriptEventBus, ScriptTimers,
+    ScriptWorldCommandQueue, process_script_world_commands, script_animation_effect_system,
+    script_api_collect_system, script_api_command_dispatch_system, script_api_snapshot_system,
+    script_audio_effect_system, script_core_effect_system,
 };
-use crate::shadow::{presentation_resource_mirror_system, EnvironmentLighting, ShadowSettings};
-use crate::morph::{material_morph_system, morph_blend_system};
+use crate::shadow::{EnvironmentLighting, ShadowSettings, presentation_resource_mirror_system};
 use crate::skinning::joint_palette_system;
 use crate::time::{FixedTime, Time};
 use crate::transform::transform_propagation_system;
 use crate::ui::{UiContext, UiSystem, UiViewport};
 use crate::ui_document::{
-    ui_event_relay_system, ui_script_event_system, UiBindings, UiDocumentDrawOptions,
-    UiDocumentInstanceDrawReport, UiDocumentRef, UiEventFrame, UiEvents, UiReloadTimer,
-    UiRuntimeDiagnostics,
+    UiBindings, UiDocumentDrawOptions, UiDocumentInstanceDrawReport, UiDocumentRef, UiEventFrame,
+    UiEvents, UiReloadTimer, UiRuntimeDiagnostics, ui_event_relay_system, ui_script_event_system,
 };
+use crate::vfx::vfx_update_system;
 use engine_authoring::project_settings::{
     ProjectSystemSchedule, SystemScheduleSettings, SystemSettings,
 };
@@ -988,9 +987,10 @@ impl ApplicationHandler for EngineRunner {
 
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = &mut self.gpu
-                    && let Err(error) = gpu.resize(size.width, size.height) {
-                        log::error!("Failed to resize rendering surface: {error}");
-                    }
+                    && let Err(error) = gpu.resize(size.width, size.height)
+                {
+                    log::error!("Failed to resize rendering surface: {error}");
+                }
                 if let Some(vp) = world.get_resource_mut::<ViewportSize>() {
                     vp.width = size.width;
                     vp.height = size.height;
@@ -1007,12 +1007,13 @@ impl ApplicationHandler for EngineRunner {
                 use winit::keyboard::PhysicalKey;
                 if !egui_event.consumed
                     && let PhysicalKey::Code(code) = event.physical_key
-                        && let Some(input) = world.get_resource_mut::<Input<KeyCode>>() {
-                            match event.state {
-                                winit::event::ElementState::Pressed => input.press(code),
-                                winit::event::ElementState::Released => input.release(code),
-                            }
-                        }
+                    && let Some(input) = world.get_resource_mut::<Input<KeyCode>>()
+                {
+                    match event.state {
+                        winit::event::ElementState::Pressed => input.press(code),
+                        winit::event::ElementState::Released => input.release(code),
+                    }
+                }
                 if let winit::keyboard::PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
                     event_loop.exit();
                 }
@@ -1020,19 +1021,21 @@ impl ApplicationHandler for EngineRunner {
 
             WindowEvent::MouseInput { state, button, .. } => {
                 if !egui_event.consumed
-                    && let Some(input) = world.get_resource_mut::<Input<MouseButton>>() {
-                        match state {
-                            winit::event::ElementState::Pressed => input.press(button),
-                            winit::event::ElementState::Released => input.release(button),
-                        }
+                    && let Some(input) = world.get_resource_mut::<Input<MouseButton>>()
+                {
+                    match state {
+                        winit::event::ElementState::Pressed => input.press(button),
+                        winit::event::ElementState::Released => input.release(button),
                     }
+                }
             }
 
             WindowEvent::CursorMoved { position, .. } => {
                 if !egui_event.consumed
-                    && let Some(mouse) = world.get_resource_mut::<MouseInput>() {
-                        mouse.set_position(position.x as f32, position.y as f32);
-                    }
+                    && let Some(mouse) = world.get_resource_mut::<MouseInput>()
+                {
+                    mouse.set_position(position.x as f32, position.y as f32);
+                }
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1050,9 +1053,10 @@ impl ApplicationHandler for EngineRunner {
             WindowEvent::RedrawRequested => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(ctx) = &mut self.gilrs_context
-                    && let Some(queue) = world.get_resource_mut::<VirtualInputQueue>() {
-                        ctx.poll(queue);
-                    }
+                    && let Some(queue) = world.get_resource_mut::<VirtualInputQueue>()
+                {
+                    ctx.poll(queue);
+                }
 
                 crate::input::drain_virtual_input(world);
                 // Publish mouse movement accumulated since the previous frame.
@@ -1099,10 +1103,11 @@ impl ApplicationHandler for EngineRunner {
                     .and_then(|window| self.run_egui_frame(&window));
 
                 if let Some(gpu) = &mut self.gpu
-                    && let Err(error) = gpu.render(self.app.ecs.world_mut(), egui_frame) {
-                        log::error!("Rendering cannot continue: {error}");
-                        event_loop.exit();
-                    }
+                    && let Err(error) = gpu.render(self.app.ecs.world_mut(), egui_frame)
+                {
+                    log::error!("Rendering cannot continue: {error}");
+                    event_loop.exit();
+                }
 
                 let world = self.app.ecs.world_mut();
                 crate::input::clear_input_transitions(world);

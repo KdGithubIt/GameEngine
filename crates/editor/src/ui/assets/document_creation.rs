@@ -4,8 +4,8 @@
 //! animation graphs, animation sets, and materials - so the naming, manifest
 //! registration, and open-in-workspace steps stay in one place.
 
-use crate::ui::*;
 use super::manifest::save_asset_manifest;
+use crate::ui::*;
 
 impl EditorApp {
     /// Opens the asset browser entry at `index` based on its [`AssetKind`].
@@ -237,7 +237,10 @@ impl EditorApp {
     /// The browser supplies an asset-relative folder, so the same graph
     /// creation path can be used by the File menu and folder context menus
     /// without duplicating graph serialization or manifest registration.
-    pub(in crate::ui) fn create_animation_graph_document_in_folder(&mut self, destination_folder: &Path) {
+    pub(in crate::ui) fn create_animation_graph_document_in_folder(
+        &mut self,
+        destination_folder: &Path,
+    ) {
         self.create_animation_graph_document_internal(destination_folder, None);
     }
 
@@ -372,7 +375,11 @@ impl EditorApp {
 
     /// Creates a Set beside its Graph, assigns it to the Controller, and opens
     /// the dedicated typed Animation Set editor.
-    pub(in crate::ui) fn create_animation_set_for_controller(&mut self, entity: EntityId, graph: AssetId) {
+    pub(in crate::ui) fn create_animation_set_for_controller(
+        &mut self,
+        entity: EntityId,
+        graph: AssetId,
+    ) {
         if let Err(error) = self.resolve_animation_asset(&graph, engine::AssetKind::AnimationGraph)
         {
             self.report_error("editor.animation_set_create_failed", error);
@@ -671,7 +678,6 @@ impl EditorApp {
                 )),
         }
     }
-
 }
 
 /// First free `name`, `name_2`, ... path with the given multi-part suffix.

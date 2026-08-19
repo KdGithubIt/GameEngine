@@ -19,7 +19,8 @@ pub(in crate::ui) struct InspectorEditContext<'a> {
     ///
     /// Interior mutability lets deeply nested schema controls request
     /// navigation while retaining an immutable shared Inspector context.
-    pub(in crate::ui) reference_navigation: &'a std::cell::RefCell<Option<InspectorReferenceNavigation>>,
+    pub(in crate::ui) reference_navigation:
+        &'a std::cell::RefCell<Option<InspectorReferenceNavigation>>,
 }
 
 /// Shows the editor for one component value.
@@ -161,12 +162,9 @@ pub(in crate::ui) fn show_schema_fields_editor(
             {
                 continue;
             }
-            let edit = inspector_field_row(
-                ui,
-                &triple.label,
-                &field_schema.description,
-                |ui| show_color_triple_editor(ui, fields, &field_schema.name, triple),
-            );
+            let edit = inspector_field_row(ui, &triple.label, &field_schema.description, |ui| {
+                show_color_triple_editor(ui, fields, &field_schema.name, triple)
+            });
             if let Some(edit) = edit {
                 return Some(edit);
             }
@@ -263,13 +261,13 @@ pub(in crate::ui) fn show_schema_fields_editor(
             &field_schema.description,
             |ui| {
                 show_schema_field_editor(
-                ui,
-                field_value,
-                &field_schema.field_type,
-                hint.and_then(|hint| hint.control),
-                context,
-                allow_none,
-                &mut clear_reference,
+                    ui,
+                    field_value,
+                    &field_schema.field_type,
+                    hint.and_then(|hint| hint.control),
+                    context,
+                    allow_none,
+                    &mut clear_reference,
                 )
             },
         );

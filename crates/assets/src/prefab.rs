@@ -7,9 +7,9 @@
 
 use crate::asset::{AssetManifest, ImportSettings, ManifestEntry};
 use engine_authoring::{
-    replace_file_contents, AssetId, AuthoringPermission, AuthoringPermissionError,
-    AuthoringPermissions, AuthoringScene, EntityId, PersistError, PrefabAsset, PrefabError,
-    PrefabSourceError, PrefabSourcePath, ProjectError, ProjectRoot,
+    AssetId, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, AuthoringScene,
+    EntityId, PersistError, PrefabAsset, PrefabError, PrefabSourceError, PrefabSourcePath,
+    ProjectError, ProjectRoot, replace_file_contents,
 };
 use serde::Serialize;
 use std::fmt;
@@ -111,13 +111,19 @@ impl fmt::Display for PrefabAssetError {
             Self::Permission(source) => source.fmt(formatter),
             Self::Project(source) => write!(formatter, "prefab path is invalid: {source}"),
             Self::MissingEntity(entity) => {
-                write!(formatter, "entity `{entity}` is absent from the source Scene")
+                write!(
+                    formatter,
+                    "entity `{entity}` is absent from the source Scene"
+                )
             }
             Self::DestinationExists(path) => {
                 write!(formatter, "prefab destination already exists: `{path}`")
             }
             Self::ScriptFolder(path) => {
-                write!(formatter, "prefab destination `{path}` is inside the script tree")
+                write!(
+                    formatter,
+                    "prefab destination `{path}` is inside the script tree"
+                )
             }
             Self::InvalidSuffix(path) => {
                 write!(formatter, "prefab path `{path}` must end with .prefab.json")
@@ -129,7 +135,11 @@ impl fmt::Display for PrefabAssetError {
                 write!(formatter, "failed to serialize asset manifest: {source}")
             }
             Self::Io { path, source } => {
-                write!(formatter, "failed to read prefab `{}`: {source}", path.display())
+                write!(
+                    formatter,
+                    "failed to read prefab `{}`: {source}",
+                    path.display()
+                )
             }
             Self::PrefabPersist(source) => write!(formatter, "failed to save prefab: {source}"),
             Self::ManifestPersist(source) => {
@@ -407,7 +417,7 @@ fn asset_name_slug(display_name: &str) -> String {
 mod tests {
     use super::*;
     use engine_authoring::{
-        AuthoringCommand, AuthoringPermission, ProjectConfig, Transaction, PROJECT_SCHEMA_VERSION,
+        AuthoringCommand, AuthoringPermission, PROJECT_SCHEMA_VERSION, ProjectConfig, Transaction,
     };
 
     fn project() -> (tempfile::TempDir, ProjectRoot) {
@@ -473,15 +483,15 @@ mod tests {
         assert_eq!(result.entity_count, 2);
         let entry = manifest.get(&result.asset_id).expect("manifest entry");
         assert_eq!(entry.path, "prefabs/enemy.prefab.json");
-        let saved = fs::read_to_string(project.assets_root().join(&entry.path))
-            .expect("prefab file");
+        let saved =
+            fs::read_to_string(project.assets_root().join(&entry.path)).expect("prefab file");
         let prefab = PrefabAsset::from_json(&saved).expect("saved prefab must be reloadable");
         assert_eq!(prefab.entities.len(), 2);
         assert_eq!(prefab.entities[&prefab.root].parent, None);
         assert!(prefab.entities.contains_key(&child));
 
-        let persisted_manifest = fs::read_to_string(project.path().join(ASSET_MANIFEST_FILE))
-            .expect("manifest file");
+        let persisted_manifest =
+            fs::read_to_string(project.path().join(ASSET_MANIFEST_FILE)).expect("manifest file");
         let persisted = AssetManifest::from_json(&persisted_manifest).expect("manifest parse");
         assert!(persisted.get(&result.asset_id).is_some());
     }

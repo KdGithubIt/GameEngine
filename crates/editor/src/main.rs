@@ -6,16 +6,14 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::Duration;
 #[cfg(feature = "visual-validation")]
 use std::time::Instant;
-use std::time::Duration;
 
-use engine_editor::benchmark_runner::{run_benchmark_experiment, BenchmarkExperimentOptions};
+use engine_editor::benchmark_runner::{BenchmarkExperimentOptions, run_benchmark_experiment};
 use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
-use engine_project_lifecycle::{acquire_editor_project, EditorLease};
-use mcp_transport::{
-    EditorMcpHostResult, EditorMcpRequest, EditorMcpServer, MCP_PROTOCOL_VERSION,
-};
+use engine_project_lifecycle::{EditorLease, acquire_editor_project};
+use mcp_transport::{EditorMcpHostResult, EditorMcpRequest, EditorMcpServer, MCP_PROTOCOL_VERSION};
 
 /// Keeps the native swapchain clear color aligned with the editor theme.
 ///
@@ -160,7 +158,9 @@ impl EditorShell {
                 authoring_windows.open(tool);
             }
         }
-        project_lease.mark_ready().map_err(|error| error.to_string())?;
+        project_lease
+            .mark_ready()
+            .map_err(|error| error.to_string())?;
         #[cfg(feature = "visual-validation")]
         let visual_behavior_debug_capture = visual_validation_touches_behavior_debug();
         Ok(Self {
@@ -216,9 +216,7 @@ impl EditorShell {
                     }
                     Err(error) => {
                         let _ = std::fs::remove_file(&path);
-                        eprintln!(
-                            "[editor.ai_studio_visual_validation_capture_failed] {error}"
-                        );
+                        eprintln!("[editor.ai_studio_visual_validation_capture_failed] {error}");
                         self.visual_capture_path = None;
                         context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
                     }
@@ -382,7 +380,9 @@ impl eframe::App for EditorShell {
             );
         }
         if let Some(action) = self.ai_studio.take_runtime_action() {
-            let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
+            let result = self
+                .app
+                .handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
             self.ai_studio.report_runtime_result(context, result);
         }
         if self.ai_studio.take_live_observation_capture_request() {
@@ -674,7 +674,10 @@ finally {
             "-Command",
             SCRIPT,
         ])
-        .env("GAMEENGINE_VISUAL_CAPTURE_PID", std::process::id().to_string())
+        .env(
+            "GAMEENGINE_VISUAL_CAPTURE_PID",
+            std::process::id().to_string(),
+        )
         .env("GAMEENGINE_VISUAL_CAPTURE_TITLE", "AI Studio")
         .env("GAMEENGINE_VISUAL_CAPTURE_PATH", path.as_os_str())
         .output()
@@ -685,10 +688,7 @@ finally {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         Err(if stderr.is_empty() {
-            format!(
-                "native-window capture exited with status {}",
-                output.status
-            )
+            format!("native-window capture exited with status {}", output.status)
         } else {
             format!("native-window capture failed: {stderr}")
         })
@@ -772,7 +772,10 @@ fn editor_invocation() -> Result<EditorInvocation, String> {
             if benchmark_experiment.is_some() {
                 return Err("--benchmark-experiment may be specified only once".to_owned());
             }
-            benchmark_experiment = Some(next_argument_value(&mut arguments, "--benchmark-experiment")?);
+            benchmark_experiment = Some(next_argument_value(
+                &mut arguments,
+                "--benchmark-experiment",
+            )?);
         } else if argument == "--benchmark-endpoint" {
             if benchmark_endpoint.is_some() {
                 return Err("--benchmark-endpoint may be specified only once".to_owned());
@@ -819,7 +822,9 @@ fn editor_invocation() -> Result<EditorInvocation, String> {
         options.run_timeout = benchmark_run_timeout;
         return Ok(EditorInvocation::BenchmarkExperiment(Box::new(options)));
     }
-    if benchmark_endpoint.is_some() || benchmark_fixture.is_some() || benchmark_run_timeout.is_some()
+    if benchmark_endpoint.is_some()
+        || benchmark_fixture.is_some()
+        || benchmark_run_timeout.is_some()
     {
         return Err(
             "--benchmark-endpoint, --benchmark-fixture, and --benchmark-run-timeout apply only to --benchmark-experiment"

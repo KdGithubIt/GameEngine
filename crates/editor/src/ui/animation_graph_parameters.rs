@@ -161,8 +161,14 @@ impl TypedTransitionCondition {
 
 #[derive(Debug, Clone)]
 enum ParameterAction {
-    Rename { old: String, new: String },
-    ChangeKind { name: String, kind: GraphParameterKind },
+    Rename {
+        old: String,
+        new: String,
+    },
+    ChangeKind {
+        name: String,
+        kind: GraphParameterKind,
+    },
     Delete(String),
 }
 
@@ -221,9 +227,7 @@ impl EditorApp {
         state: &mut GraphParameterUiState,
     ) {
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut state.new_name).hint_text("speed or grounded"),
-            );
+            ui.add(egui::TextEdit::singleline(&mut state.new_name).hint_text("speed or grounded"));
             egui::ComboBox::from_id_salt("new_animation_parameter_kind")
                 .selected_text(state.new_kind.label())
                 .show_ui(ui, |ui| {
@@ -254,9 +258,10 @@ impl EditorApp {
         });
 
         if !state.new_name.trim().is_empty()
-            && let Err(error) = validate_parameter_name(&state.new_name) {
-                ui.small(error);
-            }
+            && let Err(error) = validate_parameter_name(&state.new_name)
+        {
+            ui.small(error);
+        }
     }
 
     fn apply_animation_parameter_action(
@@ -420,9 +425,7 @@ impl EditorApp {
         let selected_name = condition.parameter().map(str::to_owned);
         let selected_label = match &condition {
             TypedTransitionCondition::Always => "Unconditional".to_owned(),
-            TypedTransitionCondition::Invalid(_) => {
-                "Removed or undeclared condition".to_owned()
-            }
+            TypedTransitionCondition::Invalid(_) => "Removed or undeclared condition".to_owned(),
             _ => selected_name.clone().unwrap_or_default(),
         };
         let unconditional_selected = matches!(&condition, TypedTransitionCondition::Always);
@@ -530,8 +533,8 @@ fn show_animation_parameter_rows(
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(buffer);
                     let new_name = buffer.trim();
-                    let can_rename = new_name != parameter.name
-                        && validate_parameter_name(new_name).is_ok();
+                    let can_rename =
+                        new_name != parameter.name && validate_parameter_name(new_name).is_ok();
                     if ui
                         .add_enabled(can_rename, egui::Button::new("Rename"))
                         .clicked()
@@ -691,8 +694,7 @@ fn edge_condition_text(edge: &engine_authoring::Edge) -> String {
 
 fn transition_condition(edge: &engine_authoring::Edge) -> TypedTransitionCondition {
     let raw = edge_condition_text(edge);
-    parse_typed_transition_condition(&raw)
-        .unwrap_or(TypedTransitionCondition::Invalid(raw))
+    parse_typed_transition_condition(&raw).unwrap_or(TypedTransitionCondition::Invalid(raw))
 }
 
 fn parse_typed_transition_condition(raw: &str) -> Option<TypedTransitionCondition> {
@@ -723,12 +725,13 @@ fn parse_typed_transition_condition(raw: &str) -> Option<TypedTransitionConditio
         let right = right.trim();
 
         if comparison == FloatComparison::Equal
-            && let Some(expected) = parse_bool_literal(right) {
-                return Some(TypedTransitionCondition::Bool {
-                    parameter: parameter.to_owned(),
-                    expected,
-                });
-            }
+            && let Some(expected) = parse_bool_literal(right)
+        {
+            return Some(TypedTransitionCondition::Bool {
+                parameter: parameter.to_owned(),
+                expected,
+            });
+        }
 
         let threshold = right.parse::<f64>().ok()?;
         if !threshold.is_finite() {

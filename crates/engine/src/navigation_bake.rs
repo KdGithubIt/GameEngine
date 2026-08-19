@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 use engine_authoring::{
-    replace_file_contents, AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId,
-    ProjectRoot, Value,
+    AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId, ProjectRoot, Value,
+    replace_file_contents,
 };
 use engine_ecs::Query;
 use glam::Vec3;
@@ -29,8 +29,8 @@ use engine_physics::navigation::{
 };
 
 pub use engine_physics::navigation_bake::{
-    NavMeshBakeDocument, NavMeshBakeSettings, NavigationBakeOutput, NavigationBakeService,
-    NavigationBakeServiceError, NavigationBakeStats, NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
+    NAVMESH_BAKE_SCHEMA_VERSION, NavMeshBakeDocument, NavMeshBakeSettings, NavigationBakeOutput,
+    NavigationBakeService, NavigationBakeServiceError, NavigationBakeStats, NavigationSource,
 };
 
 /// Stable authoring component used to emit one explicit off-mesh traversal.
@@ -69,16 +69,17 @@ pub fn collect_navigation_source(
         .map_err(|error| NavMeshBakeError::Scene(error.to_string()))?;
     crate::transform_propagation_system(Query::new(&mut world));
 
-    let render_instances = if let Ok(query) = world.query::<(
-        &GlobalTransform,
-        &Handle<Mesh>,
-        Option<&PhysicsBody>,
-    )>() {
+    let render_instances = if let Ok(query) =
+        world.query::<(&GlobalTransform, &Handle<Mesh>, Option<&PhysicsBody>)>()
+    {
         query
             .iter()
             .filter_map(|(entity, (transform, mesh, body))| {
-                (body.is_none() || body == Some(&PhysicsBody::Static))
-                    .then_some((entity, transform.matrix(), *mesh))
+                (body.is_none() || body == Some(&PhysicsBody::Static)).then_some((
+                    entity,
+                    transform.matrix(),
+                    *mesh,
+                ))
             })
             .collect::<Vec<_>>()
     } else {
@@ -138,9 +139,7 @@ pub fn collect_navigation_source(
             let aabb = collider.world_aabb(transform);
             let minimum = aabb.center - aabb.half_extents;
             let maximum = aabb.center + aabb.half_extents;
-            if !render_entities.contains(&entity)
-                && matches!(collider, Collider::Aabb { .. })
-            {
+            if !render_entities.contains(&entity) && matches!(collider, Collider::Aabb { .. }) {
                 let y = maximum.y;
                 let a = [minimum.x, y, minimum.z];
                 let b = [maximum.x, y, minimum.z];
@@ -179,12 +178,7 @@ pub fn collect_navigation_source(
     })
 }
 
-fn world_triangle(
-    matrix: glam::Mat4,
-    a: [f32; 3],
-    b: [f32; 3],
-    c: [f32; 3],
-) -> NavigationTriangle {
+fn world_triangle(matrix: glam::Mat4, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> NavigationTriangle {
     NavigationTriangle {
         a: matrix.transform_point3(Vec3::from_array(a)).to_array(),
         b: matrix.transform_point3(Vec3::from_array(b)).to_array(),
@@ -244,8 +238,10 @@ pub fn is_scene_navmesh_current(
     nav_mesh: &crate::navmesh::NavMesh,
 ) -> Result<bool, NavMeshBakeError> {
     let input = prepare_scene_navmesh(scene, project_root, manifest, document)?;
-    Ok(document.source_fingerprint.as_deref() == Some(input.source_fingerprint.as_str())
-        && nav_mesh.source_fingerprint == input.source_fingerprint)
+    Ok(
+        document.source_fingerprint.as_deref() == Some(input.source_fingerprint.as_str())
+            && nav_mesh.source_fingerprint == input.source_fingerprint,
+    )
 }
 
 /// Bakes, safely replaces, registers, and fingerprints one scene NavMesh.
@@ -359,7 +355,7 @@ fn collect_authored_modifiers(
                     other => {
                         return Err(NavMeshBakeError::Scene(format!(
                             "unsupported navigation modifier mode `{other}`"
-                        )))
+                        )));
                     }
                 };
                 Ok(NavigationModifier {
@@ -438,7 +434,7 @@ fn f32_field(fields: ObjectFields<'_>, key: &str) -> Result<f32, NavMeshBakeErro
         _ => {
             return Err(NavMeshBakeError::Scene(format!(
                 "navigation field `{key}` must be numeric"
-            )))
+            )));
         }
     };
     if value.is_finite() {
@@ -452,22 +448,17 @@ fn f32_field(fields: ObjectFields<'_>, key: &str) -> Result<f32, NavMeshBakeErro
 
 fn u16_field(fields: ObjectFields<'_>, key: &str) -> Result<u16, NavMeshBakeError> {
     match fields.get(key) {
-        Some(Value::I64(value)) => u16::try_from(*value).map_err(|_| {
-            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
-        }),
-        Some(Value::U64(value)) => u16::try_from(*value).map_err(|_| {
-            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
-        }),
+        Some(Value::I64(value)) => u16::try_from(*value)
+            .map_err(|_| NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))),
+        Some(Value::U64(value)) => u16::try_from(*value)
+            .map_err(|_| NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))),
         _ => Err(NavMeshBakeError::Scene(format!(
             "navigation field `{key}` must be an integer"
         ))),
     }
 }
 
-fn string_field<'a>(
-    fields: ObjectFields<'a>,
-    key: &str,
-) -> Result<&'a str, NavMeshBakeError> {
+fn string_field<'a>(fields: ObjectFields<'a>, key: &str) -> Result<&'a str, NavMeshBakeError> {
     match fields.get(key) {
         Some(Value::String(value)) if !value.trim().is_empty() => Ok(value),
         _ => Err(NavMeshBakeError::Scene(format!(
@@ -528,7 +519,9 @@ impl fmt::Display for NavMeshBakeError {
             Self::Scene(error) => write!(formatter, "navigation scene input failed: {error}"),
             Self::Project(error) => write!(formatter, "navigation project path failed: {error}"),
             Self::Shared(error) => write!(formatter, "{error}"),
-            Self::Persist(error) => write!(formatter, "navigation manifest persistence failed: {error}"),
+            Self::Persist(error) => {
+                write!(formatter, "navigation manifest persistence failed: {error}")
+            }
         }
     }
 }

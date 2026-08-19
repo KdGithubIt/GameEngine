@@ -60,18 +60,37 @@ impl ProjectSettingsPanel {
     }
 
     /// Inspects Project Settings through the shared typed-document service.
-    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<ProjectSettings>, TypedDocumentAuthoringError> {
+    pub fn structured_inspect(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<TypedDocumentAuthoringSnapshot<ProjectSettings>, TypedDocumentAuthoringError> {
         TypedDocumentAuthoringService::new().inspect(&self.settings, &self.authoring, permissions)
     }
 
     /// Validates Project Settings through the shared typed-document service.
-    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
+    pub fn structured_validate(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
         TypedDocumentAuthoringService::new().validate(&self.settings, &self.authoring, permissions)
     }
 
     /// Previews one complete Project Settings replacement.
-    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
-        TypedDocumentAuthoringService::new().preview(&self.settings, &self.authoring, permissions, expected_revision, expected_generation, replacement)
+    pub fn structured_preview(
+        &self,
+        permissions: &AuthoringPermissions,
+        expected_revision: u64,
+        expected_generation: u64,
+        replacement: ProjectSettings,
+    ) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().preview(
+            &self.settings,
+            &self.authoring,
+            permissions,
+            expected_revision,
+            expected_generation,
+            replacement,
+        )
     }
 
     /// Applies one complete Project Settings replacement as one undoable edit.
@@ -153,8 +172,8 @@ impl ProjectSettingsPanel {
     ) -> Result<bool, TypedDocumentAuthoringError> {
         let revision = self.authoring.revision();
         let generation = self.authoring.generation();
-        let permissions = AuthoringPermissions::read_only()
-            .with(AuthoringPermission::ProjectDataWrite);
+        let permissions =
+            AuthoringPermissions::read_only().with(AuthoringPermission::ProjectDataWrite);
         let mutation = TypedDocumentAuthoringService::new().apply(
             &mut self.settings,
             &mut self.authoring,
@@ -394,11 +413,11 @@ pub fn show_project_settings_panel(
                         .layers
                         .iter_mut()
                         .find(|candidate| candidate.index == layer.index)
-                    {
-                        target.name = name.trim().to_owned();
-                        panel.is_dirty = true;
-                        changed = true;
-                    }
+                {
+                    target.name = name.trim().to_owned();
+                    panel.is_dirty = true;
+                    changed = true;
+                }
                 if layer.index != 0 && ui.small_button("✕").clicked() {
                     panel.remove_layer(layer.index);
                     changed = true;
@@ -438,10 +457,11 @@ pub fn show_project_settings_panel(
                 ui.horizontal(|ui| {
                     ui.label("Gamepad Buttons");
                     if ui.text_edit_singleline(&mut gamepad_buttons).changed()
-                        && let Some(parsed) = parse_u32_csv(&gamepad_buttons) {
-                            edited.gamepad_buttons = parsed;
-                            action_changed = true;
-                        }
+                        && let Some(parsed) = parse_u32_csv(&gamepad_buttons)
+                    {
+                        edited.gamepad_buttons = parsed;
+                        action_changed = true;
+                    }
                 });
 
                 ui.label("Gamepad Axes");
@@ -642,22 +662,31 @@ pub fn show_project_settings_panel(
                     .color_edit_button_rgb(&mut panel.post_process.color_grading.tint)
                     .changed();
                 changed |= ui
-                    .add(eframe::egui::Slider::new(
-                        &mut panel.post_process.color_grading.saturation,
-                        0.0..=2.0,
-                    ).text("Saturation"))
+                    .add(
+                        eframe::egui::Slider::new(
+                            &mut panel.post_process.color_grading.saturation,
+                            0.0..=2.0,
+                        )
+                        .text("Saturation"),
+                    )
                     .changed();
                 changed |= ui
-                    .add(eframe::egui::Slider::new(
-                        &mut panel.post_process.color_grading.contrast,
-                        0.0..=2.0,
-                    ).text("Contrast"))
+                    .add(
+                        eframe::egui::Slider::new(
+                            &mut panel.post_process.color_grading.contrast,
+                            0.0..=2.0,
+                        )
+                        .text("Contrast"),
+                    )
                     .changed();
                 changed |= ui
-                    .add(eframe::egui::Slider::new(
-                        &mut panel.post_process.color_grading.gamma,
-                        0.1..=3.0,
-                    ).text("Gamma"))
+                    .add(
+                        eframe::egui::Slider::new(
+                            &mut panel.post_process.color_grading.gamma,
+                            0.1..=3.0,
+                        )
+                        .text("Gamma"),
+                    )
                     .changed();
             }
         }
@@ -684,12 +713,8 @@ pub fn show_project_settings_panel(
             .with(AuthoringPermission::Preview)
             .with(AuthoringPermission::ProjectDataWrite);
         if let Ok(base) = panel.structured_inspect(&permissions) {
-            let _ = panel.structured_apply(
-                &permissions,
-                base.revision,
-                base.generation,
-                replacement,
-            );
+            let _ =
+                panel.structured_apply(&permissions, base.revision, base.generation, replacement);
         }
     }
 

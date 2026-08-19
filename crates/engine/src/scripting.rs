@@ -21,18 +21,18 @@ use engine_authoring::id::{AssetId, EntityId};
 use engine_authoring::value::Value;
 use engine_ecs::{Entity, Query, Res, ResMut};
 use hashbrown::HashMap;
-use rhai::{Array as RhaiArray, Dynamic, Engine, ImmutableString, Map as RhaiMap, Scope, AST};
+use rhai::{AST, Array as RhaiArray, Dynamic, Engine, ImmutableString, Map as RhaiMap, Scope};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::animation::AnimationEvents;
-use crate::collision::{collisions_by_entity, CollisionEvents, CollisionInfo};
+use crate::collision::{CollisionEvents, CollisionInfo, collisions_by_entity};
 use crate::input::{Input, KeyCode};
 use crate::save::{SaveData, SaveStore, SaveValue};
 use crate::script_api::{
-    dynamic_to_ui_binding, QueuedScriptCommand, ScriptApiCommand, ScriptLockCommand,
-    MAX_SCRIPT_COMMANDS,
+    MAX_SCRIPT_COMMANDS, QueuedScriptCommand, ScriptApiCommand, ScriptLockCommand,
+    dynamic_to_ui_binding,
 };
 use crate::time::FixedTime;
 use crate::transform::Transform;
@@ -500,9 +500,10 @@ fn register_context_api(engine: &mut Engine) {
                 .expect("script context mutex is unpoisoned")
                 .get_component_calls += 1;
             if component.as_str() == "engine.transform"
-                && let Some(snap) = &ctx.transform_snapshot {
-                    return Dynamic::from((**snap).clone());
-                }
+                && let Some(snap) = &ctx.transform_snapshot
+            {
+                return Dynamic::from((**snap).clone());
+            }
             Dynamic::UNIT
         },
     );
@@ -1722,9 +1723,11 @@ mod tests {
     fn compile_valid_rhai_script_succeeds() {
         let mut engine = ScriptEngine::default();
         let id = sample_asset_id();
-        assert!(engine
-            .compile(&id, r#"fn on_start(ctx) { ctx.log("hello"); }"#)
-            .is_ok());
+        assert!(
+            engine
+                .compile(&id, r#"fn on_start(ctx) { ctx.log("hello"); }"#)
+                .is_ok()
+        );
         assert!(engine.is_compiled(&id));
     }
 
@@ -1826,14 +1829,18 @@ mod tests {
 
         assert!(result.error.is_none(), "script failed: {:?}", result.error);
         assert_eq!(result.logs, vec!["9v0".to_string(), "ready".to_string()]);
-        assert!(result
-            .api_commands
-            .iter()
-            .any(|command| matches!(command, ScriptApiCommand::SpawnPrefab { .. })));
-        assert!(result
-            .api_commands
-            .iter()
-            .any(|command| matches!(command, ScriptApiCommand::PlayAnimation { .. })));
+        assert!(
+            result
+                .api_commands
+                .iter()
+                .any(|command| matches!(command, ScriptApiCommand::SpawnPrefab { .. }))
+        );
+        assert!(
+            result
+                .api_commands
+                .iter()
+                .any(|command| matches!(command, ScriptApiCommand::PlayAnimation { .. }))
+        );
         assert!(result.api_commands.iter().any(|command| matches!(
             command,
             ScriptApiCommand::CrossfadeBackgroundMusic { fade_seconds, .. }
@@ -1849,14 +1856,18 @@ mod tests {
             ScriptApiCommand::SetSoundEffectVolume { volume }
                 if (*volume - 0.8).abs() < f32::EPSILON
         )));
-        assert!(result
-            .api_commands
-            .iter()
-            .any(|command| matches!(command, ScriptApiCommand::SetUiBinding { .. })));
-        assert!(result
-            .api_commands
-            .iter()
-            .any(|command| matches!(command, ScriptApiCommand::RequestScene { .. })));
+        assert!(
+            result
+                .api_commands
+                .iter()
+                .any(|command| matches!(command, ScriptApiCommand::SetUiBinding { .. }))
+        );
+        assert!(
+            result
+                .api_commands
+                .iter()
+                .any(|command| matches!(command, ScriptApiCommand::RequestScene { .. }))
+        );
         assert!(result.api_commands.iter().any(
             |command| matches!(command, ScriptApiCommand::ConsumeTimer { name } if name == "ready")
         ));
@@ -1869,7 +1880,7 @@ mod tests {
     #[test]
     fn animation_event_is_dispatched_only_to_the_firing_entity() {
         use crate::animation::{
-            animation_system, AnimEvent, AnimationClip, AnimationEvents, Animator,
+            AnimEvent, AnimationClip, AnimationEvents, Animator, animation_system,
         };
         use crate::asset::Assets;
 

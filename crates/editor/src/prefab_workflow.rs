@@ -7,11 +7,10 @@
 
 use crate::session::{EditorSession, EditorSessionError};
 use engine_authoring::{
-    prefab_instance_marker, prefab_instance_source, replace_file_contents, AuthoringCommand,
-    AuthoringPermission, AuthoringPermissions, AuthoringScene, ComponentTypeId, EntityId,
-    PersistError, PrefabAsset, PrefabAuthoringError, PrefabAuthoringService, PrefabError,
+    AuthoringCommand, AuthoringPermission, AuthoringPermissions, AuthoringScene, ComponentTypeId,
+    EntityId, PersistError, PrefabAsset, PrefabAuthoringError, PrefabAuthoringService, PrefabError,
     PrefabInstanceSource, PrefabInstantiationRequest, PrefabSourceError, PrefabSourcePath,
-    SceneAuthoringService,
+    SceneAuthoringService, prefab_instance_marker, prefab_instance_source, replace_file_contents,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -144,8 +143,7 @@ pub fn instantiate_prefab(
 ) -> Result<EntityId, PrefabWorkflowError> {
     let prefab = load_prefab(source)?;
     let source = PrefabSourcePath::from_project_path(project_root, source)?;
-    let permissions =
-        AuthoringPermissions::read_only().with(AuthoringPermission::ProjectDataWrite);
+    let permissions = AuthoringPermissions::read_only().with(AuthoringPermission::ProjectDataWrite);
     let base = {
         let authoring = session
             .scene_authoring_session()
@@ -316,12 +314,7 @@ pub fn prefab_dependencies(
         output.insert(canonical.clone());
         for entity in prefab.entities.values() {
             if let Some(source) = prefab_instance_source(entity) {
-                visit(
-                    project_root,
-                    &source.resolve(project_root),
-                    active,
-                    output,
-                )?;
+                visit(project_root, &source.resolve(project_root), active, output)?;
             }
         }
         active.remove(&canonical);

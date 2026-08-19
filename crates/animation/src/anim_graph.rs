@@ -10,17 +10,17 @@ use std::fmt;
 use std::path::Path;
 
 use engine_authoring::{
-    compile_animation_graph, AnimState, AnimTransition, AnimationGraphDomain,
-    AnimationStatePlaybackMode, AssetId, CompiledAnimGraph, Diagnostic, EdgeId, Graph, GraphId,
-    MotionSlotId, MotionSourceRef,
+    AnimState, AnimTransition, AnimationGraphDomain, AnimationStatePlaybackMode, AssetId,
+    CompiledAnimGraph, Diagnostic, EdgeId, Graph, GraphId, MotionSlotId, MotionSourceRef,
+    compile_animation_graph,
 };
 
 use crate::animation::{AnimationClip, Animator};
-use crate::motion_binding::AnimationMotionRoute;
 use crate::animation_parameters::{
     AnimationParameterError, AnimationParameterKind, AnimationParameterValue, AnimationParameters,
 };
 use crate::asset::Handle;
+use crate::motion_binding::AnimationMotionRoute;
 
 /// Comparison operator used by one floating-point transition condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +160,9 @@ impl AnimationTransitionCondition {
             Self::Bool {
                 parameter,
                 expected,
-            } => parameters.bool(parameter).is_ok_and(|value| value == *expected),
+            } => parameters
+                .bool(parameter)
+                .is_ok_and(|value| value == *expected),
             Self::Float {
                 parameter,
                 comparison,
@@ -206,7 +208,10 @@ impl fmt::Display for AnimationTransitionConditionError {
                 "animation transition expression `{expression}` must use explicit Bool equality, a Float comparison, or `trigger NAME`"
             ),
             Self::BlankParameter => {
-                write!(formatter, "animation transition parameter must not be blank")
+                write!(
+                    formatter,
+                    "animation transition parameter must not be blank"
+                )
             }
             Self::MissingComparisonValue => write!(
                 formatter,
@@ -411,7 +416,11 @@ impl AnimGraphPlayer {
     /// Returns the stable source edge for the latest accepted transition.
     pub fn last_transition_edge(&self) -> Option<&EdgeId> {
         let index = self.last_transition_index?;
-        self.debug_source.as_ref()?.transition_edges.get(index)?.as_ref()
+        self.debug_source
+            .as_ref()?
+            .transition_edges
+            .get(index)?
+            .as_ref()
     }
 
     /// Installs read-only source and binding provenance captured by scene conversion.
@@ -645,8 +654,7 @@ pub fn load_animation_graph_document_json(
 ) -> Result<(Graph, CompiledAnimGraph), AnimGraphLoadError> {
     let graph: Graph = serde_json::from_str(json).map_err(AnimGraphLoadError::Parse)?;
     let domain = AnimationGraphDomain::new();
-    let compiled =
-        compile_animation_graph(&domain, &graph).map_err(AnimGraphLoadError::Compile)?;
+    let compiled = compile_animation_graph(&domain, &graph).map_err(AnimGraphLoadError::Compile)?;
     let diagnostics = compiled
         .transitions
         .iter()
@@ -676,10 +684,10 @@ pub(crate) mod tests {
     use super::*;
     use crate::animation::{AnimChannel, AnimProperty, AnimatorState, Keyframe};
     use crate::asset::Assets;
+    use engine_authoring::GraphDomain;
     use engine_authoring::graph::{Edge, Graph as AuthoringGraph, Node, PortRef};
     use engine_authoring::id::{EdgeId, GraphId, MotionSlotId, NodeId};
     use engine_authoring::value::Value;
-    use engine_authoring::GraphDomain;
     use engine_ecs::{App, Entity, World};
     use std::collections::BTreeMap as StdBTreeMap;
 
@@ -778,10 +786,8 @@ pub(crate) mod tests {
             PortRef::new(to.clone(), domain.state_in_port().clone()),
         );
         if !condition.is_empty() {
-            edge.annotations.insert(
-                "condition".to_owned(),
-                Value::String(condition.to_owned()),
-            );
+            edge.annotations
+                .insert("condition".to_owned(), Value::String(condition.to_owned()));
         }
         graph.edges.insert(id, edge);
     }
@@ -960,9 +966,7 @@ pub(crate) mod tests {
     #[test]
     fn parameter_types_remain_stable() {
         let (mut world, entity, _, _) = two_state_world("speed > 0.1");
-        let player = world
-            .get_component_mut::<AnimGraphPlayer>(entity)
-            .unwrap();
+        let player = world.get_component_mut::<AnimGraphPlayer>(entity).unwrap();
         player.set_float_parameter("speed", 1.0).unwrap();
         assert!(matches!(
             player.set_bool_parameter("speed", true),

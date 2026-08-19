@@ -75,7 +75,12 @@ pub(crate) struct HostedBackendError {
 }
 
 impl HostedBackendError {
-    fn new(category: HostedFailureCategory, retryable: bool, status: Option<u16>, message: impl Into<String>) -> Self {
+    fn new(
+        category: HostedFailureCategory,
+        retryable: bool,
+        status: Option<u16>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             category,
             retryable,
@@ -85,15 +90,28 @@ impl HostedBackendError {
     }
 
     pub(crate) fn interrupted() -> Self {
-        Self::new(HostedFailureCategory::Interrupted, false, None, "hosted inference was interrupted")
+        Self::new(
+            HostedFailureCategory::Interrupted,
+            false,
+            None,
+            "hosted inference was interrupted",
+        )
     }
 }
 
 impl fmt::Display for HostedBackendError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.status {
-            Some(status) => write!(formatter, "hosted model backend {:?} (HTTP {status}, retryable={}): {}", self.category, self.retryable, self.message),
-            None => write!(formatter, "hosted model backend {:?} (retryable={}): {}", self.category, self.retryable, self.message),
+            Some(status) => write!(
+                formatter,
+                "hosted model backend {:?} (HTTP {status}, retryable={}): {}",
+                self.category, self.retryable, self.message
+            ),
+            None => write!(
+                formatter,
+                "hosted model backend {:?} (retryable={}): {}",
+                self.category, self.retryable, self.message
+            ),
         }
     }
 }
@@ -111,12 +129,14 @@ struct SecretBytes(Vec<u8>);
 
 impl SecretBytes {
     fn expose(&self) -> Result<&str, HostedBackendError> {
-        std::str::from_utf8(&self.0).map_err(|_| HostedBackendError::new(
-            HostedFailureCategory::CredentialUnavailable,
-            false,
-            None,
-            "stored credential is not valid UTF-8",
-        ))
+        std::str::from_utf8(&self.0).map_err(|_| {
+            HostedBackendError::new(
+                HostedFailureCategory::CredentialUnavailable,
+                false,
+                None,
+                "stored credential is not valid UTF-8",
+            )
+        })
     }
 }
 
@@ -146,12 +166,14 @@ pub(crate) fn store_api_key(path: &Path, secret: &str) -> Result<(), HostedBacke
         &AtomicBool::new(false),
         MAX_SECRET_HELPER_OUTPUT_BYTES,
     )?;
-    let parent = path.parent().ok_or_else(|| HostedBackendError::new(
-        HostedFailureCategory::CredentialUnavailable,
-        false,
-        None,
-        "credential path has no parent directory",
-    ))?;
+    let parent = path.parent().ok_or_else(|| {
+        HostedBackendError::new(
+            HostedFailureCategory::CredentialUnavailable,
+            false,
+            None,
+            "credential path has no parent directory",
+        )
+    })?;
     fs::create_dir_all(parent).map_err(credential_io_error)?;
     let temp = path.with_extension("dpapi.tmp");
     fs::write(&temp, encrypted).map_err(credential_io_error)?;
@@ -223,9 +245,13 @@ pub(crate) fn generate_hosted(
     let authorization = secret.as_ref().map(SecretBytes::expose).transpose()?;
     let request_body = serde_json::to_string(&ChatCompletionRequest {
         model: config.model.trim(),
-        messages: [ChatMessage { role: "user", content: prompt }],
+        messages: [ChatMessage {
+            role: "user",
+            content: prompt,
+        }],
         stream: false,
-    }).map_err(json_error)?;
+    })
+    .map_err(json_error)?;
     let envelope = HostedRequestEnvelope {
         endpoint: config.endpoint.trim(),
         authorization,
@@ -241,29 +267,41 @@ pub(crate) fn generate_hosted(
     );
     input.fill(0);
     let output = output?;
-    let transport: PowerShellHttpResult = serde_json::from_slice(&output).map_err(|_| HostedBackendError::new(
-        HostedFailureCategory::InvalidResponse,
-        false,
-        None,
-        "platform HTTP helper returned an invalid response envelope",
-    ))?;
+    let transport: PowerShellHttpResult = serde_json::from_slice(&output).map_err(|_| {
+        HostedBackendError::new(
+            HostedFailureCategory::InvalidResponse,
+            false,
+            None,
+            "platform HTTP helper returned an invalid response envelope",
+        )
+    })?;
     if !transport.ok {
-        return Err(classify_provider_failure(transport.status, &transport.body, &transport.message));
+        return Err(classify_provider_failure(
+            transport.status,
+            &transport.body,
+            &transport.message,
+        ));
     }
     if transport.status < 200 || transport.status >= 300 {
-        return Err(classify_provider_failure(transport.status, &transport.body, &transport.message));
+        return Err(classify_provider_failure(
+            transport.status,
+            &transport.body,
+            &transport.message,
+        ));
     }
     parse_chat_completion(&transport.body)
 }
 
 fn validate_https_endpoint(endpoint: &str) -> Result<(), HostedBackendError> {
     let trimmed = endpoint.trim();
-    let authority_and_path = trimmed.strip_prefix("https://").ok_or_else(|| HostedBackendError::new(
-        HostedFailureCategory::InvalidConfiguration,
-        false,
-        None,
-        "hosted model endpoints must use HTTPS",
-    ))?;
+    let authority_and_path = trimmed.strip_prefix("https://").ok_or_else(|| {
+        HostedBackendError::new(
+            HostedFailureCategory::InvalidConfiguration,
+            false,
+            None,
+            "hosted model endpoints must use HTTPS",
+        )
+    })?;
     let authority = authority_and_path.split('/').next().unwrap_or_default();
     if authority.is_empty() || authority.contains('@') || trimmed.contains('#') {
         return Err(HostedBackendError::new(
@@ -339,20 +377,28 @@ struct ChatCompletionUsage {
 }
 
 fn parse_chat_completion(body: &str) -> Result<HostedGeneration, HostedBackendError> {
-    let response: ChatCompletionResponse = serde_json::from_str(body).map_err(|_| HostedBackendError::new(
-        HostedFailureCategory::InvalidResponse,
-        false,
-        None,
-        "hosted provider returned invalid chat-completion JSON",
-    ))?;
-    let choice = response.choices.first().ok_or_else(|| HostedBackendError::new(
-        HostedFailureCategory::InvalidResponse,
-        false,
-        None,
-        "hosted provider returned no completion choice",
-    ))?;
+    let response: ChatCompletionResponse = serde_json::from_str(body).map_err(|_| {
+        HostedBackendError::new(
+            HostedFailureCategory::InvalidResponse,
+            false,
+            None,
+            "hosted provider returned invalid chat-completion JSON",
+        )
+    })?;
+    let choice = response.choices.first().ok_or_else(|| {
+        HostedBackendError::new(
+            HostedFailureCategory::InvalidResponse,
+            false,
+            None,
+            "hosted provider returned no completion choice",
+        )
+    })?;
     if choice.finish_reason.as_deref() == Some("content_filter")
-        || choice.message.refusal.as_deref().is_some_and(|value| !value.trim().is_empty())
+        || choice
+            .message
+            .refusal
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
     {
         return Err(HostedBackendError::new(
             HostedFailureCategory::SafetyRefusal,
@@ -361,7 +407,13 @@ fn parse_chat_completion(body: &str) -> Result<HostedGeneration, HostedBackendEr
             "hosted provider refused the request under its safety policy",
         ));
     }
-    let text = choice.message.content.as_deref().unwrap_or_default().trim().to_owned();
+    let text = choice
+        .message
+        .content
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
     if text.is_empty() {
         return Err(HostedBackendError::new(
             HostedFailureCategory::InvalidResponse,
@@ -372,27 +424,75 @@ fn parse_chat_completion(body: &str) -> Result<HostedGeneration, HostedBackendEr
     }
     Ok(HostedGeneration {
         text,
-        prompt_tokens: response.usage.as_ref().and_then(|usage| usage.prompt_tokens),
-        response_tokens: response.usage.as_ref().and_then(|usage| usage.completion_tokens),
+        prompt_tokens: response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.prompt_tokens),
+        response_tokens: response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.completion_tokens),
     })
 }
 
 fn classify_provider_failure(status: u16, body: &str, fallback: &str) -> HostedBackendError {
-    let message = if body.trim().is_empty() { fallback } else { body };
+    let message = if body.trim().is_empty() {
+        fallback
+    } else {
+        body
+    };
     let lowered = message.to_ascii_lowercase();
-    if lowered.contains("context length") || lowered.contains("maximum context") || lowered.contains("too many tokens") {
-        return HostedBackendError::new(HostedFailureCategory::ContextTooLarge, false, status_option(status), "provider context limit was exceeded");
+    if lowered.contains("context length")
+        || lowered.contains("maximum context")
+        || lowered.contains("too many tokens")
+    {
+        return HostedBackendError::new(
+            HostedFailureCategory::ContextTooLarge,
+            false,
+            status_option(status),
+            "provider context limit was exceeded",
+        );
     }
-    if lowered.contains("content_filter") || lowered.contains("safety policy") || lowered.contains("moderation") {
-        return HostedBackendError::new(HostedFailureCategory::SafetyRefusal, false, status_option(status), "provider safety policy refused the request");
+    if lowered.contains("content_filter")
+        || lowered.contains("safety policy")
+        || lowered.contains("moderation")
+    {
+        return HostedBackendError::new(
+            HostedFailureCategory::SafetyRefusal,
+            false,
+            status_option(status),
+            "provider safety policy refused the request",
+        );
     }
     match status {
         0 => HostedBackendError::new(HostedFailureCategory::Transport, true, None, message),
-        401 | 403 => HostedBackendError::new(HostedFailureCategory::Authentication, false, Some(status), "provider authentication or authorization failed"),
-        408 | 425 => HostedBackendError::new(HostedFailureCategory::Transport, true, Some(status), message),
-        429 => HostedBackendError::new(HostedFailureCategory::RateLimited, true, Some(status), "provider rate limit was reached"),
-        500..=599 => HostedBackendError::new(HostedFailureCategory::Server, true, Some(status), message),
-        _ => HostedBackendError::new(HostedFailureCategory::ProviderRejected, false, Some(status), message),
+        401 | 403 => HostedBackendError::new(
+            HostedFailureCategory::Authentication,
+            false,
+            Some(status),
+            "provider authentication or authorization failed",
+        ),
+        408 | 425 => HostedBackendError::new(
+            HostedFailureCategory::Transport,
+            true,
+            Some(status),
+            message,
+        ),
+        429 => HostedBackendError::new(
+            HostedFailureCategory::RateLimited,
+            true,
+            Some(status),
+            "provider rate limit was reached",
+        ),
+        500..=599 => {
+            HostedBackendError::new(HostedFailureCategory::Server, true, Some(status), message)
+        }
+        _ => HostedBackendError::new(
+            HostedFailureCategory::ProviderRejected,
+            false,
+            Some(status),
+            message,
+        ),
     }
 }
 
@@ -402,14 +502,22 @@ fn status_option(status: u16) -> Option<u16> {
 
 fn sanitize_provider_message(message: &str) -> String {
     let lowered = message.to_ascii_lowercase();
-    if lowered.contains("authorization") || lowered.contains("bearer ") || lowered.contains("api_key") || lowered.contains("api key") || lowered.contains("secret") {
+    if lowered.contains("authorization")
+        || lowered.contains("bearer ")
+        || lowered.contains("api_key")
+        || lowered.contains("api key")
+        || lowered.contains("secret")
+    {
         return "provider returned a sensitive error; details were redacted".to_owned();
     }
     let trimmed = message.trim();
     if trimmed.chars().count() <= MAX_PROVIDER_MESSAGE_CHARS {
         trimmed.to_owned()
     } else {
-        let mut output = trimmed.chars().take(MAX_PROVIDER_MESSAGE_CHARS).collect::<String>();
+        let mut output = trimmed
+            .chars()
+            .take(MAX_PROVIDER_MESSAGE_CHARS)
+            .collect::<String>();
         output.push('…');
         output
     }
@@ -425,7 +533,12 @@ fn credential_io_error(error: io::Error) -> HostedBackendError {
 }
 
 fn json_error(error: serde_json::Error) -> HostedBackendError {
-    HostedBackendError::new(HostedFailureCategory::InvalidConfiguration, false, None, format!("hosted request JSON failed: {error}"))
+    HostedBackendError::new(
+        HostedFailureCategory::InvalidConfiguration,
+        false,
+        None,
+        format!("hosted request JSON failed: {error}"),
+    )
 }
 
 fn ensure_windows() -> Result<(), HostedBackendError> {
@@ -448,16 +561,43 @@ fn run_powershell(
     max_output: usize,
 ) -> Result<Vec<u8>, HostedBackendError> {
     let mut child = Command::new("powershell.exe")
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("could not start Windows platform helper: {error}")))?;
+        .map_err(|error| {
+            HostedBackendError::new(
+                HostedFailureCategory::Transport,
+                true,
+                None,
+                format!("could not start Windows platform helper: {error}"),
+            )
+        })?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input).map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("could not send request to Windows platform helper: {error}")))?;
+        stdin.write_all(input).map_err(|error| {
+            HostedBackendError::new(
+                HostedFailureCategory::Transport,
+                true,
+                None,
+                format!("could not send request to Windows platform helper: {error}"),
+            )
+        })?;
     }
-    let stdout = child.stdout.take().ok_or_else(|| HostedBackendError::new(HostedFailureCategory::Transport, true, None, "Windows platform helper stdout was unavailable"))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        HostedBackendError::new(
+            HostedFailureCategory::Transport,
+            true,
+            None,
+            "Windows platform helper stdout was unavailable",
+        )
+    })?;
     let reader = std::thread::spawn(move || read_capped(stdout, max_output));
     let status = loop {
         if interrupted.load(Ordering::Acquire) {
@@ -466,18 +606,51 @@ fn run_powershell(
             let _ = reader.join();
             return Err(HostedBackendError::interrupted());
         }
-        match child.try_wait().map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("Windows platform helper wait failed: {error}")))? {
+        match child.try_wait().map_err(|error| {
+            HostedBackendError::new(
+                HostedFailureCategory::Transport,
+                true,
+                None,
+                format!("Windows platform helper wait failed: {error}"),
+            )
+        })? {
             Some(status) => break status,
             None => std::thread::sleep(Duration::from_millis(25)),
         }
     };
-    let output = reader.join().map_err(|_| HostedBackendError::new(HostedFailureCategory::Transport, true, None, "Windows platform helper output reader failed"))?
-        .map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("Windows platform helper output failed: {error}")))?;
+    let output = reader
+        .join()
+        .map_err(|_| {
+            HostedBackendError::new(
+                HostedFailureCategory::Transport,
+                true,
+                None,
+                "Windows platform helper output reader failed",
+            )
+        })?
+        .map_err(|error| {
+            HostedBackendError::new(
+                HostedFailureCategory::Transport,
+                true,
+                None,
+                format!("Windows platform helper output failed: {error}"),
+            )
+        })?;
     if !status.success() {
-        return Err(HostedBackendError::new(HostedFailureCategory::Transport, true, None, "Windows platform helper failed"));
+        return Err(HostedBackendError::new(
+            HostedFailureCategory::Transport,
+            true,
+            None,
+            "Windows platform helper failed",
+        ));
     }
     if output.len() > max_output {
-        return Err(HostedBackendError::new(HostedFailureCategory::InvalidResponse, false, None, "hosted provider response exceeded the safety limit"));
+        return Err(HostedBackendError::new(
+            HostedFailureCategory::InvalidResponse,
+            false,
+            None,
+            "hosted provider response exceeded the safety limit",
+        ));
     }
     Ok(output)
 }
@@ -506,7 +679,10 @@ mod tests {
     fn hosted_endpoint_requires_https_without_embedded_credentials() {
         assert!(validate_https_endpoint("https://provider.example/v1/chat/completions").is_ok());
         assert!(validate_https_endpoint("http://provider.example/v1/chat/completions").is_err());
-        assert!(validate_https_endpoint("https://user:secret@provider.example/v1/chat/completions").is_err());
+        assert!(
+            validate_https_endpoint("https://user:secret@provider.example/v1/chat/completions")
+                .is_err()
+        );
     }
 
     #[test]

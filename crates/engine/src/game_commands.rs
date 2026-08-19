@@ -19,13 +19,13 @@ use crate::game_module::{GameComponentDefaults, GameComponentStore};
 use crate::game_prefab::{
     GamePrefabEvents, GamePrefabSpawnQueue, GamePrefabSpawnRequest, MAX_GAME_PREFAB_REQUESTS,
 };
-use crate::game_timer::{query_game_timer, GameTimerEvents, GameTimers, MAX_GAME_TIMERS};
+use crate::game_timer::{GameTimerEvents, GameTimers, MAX_GAME_TIMERS, query_game_timer};
 use crate::hitbox::AttackHitbox;
 use crate::lock_on::TargetLock;
 use crate::native_2d::{CharacterController2d, CharacterControllerMotion2d};
 use crate::navmesh::NavMeshAgent;
 use crate::save::{
-    GameSaveCommand, GameSaveCommandQueue, SaveData, SaveValue, MAX_GAME_SAVE_COMMANDS,
+    GameSaveCommand, GameSaveCommandQueue, MAX_GAME_SAVE_COMMANDS, SaveData, SaveValue,
 };
 use crate::scene_manager::SceneManager;
 use crate::transform::Transform;
@@ -212,7 +212,10 @@ pub(crate) fn prepare_game_commands(
             }
             GameCommandFamily::Character2d => {
                 let (target, entity) = targeted_entity(world, command, index, &despawned)?;
-                if world.get_component::<CharacterController2d>(entity).is_none() {
+                if world
+                    .get_component::<CharacterController2d>(entity)
+                    .is_none()
+                {
                     return Err(GameCommandError::MissingCharacterController2d { index, target });
                 }
                 if world.get_component::<Transform>(entity).is_none() {
@@ -233,7 +236,7 @@ pub(crate) fn prepare_game_commands(
                         return Err(GameCommandError::InvalidPayload {
                             index,
                             message: format!("unknown navigation operation `{other}`"),
-                        })
+                        });
                     }
                 };
                 prepared.push(PreparedGameCommand::SetNavigationTarget { entity, target });
@@ -267,7 +270,7 @@ pub(crate) fn prepare_game_commands(
                         return Err(GameCommandError::InvalidPayload {
                             index,
                             message: format!("unknown behavior tree result kind `{other}`"),
-                        })
+                        });
                     }
                 };
                 let status = match string_field(fields, "status", index)? {
@@ -278,7 +281,7 @@ pub(crate) fn prepare_game_commands(
                         return Err(GameCommandError::InvalidPayload {
                             index,
                             message: format!("unknown behavior tree status `{other}`"),
-                        })
+                        });
                     }
                 };
                 prepared.push(PreparedGameCommand::SetBehaviorTreeResult {
@@ -335,7 +338,7 @@ pub(crate) fn prepare_game_commands(
                         return Err(GameCommandError::InvalidPayload {
                             index,
                             message: format!("unknown VFX operation `{other}`"),
-                        })
+                        });
                     }
                 };
                 prepared.push(PreparedGameCommand::Vfx { entity, operation });
@@ -448,10 +451,15 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
                     .rotation = rotation;
             }
             PreparedGameCommand::Character2d { entity, operation } => {
-                if world.get_component::<CharacterControllerMotion2d>(entity).is_none() {
+                if world
+                    .get_component::<CharacterControllerMotion2d>(entity)
+                    .is_none()
+                {
                     world
                         .add_component(entity, CharacterControllerMotion2d::default())
-                        .expect("preflighted 2D character motion intent may be installed exclusively");
+                        .expect(
+                            "preflighted 2D character motion intent may be installed exclusively",
+                        );
                 }
                 let motion = world
                     .get_component_mut::<CharacterControllerMotion2d>(entity)
@@ -807,7 +815,7 @@ fn parse_lock_on_command(
             return Err(GameCommandError::InvalidPayload {
                 index,
                 message: format!("unknown lock-on operation `{other}`"),
-            })
+            });
         }
     };
     Ok(PreparedGameCommand::LockOn(operation))
@@ -837,7 +845,7 @@ fn parse_ui_command(
                         index,
                         message: "field `value` must be a finite string, number, or boolean"
                             .to_owned(),
-                    })
+                    });
                 }
             };
             Ok(PreparedGameCommand::SetUiBinding { name, value })
@@ -957,7 +965,7 @@ fn parse_audio_command(
                     return Err(GameCommandError::InvalidPayload {
                         index,
                         message: format!("unknown spatial audio rolloff `{other}`"),
-                    })
+                    });
                 }
             };
             GameAudioCommand::PlaySpatialSoundEffect {
@@ -1004,7 +1012,7 @@ fn parse_audio_command(
             return Err(GameCommandError::InvalidPayload {
                 index,
                 message: format!("unknown audio operation `{other}`"),
-            })
+            });
         }
     };
     *pending_audio_commands += 1;
@@ -1371,7 +1379,7 @@ fn parse_hitbox_command(
                     return Err(GameCommandError::InvalidPayload {
                         index,
                         message: format!("unknown hitbox shape `{other}`"),
-                    })
+                    });
                 }
             };
             let damage = number_field(fields, "damage", index)?;
@@ -1638,7 +1646,7 @@ fn number_field(
             return Err(GameCommandError::InvalidPayload {
                 index,
                 message: format!("field `{name}` must be numeric"),
-            })
+            });
         }
     };
     if !value.is_finite() {
@@ -2006,7 +2014,10 @@ impl fmt::Display for GameCommandError {
                 "game command {index} requires the BehaviorTreeBehaviorRegistry resource"
             ),
             Self::MissingTargetLock { index } => {
-                write!(formatter, "game command {index} requires the TargetLock resource")
+                write!(
+                    formatter,
+                    "game command {index} requires the TargetLock resource"
+                )
             }
             Self::MissingAnimator { index, target } => write!(
                 formatter,
@@ -2028,7 +2039,10 @@ impl fmt::Display for GameCommandError {
                 "game command {index} references unloaded animation clip runtime ID {clip_id}"
             ),
             Self::MissingUiBindings { index } => {
-                write!(formatter, "game command {index} requires the UiBindings resource")
+                write!(
+                    formatter,
+                    "game command {index} requires the UiBindings resource"
+                )
             }
             Self::MissingUiDocument { index, target } => write!(
                 formatter,
@@ -2036,40 +2050,64 @@ impl fmt::Display for GameCommandError {
                 target.id, target.generation
             ),
             Self::MissingSceneManager { index } => {
-                write!(formatter, "game command {index} requires the SceneManager resource")
+                write!(
+                    formatter,
+                    "game command {index} requires the SceneManager resource"
+                )
             }
             Self::MissingAudioQueue { index } => {
-                write!(formatter, "game command {index} requires the project audio queue")
+                write!(
+                    formatter,
+                    "game command {index} requires the project audio queue"
+                )
             }
             Self::AudioQueueFull { index, maximum } => write!(
                 formatter,
                 "game command {index} exceeds the project audio queue capacity of {maximum}"
             ),
             Self::MissingSaveData { index } => {
-                write!(formatter, "game command {index} requires the active SaveData resource")
+                write!(
+                    formatter,
+                    "game command {index} requires the active SaveData resource"
+                )
             }
             Self::MissingSaveQueue { index } => {
-                write!(formatter, "game command {index} requires the project save queue")
+                write!(
+                    formatter,
+                    "game command {index} requires the project save queue"
+                )
             }
             Self::SaveQueueFull { index, maximum } => write!(
                 formatter,
                 "game command {index} exceeds the project save queue capacity of {maximum}"
             ),
             Self::MissingTimerService { index } => {
-                write!(formatter, "game command {index} requires the project timer service")
+                write!(
+                    formatter,
+                    "game command {index} requires the project timer service"
+                )
             }
             Self::MissingTimerEvents { index } => {
-                write!(formatter, "game command {index} requires the timer event source log")
+                write!(
+                    formatter,
+                    "game command {index} requires the timer event source log"
+                )
             }
             Self::TimerCapacityFull { index, maximum } => write!(
                 formatter,
                 "game command {index} exceeds the project timer capacity of {maximum}"
             ),
             Self::MissingPrefabQueue { index } => {
-                write!(formatter, "game command {index} requires the project prefab queue")
+                write!(
+                    formatter,
+                    "game command {index} requires the project prefab queue"
+                )
             }
             Self::MissingPrefabEvents { index } => {
-                write!(formatter, "game command {index} requires the prefab result source log")
+                write!(
+                    formatter,
+                    "game command {index} requires the prefab result source log"
+                )
             }
             Self::PrefabQueueFull { index, maximum } => write!(
                 formatter,
@@ -2121,7 +2159,10 @@ impl fmt::Display for GameCommandError {
                 target.id, target.generation
             ),
             Self::MissingAssetManifest { index } => {
-                write!(formatter, "game command {index} requires the AssetManifest resource")
+                write!(
+                    formatter,
+                    "game command {index} requires the AssetManifest resource"
+                )
             }
             Self::UnknownAudioAsset { index, asset_id } => write!(
                 formatter,
@@ -2259,12 +2300,14 @@ mod tests {
         let prepared = prepare_game_commands(&world, &commands).unwrap();
         apply_prepared_game_commands(&mut world, prepared);
 
-        assert!(world
-            .get_resource::<GameTimers>()
-            .unwrap()
-            .ids()
-            .next()
-            .is_none());
+        assert!(
+            world
+                .get_resource::<GameTimers>()
+                .unwrap()
+                .ids()
+                .next()
+                .is_none()
+        );
         let payload = &world
             .get_resource::<GameTimerEvents>()
             .unwrap()
@@ -2757,9 +2800,11 @@ mod tests {
         ];
 
         let prepared = prepare_game_commands(&world, &commands).unwrap();
-        assert!(world
-            .get_component::<UiDocumentVisibility>(document)
-            .is_none());
+        assert!(
+            world
+                .get_component::<UiDocumentVisibility>(document)
+                .is_none()
+        );
         apply_prepared_game_commands(&mut world, prepared);
 
         let bindings = world.get_resource::<UiBindings>().unwrap();
@@ -2800,11 +2845,13 @@ mod tests {
             prepare_game_commands(&world, &commands),
             Err(GameCommandError::InvalidPayload { index: 1, .. })
         ));
-        assert!(world
-            .get_resource::<UiBindings>()
-            .unwrap()
-            .get("hud.status")
-            .is_none());
+        assert!(
+            world
+                .get_resource::<UiBindings>()
+                .unwrap()
+                .get("hud.status")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2843,11 +2890,13 @@ mod tests {
             ),
             Err(GameCommandError::InvalidPayload { .. })
         ));
-        assert!(world
-            .get_resource::<SceneManager>()
-            .unwrap()
-            .pending_scene_path()
-            .is_none());
+        assert!(
+            world
+                .get_resource::<SceneManager>()
+                .unwrap()
+                .pending_scene_path()
+                .is_none()
+        );
     }
 
     #[test]

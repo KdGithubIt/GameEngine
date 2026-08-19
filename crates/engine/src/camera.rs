@@ -1,5 +1,5 @@
 use crate::collision::{
-    segment_blocked_by_static, static_obstacle_aabbs, Collider, PhysicsBody, TriggerVolume,
+    Collider, PhysicsBody, TriggerVolume, segment_blocked_by_static, static_obstacle_aabbs,
 };
 use crate::input::{Input, MouseButton, MouseInput};
 use crate::lock_on::TargetLock;
@@ -9,12 +9,10 @@ use glam::{Mat4, Quat, Vec3};
 use hashbrown::HashMap;
 
 pub use engine_render_runtime::camera::{
-    camera_aspect_system, default_camera_transform, select_game_camera_intent, Camera3D,
-    GameCameraIntent, GameCameraKind, GameCameraSelection, ViewportSize,
+    Camera3D, GameCameraIntent, GameCameraKind, GameCameraSelection, ViewportSize,
+    camera_aspect_system, default_camera_transform, select_game_camera_intent,
 };
-pub(crate) use engine_render_runtime::camera::{
-    camera_selection_key, select_active_game_camera,
-};
+pub(crate) use engine_render_runtime::camera::{camera_selection_key, select_active_game_camera};
 
 /// A camera that orbits around a fixed world-space target point.
 ///
@@ -322,12 +320,8 @@ mod tests {
 
     fn selected_camera(world: &mut engine_ecs::World) -> Option<engine_ecs::Entity> {
         let query = engine_ecs::Query::<&Camera3D>::new(world);
-        select_active_game_camera(
-            query
-                .iter()
-                .map(|(entity, camera)| (entity, (camera, ()))),
-        )
-        .map(|(entity, _)| entity)
+        select_active_game_camera(query.iter().map(|(entity, camera)| (entity, (camera, ()))))
+            .map(|(entity, _)| entity)
     }
 
     #[test]
@@ -358,9 +352,7 @@ mod tests {
             priority: 100,
             ..Camera3D::default()
         };
-        world
-            .spawn_with(disabled)
-            .expect("spawn disabled camera");
+        world.spawn_with(disabled).expect("spawn disabled camera");
         let enabled = world
             .spawn_with(Camera3D::default())
             .expect("spawn enabled camera");
@@ -388,9 +380,7 @@ mod tests {
             enabled: false,
             ..Camera3D::default()
         };
-        world
-            .spawn_with(camera)
-            .expect("spawn disabled camera");
+        world.spawn_with(camera).expect("spawn disabled camera");
 
         assert!(selected_camera(&mut world).is_none());
     }

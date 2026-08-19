@@ -103,10 +103,7 @@ impl EditorApp {
     /// than remembered, which is the case when its tab was closed or when its
     /// document was replaced in place. A tab with no recorded state, such as a
     /// newly opened document, starts from [`DocumentPresentation::default`].
-    pub(super) fn adopt_active_document_presentation(
-        &mut self,
-        outgoing: Option<WorkspaceTabId>,
-    ) {
+    pub(super) fn adopt_active_document_presentation(&mut self, outgoing: Option<WorkspaceTabId>) {
         // A numeric drag belongs to the pointer rather than to a document, so
         // it can never be resumed after the drawn document changes.
         self.pending_component_drag = None;

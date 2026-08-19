@@ -4,8 +4,8 @@
 //! picker exists because either side may record more than one skeleton, in
 //! which case the pair cannot be chosen automatically.
 
-use crate::ui::*;
 use super::manifest::save_asset_manifest;
+use crate::ui::*;
 
 impl EditorApp {
     /// Shows the skeleton bind report detail view opened from a Problems
@@ -40,7 +40,11 @@ impl EditorApp {
 
     /// Opens the RetargetMap inspector window for a `*.retarget.json` asset
     /// (AP-5, ADR 0079 §1).
-    pub(in crate::ui) fn open_retarget_map_editor(&mut self, relative_path: PathBuf, abs_path: PathBuf) {
+    pub(in crate::ui) fn open_retarget_map_editor(
+        &mut self,
+        relative_path: PathBuf,
+        abs_path: PathBuf,
+    ) {
         let result = fs::read_to_string(&abs_path)
             .map_err(|error| error.to_string())
             .and_then(|json| {
@@ -382,7 +386,10 @@ impl EditorApp {
     /// writes the map for the currently selected pair through
     /// [`Self::write_retarget_map_for_pair`]; Cancel and closing the window
     /// both discard the picker state without writing anything.
-    pub(in crate::ui) fn show_retarget_map_creation_picker_window(&mut self, context: &egui::Context) {
+    pub(in crate::ui) fn show_retarget_map_creation_picker_window(
+        &mut self,
+        context: &egui::Context,
+    ) {
         let Some(state) = &mut self.retarget_map_creation_picker else {
             return;
         };
@@ -439,7 +446,6 @@ impl EditorApp {
             }
         }
     }
-
 }
 
 /// Open document state for the RetargetMap inspector window (AP-5).
@@ -488,18 +494,13 @@ pub(in crate::ui) fn retarget_map_model_source_choices(
         .filter(|(_, entry)| {
             // GltfSource is the legacy category name shared by all supported
             // model documents: glTF, GLB, FBX, and PMX.
-            engine::asset_path_matches_kind(
-                engine::AssetKind::GltfSource,
-                Path::new(&entry.path),
-            ) && !entry.import_settings.skeleton_records.is_empty()
+            engine::asset_path_matches_kind(engine::AssetKind::GltfSource, Path::new(&entry.path))
+                && !entry.import_settings.skeleton_records.is_empty()
         })
         .map(|(id, entry)| {
             (
                 id.clone(),
-                entry
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| entry.path.clone()),
+                entry.name.clone().unwrap_or_else(|| entry.path.clone()),
             )
         })
         .collect()
@@ -546,10 +547,7 @@ pub(super) fn pmx_model_sources(manifest: &engine::AssetManifest) -> Vec<(AssetI
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("pmx"))
         })
         .map(|(id, entry)| {
-            let label = entry
-                .name
-                .clone()
-                .unwrap_or_else(|| entry.path.clone());
+            let label = entry.name.clone().unwrap_or_else(|| entry.path.clone());
             (id.clone(), label)
         })
         .collect()

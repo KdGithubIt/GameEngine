@@ -5,7 +5,7 @@
 //! Agent Host captured-frame evidence and never carry authoring authority.
 
 use crate::FrameCapture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -48,12 +48,25 @@ impl fmt::Display for LiveObservationError {
                 formatter,
                 "live observation max_fps must be between 1 and {MAX_LIVE_OBSERVATION_FPS}"
             ),
-            Self::TooManySessions => formatter.write_str("too many live observation sessions are active"),
-            Self::NotFound => formatter.write_str("live observation media session or frame was not found"),
-            Self::Unauthorized => formatter.write_str("live observation media authentication failed"),
-            Self::Random(error) => write!(formatter, "could not create live observation credential: {error}"),
-            Self::InvalidFrame(error) => write!(formatter, "live observation frame is invalid: {error}"),
-            Self::Encode(error) => write!(formatter, "live observation frame encoding failed: {error}"),
+            Self::TooManySessions => {
+                formatter.write_str("too many live observation sessions are active")
+            }
+            Self::NotFound => {
+                formatter.write_str("live observation media session or frame was not found")
+            }
+            Self::Unauthorized => {
+                formatter.write_str("live observation media authentication failed")
+            }
+            Self::Random(error) => write!(
+                formatter,
+                "could not create live observation credential: {error}"
+            ),
+            Self::InvalidFrame(error) => {
+                write!(formatter, "live observation frame is invalid: {error}")
+            }
+            Self::Encode(error) => {
+                write!(formatter, "live observation frame encoding failed: {error}")
+            }
         }
     }
 }
@@ -151,9 +164,7 @@ impl LiveObservationSession {
 
     fn status_json(&self, codec: &str) -> Value {
         let latest = self.latest.as_ref();
-        let average = |total: u64| {
-            (self.capture_count > 0).then(|| total / self.capture_count)
-        };
+        let average = |total: u64| (self.capture_count > 0).then(|| total / self.capture_count);
         json!({
             "media_session_id": self.id,
             "run_id": self.run_id,
@@ -234,8 +245,7 @@ impl LiveObservationManager {
     ) -> Result<(), LiveObservationError> {
         self.authenticate(media_session_id, media_token)?;
         self.sessions.remove(media_session_id);
-        self.pending_session_ids
-            .retain(|id| id != media_session_id);
+        self.pending_session_ids.retain(|id| id != media_session_id);
         Ok(())
     }
 
@@ -275,7 +285,10 @@ impl LiveObservationManager {
         sequence: u64,
     ) -> Result<Vec<u8>, LiveObservationError> {
         let session = self.authenticate(media_session_id, media_token)?;
-        let sample = session.latest.as_ref().ok_or(LiveObservationError::NotFound)?;
+        let sample = session
+            .latest
+            .as_ref()
+            .ok_or(LiveObservationError::NotFound)?;
         if sample.sequence != sequence {
             return Err(LiveObservationError::NotFound);
         }
@@ -366,7 +379,8 @@ impl LiveObservationManager {
     fn finish_failure(&mut self) {
         for id in std::mem::take(&mut self.pending_session_ids) {
             if let Some(session) = self.sessions.get_mut(&id) {
-                session.last_error = Some("Game View capture is temporarily unavailable; retry is allowed.");
+                session.last_error =
+                    Some("Game View capture is temporarily unavailable; retry is allowed.");
             }
         }
         self.pending_started_at = None;
@@ -398,7 +412,9 @@ fn bounded_rgba8(capture: &FrameCapture) -> Result<(u32, u32, Vec<u8>), LiveObse
         .checked_mul(u64::from(capture.height))
         .and_then(|pixels| pixels.checked_mul(4))
         .and_then(|bytes| usize::try_from(bytes).ok())
-        .ok_or_else(|| LiveObservationError::InvalidFrame("pixel dimensions overflow".to_owned()))?;
+        .ok_or_else(|| {
+            LiveObservationError::InvalidFrame("pixel dimensions overflow".to_owned())
+        })?;
     if capture.rgba8.len() != expected_len {
         return Err(LiveObservationError::InvalidFrame(
             "RGBA8 byte count does not match dimensions".to_owned(),
@@ -425,7 +441,9 @@ fn bounded_rgba8(capture: &FrameCapture) -> Result<(u32, u32, Vec<u8>), LiveObse
         .checked_mul(u64::from(height))
         .and_then(|pixels| pixels.checked_mul(4))
         .and_then(|bytes| usize::try_from(bytes).ok())
-        .ok_or_else(|| LiveObservationError::InvalidFrame("bounded dimensions overflow".to_owned()))?;
+        .ok_or_else(|| {
+            LiveObservationError::InvalidFrame("bounded dimensions overflow".to_owned())
+        })?;
     let mut rgba8 = vec![0_u8; output_len];
     for y in 0..height {
         let source_y = u64::from(y) * u64::from(capture.height) / u64::from(height);
@@ -435,8 +453,10 @@ fn bounded_rgba8(capture: &FrameCapture) -> Result<(u32, u32, Vec<u8>), LiveObse
                 (source_y * u64::from(capture.width) + source_x) * 4,
             )
             .map_err(|_| LiveObservationError::InvalidFrame("source index overflow".to_owned()))?;
-            let output_index = usize::try_from((u64::from(y) * u64::from(width) + u64::from(x)) * 4)
-                .map_err(|_| LiveObservationError::InvalidFrame("output index overflow".to_owned()))?;
+            let output_index = usize::try_from(
+                (u64::from(y) * u64::from(width) + u64::from(x)) * 4,
+            )
+            .map_err(|_| LiveObservationError::InvalidFrame("output index overflow".to_owned()))?;
             rgba8[output_index..output_index + 4]
                 .copy_from_slice(&capture.rgba8[source_index..source_index + 4]);
         }
@@ -446,15 +466,13 @@ fn bounded_rgba8(capture: &FrameCapture) -> Result<(u32, u32, Vec<u8>), LiveObse
 
 fn random_hex(prefix: &str, byte_count: usize) -> Result<String, LiveObservationError> {
     let mut bytes = vec![0_u8; byte_count];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| LiveObservationError::Random(error.to_string()))?;
+    getrandom::fill(&mut bytes).map_err(|error| LiveObservationError::Random(error.to_string()))?;
     let mut value = String::with_capacity(prefix.len() + 1 + byte_count * 2);
     value.push_str(prefix);
     value.push('-');
     for byte in bytes {
         use std::fmt::Write as _;
-        write!(&mut value, "{byte:02x}")
-            .expect("writing hexadecimal text into String cannot fail");
+        write!(&mut value, "{byte:02x}").expect("writing hexadecimal text into String cannot fail");
     }
     Ok(value)
 }
@@ -487,15 +505,19 @@ mod tests {
     fn session_requires_media_specific_authentication_and_restart_rotates_it() {
         let mut manager = LiveObservationManager::default();
         let first = manager.start("run-a", 4).expect("first session");
-        assert!(manager
-            .status_json(&first.media_session_id, "wrong")
-            .is_err());
+        assert!(
+            manager
+                .status_json(&first.media_session_id, "wrong")
+                .is_err()
+        );
         let second = manager.start("run-a", 4).expect("replacement session");
         assert_ne!(first.media_session_id, second.media_session_id);
         assert_ne!(first.media_token, second.media_token);
-        assert!(manager
-            .status_json(&first.media_session_id, &first.media_token)
-            .is_err());
+        assert!(
+            manager
+                .status_json(&first.media_session_id, &first.media_token)
+                .is_err()
+        );
     }
 
     #[test]
@@ -550,11 +572,7 @@ mod tests {
         fs::create_dir_all(&project).expect("project");
         let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
         let session_id = host.create_session("Live observation").expect("session");
-        let version = host
-            .session(&session_id)
-            .expect("session")
-            .proposal
-            .version;
+        let version = host.session(&session_id).expect("session").proposal.version;
         let run_id = host
             .start_run_authorized(&session_id, version, "test")
             .expect("run");

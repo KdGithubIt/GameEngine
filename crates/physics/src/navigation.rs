@@ -283,9 +283,7 @@ impl NavigationBuildInput {
                 || !ids.insert(format!("modifier:{}", modifier.id))
                 || modifier.profiles.iter().any(|id| !profiles.contains(id))
             {
-                return Err(NavigationBakeError::InvalidModifier(
-                    modifier.id.clone(),
-                ));
+                return Err(NavigationBakeError::InvalidModifier(modifier.id.clone()));
             }
         }
         Ok(())
@@ -293,9 +291,7 @@ impl NavigationBuildInput {
 }
 
 /// Stable independently replaceable tile coordinate.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NavigationTileId {
     /// Tile coordinate along world X.
     pub x: i32,
@@ -304,9 +300,7 @@ pub struct NavigationTileId {
 }
 
 /// Runtime polygon identity within one stable tile.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NavigationPolygonRef {
     /// Stable tile coordinate.
     pub tile: NavigationTileId,
@@ -685,7 +679,9 @@ fn bake_profile(
             traversal_tag: link.traversal_tag.clone(),
         });
     }
-    profile_mesh.links.sort_by(|left, right| left.id.cmp(&right.id));
+    profile_mesh
+        .links
+        .sort_by(|left, right| left.id.cmp(&right.id));
     profile_mesh
 }
 
@@ -730,8 +726,7 @@ fn point_in_triangle_xz(point: Vec3, triangle: [Vec3; 3]) -> bool {
     let ab = cross_2d(b - a, p - a);
     let bc = cross_2d(c - b, p - b);
     let ca = cross_2d(a - c, p - c);
-    (ab >= -1e-5 && bc >= -1e-5 && ca >= -1e-5)
-        || (ab <= 1e-5 && bc <= 1e-5 && ca <= 1e-5)
+    (ab >= -1e-5 && bc >= -1e-5 && ca >= -1e-5) || (ab <= 1e-5 && bc <= 1e-5 && ca <= 1e-5)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -800,14 +795,9 @@ fn build_adjacency(tiles: &mut [NavigationTile], profile: &NavigationAgentProfil
                 let climb = (first_low.y - second_low.y)
                     .abs()
                     .max((first_high.y - second_high.y).abs());
-                let portal_width = Vec2::new(
-                    first_high.x - first_low.x,
-                    first_high.z - first_low.z,
-                )
-                .length();
-                if climb > profile.max_climb + 1e-4
-                    || portal_width + 1e-4 < profile.radius * 2.0
-                {
+                let portal_width =
+                    Vec2::new(first_high.x - first_low.x, first_high.z - first_low.z).length();
+                if climb > profile.max_climb + 1e-4 || portal_width + 1e-4 < profile.radius * 2.0 {
                     continue;
                 }
                 let Some(first_center) = centers.get(&first).copied() else {
@@ -1093,7 +1083,10 @@ fn closest_point_on_polygon(
     reference: NavigationPolygonRef,
     point: Vec3,
 ) -> Option<Vec3> {
-    let tile = profile.tiles.iter().find(|tile| tile.id == reference.tile)?;
+    let tile = profile
+        .tiles
+        .iter()
+        .find(|tile| tile.id == reference.tile)?;
     let polygon = tile.polygons.get(reference.polygon as usize)?;
     if polygon.vertices.len() != 3 {
         return None;
@@ -1499,7 +1492,10 @@ fn cross_2d(a: Vec2, b: Vec2) -> f32 {
 }
 
 fn push_distinct(path: &mut Vec<Vec3>, point: Vec3) {
-    if path.last().is_none_or(|last| last.distance_squared(point) > 1e-8) {
+    if path
+        .last()
+        .is_none_or(|last| last.distance_squared(point) > 1e-8)
+    {
         path.push(point);
     }
 }
@@ -1633,7 +1629,8 @@ pub fn nav_mesh_agent_system(
             agent.path_index = 0;
             agent.current_path_partial = false;
             if let Some(target) = agent.target {
-                match nav_mesh.query_path(agent.profile_id.as_str(), transform.translation, target) {
+                match nav_mesh.query_path(agent.profile_id.as_str(), transform.translation, target)
+                {
                     NavigationPathResult::Complete(path) => {
                         agent.current_path = path.waypoints;
                         agent.status = NavMeshAgentStatus::Moving;
@@ -1655,7 +1652,9 @@ pub fn nav_mesh_agent_system(
                     NavigationPathResult::Failure(NavigationQueryFailure::NoPath) => {
                         agent.status = NavMeshAgentStatus::NoPath;
                     }
-                    NavigationPathResult::Failure(NavigationQueryFailure::MissingNavigationData) => {
+                    NavigationPathResult::Failure(
+                        NavigationQueryFailure::MissingNavigationData,
+                    ) => {
                         agent.status = NavMeshAgentStatus::MissingNavMesh;
                     }
                 }
@@ -1810,7 +1809,12 @@ pub fn bake_from_obstacles(obstacles: &[(Vec3, Vec3)], settings: &NavMeshSetting
             let c = [maximum_x, y, maximum_z];
             let d = [minimum_x, y, maximum_z];
             triangles.push(NavigationTriangle { a, b, c, area: 0 });
-            triangles.push(NavigationTriangle { a, b: c, c: d, area: 0 });
+            triangles.push(NavigationTriangle {
+                a,
+                b: c,
+                c: d,
+                area: 0,
+            });
         }
     }
     let input = NavigationBuildInput {
@@ -2012,7 +2016,6 @@ mod tests {
             NavigationPathResult::Failure(NavigationQueryFailure::NoPath)
         ));
     }
-
 
     #[test]
     fn max_climb_connects_matching_xz_edges_without_linking_stacked_floors() {
@@ -2231,10 +2234,26 @@ mod tests {
     #[test]
     fn area_cost_prefers_lower_cost_corridor() {
         let mut build = input(vec![
-            triangle(Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 2.0)),
-            triangle(Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 2.0), Vec3::new(0.0, 0.0, 2.0)),
-            triangle(Vec3::new(2.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 2.0)),
-            triangle(Vec3::new(4.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 2.0), Vec3::new(2.0, 0.0, 2.0)),
+            triangle(
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(2.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 2.0),
+            ),
+            triangle(
+                Vec3::new(2.0, 0.0, 0.0),
+                Vec3::new(2.0, 0.0, 2.0),
+                Vec3::new(0.0, 0.0, 2.0),
+            ),
+            triangle(
+                Vec3::new(2.0, 0.0, 0.0),
+                Vec3::new(4.0, 0.0, 0.0),
+                Vec3::new(2.0, 0.0, 2.0),
+            ),
+            triangle(
+                Vec3::new(4.0, 0.0, 0.0),
+                Vec3::new(4.0, 0.0, 2.0),
+                Vec3::new(2.0, 0.0, 2.0),
+            ),
         ]);
         build.modifiers.push(NavigationModifier {
             id: "expensive".to_owned(),
@@ -2249,13 +2268,15 @@ mod tests {
         let asset = ProductionNavigationBaker
             .bake(&build, &|| false)
             .expect("cost fixture must bake");
-        assert!(asset
-            .profile(DEFAULT_NAVIGATION_PROFILE)
-            .unwrap()
-            .tiles
-            .iter()
-            .flat_map(|tile| &tile.polygons)
-            .any(|polygon| polygon.area == 7 && polygon.cost_multiplier > 1.0));
+        assert!(
+            asset
+                .profile(DEFAULT_NAVIGATION_PROFILE)
+                .unwrap()
+                .tiles
+                .iter()
+                .flat_map(|tile| &tile.polygons)
+                .any(|polygon| polygon.area == 7 && polygon.cost_multiplier > 1.0)
+        );
     }
 
     #[test]
@@ -2278,11 +2299,7 @@ mod tests {
 
     #[test]
     fn cancelled_bake_produces_no_asset() {
-        let build = input(vec![triangle(
-            Vec3::ZERO,
-            Vec3::X * 2.0,
-            Vec3::Z * 2.0,
-        )]);
+        let build = input(vec![triangle(Vec3::ZERO, Vec3::X * 2.0, Vec3::Z * 2.0)]);
         assert_eq!(
             ProductionNavigationBaker.bake(&build, &|| true),
             Err(NavigationBakeError::Cancelled)

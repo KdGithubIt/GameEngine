@@ -8,10 +8,10 @@
 //! render batch pass turns the compatibility particle view into instanced draws.
 
 use engine_authoring::{
-    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxAttributeLayout,
-    VfxCapabilityRequirements, VfxCurve, VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId,
-    VfxEmitterId, VfxGradient, VfxGradientKey, VfxGradientKeyId, VfxModuleId,
-    VfxModuleOperation, VfxRandomChannel, VfxScalarValue, VfxShape, VFX_SCHEMA_VERSION,
+    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VFX_SCHEMA_VERSION,
+    VfxAttributeLayout, VfxCapabilityRequirements, VfxCurve, VfxCurveInterpolation, VfxCurveKey,
+    VfxCurveKeyId, VfxEmitterId, VfxGradient, VfxGradientKey, VfxGradientKeyId, VfxModuleId,
+    VfxModuleOperation, VfxRandomChannel, VfxScalarValue, VfxShape,
 };
 use engine_ecs::{Query, Res};
 use glam::Vec3;
@@ -293,11 +293,12 @@ impl ParticleEmitter {
         runtime.step(dt, origin);
         self.particles.clear();
         if let Some(emitter) = runtime.emitters().first() {
-            self.particles.extend(emitter.particles().iter().map(|particle| Particle {
-                position: particle.position,
-                age: particle.age,
-                lifetime: particle.lifetime,
-            }));
+            self.particles
+                .extend(emitter.particles().iter().map(|particle| Particle {
+                    position: particle.position,
+                    age: particle.age,
+                    lifetime: particle.lifetime,
+                }));
         }
     }
 }

@@ -1,6 +1,6 @@
 mod query;
 
-use crate::{register, SystemConfig};
+use crate::{SystemConfig, register};
 use query::AutoQuery;
 use quote::{format_ident, quote};
 use syn::{FnArg, Ident, ItemFn, ReturnType, Type};

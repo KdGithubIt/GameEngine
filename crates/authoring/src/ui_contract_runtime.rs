@@ -4,7 +4,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::persist::{replace_file_contents, PersistError};
+use crate::persist::{PersistError, replace_file_contents};
 use crate::ui::UiDocument;
 use crate::ui_contract::{UiAuthoringContract, UiContractError, UiFocusDirection};
 
@@ -191,7 +191,9 @@ mod tests {
             }],
             ..UiAuthoringContract::default()
         };
-        let json = contract.to_json_string().expect("contract should serialize");
+        let json = contract
+            .to_json_string()
+            .expect("contract should serialize");
         let decoded = UiAuthoringContract::from_json_str(&json).expect("contract should decode");
         assert_eq!(decoded, contract);
     }

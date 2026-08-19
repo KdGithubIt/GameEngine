@@ -5,13 +5,12 @@
 //! HumanoidMotion variants without making either one runtime playback state.
 
 use crate::asset::{
-    imported_humanoid_motion_sub_asset_id, HumanoidProfile, ImportedSubAsset,
-    ImportedSubAssetKind,
+    HumanoidProfile, ImportedSubAsset, ImportedSubAssetKind, imported_humanoid_motion_sub_asset_id,
 };
 use crate::model_import::GltfImportResult;
 use engine_animation::humanoid::{detect_humanoid_profile, validate_humanoid_profile};
 use engine_animation::humanoid_motion::{
-    build_humanoid_motion, HumanoidMotion, HumanoidMotionError,
+    HumanoidMotion, HumanoidMotionError, build_humanoid_motion,
 };
 use engine_assets::asset::HumanoidProfileOrigin;
 use engine_authoring::diagnostic::Diagnostic;

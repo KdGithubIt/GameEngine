@@ -401,17 +401,13 @@ impl EditorApp {
         }
 
         if let Some(id) = duplicate_request {
-            if !self.selected_entities.contains(&id)
-                && self.selected_entity.as_ref() != Some(&id)
-            {
+            if !self.selected_entities.contains(&id) && self.selected_entity.as_ref() != Some(&id) {
                 self.select_single_entity(Some(id));
             }
             self.duplicate_selected_entity();
         }
         if let Some(id) = copy_request {
-            if !self.selected_entities.contains(&id)
-                && self.selected_entity.as_ref() != Some(&id)
-            {
+            if !self.selected_entities.contains(&id) && self.selected_entity.as_ref() != Some(&id) {
                 self.select_single_entity(Some(id));
             }
             self.copy_selected_entity();
@@ -427,9 +423,7 @@ impl EditorApp {
         }
 
         if let Some(id) = delete_request {
-            if !self.selected_entities.contains(&id)
-                && self.selected_entity.as_ref() != Some(&id)
-            {
+            if !self.selected_entities.contains(&id) && self.selected_entity.as_ref() != Some(&id) {
                 self.select_single_entity(Some(id));
             }
             self.delete_selected_entity();
@@ -526,11 +520,9 @@ impl EditorApp {
                         "Triangle",
                         engine::scene_bridge::BUILTIN_TRIANGLE_ASSET_ID,
                     ),
-                    EntityPreset::Quad => (
-                        "quad",
-                        "Quad",
-                        engine::scene_bridge::BUILTIN_QUAD_ASSET_ID,
-                    ),
+                    EntityPreset::Quad => {
+                        ("quad", "Quad", engine::scene_bridge::BUILTIN_QUAD_ASSET_ID)
+                    }
                     _ => unreachable!("primitive branch only receives primitive presets"),
                 };
                 (
@@ -544,7 +536,10 @@ impl EditorApp {
                                 engine::scene_bridge::STATIC_MESH_RENDERER_COMPONENT,
                             ),
                             Value::Object(std::collections::BTreeMap::from([
-                                ("mesh".to_owned(), Value::AssetRef(builtin_asset_id(mesh_id))),
+                                (
+                                    "mesh".to_owned(),
+                                    Value::AssetRef(builtin_asset_id(mesh_id)),
+                                ),
                                 (
                                     "material".to_owned(),
                                     Value::AssetRef(builtin_asset_id(

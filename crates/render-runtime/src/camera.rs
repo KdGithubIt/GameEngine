@@ -124,7 +124,10 @@ pub fn select_game_camera_intent(
         }
     }
     if tied > 1 {
-        GameCameraSelection::Ambiguous { priority: best.priority, count: tied }
+        GameCameraSelection::Ambiguous {
+            priority: best.priority,
+            count: tied,
+        }
     } else {
         GameCameraSelection::Selected(best)
     }

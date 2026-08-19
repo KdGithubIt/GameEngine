@@ -12,12 +12,12 @@ mod typed_document_cli;
 mod vfx_cli;
 
 use engine_authoring::{
-    replace_file_contents, BehaviorTreeApply, BehaviorTreeAuthoringService,
-    BehaviorTreeServiceError, Diagnostic, Graph, GraphChange, GraphCommand, PersistError,
+    BehaviorTreeApply, BehaviorTreeAuthoringService, BehaviorTreeServiceError, Diagnostic, Graph,
+    GraphChange, GraphCommand, PersistError, replace_file_contents,
 };
 use engine_mcp::ai_agent::{
-    ai_agent_tool_descriptors, handle_capture_frame, handle_inject_input, validate_ai_agent_input,
-    AiAgentInput, AiAgentOutput,
+    AiAgentInput, AiAgentOutput, ai_agent_tool_descriptors, handle_capture_frame,
+    handle_inject_input, validate_ai_agent_input,
 };
 use serde::Serialize;
 use std::fmt;
@@ -460,14 +460,12 @@ fn behavior_tree_apply_impl(
     };
 
     let application = service.apply(&graph, commands);
-    if persist
-        && let Some(graph) = application.graph() {
-            let json = service
-                .graph_to_canonical_json(graph)
-                .map_err(|error| service_error_to_cli(error, Some(graph_path)))?;
-            replace_file_contents(graph_path, &json)
-                .map_err(|source| CliError::Persist { source })?;
-        }
+    if persist && let Some(graph) = application.graph() {
+        let json = service
+            .graph_to_canonical_json(graph)
+            .map_err(|error| service_error_to_cli(error, Some(graph_path)))?;
+        replace_file_contents(graph_path, &json).map_err(|source| CliError::Persist { source })?;
+    }
 
     let output = TransactionOutput::from_application(&application);
     Ok(CliRunResult::diagnostics(
@@ -748,11 +746,13 @@ mod tests {
 
         assert_eq!(result.exit_code, 1);
         assert_eq!(json["success"], false);
-        assert!(json["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|diagnostic| diagnostic["code"] == "behavior_tree.missing_root"));
+        assert!(
+            json["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "behavior_tree.missing_root")
+        );
     }
 
     #[test]
@@ -900,10 +900,12 @@ mod tests {
         assert_eq!(result.exit_code, 2);
         assert_eq!(json["success"], false);
         assert_eq!(json["error"]["kind"], "wrong_domain");
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("behavior_tree.graph"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("behavior_tree.graph")
+        );
     }
 
     #[test]
@@ -943,10 +945,12 @@ mod tests {
         assert_eq!(json["nodes"].as_array().unwrap().len(), 3);
         let first = &json["nodes"][0];
         assert!(first["id"].as_str().unwrap().starts_with("node_"));
-        assert!(first["node_type"]
-            .as_str()
-            .unwrap()
-            .starts_with("behavior_tree."));
+        assert!(
+            first["node_type"]
+                .as_str()
+                .unwrap()
+                .starts_with("behavior_tree.")
+        );
     }
 
     #[test]
@@ -1165,11 +1169,13 @@ mod tests {
 
         assert_eq!(result.exit_code, 1);
         assert_eq!(json["success"], false);
-        assert!(json["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|d| d["code"] == "behavior_tree.missing_root"));
+        assert!(
+            json["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "behavior_tree.missing_root")
+        );
         assert_eq!(std::fs::read_to_string(fixture.path()).unwrap(), original);
     }
 

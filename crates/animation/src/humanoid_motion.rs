@@ -4,9 +4,11 @@
 //! adaptation resolves those deltas against the target rest pose and emits an
 //! ordinary target-bound `AnimationClip` before runtime playback.
 
-use crate::animation::{lerp_channel, AnimChannel, AnimEvent, AnimProperty, AnimationClip, Keyframe};
+use crate::animation::{
+    AnimChannel, AnimEvent, AnimProperty, AnimationClip, Keyframe, lerp_channel,
+};
 use crate::derived_cache::{CacheKey, DerivedCache};
-use crate::humanoid::{validate_humanoid_profile, HumanoidError};
+use crate::humanoid::{HumanoidError, validate_humanoid_profile};
 use crate::skeleton_asset::{BoneId, SkeletonAsset};
 use engine_assets::asset::{HumanoidBone, HumanoidProfile};
 use engine_authoring::diagnostic::Diagnostic;
@@ -79,11 +81,8 @@ pub fn store_imported_humanoid_motion(
     provenance_model: Option<&AssetId>,
     motion: &HumanoidMotion,
 ) -> Result<(), HumanoidMotionError> {
-    let key = imported_humanoid_motion_cache_key(
-        motion_asset,
-        source_fingerprint,
-        provenance_model,
-    );
+    let key =
+        imported_humanoid_motion_cache_key(motion_asset, source_fingerprint, provenance_model);
     let bytes = serde_json::to_vec(motion).map_err(cache_error)?;
     cache
         .put(
@@ -102,11 +101,8 @@ pub fn load_imported_humanoid_motion(
     source_fingerprint: &str,
     provenance_model: Option<&AssetId>,
 ) -> Option<HumanoidMotion> {
-    let key = imported_humanoid_motion_cache_key(
-        motion_asset,
-        source_fingerprint,
-        provenance_model,
-    );
+    let key =
+        imported_humanoid_motion_cache_key(motion_asset, source_fingerprint, provenance_model);
     cache
         .get(
             HUMANOID_PORTABLE_CACHE_DOMAIN,
@@ -186,9 +182,9 @@ impl fmt::Display for HumanoidMotionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Profile(error) => write!(formatter, "invalid humanoid profile: {error}"),
-            Self::ClipSkeletonMismatch => formatter.write_str(
-                "native clip does not match the humanoid source skeleton",
-            ),
+            Self::ClipSkeletonMismatch => {
+                formatter.write_str("native clip does not match the humanoid source skeleton")
+            }
             Self::Cache(message) => write!(formatter, "humanoid derived-cache error: {message}"),
         }
     }
@@ -433,9 +429,7 @@ pub fn resolve_or_bake_humanoid_motion(
 /// # Errors
 ///
 /// Returns [`HumanoidMotionError::Cache`] when the baked clip cannot be encoded.
-pub fn serialize_humanoid_baked_clip(
-    clip: &AnimationClip,
-) -> Result<Vec<u8>, HumanoidMotionError> {
+pub fn serialize_humanoid_baked_clip(clip: &AnimationClip) -> Result<Vec<u8>, HumanoidMotionError> {
     serde_json::to_vec(&HumanoidBakeEnvelope {
         schema_version: HUMANOID_BAKED_CLIP_SCHEMA_VERSION,
         clip: clip.clone(),
@@ -449,9 +443,7 @@ pub fn serialize_humanoid_baked_clip(
 ///
 /// Returns [`HumanoidMotionError::Cache`] when the envelope is malformed or uses
 /// an unsupported schema version.
-pub fn deserialize_humanoid_baked_clip(
-    bytes: &[u8],
-) -> Result<AnimationClip, HumanoidMotionError> {
+pub fn deserialize_humanoid_baked_clip(bytes: &[u8]) -> Result<AnimationClip, HumanoidMotionError> {
     let envelope: HumanoidBakeEnvelope = serde_json::from_slice(bytes).map_err(cache_error)?;
     if envelope.schema_version != HUMANOID_BAKED_CLIP_SCHEMA_VERSION {
         return Err(HumanoidMotionError::Cache(format!(
@@ -481,10 +473,7 @@ fn ancestor_chain(skeleton: &SkeletonAsset, mut index: usize) -> Vec<usize> {
     chain
 }
 
-fn channels_by_bone(
-    clip: &AnimationClip,
-    property: AnimProperty,
-) -> HashMap<BoneId, &AnimChannel> {
+fn channels_by_bone(clip: &AnimationClip, property: AnimProperty) -> HashMap<BoneId, &AnimChannel> {
     clip.channels
         .iter()
         .filter(|channel| channel.property == property)
@@ -720,25 +709,40 @@ impl Ord for OrderedTime {
 mod tests {
     use super::*;
     use crate::humanoid::detect_humanoid_profile;
-    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef};
+    use crate::skeleton_asset::{BoneDef, compute_skeleton_identity};
     use engine_authoring::id::AssetId;
 
     fn skeleton(id: AssetId) -> SkeletonAsset {
         let definitions = [
-            ("Hips", None), ("helper", Some(0)), ("Spine", Some(1)), ("Head", Some(2)),
-            ("LeftArm", Some(2)), ("LeftForeArm", Some(4)), ("LeftHand", Some(5)),
-            ("RightArm", Some(2)), ("RightForeArm", Some(7)), ("RightHand", Some(8)),
-            ("LeftUpLeg", Some(0)), ("LeftLeg", Some(10)), ("LeftFoot", Some(11)),
-            ("RightUpLeg", Some(0)), ("RightLeg", Some(13)), ("RightFoot", Some(14)),
+            ("Hips", None),
+            ("helper", Some(0)),
+            ("Spine", Some(1)),
+            ("Head", Some(2)),
+            ("LeftArm", Some(2)),
+            ("LeftForeArm", Some(4)),
+            ("LeftHand", Some(5)),
+            ("RightArm", Some(2)),
+            ("RightForeArm", Some(7)),
+            ("RightHand", Some(8)),
+            ("LeftUpLeg", Some(0)),
+            ("LeftLeg", Some(10)),
+            ("LeftFoot", Some(11)),
+            ("RightUpLeg", Some(0)),
+            ("RightLeg", Some(13)),
+            ("RightFoot", Some(14)),
         ];
-        let bones = definitions.iter().enumerate().map(|(index, (name, parent))| BoneDef {
-            id: BoneId(index as u32),
-            name: (*name).to_owned(),
-            parent: *parent,
-            rest_translation: Vec3::ZERO,
-            rest_rotation: Quat::IDENTITY,
-            rest_scale: Vec3::ONE,
-        }).collect::<Vec<_>>();
+        let bones = definitions
+            .iter()
+            .enumerate()
+            .map(|(index, (name, parent))| BoneDef {
+                id: BoneId(index as u32),
+                name: (*name).to_owned(),
+                parent: *parent,
+                rest_translation: Vec3::ZERO,
+                rest_rotation: Quat::IDENTITY,
+                rest_scale: Vec3::ONE,
+            })
+            .collect::<Vec<_>>();
         SkeletonAsset {
             id,
             name: "test_humanoid".to_owned(),
@@ -769,8 +773,12 @@ mod tests {
     fn model_space_rotation_delta_bakes_to_target() {
         let source = skeleton(AssetId::generate());
         let target = skeleton(AssetId::generate());
-        let source_profile = detect_humanoid_profile(&source).profile.expect("source profile");
-        let target_profile = detect_humanoid_profile(&target).profile.expect("target profile");
+        let source_profile = detect_humanoid_profile(&source)
+            .profile
+            .expect("source profile");
+        let target_profile = detect_humanoid_profile(&target)
+            .profile
+            .expect("target profile");
         let expected = Quat::from_rotation_y(0.6);
         let clip = AnimationClip {
             duration: 1.0,
@@ -778,8 +786,14 @@ mod tests {
                 property: AnimProperty::Rotation,
                 target_bone: Some(BoneId(source_profile.bones[&HumanoidBone::LeftUpperArm])),
                 keyframes: vec![
-                    Keyframe { time: 0.0, value: quat_value(Quat::IDENTITY) },
-                    Keyframe { time: 1.0, value: quat_value(expected) },
+                    Keyframe {
+                        time: 0.0,
+                        value: quat_value(Quat::IDENTITY),
+                    },
+                    Keyframe {
+                        time: 1.0,
+                        value: quat_value(expected),
+                    },
                 ],
             }],
             morph_channels: Vec::new(),
@@ -789,10 +803,18 @@ mod tests {
             root_bone: None,
             contacts: Vec::new(),
         };
-        let portable = build_humanoid_motion(&clip, &source, &source_profile).expect("portable").motion;
-        let baked = bake_humanoid_motion(&portable, &target, &target_profile).expect("bake").clip;
+        let portable = build_humanoid_motion(&clip, &source, &source_profile)
+            .expect("portable")
+            .motion;
+        let baked = bake_humanoid_motion(&portable, &target, &target_profile)
+            .expect("bake")
+            .clip;
         let target_bone = BoneId(target_profile.bones[&HumanoidBone::LeftUpperArm]);
-        let channel = baked.channels.iter().find(|channel| channel.target_bone == Some(target_bone)).expect("target channel");
+        let channel = baked
+            .channels
+            .iter()
+            .find(|channel| channel.target_bone == Some(target_bone))
+            .expect("target channel");
         let actual = quat_from_value(lerp_channel(channel, 1.0).expect("sample"));
         assert!(actual.dot(expected).abs() > 0.99999);
 

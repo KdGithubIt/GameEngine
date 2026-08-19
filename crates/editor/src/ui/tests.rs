@@ -32,12 +32,8 @@ fn unified_toolbar_reserves_launcher_space_and_does_not_wrap_tabs() {
             show_toolbar_document_tab_strip(ui, |ui| {
                 ui.horizontal(|ui| {
                     for index in 0..12 {
-                        tab_tops.push(
-                            ui.button(format!("Scene {index}"))
-                                .rect
-                                .top()
-                                .round() as i32,
-                        );
+                        tab_tops
+                            .push(ui.button(format!("Scene {index}")).rect.top().round() as i32);
                     }
                 });
             });
@@ -48,8 +44,7 @@ fn unified_toolbar_reserves_launcher_space_and_does_not_wrap_tabs() {
 
     let available_width = available_width.expect("root toolbar width must be measured");
     let toolbar_rect = toolbar_rect.expect("toolbar content must be allocated");
-    let expected_width =
-        (available_width - AUTHORING_TOOLS_LAUNCHER_RESERVED_WIDTH).max(0.0);
+    let expected_width = (available_width - AUTHORING_TOOLS_LAUNCHER_RESERVED_WIDTH).max(0.0);
 
     assert!(
         (toolbar_rect.width() - expected_width).abs() <= 1.0,
@@ -1531,9 +1526,11 @@ fn mesh_picker_uses_stable_gltf_sub_asset_instead_of_source_id() {
 
     let choices = asset_choices_for_kind(engine::AssetKind::Mesh, &manifest, None);
 
-    assert!(choices
-        .iter()
-        .any(|choice| choice.id == mesh_id && choice.label == "Hero / Body"));
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.id == mesh_id && choice.label == "Hero / Body")
+    );
     assert!(!choices.iter().any(|choice| choice.id == source_id));
 }
 
@@ -1599,12 +1596,16 @@ fn clip_picker_offers_animation_sub_assets_instead_of_model_sources() {
 
     let choices = asset_choices_for_kind(engine::AssetKind::AnimationClip, &manifest, None);
 
-    assert!(choices
-        .iter()
-        .any(|choice| choice.id == clip_id && choice.label == "flair / mixamo.com"));
-    assert!(choices
-        .iter()
-        .any(|choice| choice.id == motion_clip_id && choice.label == "dance / dance"));
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.id == clip_id && choice.label == "flair / mixamo.com")
+    );
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.id == motion_clip_id && choice.label == "dance / dance")
+    );
     assert!(
         !choices.iter().any(|choice| choice.id == imported_id),
         "an Animation Set binding must not be able to name the model source file"
@@ -1632,11 +1633,8 @@ fn clip_picker_distinguishes_one_vmd_baked_for_multiple_models() {
     let villain = AssetId::generate();
     let hero_clip = engine::imported_motion_sub_asset_id(&motion, &hero, 0);
     let villain_clip = engine::imported_motion_sub_asset_id(&motion, &villain, 0);
-    let legacy_alias = engine::imported_sub_asset_id(
-        &motion,
-        engine::ImportedSubAssetKind::Animation,
-        0,
-    );
+    let legacy_alias =
+        engine::imported_sub_asset_id(&motion, engine::ImportedSubAssetKind::Animation, 0);
     let mut manifest = engine::AssetManifest::default();
     for (id, path, name) in [
         (hero.clone(), "models/hero.pmx", "Hero"),
@@ -1687,9 +1685,11 @@ fn clip_picker_distinguishes_one_vmd_baked_for_multiple_models() {
 
     let choices = asset_choices_for_kind(engine::AssetKind::AnimationClip, &manifest, None);
 
-    assert!(choices
-        .iter()
-        .any(|choice| choice.id == hero_clip && choice.label == "dance / dance — Hero"));
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.id == hero_clip && choice.label == "dance / dance — Hero")
+    );
     assert!(choices.iter().any(|choice| {
         choice.id == villain_clip && choice.label == "dance / dance — Villain"
     }));
@@ -1756,9 +1756,7 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
             events: Vec::new(),
         },
     );
-    assert!(
-        super::assets::validate_animation_set_clip_references(&document, &manifest).is_ok()
-    );
+    assert!(super::assets::validate_animation_set_clip_references(&document, &manifest).is_ok());
 
     document
         .bindings
@@ -1781,9 +1779,8 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
         .get_mut(&slot)
         .expect("the test binding must exist")
         .clip = engine_authoring::MotionSourceRef::auto(motion_source.clone());
-    let source_error =
-        super::assets::validate_animation_set_clip_references(&document, &manifest)
-            .expect_err("a parent source must never be stored as an Auto motion");
+    let source_error = super::assets::validate_animation_set_clip_references(&document, &manifest)
+        .expect_err("a parent source must never be stored as an Auto motion");
     assert!(source_error.contains("source asset"));
 
     let binding = document
@@ -1792,8 +1789,9 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
         .expect("the test binding must exist");
     binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
     binding.overlays = vec![engine_authoring::MotionSourceRef::humanoid(overlay_clip)];
-    super::assets::validate_animation_set_clip_references(&document, &manifest)
-        .expect("schema v3 validates imported candidate kinds independently of legacy constructor labels");
+    super::assets::validate_animation_set_clip_references(&document, &manifest).expect(
+        "schema v3 validates imported candidate kinds independently of legacy constructor labels",
+    );
 }
 
 #[test]
@@ -2624,13 +2622,14 @@ fn create_animation_graph_in_selected_asset_folder_registers_and_opens_it() {
             entry.path.starts_with("characters/") && entry.path.ends_with(".anim.graph.json")
         })
         .expect("folder-created graph must be registered");
-    assert!(app
-        .project_root
-        .as_ref()
-        .expect("project root")
-        .assets_root()
-        .join(&entry.path)
-        .is_file());
+    assert!(
+        app.project_root
+            .as_ref()
+            .expect("project root")
+            .assets_root()
+            .join(&entry.path)
+            .is_file()
+    );
     assert!(app.session.is_animation_graph());
 }
 
@@ -3004,10 +3003,11 @@ fn register_asset_from_browser_adds_obj_to_manifest_file() {
         .expect("manifest entry must exist");
     assert_eq!(entry.path, "meshes/My Cube.obj");
     assert_eq!(entry.name.as_deref(), Some("my_cube"));
-    assert!(app
-        .notifications
-        .iter()
-        .any(|notification| notification.message == "Registered 1 asset: My Cube.obj"));
+    assert!(
+        app.notifications
+            .iter()
+            .any(|notification| notification.message == "Registered 1 asset: My Cube.obj")
+    );
 }
 
 #[test]
@@ -3079,11 +3079,12 @@ fn scene_view_problem_appears_in_problems_and_console_once_until_resolved() {
     app.scene_view_problem = None;
     app.refresh_scene_problems();
 
-    assert!(app
-        .problems_panel
-        .problems
-        .iter()
-        .all(|diagnostic| diagnostic.code != problem.code));
+    assert!(
+        app.problems_panel
+            .problems
+            .iter()
+            .all(|diagnostic| diagnostic.code != problem.code)
+    );
 }
 
 #[test]
@@ -3124,16 +3125,18 @@ fn external_drop_refreshes_browser_and_notifies_after_manifest_commit() {
 
     app.import_external_asset_files(vec![source]);
 
-    assert!(app
-        .asset_browser
-        .entries()
-        .iter()
-        .any(|entry| entry.relative_path == Path::new("textures/icon.png")));
+    assert!(
+        app.asset_browser
+            .entries()
+            .iter()
+            .any(|entry| entry.relative_path == Path::new("textures/icon.png"))
+    );
     assert_eq!(app.asset_manifest.len(), 1);
-    assert!(app
-        .notifications
-        .iter()
-        .any(|notification| notification.message == "Registered 1 asset: icon.png"));
+    assert!(
+        app.notifications
+            .iter()
+            .any(|notification| notification.message == "Registered 1 asset: icon.png")
+    );
 }
 
 #[test]
@@ -3160,14 +3163,16 @@ fn external_manifest_save_failure_shows_no_success_notification() {
 
     app.import_external_asset_files(vec![source]);
 
-    assert!(app
-        .notifications
-        .iter()
-        .all(|notification| !notification.message.starts_with("Registered")));
-    assert!(app
-        .notifications
-        .iter()
-        .any(|notification| matches!(notification.level, EditorNotificationLevel::Error)));
+    assert!(
+        app.notifications
+            .iter()
+            .all(|notification| !notification.message.starts_with("Registered"))
+    );
+    assert!(
+        app.notifications
+            .iter()
+            .any(|notification| matches!(notification.level, EditorNotificationLevel::Error))
+    );
     assert!(app.asset_manifest.is_empty());
     assert!(!root.assets_root().join("icon.png").exists());
 }

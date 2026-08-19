@@ -83,7 +83,9 @@ impl ProjectFileWatcher {
         let (message_sender, message_receiver) = mpsc::channel();
         let _ = std::thread::Builder::new()
             .name("project-file-watcher".to_owned())
-            .spawn(move || watcher_worker(project_root, interval, command_receiver, message_sender));
+            .spawn(move || {
+                watcher_worker(project_root, interval, command_receiver, message_sender)
+            });
         Self {
             command_sender,
             message_receiver,
@@ -280,9 +282,11 @@ mod tests {
         )
         .unwrap();
         let events = wait_for_events(&mut watcher);
-        assert!(events
-            .iter()
-            .any(|event| event.area == FileSyncArea::Assets));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.area == FileSyncArea::Assets)
+        );
         assert!(events.iter().any(|event| {
             event.area == FileSyncArea::Assets
                 && event
@@ -307,7 +311,10 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         while !watcher.is_ready() {
             let _ = watcher.poll();
-            assert!(Instant::now() < deadline, "watcher initialization timed out");
+            assert!(
+                Instant::now() < deadline,
+                "watcher initialization timed out"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     }

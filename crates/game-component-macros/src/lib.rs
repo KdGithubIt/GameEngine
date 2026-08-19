@@ -2,7 +2,7 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta, Type};
+use syn::{Attribute, Data, DeriveInput, Fields, Ident, Meta, Type, parse_macro_input};
 
 /// Derives the runtime and authoring contracts for a project component.
 ///
@@ -47,14 +47,14 @@ fn derive_game_component_impl(input: DeriveInput) -> syn::Result<proc_macro2::To
                 return Err(syn::Error::new_spanned(
                     name,
                     "GameComponent requires a struct with named fields",
-                ))
+                ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 name,
                 "GameComponent can only be derived for structs",
-            ))
+            ));
         }
     };
 
@@ -68,8 +68,7 @@ fn derive_game_component_impl(input: DeriveInput) -> syn::Result<proc_macro2::To
                     .attrs
                     .into_iter()
                     .filter(|attribute| {
-                        attribute.path().is_ident("cfg")
-                            || attribute.path().is_ident("cfg_attr")
+                        attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr")
                     })
                     .collect(),
             });

@@ -442,7 +442,7 @@ fn parse_gamepad_axis(value: &str) -> Result<GamepadAxis, ReplayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_platform::input::{drain_virtual_input, Input, KeyCode};
+    use engine_platform::input::{Input, KeyCode, drain_virtual_input};
 
     #[test]
     fn replay_round_trip_preserves_ordered_commands() {
@@ -474,7 +474,10 @@ mod tests {
             r#"{{"format_version":{REPLAY_FORMAT_VERSION},"engine_version":"{}","fixed_step_seconds":0.016666668}}"#,
             env!("CARGO_PKG_VERSION")
         );
-        assert!(matches!(InputReplay::from_json(&json), Err(ReplayError::Json(_))));
+        assert!(matches!(
+            InputReplay::from_json(&json),
+            Err(ReplayError::Json(_))
+        ));
     }
 
     #[test]
@@ -510,9 +513,11 @@ mod tests {
 
         assert_eq!(player.inject_tick(&mut world, 0).unwrap(), 1);
         drain_virtual_input(&mut world);
-        assert!(world
-            .get_resource::<Input<KeyCode>>()
-            .unwrap()
-            .pressed(KeyCode::KeyW));
+        assert!(
+            world
+                .get_resource::<Input<KeyCode>>()
+                .unwrap()
+                .pressed(KeyCode::KeyW)
+        );
     }
 }

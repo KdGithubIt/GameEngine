@@ -75,14 +75,13 @@ impl AuthoringPermissions {
     /// # Errors
     ///
     /// Returns [`AuthoringPermissionError`] when the permission is absent.
-    pub fn require(
-        &self,
-        permission: AuthoringPermission,
-    ) -> Result<(), AuthoringPermissionError> {
+    pub fn require(&self, permission: AuthoringPermission) -> Result<(), AuthoringPermissionError> {
         if self.contains(permission) {
             Ok(())
         } else {
-            Err(AuthoringPermissionError { required: permission })
+            Err(AuthoringPermissionError {
+                required: permission,
+            })
         }
     }
 }

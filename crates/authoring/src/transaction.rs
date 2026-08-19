@@ -741,7 +741,7 @@ impl Transaction {
                 Ok(old_value) => old_value,
                 Err(PropertyPathError::NotFound) => return self.property_not_found(&target),
                 Err(PropertyPathError::TypeMismatch) => {
-                    return self.property_type_mismatch(&target)
+                    return self.property_type_mismatch(&target);
                 }
             };
 
@@ -978,9 +978,11 @@ mod tests {
         assert_eq!(changes.len(), 3);
         let entity = scene.entity(&id).unwrap();
         assert_eq!(entity.display_name, "Enemy Guard");
-        assert!(entity
-            .components
-            .contains_key(&ComponentTypeId::new("gameplay.health")));
+        assert!(
+            entity
+                .components
+                .contains_key(&ComponentTypeId::new("gameplay.health"))
+        );
     }
 
     // --- rollback ---

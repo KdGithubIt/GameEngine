@@ -469,7 +469,13 @@ mod tests {
 
         assert!((blend_start - 19.0).abs() < 1.0e-6);
         assert!((split - 21.0).abs() < 1.0e-6);
-        assert_eq!(fitting[0], ShadowCascade { near: 1.0, far: 21.0 });
+        assert_eq!(
+            fitting[0],
+            ShadowCascade {
+                near: 1.0,
+                far: 21.0
+            }
+        );
         assert_eq!(
             fitting[1],
             ShadowCascade {
@@ -526,16 +532,14 @@ mod tests {
         let camera = Camera3D::new(60.0, 1.0, 0.1, 100.0);
         let settings = ShadowSettings::default();
         let light_direction = Vec3::NEG_Z;
-        let first_transform =
-            Transform::looking_at(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
+        let first_transform = Transform::looking_at(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
         let second_transform = Transform::looking_at(
             Vec3::new(0.001, 0.0, 5.0),
             Vec3::new(0.001, 0.0, 0.0),
             Vec3::Y,
         );
 
-        let first =
-            cascade_view_projections(&camera, &first_transform, light_direction, &settings);
+        let first = cascade_view_projections(&camera, &first_transform, light_direction, &settings);
         let second =
             cascade_view_projections(&camera, &second_transform, light_direction, &settings);
 

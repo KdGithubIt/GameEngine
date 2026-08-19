@@ -1,7 +1,7 @@
 //! Inspector tooling for reusable generic data assets.
 
 use super::*;
-use engine::data_asset::{DataAssetDocument, DataAssetRef, DATA_ASSET_FILE_SUFFIX};
+use engine::data_asset::{DATA_ASSET_FILE_SUFFIX, DataAssetDocument, DataAssetRef};
 
 const DATA_ASSET_UI_STATE_ID: &str = "data_asset_inspector_state";
 
@@ -266,10 +266,9 @@ impl EditorApp {
             ui.small(format!("Stored field name: {normalized_field}"));
         }
 
-        if changed
-            && let Err(error) = persist_data_asset_document(&absolute_path, &document) {
-                self.report_data_asset_error("editor.data_asset_save_failed", error);
-            }
+        if changed && let Err(error) = persist_data_asset_document(&absolute_path, &document) {
+            self.report_data_asset_error("editor.data_asset_save_failed", error);
+        }
     }
 
     fn show_selected_entity_data_asset_references(
@@ -437,13 +436,9 @@ fn show_data_asset_creation_controls(
     create_name: &mut String,
 ) -> DataAssetCreationControlsResponse {
     control_row(ui, |ui| {
-        let name_field =
-            ui.add(egui::TextEdit::singleline(create_name).hint_text("Enemy Stats"));
+        let name_field = ui.add(egui::TextEdit::singleline(create_name).hint_text("Enemy Stats"));
         let valid = !create_name.trim().is_empty();
-        let create_button = ui.add_enabled(
-            valid,
-            dock_action_button("New Data Asset", 116.0),
-        );
+        let create_button = ui.add_enabled(valid, dock_action_button("New Data Asset", 116.0));
 
         DataAssetCreationControlsResponse {
             create_requested: create_button.clicked(),

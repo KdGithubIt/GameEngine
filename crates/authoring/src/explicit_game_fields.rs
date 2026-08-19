@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 
 const GENERATED_COMPONENT_FIELD: &str =
     "    /// Example public setting shown in the Inspector.\n    pub enabled: bool,\n";
-const EXPLICIT_GENERATED_COMPONENT_FIELD: &str =
-    "    /// Example public setting shown in the Inspector.\n    #[game_field]\n    pub enabled: bool,\n";
+const EXPLICIT_GENERATED_COMPONENT_FIELD: &str = "    /// Example public setting shown in the Inspector.\n    #[game_field]\n    pub enabled: bool,\n";
 
 /// Creates one Rust script in the recommended folder for its kind.
 pub fn create_rust_script(
@@ -39,13 +38,8 @@ pub fn create_rust_script_in(
     rust_name: &str,
     schedule: RustScriptSchedule,
 ) -> Result<PathBuf, GameProjectError> {
-    let path = game_project::create_rust_script_in(
-        project,
-        kind,
-        script_folder,
-        rust_name,
-        schedule,
-    )?;
+    let path =
+        game_project::create_rust_script_in(project, kind, script_folder, rust_name, schedule)?;
     if kind != RustScriptKind::Component {
         return Ok(path);
     }
@@ -77,7 +71,7 @@ fn mark_generated_component_field(source: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{mark_generated_component_field, EXPLICIT_GENERATED_COMPONENT_FIELD};
+    use super::{EXPLICIT_GENERATED_COMPONENT_FIELD, mark_generated_component_field};
 
     #[test]
     fn generated_component_marks_only_the_example_setting() {

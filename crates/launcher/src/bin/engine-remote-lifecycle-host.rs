@@ -18,9 +18,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let bearer_token = std::env::var(REMOTE_LIFECYCLE_TOKEN_ENV).map_err(|_| {
-        format!(
-            "{REMOTE_LIFECYCLE_TOKEN_ENV} must be set to a dedicated lifecycle credential"
-        )
+        format!("{REMOTE_LIFECYCLE_TOKEN_ENV} must be set to a dedicated lifecycle credential")
     })?;
     let mut port = DEFAULT_REMOTE_LIFECYCLE_PORT;
     let mut allow_editor_start = false;

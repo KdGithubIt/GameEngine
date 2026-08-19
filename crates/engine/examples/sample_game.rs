@@ -12,10 +12,10 @@ use engine::ecs::{Entity, World};
 use engine::glam::Vec3;
 use engine::time::Time;
 use engine::{
-    character_controller_system, collision_detection_system, player_character_motor_system,
-    player_controller_system, App, Assets, Camera3D, Collider, CollisionEvents, Commands,
-    GlobalTransform, Handle, KinematicCharacterController, Material, Mesh, MovePlane, PhysicsBody,
-    PlayerController, PlayerMarker, Query, Res, ResMut, Transform, UiSystem, Vertex,
+    App, Assets, Camera3D, Collider, CollisionEvents, Commands, GlobalTransform, Handle,
+    KinematicCharacterController, Material, Mesh, MovePlane, PhysicsBody, PlayerController,
+    PlayerMarker, Query, Res, ResMut, Transform, UiSystem, Vertex, character_controller_system,
+    collision_detection_system, player_character_motor_system, player_controller_system,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -130,10 +130,11 @@ fn coin_pickup_system(
         };
 
         if let Some(coin_entity) = coin
-            && despawned.insert(coin_entity) {
-                commands.despawn(coin_entity);
-                score.collected += 1;
-            }
+            && despawned.insert(coin_entity)
+        {
+            commands.despawn(coin_entity);
+            score.collected += 1;
+        }
     }
 }
 

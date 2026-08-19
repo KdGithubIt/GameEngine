@@ -23,31 +23,31 @@ pub mod scene;
 pub mod vfx;
 
 pub use ai_agent::{
-    ai_agent_tool_descriptors, describe_session, handle_describe_session, handle_validate_input,
-    validate_ai_agent_input, AiAgentInput, AiAgentOutput,
+    AiAgentInput, AiAgentOutput, ai_agent_tool_descriptors, describe_session,
+    handle_describe_session, handle_validate_input, validate_ai_agent_input,
 };
 pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
 pub use capability::{
-    capability_coverage, uncovered_capabilities, AuthoringCapabilityMcpTools,
-    AuthoringInvocationPlan, AuthoringVerb, CapabilityCoverage, CapabilityDescribeInput,
-    CapabilityDescribeOutput, CapabilityInvokeInput, CapabilityListOutput, CapabilityMcpError,
     AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL, AUTHORING_DESCRIBE_TOOL,
     AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
+    AuthoringCapabilityMcpTools, AuthoringInvocationPlan, AuthoringVerb, CapabilityCoverage,
+    CapabilityDescribeInput, CapabilityDescribeOutput, CapabilityInvokeInput, CapabilityListOutput,
+    CapabilityMcpError, capability_coverage, uncovered_capabilities,
 };
 pub use generic_authoring::{
-    GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
-    GraphViewMutationInput, TypedDocumentMutationInput, UiMutationInput,
+    GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput, GraphViewMutationInput,
+    TypedDocumentMutationInput, UiMutationInput,
 };
 pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
 pub use scene::{
     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
 };
-pub use vfx::{
-    VfxEffectInput, VfxInspectOutput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
-};
+pub use vfx::{VfxEffectInput, VfxInspectOutput, VfxMcpTools, VfxMutationInput, VfxTemplateInput};
 
 use capability::{authorize_capability, domain_tool_descriptors};
+use engine_assets::catalog::AssetCatalogError;
+use engine_assets::prefab::PrefabAssetError;
 use engine_authoring::{
     AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermissions, BehaviorTreeApply,
     BehaviorTreeAuthoringService, BehaviorTreeCompilation, BehaviorTreeEdgeSummary,
@@ -55,8 +55,6 @@ use engine_authoring::{
     BehaviorTreeServiceError, BehaviorTreeValidation, Graph, GraphCommand, PrefabAuthoringError,
     SceneAuthoringError,
 };
-use engine_assets::catalog::AssetCatalogError;
-use engine_assets::prefab::PrefabAssetError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -390,9 +388,7 @@ impl Default for BehaviorTreeMcpTools {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_authoring::{
-        AuthoringPermission, BehaviorTreeDomain, EdgeId, GraphId, NodeId,
-    };
+    use engine_authoring::{AuthoringPermission, BehaviorTreeDomain, EdgeId, GraphId, NodeId};
 
     fn writable() -> AuthoringPermissions {
         AuthoringPermissions::read_only()

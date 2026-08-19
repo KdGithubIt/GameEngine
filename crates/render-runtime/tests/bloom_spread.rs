@@ -7,8 +7,7 @@ const WIDTH: u32 = 32;
 const HEIGHT: u32 = 32;
 const BYTES_PER_PIXEL_RGBA16F: usize = 8;
 const BLACK_RGBA16F: [u8; BYTES_PER_PIXEL_RGBA16F] = [0, 0, 0, 0, 0, 0, 0, 0x3c];
-const BRIGHT_RGBA16F: [u8; BYTES_PER_PIXEL_RGBA16F] =
-    [0, 0x40, 0, 0x40, 0, 0x40, 0, 0x3c];
+const BRIGHT_RGBA16F: [u8; BYTES_PER_PIXEL_RGBA16F] = [0, 0x40, 0, 0x40, 0, 0x40, 0, 0x3c];
 
 fn impulse_hdr_pixels() -> Vec<u8> {
     let mut pixels = vec![0_u8; WIDTH as usize * HEIGHT as usize * BYTES_PER_PIXEL_RGBA16F];
@@ -34,8 +33,7 @@ fn readback_image(
 ) -> Vec<[u8; 4]> {
     const BYTES_PER_PIXEL: u32 = 4;
     let unpadded_bytes_per_row = WIDTH * BYTES_PER_PIXEL;
-    let padded_bytes_per_row = unpadded_bytes_per_row
-        .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
         * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Bloom spread readback"),

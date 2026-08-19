@@ -95,7 +95,7 @@ impl Default for AssetMcpTools {
 mod tests {
     use super::*;
     use engine_assets::asset::{ImportSettings, ManifestEntry};
-    use engine_authoring::{ProjectConfig, PROJECT_SCHEMA_VERSION};
+    use engine_authoring::{PROJECT_SCHEMA_VERSION, ProjectConfig};
     use std::fs;
     use std::path::PathBuf;
 

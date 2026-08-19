@@ -82,18 +82,8 @@ pub fn validate_scene_render_limits(scene: &AuthoringScene) -> Vec<Diagnostic> {
         "directional",
         &mut diagnostics,
     );
-    push_light_limit(
-        point_count,
-        MAX_POINT_LIGHTS,
-        "point",
-        &mut diagnostics,
-    );
-    push_light_limit(
-        spot_count,
-        MAX_SPOT_LIGHTS,
-        "spot",
-        &mut diagnostics,
-    );
+    push_light_limit(point_count, MAX_POINT_LIGHTS, "point", &mut diagnostics);
+    push_light_limit(spot_count, MAX_SPOT_LIGHTS, "spot", &mut diagnostics);
     push_light_limit(
         ambient_count,
         MAX_AMBIENT_LIGHTS,
@@ -143,11 +133,15 @@ mod tests {
         .expect("budget fixture");
 
         let diagnostics = validate_scene_render_limits(&scene);
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "renderer.particle_emitter_limit"));
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "renderer.instance_limit"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "renderer.particle_emitter_limit")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "renderer.instance_limit")
+        );
     }
 }

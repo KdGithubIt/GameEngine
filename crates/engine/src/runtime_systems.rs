@@ -1,38 +1,38 @@
 //! Shared host-profile registration for editor Play and packaged players.
 
+use crate::App;
 use crate::anim_graph::anim_graph_system;
 use crate::animation::{
-    animation_system, root_motion_motor_system, AnimationClip, AnimationEvents,
+    AnimationClip, AnimationEvents, animation_system, root_motion_motor_system,
 };
 use crate::asset::Assets;
 use crate::audio::{
-    authored_audio_system, spatial_audio_frame_system, spatial_audio_system, SpatialAudioRuntime,
+    SpatialAudioRuntime, authored_audio_system, spatial_audio_frame_system, spatial_audio_system,
 };
-use crate::behavior_tree::{behavior_tree_tick_system, BehaviorTreeBehaviorRegistry};
+use crate::behavior_tree::{BehaviorTreeBehaviorRegistry, behavior_tree_tick_system};
 use crate::camera::{follow_camera_system, lock_on_camera_system, orbit_camera_system};
 use crate::character_controller::character_controller_system;
-use crate::collision::{collision_detection_system, CollisionEvents, CollisionStats};
+use crate::collision::{CollisionEvents, CollisionStats, collision_detection_system};
 use crate::combat::{
-    apply_knockback_system, combat_contact_system, combat_debug_draw_system, HitResults,
-    KnockbackRequests,
+    HitResults, KnockbackRequests, apply_knockback_system, combat_contact_system,
+    combat_debug_draw_system,
 };
-use crate::event_debug::{runtime_event_timeline_system, RuntimeEventTimeline};
+use crate::event_debug::{RuntimeEventTimeline, runtime_event_timeline_system};
 use crate::foot_ik::foot_ik_system;
 use crate::lock_on::lock_on_system;
-use crate::secondary_motion::{
-    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
-};
 use crate::native_2d::{
-    physics_2d_fixed_system, sprite_animation_2d_fixed_system, Gravity2d, Physics2dDiagnostics,
-    PhysicsRuntime2d, SpriteAnimationClipRegistry2d, SpriteAnimationEvents2d,
+    Gravity2d, Physics2dDiagnostics, PhysicsRuntime2d, SpriteAnimationClipRegistry2d,
+    SpriteAnimationEvents2d, physics_2d_fixed_system, sprite_animation_2d_fixed_system,
 };
 use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
 use crate::physics::velocity_system;
 use crate::player::{player_character_motor_system, player_controller_system};
 use crate::pose_graph::PoseArena;
 use crate::rig_pose::{publish_final_rig_pose_system, rig_pose_clear_transient_system};
+use crate::secondary_motion::{
+    SecondaryMotionWorlds, secondary_motion_presentation_system, secondary_motion_system,
+};
 use crate::transform::transform_propagation_system;
-use crate::App;
 use engine_ecs::{SystemDescriptor, SystemOrigin, SystemRegistrationError};
 
 /// Registers the shared gameplay systems used by every runtime host.
@@ -61,7 +61,11 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     if app.world().get_resource::<CollisionStats>().is_none() {
         app.insert_resource(CollisionStats::default());
     }
-    if app.world().get_resource::<SecondaryMotionWorlds>().is_none() {
+    if app
+        .world()
+        .get_resource::<SecondaryMotionWorlds>()
+        .is_none()
+    {
         app.insert_resource(SecondaryMotionWorlds::default());
     }
     if app.world().get_resource::<HitResults>().is_none() {
@@ -92,10 +96,18 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     if app.world().get_resource::<Physics2dDiagnostics>().is_none() {
         app.insert_resource(Physics2dDiagnostics::default());
     }
-    if app.world().get_resource::<SpriteAnimationEvents2d>().is_none() {
+    if app
+        .world()
+        .get_resource::<SpriteAnimationEvents2d>()
+        .is_none()
+    {
         app.insert_resource(SpriteAnimationEvents2d::default());
     }
-    if app.world().get_resource::<SpriteAnimationClipRegistry2d>().is_none() {
+    if app
+        .world()
+        .get_resource::<SpriteAnimationClipRegistry2d>()
+        .is_none()
+    {
         app.insert_resource(SpriteAnimationClipRegistry2d::default());
     }
     app.try_add_system_with_descriptor(
@@ -419,8 +431,8 @@ fn engine_system(id: &str, display_name: &str, description: &str) -> SystemDescr
 mod tests {
     use super::*;
     use crate::{
-        clear_input_transitions, drain_virtual_input, GamepadAxis, GamepadId, InputActionMap,
-        InputCommand, InputSource, KeyCode, VirtualInputQueue,
+        GamepadAxis, GamepadId, InputActionMap, InputCommand, InputSource, KeyCode,
+        VirtualInputQueue, clear_input_transitions, drain_virtual_input,
     };
     use engine_authoring::project_settings::{AxisBinding, ProjectSystemSchedule};
     use engine_authoring::{InputAction, ProjectSettings};
@@ -455,9 +467,11 @@ mod tests {
 
         assert_eq!(fingerprint(&editor_play), fingerprint(&player));
         let update = player.system_infos(ProjectSystemSchedule::Update);
-        assert!(update
-            .iter()
-            .any(|info| info.descriptor.id().as_str() == "engine.authored_audio"));
+        assert!(
+            update
+                .iter()
+                .any(|info| info.descriptor.id().as_str() == "engine.authored_audio")
+        );
         let secondary_motion_presentation = update
             .iter()
             .find(|info| info.descriptor.id().as_str() == "engine.secondary_motion_presentation")
@@ -503,71 +517,103 @@ mod tests {
                 .map(|info| &info.descriptor)
                 .unwrap()
         };
-        assert!(descriptor("engine.animation")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.animation_graph"));
-        assert!(descriptor("engine.root_motion_motor")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.animation"));
-        assert!(descriptor("engine.foot_ik")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.fixed_transform_propagation"));
-        assert!(descriptor("engine.character_controller")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.root_motion_motor"));
-        assert!(descriptor("engine.collision_detection")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.secondary_motion_transform_propagation"));
-        assert!(descriptor("engine.secondary_motion")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.fixed_transform_propagation"));
-        assert!(descriptor("engine.secondary_motion_transform_propagation")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.rig_pose_publish_final"));
-        assert!(descriptor("engine.rig_pose_publish_final")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.secondary_motion"));
-        assert!(descriptor("engine.combat_contacts")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.collision_detection"));
-        assert!(descriptor("engine.knockback")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.combat_contacts"));
-        assert!(descriptor("engine.event_timeline")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.animation"));
-        assert!(descriptor("engine.event_timeline")
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.knockback"));
-        assert!(editor_play
-            .world()
-            .get_resource::<Assets<AnimationClip>>()
-            .is_some());
-        assert!(editor_play
-            .world()
-            .get_resource::<AnimationEvents>()
-            .is_some());
-        assert!(editor_play
-            .world()
-            .get_resource::<CollisionEvents>()
-            .is_some());
+        assert!(
+            descriptor("engine.animation")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.animation_graph")
+        );
+        assert!(
+            descriptor("engine.root_motion_motor")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.animation")
+        );
+        assert!(
+            descriptor("engine.foot_ik")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.fixed_transform_propagation")
+        );
+        assert!(
+            descriptor("engine.character_controller")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.root_motion_motor")
+        );
+        assert!(
+            descriptor("engine.collision_detection")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.secondary_motion_transform_propagation")
+        );
+        assert!(
+            descriptor("engine.secondary_motion")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.fixed_transform_propagation")
+        );
+        assert!(
+            descriptor("engine.secondary_motion_transform_propagation")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.rig_pose_publish_final")
+        );
+        assert!(
+            descriptor("engine.rig_pose_publish_final")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.secondary_motion")
+        );
+        assert!(
+            descriptor("engine.combat_contacts")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.collision_detection")
+        );
+        assert!(
+            descriptor("engine.knockback")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.combat_contacts")
+        );
+        assert!(
+            descriptor("engine.event_timeline")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.animation")
+        );
+        assert!(
+            descriptor("engine.event_timeline")
+                .after()
+                .iter()
+                .any(|id| id.as_str() == "engine.knockback")
+        );
+        assert!(
+            editor_play
+                .world()
+                .get_resource::<Assets<AnimationClip>>()
+                .is_some()
+        );
+        assert!(
+            editor_play
+                .world()
+                .get_resource::<AnimationEvents>()
+                .is_some()
+        );
+        assert!(
+            editor_play
+                .world()
+                .get_resource::<CollisionEvents>()
+                .is_some()
+        );
         assert!(editor_play.world().get_resource::<HitResults>().is_some());
-        assert!(editor_play
-            .world()
-            .get_resource::<RuntimeEventTimeline>()
-            .is_some());
+        assert!(
+            editor_play
+                .world()
+                .get_resource::<RuntimeEventTimeline>()
+                .is_some()
+        );
 
         // A complete host profile must remain safe for empty or partial
         // scenes; missing matching components are normal, not startup errors.

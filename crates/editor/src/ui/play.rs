@@ -1,9 +1,7 @@
 //! Play-mode runtime workspace, game-view input forwarding, and frame capture.
 
 use super::*;
-use crate::view_resolution::{
-    clamp_render_target_size_in_pixels, render_target_size_in_pixels,
-};
+use crate::view_resolution::{clamp_render_target_size_in_pixels, render_target_size_in_pixels};
 
 impl EditorApp {
     pub(super) fn show_runtime_debugger(&mut self, ui: &mut egui::Ui) {
@@ -156,9 +154,7 @@ impl EditorApp {
             if self.preferences.play_mode_view != previous {
                 self.preferences.save();
             }
-            if !self.graph_debug.visible
-                && self.preferences.play_mode_view == PlayModeView::Scene
-            {
+            if !self.graph_debug.visible && self.preferences.play_mode_view == PlayModeView::Scene {
                 ui.separator();
                 if ui.button("Reset Camera").clicked() {
                     self.scene_view.reset_camera();
@@ -191,13 +187,14 @@ impl EditorApp {
                 .add_enabled(!recording && !replaying, egui::Button::new("Record"))
                 .clicked()
                 && let Some(runtime) = &mut self.runtime_state
-                    && let Err(error) = runtime.start_replay_recording() {
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::error(
-                                "editor.replay.record_failed",
-                                error.to_string(),
-                            ));
-                    }
+                && let Err(error) = runtime.start_replay_recording()
+            {
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::error(
+                        "editor.replay.record_failed",
+                        error.to_string(),
+                    ));
+            }
             if ui
                 .add_enabled(recording, egui::Button::new("Stop Recording"))
                 .clicked()
@@ -205,9 +202,9 @@ impl EditorApp {
                     .runtime_state
                     .as_mut()
                     .and_then(RuntimePlayState::stop_replay_recording)
-                {
-                    self.last_replay = Some(replay);
-                }
+            {
+                self.last_replay = Some(replay);
+            }
             if ui
                 .add_enabled(
                     self.last_replay.is_some() && !recording,
@@ -216,33 +213,34 @@ impl EditorApp {
                 .clicked()
                 && let (Some(runtime), Some(replay)) =
                     (&mut self.runtime_state, self.last_replay.clone())
-                    && let Err(error) = runtime.start_replay(replay) {
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::error(
-                                "editor.replay.start_failed",
-                                error.to_string(),
-                            ));
-                    }
+                && let Err(error) = runtime.start_replay(replay)
+            {
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::error(
+                        "editor.replay.start_failed",
+                        error.to_string(),
+                    ));
+            }
             if ui.button("Load Replay...").clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("Engine Replay", &["json"])
                     .pick_file()
-                {
-                    match fs::read_to_string(&path)
-                        .map_err(|error| error.to_string())
-                        .and_then(|json| {
-                            engine::InputReplay::from_json(&json).map_err(|error| error.to_string())
-                        }) {
-                        Ok(replay) => self.last_replay = Some(replay),
-                        Err(error) => {
-                            self.session
-                                .push_diagnostic(engine_authoring::Diagnostic::error(
-                                    "editor.replay.load_failed",
-                                    format!("{}: {error}", path.display()),
-                                ))
-                        }
+            {
+                match fs::read_to_string(&path)
+                    .map_err(|error| error.to_string())
+                    .and_then(|json| {
+                        engine::InputReplay::from_json(&json).map_err(|error| error.to_string())
+                    }) {
+                    Ok(replay) => self.last_replay = Some(replay),
+                    Err(error) => {
+                        self.session
+                            .push_diagnostic(engine_authoring::Diagnostic::error(
+                                "editor.replay.load_failed",
+                                format!("{}: {error}", path.display()),
+                            ))
                     }
                 }
+            }
             if ui
                 .add_enabled(
                     self.last_replay.is_some(),
@@ -297,9 +295,10 @@ impl EditorApp {
             if ui
                 .checkbox(&mut self.show_debug_lines, "Debug Draw")
                 .changed()
-                && let Some(runtime) = &mut self.runtime_state {
-                    runtime.set_debug_draw_enabled(self.show_debug_lines);
-                }
+                && let Some(runtime) = &mut self.runtime_state
+            {
+                runtime.set_debug_draw_enabled(self.show_debug_lines);
+            }
             ui.separator();
             egui::ComboBox::from_id_salt("game_view_aspect")
                 .selected_text(self.game_view_aspect.label())
@@ -357,9 +356,8 @@ impl EditorApp {
             if let Some(error) = output.render_error {
                 self.stop_play(Some(render_state));
                 self.session.push_diagnostic(
-                    RuntimeDiagnosticKind::RenderError.to_diagnostic(format!(
-                        "Play Scene View render failed: {error}"
-                    )),
+                    RuntimeDiagnosticKind::RenderError
+                        .to_diagnostic(format!("Play Scene View render failed: {error}")),
                 );
             }
             return;
@@ -760,7 +758,9 @@ impl EditorApp {
         action: crate::ai_studio::AiStudioRuntimeAction,
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> crate::ai_studio::AiStudioRuntimeResult {
-        use crate::ai_studio::{AiStudioReclaimLevel, AiStudioRuntimeAction, AiStudioRuntimeResult};
+        use crate::ai_studio::{
+            AiStudioReclaimLevel, AiStudioRuntimeAction, AiStudioRuntimeResult,
+        };
         match action {
             AiStudioRuntimeAction::EnterInferenceFocused { reclaim } => {
                 if self.is_playing() {
@@ -809,7 +809,9 @@ impl EditorApp {
                 self.inference_focused = false;
                 self.inference_restore_pending = false;
                 self.inference_restore_completed = false;
-                if !self.is_playing() { self.start_play(); }
+                if !self.is_playing() {
+                    self.start_play();
+                }
                 if self.is_playing() {
                     if let Some(runtime) = self.runtime_state.as_mut() {
                         runtime.set_paused(true);
@@ -818,7 +820,10 @@ impl EditorApp {
                 } else if self.play_after_game_build {
                     AiStudioRuntimeResult::PlayStartPending
                 } else {
-                    AiStudioRuntimeResult::Failed("Editor Play could not start; inspect the current Editor diagnostics.".to_owned())
+                    AiStudioRuntimeResult::Failed(
+                        "Editor Play could not start; inspect the current Editor diagnostics."
+                            .to_owned(),
+                    )
                 }
             }
             AiStudioRuntimeAction::SendInput(command) => {
@@ -838,9 +843,10 @@ impl EditorApp {
                     );
                 };
                 runtime.set_paused(true);
-                AiStudioRuntimeResult::RuntimePaused(
-                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
-                )
+                AiStudioRuntimeResult::RuntimePaused(crate::runtime_debug::capture_observation(
+                    runtime,
+                    &host_diagnostics,
+                ))
             }
             AiStudioRuntimeAction::ResumePlaytest => {
                 let host_diagnostics = self.session.diagnostics().to_vec();
@@ -850,9 +856,10 @@ impl EditorApp {
                     );
                 };
                 runtime.set_paused(false);
-                AiStudioRuntimeResult::RuntimeResumed(
-                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
-                )
+                AiStudioRuntimeResult::RuntimeResumed(crate::runtime_debug::capture_observation(
+                    runtime,
+                    &host_diagnostics,
+                ))
             }
             AiStudioRuntimeAction::StepPlaytest { steps } => {
                 let host_diagnostics = self.session.diagnostics().to_vec();
@@ -899,9 +906,10 @@ impl EditorApp {
                         "Runtime observation requires an active Editor Play session.".to_owned(),
                     );
                 };
-                AiStudioRuntimeResult::RuntimeObserved(
-                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
-                )
+                AiStudioRuntimeResult::RuntimeObserved(crate::runtime_debug::capture_observation(
+                    runtime,
+                    &host_diagnostics,
+                ))
             }
             AiStudioRuntimeAction::WaitRuntime {
                 predicate,
@@ -946,8 +954,7 @@ impl EditorApp {
                 self.start_play();
                 if !self.is_playing() {
                     return AiStudioRuntimeResult::Failed(
-                        "Replay reproduction could not start a fresh Editor Play world."
-                            .to_owned(),
+                        "Replay reproduction could not start a fresh Editor Play world.".to_owned(),
                     );
                 }
                 let host_diagnostics = self.session.diagnostics().to_vec();
@@ -979,14 +986,20 @@ impl EditorApp {
                 self.inference_restore_pending = false;
                 self.inference_restore_completed = false;
                 let Some(render_state) = render_state else {
-                    return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());
+                    return AiStudioRuntimeResult::Failed(
+                        "WGPU render state is unavailable for managed frame capture.".to_owned(),
+                    );
                 };
                 let Some(runtime) = self.runtime_state.as_ref() else {
-                    return AiStudioRuntimeResult::Failed("Managed frame capture requires an active Editor Play session.".to_owned());
+                    return AiStudioRuntimeResult::Failed(
+                        "Managed frame capture requires an active Editor Play session.".to_owned(),
+                    );
                 };
                 match runtime.capture_game_view(render_state) {
                     Ok(capture) => AiStudioRuntimeResult::FrameCaptured(capture),
-                    Err(error) => AiStudioRuntimeResult::Failed(format!("Managed Game View capture failed: {error}")),
+                    Err(error) => AiStudioRuntimeResult::Failed(format!(
+                        "Managed Game View capture failed: {error}"
+                    )),
                 }
             }
             AiStudioRuntimeAction::StopPlaytest => {
@@ -1008,8 +1021,9 @@ impl EditorApp {
         self.inference_focused = false;
         self.inference_restore_pending = false;
         self.inference_restore_completed = false;
-        let render_state = render_state
-            .ok_or_else(|| "WGPU render state is unavailable for live Game View observation.".to_owned())?;
+        let render_state = render_state.ok_or_else(|| {
+            "WGPU render state is unavailable for live Game View observation.".to_owned()
+        })?;
         let runtime = self.runtime_state.as_ref().ok_or_else(|| {
             "Live Game View observation requires an active Editor Play session.".to_owned()
         })?;
@@ -1346,10 +1360,7 @@ fn game_view_dimensions(
         // The only preset with a render-target size of its own: the image is
         // rendered at 1920x1080 and then scaled down to fit the panel.
         ViewAspect::Fixed1080 => GameViewDimensions {
-            render_size: clamp_render_target_size_in_pixels(
-                [1920, 1080],
-                max_texture_dimension_2d,
-            ),
+            render_size: clamp_render_target_size_in_pixels([1920, 1080], max_texture_dimension_2d),
             display_size: fit(16.0 / 9.0),
             ui_screen_size: eframe::egui::vec2(1920.0, 1080.0),
         },
@@ -1386,12 +1397,8 @@ mod game_view_dimension_tests {
         ];
 
         for (pixels_per_point, render_size) in expected {
-            let dimensions = game_view_dimensions(
-                ViewAspect::Free,
-                available,
-                pixels_per_point,
-                8192,
-            );
+            let dimensions =
+                game_view_dimensions(ViewAspect::Free, available, pixels_per_point, 8192);
             assert_eq!(dimensions.render_size, render_size);
             assert_eq!(dimensions.display_size, available);
             assert_eq!(dimensions.ui_screen_size, available);

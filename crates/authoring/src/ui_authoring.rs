@@ -6,9 +6,7 @@
 //! persisting the live UI document and for their own undo presentation.
 
 use super::UiDocument;
-use crate::access::{
-    AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
-};
+use crate::access::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
 use crate::diagnostic::Diagnostic;
 use crate::ui_edit::{
     UiDocumentChange, UiDocumentCommand, UiDocumentCommitError, UiDocumentEditError,
@@ -224,11 +222,7 @@ impl UiAuthoringService {
         permissions.require(AuthoringPermission::Preview)?;
         ensure_current(session, expected_revision, expected_generation)?;
         let evaluated = evaluate(&session.document, commands)?;
-        Ok(evaluated.mutation(
-            expected_revision,
-            expected_generation,
-            false,
-        ))
+        Ok(evaluated.mutation(expected_revision, expected_generation, false))
     }
 
     /// Applies one atomic UI command batch to the live session.
@@ -477,10 +471,12 @@ mod tests {
         assert!(!result.success);
         assert_eq!(session.document().reference_resolution, [1920.0, 1080.0]);
         assert_eq!(result.revision, base.revision);
-        assert!(result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "ui.invalid_reference_resolution"));
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ui.invalid_reference_resolution")
+        );
     }
 
     #[test]
@@ -530,7 +526,9 @@ mod tests {
         let service = UiAuthoringService::new();
         let permissions = AuthoringPermissions::read_only();
         let mut session = UiAuthoringSession::new(UiDocument::default());
-        let base = service.inspect(&session, &permissions).expect("read is allowed");
+        let base = service
+            .inspect(&session, &permissions)
+            .expect("read is allowed");
 
         let error = service
             .apply(

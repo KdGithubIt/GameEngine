@@ -255,11 +255,7 @@ fn build_character_world(
     procedural_worlds: &[Mat4],
 ) -> CharacterPhysicsWorld {
     let mut world = PhysicsWorld::new();
-    world.gravity = Vector::new(
-        0.0,
-        -STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED,
-        0.0,
-    );
+    world.gravity = Vector::new(0.0, -STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED, 0.0);
     let bone_driven = bone_driven_bodies(rig);
     let mut body_handles = Vec::with_capacity(rig.bodies.len());
     let mut rest_body_poses = Vec::with_capacity(rig.bodies.len());
@@ -658,10 +654,7 @@ fn rigid_body_shape(shape: RigidBodyShape) -> SharedShape {
         RigidBodyShape::Capsule {
             radius,
             half_height,
-        } => SharedShape::capsule_y(
-            half_height.max(f32::EPSILON),
-            radius.max(f32::EPSILON),
-        ),
+        } => SharedShape::capsule_y(half_height.max(f32::EPSILON), radius.max(f32::EPSILON)),
     }
 }
 
@@ -744,7 +737,11 @@ mod tests {
 
         reseat_bodies(&mut state, &[Some(target)]);
 
-        let body = state.world.bodies.get(handle).expect("body must remain alive");
+        let body = state
+            .world
+            .bodies
+            .get(handle)
+            .expect("body must remain alive");
         assert_eq!(body.linvel(), Vector::ZERO);
         assert_eq!(body.angvel(), Vector::ZERO);
         assert_eq!(*body.position(), target);
@@ -775,9 +772,6 @@ mod tests {
     #[test]
     fn invalid_limits_are_treated_as_free() {
         assert_eq!(AuthoredLimit::from_pair(1.0, -1.0), AuthoredLimit::Free);
-        assert_eq!(
-            AuthoredLimit::from_pair(f32::NAN, 1.0),
-            AuthoredLimit::Free
-        );
+        assert_eq!(AuthoredLimit::from_pair(f32::NAN, 1.0), AuthoredLimit::Free);
     }
 }

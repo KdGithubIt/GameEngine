@@ -11,13 +11,13 @@ use crate::agent_host::{
 use crate::live_observation::DEFAULT_LIVE_OBSERVATION_FPS;
 use eframe::egui;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -108,21 +108,13 @@ impl RemoteOperation {
                 session_id,
                 request_id,
                 proposal_version,
-            } => Some((
-                request_id,
-                format!("go:{session_id}:{proposal_version}"),
-            )),
-            Self::Stop { run_id, request_id } => {
-                Some((request_id, format!("stop:{run_id}")))
-            }
+            } => Some((request_id, format!("go:{session_id}:{proposal_version}"))),
+            Self::Stop { run_id, request_id } => Some((request_id, format!("stop:{run_id}"))),
             Self::AwaitingUser {
                 run_id,
                 request_id,
                 text,
-            } => Some((
-                request_id,
-                format!("awaiting_user:{run_id}:{text}"),
-            )),
+            } => Some((request_id, format!("awaiting_user:{run_id}:{text}"))),
             Self::Permission {
                 run_id,
                 request_id,
@@ -150,7 +142,7 @@ impl RemoteOperation {
             | Self::Events { .. }
             | Self::Frame { .. }
             | Self::LiveObservationStatus { .. }
-            | Self::LiveObservationFrame { .. } => None
+            | Self::LiveObservationFrame { .. } => None,
         }
     }
 }
@@ -244,10 +236,22 @@ pub(crate) enum RemoteAiStudioServerError {
 impl fmt::Display for RemoteAiStudioServerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Bind(error) => write!(formatter, "could not bind Remote AI Studio loopback gateway: {error}"),
-            Self::Configure(error) => write!(formatter, "could not configure Remote AI Studio gateway: {error}"),
-            Self::Random(error) => write!(formatter, "could not create Remote AI Studio credential: {error}"),
-            Self::Thread(error) => write!(formatter, "could not start Remote AI Studio listener thread: {error}"),
+            Self::Bind(error) => write!(
+                formatter,
+                "could not bind Remote AI Studio loopback gateway: {error}"
+            ),
+            Self::Configure(error) => write!(
+                formatter,
+                "could not configure Remote AI Studio gateway: {error}"
+            ),
+            Self::Random(error) => write!(
+                formatter,
+                "could not create Remote AI Studio credential: {error}"
+            ),
+            Self::Thread(error) => write!(
+                formatter,
+                "could not start Remote AI Studio listener thread: {error}"
+            ),
         }
     }
 }
@@ -266,8 +270,8 @@ impl RemoteAiStudioServer {
     pub(crate) fn start(
         context: egui::Context,
     ) -> Result<(Self, mpsc::Receiver<RemoteAiStudioRequest>), RemoteAiStudioServerError> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(RemoteAiStudioServerError::Bind)?;
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(RemoteAiStudioServerError::Bind)?;
         listener
             .set_nonblocking(true)
             .map_err(RemoteAiStudioServerError::Configure)?;
@@ -330,8 +334,7 @@ fn new_access_token() -> Result<String, RemoteAiStudioServerError> {
     let mut token = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;
-        write!(&mut token, "{byte:02x}")
-            .expect("writing hexadecimal text into String cannot fail");
+        write!(&mut token, "{byte:02x}").expect("writing hexadecimal text into String cannot fail");
     }
     Ok(token)
 }
@@ -399,13 +402,8 @@ fn serve_loop(
                 if shutdown.load(Ordering::Acquire) {
                     break;
                 }
-                let _ = handle_connection(
-                    stream,
-                    &access_token,
-                    &request_sender,
-                    &context,
-                    &mut cache,
-                );
+                let _ =
+                    handle_connection(stream, &access_token, &request_sender, &context, &mut cache);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
@@ -429,12 +427,21 @@ fn handle_connection(
         Err(status) => {
             return write_response(
                 &mut stream,
-                RemoteAiStudioResponse::error(status, "invalid_request", "Invalid HTTP request.", false),
+                RemoteAiStudioResponse::error(
+                    status,
+                    "invalid_request",
+                    "Invalid HTTP request.",
+                    false,
+                ),
             );
         }
     };
 
-    let path = request.path.split('?').next().unwrap_or(request.path.as_str());
+    let path = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or(request.path.as_str());
     if request.method == "GET" && path == "/" {
         return write_response(
             &mut stream,
@@ -455,7 +462,12 @@ fn handle_connection(
     if request.headers.get("authorization") != Some(&expected) {
         return write_response(
             &mut stream,
-            RemoteAiStudioResponse::error(401, "unauthorized", "Remote authentication is required.", false),
+            RemoteAiStudioResponse::error(
+                401,
+                "unauthorized",
+                "Remote authentication is required.",
+                false,
+            ),
         );
     }
     let operation = match route_request(&request) {
@@ -548,7 +560,11 @@ fn default_live_observation_fps() -> u8 {
 }
 
 fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudioResponse> {
-    let path = request.path.split('?').next().unwrap_or(request.path.as_str());
+    let path = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or(request.path.as_str());
     let parts = path
         .trim_matches('/')
         .split('/')
@@ -624,12 +640,10 @@ fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudi
             run_id: (*run_id).to_owned(),
             after: query_u64(&request.path, "after").unwrap_or(0),
         }),
-        ("GET", ["api", "runs", run_id, "frames", artifact_id]) => {
-            Ok(RemoteOperation::Frame {
-                run_id: (*run_id).to_owned(),
-                artifact_id: (*artifact_id).to_owned(),
-            })
-        }
+        ("GET", ["api", "runs", run_id, "frames", artifact_id]) => Ok(RemoteOperation::Frame {
+            run_id: (*run_id).to_owned(),
+            artifact_id: (*artifact_id).to_owned(),
+        }),
         ("POST", ["api", "runs", run_id, "live"]) => {
             let body: StartLiveObservationBody = parse_json_body(request)?;
             validate_request_id(&body.request_id)?;
@@ -639,16 +653,14 @@ fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudi
                 max_fps: body.max_fps,
             })
         }
-        ("GET", ["api", "live", media_session_id]) => {
-            Ok(RemoteOperation::LiveObservationStatus {
-                media_session_id: (*media_session_id).to_owned(),
-                media_token: request
-                    .headers
-                    .get("x-gameengine-media-token")
-                    .cloned()
-                    .unwrap_or_default(),
-            })
-        }
+        ("GET", ["api", "live", media_session_id]) => Ok(RemoteOperation::LiveObservationStatus {
+            media_session_id: (*media_session_id).to_owned(),
+            media_token: request
+                .headers
+                .get("x-gameengine-media-token")
+                .cloned()
+                .unwrap_or_default(),
+        }),
         ("GET", ["api", "live", media_session_id, "frames", sequence]) => {
             let sequence = sequence.parse::<u64>().map_err(|_| {
                 RemoteAiStudioResponse::error(
@@ -851,8 +863,14 @@ pub(crate) fn snapshot_json(
     session_id: &str,
     pending_permission: Option<(&str, AgentCapability)>,
 ) -> Result<Value, String> {
-    let session = host.session(session_id).map_err(|error| error.to_string())?;
-    let active_run = session.runs.iter().rev().find(|run| !is_terminal(run.state));
+    let session = host
+        .session(session_id)
+        .map_err(|error| error.to_string())?;
+    let active_run = session
+        .runs
+        .iter()
+        .rev()
+        .find(|run| !is_terminal(run.state));
     Ok(json!({
         "project_id": project_id,
         "session": session_json(session),
@@ -930,17 +948,26 @@ fn session_json(session: &AgentSession) -> Value {
 }
 
 fn run_json(run: &AgentRun) -> Value {
-    let frames = run.events.iter().filter_map(|event| {
-        let AgentEventEvidence::CapturedFrame { artifact_id, width, height } = event.evidence.as_ref()? else {
-            return None;
-        };
-        Some(json!({
-            "artifact_id": artifact_id,
-            "width": width,
-            "height": height,
-            "step": event.sequence,
-        }))
-    }).collect::<Vec<_>>();
+    let frames = run
+        .events
+        .iter()
+        .filter_map(|event| {
+            let AgentEventEvidence::CapturedFrame {
+                artifact_id,
+                width,
+                height,
+            } = event.evidence.as_ref()?
+            else {
+                return None;
+            };
+            Some(json!({
+                "artifact_id": artifact_id,
+                "width": width,
+                "height": height,
+                "step": event.sequence,
+            }))
+        })
+        .collect::<Vec<_>>();
     json!({
         "id": run.id,
         "proposal_version": run.proposal_snapshot.version,
@@ -1049,18 +1076,29 @@ fn safe_evidence(event: &AgentEvent) -> Value {
             "step": sanitize_text(step),
             "detail": sanitize_text(detail),
         }),
-        Some(AgentEventEvidence::ToolAction { tool, action, success }) => json!({
+        Some(AgentEventEvidence::ToolAction {
+            tool,
+            action,
+            success,
+        }) => json!({
             "evidence": "tool_action",
             "tool": sanitize_text(tool),
             "action": sanitize_text(action),
             "success": success,
         }),
-        Some(AgentEventEvidence::Playtest { launched, interactions_passed }) => json!({
+        Some(AgentEventEvidence::Playtest {
+            launched,
+            interactions_passed,
+        }) => json!({
             "evidence": "playtest",
             "launched": launched,
             "interactions_passed": interactions_passed,
         }),
-        Some(AgentEventEvidence::CapturedFrame { artifact_id, width, height }) => json!({
+        Some(AgentEventEvidence::CapturedFrame {
+            artifact_id,
+            width,
+            height,
+        }) => json!({
             "evidence": "captured_frame",
             "artifact_id": artifact_id,
             "width": width,
@@ -1102,12 +1140,11 @@ fn sanitize_text(text: &str) -> String {
                 || token.starts_with("/Users/")
                 || token.starts_with("\\\\")
                 || token.as_bytes().get(1) == Some(&b':')
-                    && token.as_bytes().get(2).is_some_and(|byte| matches!(byte, b'\\' | b'/'));
-            if path_like {
-                "[private-path]"
-            } else {
-                token
-            }
+                    && token
+                        .as_bytes()
+                        .get(2)
+                        .is_some_and(|byte| matches!(byte, b'\\' | b'/'));
+            if path_like { "[private-path]" } else { token }
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -1229,7 +1266,9 @@ mod tests {
             let _ = cache.execute(&operation, || {
                 match host.start_run_authorized(&session, version, "test") {
                     Ok(run_id) => RemoteAiStudioResponse::json(json!({"run_id": run_id})),
-                    Err(error) => RemoteAiStudioResponse::error(409, "go_failed", error.to_string(), false),
+                    Err(error) => {
+                        RemoteAiStudioResponse::error(409, "go_failed", error.to_string(), false)
+                    }
                 }
             });
         }
@@ -1288,7 +1327,9 @@ mod tests {
         let (mut host, project, storage) = test_host("reconnect");
         let session = host.create_session("Remote").expect("session");
         let version = host.session(&session).expect("session").proposal.version;
-        let run = host.start_run_authorized(&session, version, "test").expect("run");
+        let run = host
+            .start_run_authorized(&session, version, "test")
+            .expect("run");
         host.transition_run(&run, AgentRunState::AwaitingUser, "Need input")
             .expect("awaiting");
         drop(host);
@@ -1305,10 +1346,16 @@ mod tests {
         let (mut host, project, storage) = test_host("events");
         let session = host.create_session("Remote").expect("session");
         let version = host.session(&session).expect("session").proposal.version;
-        let run = host.start_run_authorized(&session, version, "test").expect("run");
+        let run = host
+            .start_run_authorized(&session, version, "test")
+            .expect("run");
         for index in 0..520 {
-            host.record_event(&run, AgentEventKind::SemanticProgress, format!("event {index}"))
-                .expect("event");
+            host.record_event(
+                &run,
+                AgentEventKind::SemanticProgress,
+                format!("event {index}"),
+            )
+            .expect("event");
         }
         let batch = events_json(&host, &run, 515).expect("batch");
         let sequences = batch["events"]
@@ -1330,7 +1377,9 @@ mod tests {
         let (mut host, project, storage) = test_host("disconnect");
         let session = host.create_session("Remote").expect("session");
         let version = host.session(&session).expect("session").proposal.version;
-        let run = host.start_run_authorized(&session, version, "test").expect("run");
+        let run = host
+            .start_run_authorized(&session, version, "test")
+            .expect("run");
         drop(MutationCache::default());
         assert!(!is_terminal(host.run(&run).expect("run").state));
         let _ = fs::remove_dir_all(project);
@@ -1342,7 +1391,9 @@ mod tests {
         let (mut host, project, storage) = test_host("sanitize");
         let session = host.create_session("Remote").expect("session");
         let version = host.session(&session).expect("session").proposal.version;
-        let run = host.start_run_authorized(&session, version, "test").expect("run");
+        let run = host
+            .start_run_authorized(&session, version, "test")
+            .expect("run");
         host.record_event(
             &run,
             AgentEventKind::ProviderOutput,
@@ -1420,7 +1471,10 @@ mod tests {
                 headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
                 body: b"{}".to_vec(),
             };
-            assert!(route_request(&request).is_err(), "{path} must not be routed");
+            assert!(
+                route_request(&request).is_err(),
+                "{path} must not be routed"
+            );
         }
     }
 
@@ -1428,17 +1482,31 @@ mod tests {
     fn captured_frame_is_scoped_to_project_session_and_run() {
         let (mut host, project, storage) = test_host("frame");
         let first_session = host.create_session("First").expect("session");
-        let version = host.session(&first_session).expect("session").proposal.version;
-        let first_run = host.start_run_authorized(&first_session, version, "test").expect("run");
-        host.transition_run(&first_run, AgentRunState::Executing, "execute").expect("execute");
-        host.transition_run(&first_run, AgentRunState::Validating, "validate").expect("validate");
-        host.transition_run(&first_run, AgentRunState::Playtesting, "playtest").expect("playtest");
-        let (artifact, _) = host.store_captured_frame_artifact(&first_run, 1, 1, b"png-one").expect("frame");
+        let version = host
+            .session(&first_session)
+            .expect("session")
+            .proposal
+            .version;
+        let first_run = host
+            .start_run_authorized(&first_session, version, "test")
+            .expect("run");
+        host.transition_run(&first_run, AgentRunState::Executing, "execute")
+            .expect("execute");
+        host.transition_run(&first_run, AgentRunState::Validating, "validate")
+            .expect("validate");
+        host.transition_run(&first_run, AgentRunState::Playtesting, "playtest")
+            .expect("playtest");
+        let (artifact, _) = host
+            .store_captured_frame_artifact(&first_run, 1, 1, b"png-one")
+            .expect("frame");
         let snapshot = snapshot_json(&host, "project-a", &first_session, None).expect("snapshot");
         assert_eq!(snapshot["project_id"], "project-a");
         assert_eq!(snapshot["session"]["id"], first_session);
         assert_eq!(snapshot["active_run"]["id"], first_run);
-        assert_eq!(frame_bytes(&host, &first_run, &artifact).expect("bytes"), b"png-one");
+        assert_eq!(
+            frame_bytes(&host, &first_run, &artifact).expect("bytes"),
+            b"png-one"
+        );
         assert!(frame_bytes(&host, "run_wrong", &artifact).is_err());
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
@@ -1460,10 +1528,7 @@ mod tests {
         let frame = HttpRequest {
             method: "GET".into(),
             path: "/api/live/media_1/frames/7".into(),
-            headers: BTreeMap::from([(
-                "x-gameengine-media-token".into(),
-                "media-secret".into(),
-            )]),
+            headers: BTreeMap::from([("x-gameengine-media-token".into(), "media-secret".into())]),
             body: Vec::new(),
         };
         assert!(matches!(
@@ -1483,21 +1548,16 @@ mod tests {
         assert!(COMPANION_HTML.contains(
             ".shell{width:100%;max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;grid-template-columns:minmax(0,1fr);gap:14px}"
         ));
-        assert!(COMPANION_HTML.contains(
-            "min-width:0;overflow-wrap:anywhere"
-        ));
-        assert!(COMPANION_HTML.contains(
-            "padding:9px;max-width:100%;min-width:0"
-        ));
-        assert!(COMPANION_HTML.contains(
-            "#sessions{width:100%;flex:1 1 100%}"
-        ));
+        assert!(COMPANION_HTML.contains("min-width:0;overflow-wrap:anywhere"));
+        assert!(COMPANION_HTML.contains("padding:9px;max-width:100%;min-width:0"));
+        assert!(COMPANION_HTML.contains("#sessions{width:100%;flex:1 1 100%}"));
         assert!(!COMPANION_HTML.contains("overflow-x:hidden"));
     }
 
     #[test]
     fn gateway_binds_only_to_loopback() {
-        let (server, _requests) = RemoteAiStudioServer::start(egui::Context::default()).expect("server");
+        let (server, _requests) =
+            RemoteAiStudioServer::start(egui::Context::default()).expect("server");
         assert!(server.local_addr.ip().is_loopback());
     }
 }

@@ -52,8 +52,8 @@ use crate::document::CurrentDocument;
 use engine_authoring::{
     AnimationGraphDomain, AuthoringCommand, AuthoringEntity, AuthoringScene, AuthoringSession,
     BehaviorTreeAuthoringService, BehaviorTreeServiceError, Diagnostic, EdgeId, EntityId, Graph,
-    GraphDomain, GraphId, GraphSchemaRegistry, GraphView, NodeId,
-    TransactionError, UiAuthoringSession, UiDocument, Vec2,
+    GraphDomain, GraphId, GraphSchemaRegistry, GraphView, NodeId, TransactionError,
+    UiAuthoringSession, UiDocument, Vec2,
 };
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -367,7 +367,10 @@ impl EditorSession {
         matches!(self.domain, EditorGraphDomain::Animation(_))
     }
 
-    pub(super) fn apply_scene_command(&mut self, command: AuthoringCommand) -> Result<(), EditorSessionError> {
+    pub(super) fn apply_scene_command(
+        &mut self,
+        command: AuthoringCommand,
+    ) -> Result<(), EditorSessionError> {
         self.apply_scene_commands(std::iter::once(command))
     }
 

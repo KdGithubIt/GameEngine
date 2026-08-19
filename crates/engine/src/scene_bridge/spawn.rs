@@ -578,12 +578,13 @@ fn lookup_skin_binding(
     mesh_asset: &AssetId,
     context: &mut SpawnContext<'_>,
 ) -> Option<SkinBinding> {
-    let source = context
-        .manifest
-        .imported_sub_asset(mesh_asset)
-        .and_then(|(source, _, sub_asset)| {
-            (sub_asset.kind == ImportedSubAssetKind::Mesh).then(|| source.clone())
-        })?;
+    let source =
+        context
+            .manifest
+            .imported_sub_asset(mesh_asset)
+            .and_then(|(source, _, sub_asset)| {
+                (sub_asset.kind == ImportedSubAssetKind::Mesh).then(|| source.clone())
+            })?;
     let imported = import_source_cached(&source, context).ok()?;
     let skin_index = imported
         .meshes
@@ -920,13 +921,15 @@ pub(crate) fn spawn_animation_controller_component(
     let graph_path = manifest_asset_path(&graph_asset, context)?;
     let (source_graph, compiled_graph) =
         if let Some(snapshot) = context.asset_state.authoring_overlay.get(&graph_path) {
-            let json = snapshot.contents().map_err(|message| SceneBridgeError::AssetLoad {
-                asset: graph_asset.clone(),
-                source: AssetLoadError::InvalidAsset {
-                    path: graph_path.clone(),
-                    message: message.to_owned(),
-                },
-            })?;
+            let json = snapshot
+                .contents()
+                .map_err(|message| SceneBridgeError::AssetLoad {
+                    asset: graph_asset.clone(),
+                    source: AssetLoadError::InvalidAsset {
+                        path: graph_path.clone(),
+                        message: message.to_owned(),
+                    },
+                })?;
             load_animation_graph_document_json(json)
         } else {
             load_animation_graph_document(&graph_path)
@@ -947,10 +950,14 @@ pub(crate) fn spawn_animation_controller_component(
                 if claimed_transition_edges.contains(edge_id) {
                     return None;
                 }
-                let condition = edge.annotations.get("condition").and_then(|value| match value {
-                    Value::String(value) => Some(value.as_str()),
-                    _ => None,
-                }).unwrap_or("");
+                let condition = edge
+                    .annotations
+                    .get("condition")
+                    .and_then(|value| match value {
+                        Value::String(value) => Some(value.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("");
                 (edge.from.node == transition.from_node
                     && edge.to.node == transition.to_node
                     && condition == transition.condition)
@@ -961,12 +968,7 @@ pub(crate) fn spawn_animation_controller_component(
             })
         })
         .collect::<Vec<_>>();
-    let resolved_set = resolve_animation_set(
-        &animation_set_asset,
-        &graph_asset,
-        entity,
-        context,
-    )?;
+    let resolved_set = resolve_animation_set(&animation_set_asset, &graph_asset, entity, context)?;
     let ResolvedAnimationSet {
         clips: resolved_clips,
         events: animation_set_events,
@@ -1257,7 +1259,11 @@ pub(crate) fn spawn_vfx_player_component(
     let seed_override = match fields.get("seed_override") {
         None | Some(Value::I64(-1)) => None,
         Some(Value::I64(seed)) if (0..=i64::from(u32::MAX)).contains(seed) => Some(*seed as u32),
-        _ => return Err(fields.invalid("seed_override equal to -1 or a u32 value").into()),
+        _ => {
+            return Err(fields
+                .invalid("seed_override equal to -1 or a u32 value")
+                .into());
+        }
     };
     let parameter_overrides = match fields.get("parameter_overrides") {
         None => BTreeMap::new(),
@@ -1277,7 +1283,11 @@ pub(crate) fn spawn_vfx_player_component(
             }
             overrides
         }
-        _ => return Err(fields.invalid("a string-to-number parameter override object").into()),
+        _ => {
+            return Err(fields
+                .invalid("a string-to-number parameter override object")
+                .into());
+        }
     };
 
     let built_in_quad = AssetId::from_stable_id(StableId::new(BUILTIN_QUAD_ASSET_ID))
@@ -1337,8 +1347,7 @@ pub(crate) fn spawn_audio_emitter_component(
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
     let component_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
-    let expected =
-        "an object with clip, volume, spatial blend, distance, rolloff, looping, and autoplay fields";
+    let expected = "an object with clip, volume, spatial blend, distance, rolloff, looping, and autoplay fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
     if !context
         .authoring_entity
@@ -1594,13 +1603,16 @@ fn resolve_animation_set(
         })?
     };
     let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
-        snapshot.contents().map(str::to_owned).map_err(|message| SceneBridgeError::AssetLoad {
-            asset: animation_set_asset.clone(),
-            source: AssetLoadError::InvalidAsset {
-                path: path.clone(),
-                message: message.to_owned(),
-            },
-        })?
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| SceneBridgeError::AssetLoad {
+                asset: animation_set_asset.clone(),
+                source: AssetLoadError::InvalidAsset {
+                    path: path.clone(),
+                    message: message.to_owned(),
+                },
+            })?
     } else {
         std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
             asset: animation_set_asset.clone(),
@@ -1688,18 +1700,19 @@ fn resolve_animation_set(
                     })
                     .collect::<Result<Vec<_>, _>>()?
             };
-            let composite = compose_animation_clips(&layer_clips[0], &layer_clips[1..]).map_err(
-                |source| SceneBridgeError::AssetLoad {
-                    asset: animation_set_asset.clone(),
-                    source: AssetLoadError::InvalidAsset {
-                        path: path.clone(),
-                        message: format!(
-                            "animation-set binding `{}` could not compose its layers: {source}",
-                            binding.name
-                        ),
-                    },
-                },
-            )?;
+            let composite =
+                compose_animation_clips(&layer_clips[0], &layer_clips[1..]).map_err(|source| {
+                    SceneBridgeError::AssetLoad {
+                        asset: animation_set_asset.clone(),
+                        source: AssetLoadError::InvalidAsset {
+                            path: path.clone(),
+                            message: format!(
+                                "animation-set binding `{}` could not compose its layers: {source}",
+                                binding.name
+                            ),
+                        },
+                    }
+                })?;
             let mut fingerprint = String::from("animation-composite-v1");
             for layer_handle in &layer_handles {
                 let (source_id, sub_asset_id) = context
@@ -1887,13 +1900,11 @@ fn resolve_animation_binding_clip(
             "model-bound Animation Set candidates must reference imported Animation sub-assets",
         )
     })?;
-    let native_handle = resolved
-        .clips
-        .get(&selected_name)
-        .copied()
-        .ok_or_else(|| SceneBridgeError::UnknownAsset {
+    let native_handle = resolved.clips.get(&selected_name).copied().ok_or_else(|| {
+        SceneBridgeError::UnknownAsset {
             asset: source.asset.clone(),
-        })?;
+        }
+    })?;
     let native_clip = context
         .world
         .get_resource::<Assets<AnimationClip>>()
@@ -1916,15 +1927,11 @@ fn resolve_animation_binding_clip(
     let retarget_map = maps
         .iter()
         .find(|(_, map)| {
-            map.source_skeleton == source_skeleton_id
-                && map.target_skeleton == target_skeleton.id
+            map.source_skeleton == source_skeleton_id && map.target_skeleton == target_skeleton.id
         })
         .map(|(id, _)| id.clone());
     let humanoid_fallback = has_humanoid_fallback.then(|| {
-        crate::asset::imported_logical_humanoid_motion_sub_asset_id(
-            &owner_source,
-            source_index,
-        )
+        crate::asset::imported_logical_humanoid_motion_sub_asset_id(&owner_source, source_index)
     });
     let route = crate::motion_binding::plan_animation_motion(
         &crate::motion_binding::AnimationMotionPlanInput {
@@ -2120,7 +2127,9 @@ fn resolve_humanoid_animation_binding_clip(
                     animation_set_asset,
                     motion_asset,
                     context,
-                    format!("Humanoid source provenance contains an invalid model AssetId: {error}"),
+                    format!(
+                        "Humanoid source provenance contains an invalid model AssetId: {error}"
+                    ),
                 )
             })?;
         (source_id.clone(), source_fingerprint, provenance_model)
@@ -2201,7 +2210,9 @@ fn resolve_humanoid_animation_binding_clip(
         .manifest
         .iter()
         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
-        .find(|profile| crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok())
+        .find(|profile| {
+            crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok()
+        })
         .cloned()
         .ok_or_else(|| {
             animation_binding_error(
@@ -2223,11 +2234,7 @@ fn resolve_humanoid_animation_binding_clip(
             &target_profile,
         )
     } else {
-        crate::humanoid_motion::bake_humanoid_motion(
-            &portable,
-            target_skeleton,
-            &target_profile,
-        )
+        crate::humanoid_motion::bake_humanoid_motion(&portable, target_skeleton, &target_profile)
     }
     .map_err(|error| {
         animation_binding_error(
@@ -2304,10 +2311,8 @@ fn load_source_animations(
     path: &Path,
     context: &mut SpawnContext<'_>,
 ) -> Result<Vec<SourceAnimation>, SceneBridgeError> {
-    if crate::components::asset_path_matches_kind(
-        crate::components::AssetKind::MotionSource,
-        path,
-    ) {
+    if crate::components::asset_path_matches_kind(crate::components::AssetKind::MotionSource, path)
+    {
         return load_motion_source_animations(source_id, path, context);
     }
     let existing_skeletons = context
@@ -2407,14 +2412,9 @@ fn load_motion_source_animations(
     if let Some(original_model_source) = original_model_source {
         let (_original_path, original_rig) =
             load_vmd_model_rig(source_id, &original_model_source, context)?;
-        let mut original_bake = resolve_or_bake_vmd_for_scene(
-            source_id,
-            path,
-            &original_rig,
-            &options,
-            context,
-        )
-        .map_err(|error| invalid(path, error.to_string()))?;
+        let mut original_bake =
+            resolve_or_bake_vmd_for_scene(source_id, path, &original_rig, &options, context)
+                .map_err(|error| invalid(path, error.to_string()))?;
         for diagnostic in std::mem::take(&mut original_bake.diagnostics) {
             context
                 .asset_diagnostics
@@ -2433,7 +2433,9 @@ fn load_motion_source_animations(
             .map_err(|error| {
                 invalid(
                     path,
-                    format!("output model source `{model_source}` is not a valid asset ID: {error}"),
+                    format!(
+                        "output model source `{model_source}` is not a valid asset ID: {error}"
+                    ),
                 )
             })?;
             let mut baked = original_bake.clone();
@@ -2526,9 +2528,8 @@ fn load_motion_source_animations(
         let rig =
             crate::vmd_import::VmdBakeRig::from_model_import(&model_path, &model_bytes, &imported)
                 .map_err(|error| invalid(&model_path, error.to_string()))?;
-        let mut baked =
-            resolve_or_bake_vmd_for_scene(source_id, path, &rig, &options, context)
-                .map_err(|error| invalid(path, error.to_string()))?;
+        let mut baked = resolve_or_bake_vmd_for_scene(source_id, path, &rig, &options, context)
+            .map_err(|error| invalid(path, error.to_string()))?;
         baked.bind_model_source(source_id, &model_source_id);
         for diagnostic in baked.diagnostics {
             context
@@ -2555,9 +2556,9 @@ fn resolve_or_bake_vmd_for_scene(
     context: &SpawnContext<'_>,
 ) -> Result<crate::vmd_import::VmdImportResult, crate::vmd_import::VmdImportError> {
     match &context.asset_state.derived_cache {
-        Some(cache) => crate::vmd_import::resolve_or_bake_vmd_path(
-            cache, source_id, path, rig, options,
-        ),
+        Some(cache) => {
+            crate::vmd_import::resolve_or_bake_vmd_path(cache, source_id, path, rig, options)
+        }
         None => crate::vmd_import::import_vmd_path(source_id, path, rig, options),
     }
 }
@@ -2596,12 +2597,9 @@ fn load_vmd_model_rig(
     .map_err(|source| invalid(&model_path, source.to_string()))?;
     let model_bytes =
         std::fs::read(&model_path).map_err(|error| invalid(&model_path, error.to_string()))?;
-    let rig = crate::vmd_import::VmdBakeRig::from_model_import(
-        &model_path,
-        &model_bytes,
-        &imported,
-    )
-    .map_err(|error| invalid(&model_path, error.to_string()))?;
+    let rig =
+        crate::vmd_import::VmdBakeRig::from_model_import(&model_path, &model_bytes, &imported)
+            .map_err(|error| invalid(&model_path, error.to_string()))?;
     Ok((model_path, rig))
 }
 
@@ -2638,7 +2636,10 @@ fn resolve_animation_clip_source(
     if let Some(clips) = context.asset_state.animation_clip_handles.get(&source_id) {
         let selected_clip = selected_asset.as_ref().and_then(|selected| {
             selected_clip_name(
-                context.asset_state.animation_clip_selectors.get(&source_id)?,
+                context
+                    .asset_state
+                    .animation_clip_selectors
+                    .get(&source_id)?,
                 selected,
             )
         });
@@ -2793,11 +2794,14 @@ pub(crate) fn spawn_camera_2d_component(
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
     let component_type = ComponentTypeId::new(CAMERA_2D_COMPONENT);
-    const EXPECTED: &str = "a Camera2D object with valid orthographic projection and reference-resolution fields";
+    const EXPECTED: &str =
+        "a Camera2D object with valid orthographic projection and reference-resolution fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let priority = i32::try_from(fields.i64("priority")?).map_err(|_| fields.invalid(EXPECTED))?;
-    let width = u32::try_from(fields.i64("reference_width")?).map_err(|_| fields.invalid(EXPECTED))?;
-    let height = u32::try_from(fields.i64("reference_height")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let width =
+        u32::try_from(fields.i64("reference_width")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let height =
+        u32::try_from(fields.i64("reference_height")?).map_err(|_| fields.invalid(EXPECTED))?;
     let fit = match fields.string("fit")? {
         "fit" => ViewportFit2d::Fit,
         "fill" => ViewportFit2d::Fill,
@@ -2890,7 +2894,10 @@ fn resolve_native_2d_texture_inner(
         return Err(native_2d_asset_error(
             owner_id,
             Path::new(texture_id.as_str()),
-            format!("Native 2D source texture remap cycle at `{}`", texture_id.as_str()),
+            format!(
+                "Native 2D source texture remap cycle at `{}`",
+                texture_id.as_str()
+            ),
         ));
     }
 
@@ -2908,14 +2915,19 @@ fn resolve_native_2d_texture_inner(
                 ),
             ));
         }
-        if let Some(remapped) = source_entry.import_settings.texture_remaps.get(&sub_asset.id) {
-            let remapped_id = AssetId::from_stable_id(StableId::new(remapped)).map_err(|error| {
-                native_2d_asset_error(
-                    owner_id,
-                    Path::new(&source_entry.path),
-                    format!("invalid Native 2D texture remap `{remapped}`: {error}"),
-                )
-            })?;
+        if let Some(remapped) = source_entry
+            .import_settings
+            .texture_remaps
+            .get(&sub_asset.id)
+        {
+            let remapped_id =
+                AssetId::from_stable_id(StableId::new(remapped)).map_err(|error| {
+                    native_2d_asset_error(
+                        owner_id,
+                        Path::new(&source_entry.path),
+                        format!("invalid Native 2D texture remap `{remapped}`: {error}"),
+                    )
+                })?;
             return resolve_native_2d_texture_inner(owner_id, &remapped_id, context, visited);
         }
         let source_path = context
@@ -2940,7 +2952,10 @@ fn resolve_native_2d_texture_inner(
             native_2d_asset_error(
                 owner_id,
                 &source_path,
-                format!("imported Native 2D texture `{}` is missing", texture_id.as_str()),
+                format!(
+                    "imported Native 2D texture `{}` is missing",
+                    texture_id.as_str()
+                ),
             )
         })?
     } else {
@@ -2988,14 +3003,20 @@ fn resolve_sprite_region_2d(
         return Err(native_2d_asset_error(
             &sprite.atlas,
             &path,
-            format!("SpriteId `{}` pixel rect overflows u32", sprite.sprite.as_str()),
+            format!(
+                "SpriteId `{}` pixel rect overflows u32",
+                sprite.sprite.as_str()
+            ),
         ));
     };
     let Some(bottom) = region.rect.y.checked_add(region.rect.height) else {
         return Err(native_2d_asset_error(
             &sprite.atlas,
             &path,
-            format!("SpriteId `{}` pixel rect overflows u32", sprite.sprite.as_str()),
+            format!(
+                "SpriteId `{}` pixel rect overflows u32",
+                sprite.sprite.as_str()
+            ),
         ));
     };
     if right > texture.width || bottom > texture.height {
@@ -3013,7 +3034,12 @@ fn resolve_sprite_region_2d(
     Ok(ResolvedSpriteRegion2d {
         source_texture: region.source_texture,
         texture,
-        rect: [region.rect.x, region.rect.y, region.rect.width, region.rect.height],
+        rect: [
+            region.rect.x,
+            region.rect.y,
+            region.rect.width,
+            region.rect.height,
+        ],
         pivot: region.pivot,
         pixels_per_unit: region.pixels_per_unit,
         filtering: region.filtering,
@@ -3131,7 +3157,9 @@ pub(crate) fn spawn_tile_map_2d_component(
         for chunk in &layer.chunks {
             let mut cells = Vec::with_capacity(chunk.cells.len());
             for entry in &chunk.cells {
-                let tile = tile_set.tile(&entry.tile).expect("used TileId was validated above");
+                let tile = tile_set
+                    .tile(&entry.tile)
+                    .expect("used TileId was validated above");
                 let region = sprites
                     .get(&entry.tile)
                     .expect("used TileId has a resolved sprite region")
@@ -3195,16 +3223,21 @@ pub(crate) fn spawn_sprite_renderer_2d_component(
     const EXPECTED: &str = "a SpriteRenderer2D object with stable atlas/SpriteId, tint, sorting, blend, and visibility fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let Some(atlas) = fields.assignable_asset_ref("atlas")?.cloned() else {
-        context.asset_diagnostics.push(component_inactive_diagnostic(
-            context.authoring_entity,
-            &component_type,
-            "atlas",
-        ));
+        context
+            .asset_diagnostics
+            .push(component_inactive_diagnostic(
+                context.authoring_entity,
+                &component_type,
+                "atlas",
+            ));
         return Ok(());
     };
-    let sprite = SpriteId::parse(fields.string("sprite_id")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
-    let sorting_layer = SortingLayerId::parse(fields.string("sorting_layer")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
-    let order_in_layer = i32::try_from(fields.i64("order_in_layer")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let sprite = SpriteId::parse(fields.string("sprite_id")?.to_owned())
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let sorting_layer = SortingLayerId::parse(fields.string("sorting_layer")?.to_owned())
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let order_in_layer =
+        i32::try_from(fields.i64("order_in_layer")?).map_err(|_| fields.invalid(EXPECTED))?;
     let tint = [
         fields.f32("tint_r")?,
         fields.f32("tint_g")?,
@@ -3252,32 +3285,50 @@ fn resolve_sprite_animation_document(
         return Ok(Arc::clone(document));
     }
     let path = manifest_asset_path(asset, context)?;
-    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAnimation, &path) {
+    if !crate::components::asset_path_matches_kind(
+        crate::components::AssetKind::SpriteAnimation,
+        &path,
+    ) {
         return Err(SceneBridgeError::AssetLoad {
             asset: asset.clone(),
             source: AssetLoadError::InvalidAsset {
                 path,
-                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset".to_owned(),
+                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset"
+                    .to_owned(),
             },
         });
     }
     let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
         asset: asset.clone(),
-        source: AssetLoadError::Io { path: path.clone(), source },
+        source: AssetLoadError::Io {
+            path: path.clone(),
+            source,
+        },
     })?;
-    let document = SpriteAnimationDocument::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
-        asset: asset.clone(),
-        source: AssetLoadError::InvalidAsset { path: path.clone(), message: source.to_string() },
+    let document = SpriteAnimationDocument::from_json(&json).map_err(|source| {
+        SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path: path.clone(),
+                message: source.to_string(),
+            },
+        }
     })?;
     let validation = document.validate();
     if !validation.is_empty() {
         return Err(SceneBridgeError::AssetLoad {
             asset: asset.clone(),
-            source: AssetLoadError::InvalidAsset { path, message: validation.join("; ") },
+            source: AssetLoadError::InvalidAsset {
+                path,
+                message: validation.join("; "),
+            },
         });
     }
     let document = Arc::new(document);
-    context.asset_state.sprite_animation_documents.insert(asset.clone(), Arc::clone(&document));
+    context
+        .asset_state
+        .sprite_animation_documents
+        .insert(asset.clone(), Arc::clone(&document));
     Ok(document)
 }
 
@@ -3287,14 +3338,17 @@ pub(crate) fn spawn_sprite_animator_2d_component(
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
     let component_type = ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT);
-    const EXPECTED: &str = "a SpriteAnimator2D object with clip, autoplay, speed, looping override, and initial frame";
+    const EXPECTED: &str =
+        "a SpriteAnimator2D object with clip, autoplay, speed, looping override, and initial frame";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let Some(clip_asset) = fields.assignable_asset_ref("clip")?.cloned() else {
-        context.asset_diagnostics.push(component_inactive_diagnostic(
-            context.authoring_entity,
-            &component_type,
-            "clip",
-        ));
+        context
+            .asset_diagnostics
+            .push(component_inactive_diagnostic(
+                context.authoring_entity,
+                &component_type,
+                "clip",
+            ));
         return Ok(());
     };
     let speed = fields.f32("speed")?;
@@ -3303,7 +3357,8 @@ pub(crate) fn spawn_sprite_animator_2d_component(
         Some(Value::Bool(value)) => Some(*value),
         _ => return Err(fields.invalid(EXPECTED).into()),
     };
-    let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let initial_frame =
+        usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
     let clip = resolve_sprite_animation_document(&clip_asset, context)?;
     if context
         .world
@@ -3370,7 +3425,8 @@ pub(crate) fn spawn_point_light_component(
     value: &Value,
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
-    const EXPECTED: &str = "an object with unit-range color, non-negative intensity, and positive range";
+    const EXPECTED: &str =
+        "an object with unit-range color, non-negative intensity, and positive range";
     let component_type = ComponentTypeId::new(POINT_LIGHT_COMPONENT);
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let color = fields.color()?;
@@ -3401,8 +3457,7 @@ pub(crate) fn spawn_spot_light_component(
     value: &Value,
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
-    const EXPECTED: &str =
-        "an object with unit-range color, non-negative intensity, positive range, and 0 <= inner_angle_degrees < outer_angle_degrees < 90";
+    const EXPECTED: &str = "an object with unit-range color, non-negative intensity, positive range, and 0 <= inner_angle_degrees < outer_angle_degrees < 90";
     let component_type = ComponentTypeId::new(SPOT_LIGHT_COMPONENT);
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let color = fields.color()?;
@@ -3607,7 +3662,7 @@ pub(crate) fn spawn_player_controller_component(
         _ => {
             return Err(fields
                 .invalid("an object with numeric move_speed and string move_plane fields")
-                .into())
+                .into());
         }
     };
     let defaults = PlayerController::default();
@@ -3648,7 +3703,7 @@ pub(crate) fn spawn_nav_mesh_agent_component(
         Some(_) => {
             return Err(fields
                 .invalid("a non-empty stable navigation profile ID")
-                .into())
+                .into());
         }
     };
     let speed = fields.f32("speed")?;
@@ -4097,7 +4152,7 @@ pub(crate) fn spawn_collider_component(
         _ => {
             return Err(fields
                 .invalid("a shape of \"aabb\", \"sphere\", or \"capsule_y\"")
-                .into())
+                .into());
         }
     };
 
@@ -4185,8 +4240,8 @@ pub(crate) fn spawn_collider_2d_component(
     };
     let memberships = u32::try_from(fields.i64("membership")?)
         .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
-    let mask = u32::try_from(fields.i64("mask")?)
-        .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
+    let mask =
+        u32::try_from(fields.i64("mask")?).map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
     context.world.add_component(
         entity,
         crate::native_2d::Collider2d {
@@ -4207,7 +4262,8 @@ pub(crate) fn spawn_rigid_body_2d_component(
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
     let component_type = ComponentTypeId::new(RIGID_BODY_2D_COMPONENT);
-    const EXPECTED: &str = "a Native 2D rigid body with fixed, dynamic, or kinematic mode and finite motion fields";
+    const EXPECTED: &str =
+        "a Native 2D rigid body with fixed, dynamic, or kinematic mode and finite motion fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let mode = match fields.string("mode")? {
         "fixed" => crate::native_2d::RigidBodyMode2d::Fixed,
@@ -4234,17 +4290,19 @@ pub(crate) fn spawn_character_controller_2d_component(
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
     let component_type = ComponentTypeId::new(CHARACTER_CONTROLLER_2D_COMPONENT);
-    const EXPECTED: &str = "a Native 2D character controller with positive extents and valid movement settings";
+    const EXPECTED: &str =
+        "a Native 2D character controller with positive extents and valid movement settings";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
-    let collision_mask = u32::try_from(fields.i64("collision_mask")?)
-        .map_err(|_| fields.invalid(EXPECTED))?;
-    let half_extents = glam::Vec2::new(
-        fields.f32("half_extent_x")?,
-        fields.f32("half_extent_y")?,
-    );
+    let collision_mask =
+        u32::try_from(fields.i64("collision_mask")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let half_extents = glam::Vec2::new(fields.f32("half_extent_x")?, fields.f32("half_extent_y")?);
     let skin = fields.f32("skin")?;
     if skin >= half_extents.min_element() {
-        return Err(fields.invalid("a Native 2D character controller whose skin is smaller than both half extents").into());
+        return Err(fields
+            .invalid(
+                "a Native 2D character controller whose skin is smaller than both half extents",
+            )
+            .into());
     }
     context.world.add_component(
         entity,
@@ -4282,8 +4340,7 @@ pub(crate) fn spawn_physics_body_component(
     Ok(())
 }
 
-const CHARACTER_CONTROLLER_EXPECTED: &str =
-    "an object with finite character motor settings, max_resolve_iterations between 1 and 16, and slope_limit_degrees between 0 and 89";
+const CHARACTER_CONTROLLER_EXPECTED: &str = "an object with finite character motor settings, max_resolve_iterations between 1 and 16, and slope_limit_degrees between 0 and 89";
 
 pub(crate) fn spawn_character_controller_component(
     entity: Entity,

@@ -154,9 +154,8 @@ pub enum ClipCompositionError {
 impl fmt::Display for ClipCompositionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SkeletonMismatch => formatter.write_str(
-                "animation layers target different skeletons and cannot be composed",
-            ),
+            Self::SkeletonMismatch => formatter
+                .write_str("animation layers target different skeletons and cannot be composed"),
         }
     }
 }
@@ -215,10 +214,7 @@ fn insert_transform_channels(
     channels: &[AnimChannel],
 ) {
     for channel in channels {
-        let target = channel
-            .target_bone
-            .map(|bone| bone.0)
-            .unwrap_or(u32::MAX);
+        let target = channel.target_bone.map(|bone| bone.0).unwrap_or(u32::MAX);
         destination.insert((target, channel.property as u8), channel.clone());
     }
 }
@@ -478,9 +474,10 @@ impl Animator {
             self.clip_events.insert(new.id(), events);
         }
         if let Some(fade) = &mut self.fade
-            && fade.clip == old {
-                fade.clip = new;
-            }
+            && fade.clip == old
+        {
+            fade.clip = new;
+        }
     }
 
     /// Returns the root displacement extracted during the latest fixed step.
@@ -823,13 +820,13 @@ pub fn animation_system(
                     .completion_event
                     .as_deref()
                     .filter(|name| !name.trim().is_empty())
-                {
-                    events.push(AnimationEventRecord {
-                        entity,
-                        name: name.to_owned(),
-                        clip_time: new_time,
-                    });
-                }
+            {
+                events.push(AnimationEventRecord {
+                    entity,
+                    name: name.to_owned(),
+                    clip_time: new_time,
+                });
+            }
         }
 
         let bone_index = bone_index_map(skeleton);
@@ -845,18 +842,19 @@ pub fn animation_system(
                 entity,
                 skeleton,
                 &bone_index,
-            ) {
-                animator.root_motion_delta = delta;
-                // The root stays at its authored first-frame position; only
-                // the extracted delta may move the character body.
-                if target == entity {
-                    current_pose.entity.translation = Some(start);
-                } else if let Some(index) = skeleton.and_then(|skeleton| {
-                    skeleton.joints.iter().position(|joint| *joint == target)
-                }) {
-                    current_pose.joints.write_translation(index, start);
-                }
+            )
+        {
+            animator.root_motion_delta = delta;
+            // The root stays at its authored first-frame position; only
+            // the extracted delta may move the character body.
+            if target == entity {
+                current_pose.entity.translation = Some(start);
+            } else if let Some(index) = skeleton
+                .and_then(|skeleton| skeleton.joints.iter().position(|joint| *joint == target))
+            {
+                current_pose.joints.write_translation(index, start);
             }
+        }
 
         let target_pose = match &mut animator.fade {
             Some(fade) => {
@@ -1252,7 +1250,7 @@ mod tests {
     #[test]
     fn animation_system_drives_skeleton_joints_by_bone_id() {
         use crate::rig_pose::publish_final_rig_pose_system;
-        use crate::skeleton_asset::{compute_skeleton_identity, BoneDef, BoneId, SkeletonAsset};
+        use crate::skeleton_asset::{BoneDef, BoneId, SkeletonAsset, compute_skeleton_identity};
         use crate::skinning::Skeleton;
         use engine_ecs::World;
 
@@ -1689,10 +1687,11 @@ mod tests {
         // `a.dot(b) < 0`.
         let b = Quat::from_xyzw(0.0, 0.0, 0.0, -1.0);
 
-        let blended = PoseGraphOutput::blend(&entity_rotation_pose(a), &entity_rotation_pose(b), 0.5)
-            .entity
-            .rotation
-            .expect("both sides drive the entity rotation");
+        let blended =
+            PoseGraphOutput::blend(&entity_rotation_pose(a), &entity_rotation_pose(b), 0.5)
+                .entity
+                .rotation
+                .expect("both sides drive the entity rotation");
 
         assert!(
             blended.is_finite(),
@@ -1813,13 +1812,14 @@ mod tests {
         app.add_system(animation_system);
 
         app.update().expect("idle tick must run");
-        assert!(app
-            .world()
-            .get_resource::<AnimationEvents>()
-            .expect("animation events")
-            .iter()
-            .next()
-            .is_none());
+        assert!(
+            app.world()
+                .get_resource::<AnimationEvents>()
+                .expect("animation events")
+                .iter()
+                .next()
+                .is_none()
+        );
 
         app.world_mut()
             .get_component_mut::<Animator>(entity)
@@ -1940,13 +1940,14 @@ mod tests {
         assert_eq!(first, vec!["animation.completed"]);
 
         app.update().expect("stopped tick must run");
-        assert!(app
-            .world()
-            .get_resource::<AnimationEvents>()
-            .expect("animation events")
-            .iter()
-            .next()
-            .is_none());
+        assert!(
+            app.world()
+                .get_resource::<AnimationEvents>()
+                .expect("animation events")
+                .iter()
+                .next()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2187,7 +2188,7 @@ mod tests {
     /// fast clip and a seek arrive as the same large displacement.
     #[test]
     fn playback_declares_a_repositioning_but_never_mere_speed() {
-        use crate::skeleton_asset::{compute_skeleton_identity, BoneDef, SkeletonAsset};
+        use crate::skeleton_asset::{BoneDef, SkeletonAsset, compute_skeleton_identity};
 
         fn run(build: impl FnOnce(&mut Animator), steps: usize) -> bool {
             let mut clips = Assets::<AnimationClip>::new();

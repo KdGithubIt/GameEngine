@@ -22,14 +22,14 @@ pub mod collision;
 #[cfg(not(feature = "solver"))]
 #[path = "collision_contract.rs"]
 pub mod collision;
+/// Engine-owned Native 2D physics contracts and deterministic reference solver (ADR 0127).
+pub mod native_2d;
 /// Production tiled polygon navigation assets, baking, queries, and agents.
 pub mod navigation;
 /// Shared GUI-free navigation bake document and service contracts.
 pub mod navigation_bake;
 /// Legacy grid navigation retained for focused compatibility tests and layered utilities.
 pub mod navmesh;
-/// Engine-owned Native 2D physics contracts and deterministic reference solver (ADR 0127).
-pub mod native_2d;
 /// Rapier-backed gameplay rigid-body integration.
 #[cfg(feature = "solver")]
 pub mod physics;

@@ -11,7 +11,7 @@ use crate::graph::{
     Edge, Graph, GraphKind, GraphSchemaRegistry, NodeSchema, NodeTypeId, PortArity, PortDirection,
     PortSchema, PortValueTypeId,
 };
-use crate::graph_domain::{validate_graph_with_domain, GraphDomain};
+use crate::graph_domain::{GraphDomain, validate_graph_with_domain};
 use crate::id::{MotionSlotId, NodeId, PortId, StableId};
 use crate::value::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -733,9 +733,11 @@ mod tests {
 
         let diagnostics = validate_graph_with_domain(&graph, &domain);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "anim.state_motion_slot_missing"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "anim.state_motion_slot_missing")
+        );
     }
 
     #[test]
@@ -817,9 +819,11 @@ mod tests {
 
         let diagnostics = validate_graph_with_domain(&graph, &domain);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "anim.invalid_state_playback_mode"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "anim.invalid_state_playback_mode")
+        );
     }
 
     #[test]
@@ -898,8 +902,10 @@ mod tests {
 
         let diagnostics = validate_graph_with_domain(&graph, &domain);
 
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "anim.invalid_transition_fade"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "anim.invalid_transition_fade")
+        );
     }
 }

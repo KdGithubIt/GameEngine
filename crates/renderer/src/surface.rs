@@ -94,7 +94,10 @@ impl fmt::Display for WindowSurfaceError {
                 "window surface does not support present mode {present_mode:?}"
             ),
             Self::UnsupportedFormat { format } => {
-                write!(formatter, "window surface does not support format {format:?}")
+                write!(
+                    formatter,
+                    "window surface does not support format {format:?}"
+                )
             }
             Self::UnsupportedAlphaMode { alpha_mode } => write!(
                 formatter,

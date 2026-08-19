@@ -434,12 +434,16 @@ mod tests {
         scene.insert_entity(entity);
 
         let diagnostics = scene.validate();
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "scene.missing_parent"));
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "scene.bad_entity_ref"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "scene.missing_parent")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "scene.bad_entity_ref")
+        );
     }
 
     #[test]
@@ -465,10 +469,12 @@ mod tests {
         );
         scene.insert_entity(entity);
 
-        assert!(scene
-            .validate()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "scene.non_finite_number"));
+        assert!(
+            scene
+                .validate()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "scene.non_finite_number")
+        );
     }
 
     #[test]
@@ -479,10 +485,12 @@ mod tests {
         entity.parent = Some(id);
         scene.insert_entity(entity);
 
-        assert!(scene
-            .validate()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "scene.self_parent"));
+        assert!(
+            scene
+                .validate()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "scene.self_parent")
+        );
     }
 
     #[test]
@@ -529,9 +537,11 @@ mod tests {
         scene.insert_entity(first);
         scene.insert_entity(second);
 
-        assert!(scene
-            .validate()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "scene.parent_cycle"));
+        assert!(
+            scene
+                .validate()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "scene.parent_cycle")
+        );
     }
 }

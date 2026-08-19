@@ -34,13 +34,7 @@ pub fn collision_detection_system(
 ) {
     events.begin_detection();
 
-    let mut bodies: Vec<(
-        Entity,
-        WorldShape,
-        PhysicsBody,
-        CollisionLayers,
-        bool,
-    )> = query
+    let mut bodies: Vec<(Entity, WorldShape, PhysicsBody, CollisionLayers, bool)> = query
         .iter()
         .filter_map(|(entity, (collider, body, gt, layers, trigger, hitbox))| {
             if hitbox.is_some_and(|hitbox| !hitbox.enabled) {
@@ -145,8 +139,7 @@ pub fn collision_detection_system(
     // still entirely delegated to Rapier's discrete broad/narrow phase.
     for first in 0..bodies.len() {
         for second in (first + 1)..bodies.len() {
-            if reported_pairs.contains(&(first, second))
-                || (!bodies[first].4 && !bodies[second].4)
+            if reported_pairs.contains(&(first, second)) || (!bodies[first].4 && !bodies[second].4)
             {
                 continue;
             }
@@ -179,7 +172,9 @@ pub fn collision_detection_system(
     }
 
     for (entity, delta) in push_outs {
-        if let Some((_, transform)) = transforms.iter_mut().find(|(candidate, _)| *candidate == entity)
+        if let Some((_, transform)) = transforms
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == entity)
         {
             transform.translation += delta;
         }

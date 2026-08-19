@@ -160,10 +160,7 @@ impl ProjectAssetResidency {
                 source_id.as_str()
             ));
         };
-        if !engine::asset_path_matches_kind(
-            engine::AssetKind::GltfSource,
-            Path::new(&entry.path),
-        ) {
+        if !engine::asset_path_matches_kind(engine::AssetKind::GltfSource, Path::new(&entry.path)) {
             return PreviewResidencyState::Failed(format!(
                 "asset `{}` is not a model source",
                 source_id.as_str()
@@ -197,10 +194,7 @@ impl ProjectAssetResidency {
                     source_path,
                     source_stamp: current_stamp,
                     source_fingerprint: entry.import_settings.source_fingerprint.clone(),
-                    settings_fingerprint: settings_fingerprint(
-                        &skeleton_records,
-                        &contact_bones,
-                    ),
+                    settings_fingerprint: settings_fingerprint(&skeleton_records, &contact_bones),
                 },
                 skeleton_records,
                 contact_bones,
@@ -347,7 +341,9 @@ impl ProjectAssetResidency {
                     return PreviewResidencyState::Pending;
                 }
                 Some(SourceState::Failed {
-                    generation, message, ..
+                    generation,
+                    message,
+                    ..
                 }) if generation == &request.generation => {
                     return PreviewResidencyState::Failed(message.clone());
                 }
@@ -417,8 +413,7 @@ impl ProjectAssetResidency {
                             ..
                         } => {
                             let waited = dispatch_count.saturating_sub(*queued_dispatch);
-                            let promotions =
-                                (waited / AGING_DISPATCH_INTERVAL).min(3) as u8;
+                            let promotions = (waited / AGING_DISPATCH_INTERVAL).min(3) as u8;
                             Some((
                                 priority.rank().saturating_sub(promotions),
                                 *sequence,
@@ -562,8 +557,7 @@ impl ProjectAssetResidency {
             .sources
             .insert(source_id.clone(), SourceState::Ready { generation });
         inner.revision = inner.revision.saturating_add(1);
-        inner.stats.generations_published =
-            inner.stats.generations_published.saturating_add(1);
+        inner.stats.generations_published = inner.stats.generations_published.saturating_add(1);
         inner.stats.decoded_textures_published = inner
             .stats
             .decoded_textures_published
@@ -707,11 +701,8 @@ type MaterializationResult = Result<
 fn materialize_source(request: &SourceRequest) -> MaterializationResult {
     let dependencies_before = engine::model_source_dependencies(&request.generation.source_path)
         .map_err(|error| error.to_string())?;
-    let stamp_before = SourceStamp::capture(
-        &request.generation.source_path,
-        &dependencies_before,
-    )
-    .map_err(|error| error.to_string())?;
+    let stamp_before = SourceStamp::capture(&request.generation.source_path, &dependencies_before)
+        .map_err(|error| error.to_string())?;
     if request
         .generation
         .source_stamp
@@ -720,11 +711,9 @@ fn materialize_source(request: &SourceRequest) -> MaterializationResult {
     {
         return Err("model source changed after its last successful import".into());
     }
-    let fingerprint_before = engine::fingerprint_model_source(
-        &request.generation.source_path,
-        &dependencies_before,
-    )
-    .map_err(|error| error.to_string())?;
+    let fingerprint_before =
+        engine::fingerprint_model_source(&request.generation.source_path, &dependencies_before)
+            .map_err(|error| error.to_string())?;
     if request
         .generation
         .source_fingerprint
@@ -743,16 +732,11 @@ fn materialize_source(request: &SourceRequest) -> MaterializationResult {
     .map_err(|error| error.to_string())?;
     let dependencies_after = engine::model_source_dependencies(&request.generation.source_path)
         .map_err(|error| error.to_string())?;
-    let stamp_after = SourceStamp::capture(
-        &request.generation.source_path,
-        &dependencies_after,
-    )
-    .map_err(|error| error.to_string())?;
-    let fingerprint_after = engine::fingerprint_model_source(
-        &request.generation.source_path,
-        &dependencies_after,
-    )
-    .map_err(|error| error.to_string())?;
+    let stamp_after = SourceStamp::capture(&request.generation.source_path, &dependencies_after)
+        .map_err(|error| error.to_string())?;
+    let fingerprint_after =
+        engine::fingerprint_model_source(&request.generation.source_path, &dependencies_after)
+            .map_err(|error| error.to_string())?;
     if dependencies_before != dependencies_after
         || stamp_before != stamp_after
         || fingerprint_before != fingerprint_after

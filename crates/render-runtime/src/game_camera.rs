@@ -1,8 +1,8 @@
 //! Internal Camera2D/Camera3D arbitration for the shared world renderer.
 
 use crate::camera::{
-    select_game_camera_intent, Camera3D, GameCameraIntent, GameCameraKind, GameCameraSelection,
-    ViewportSize,
+    Camera3D, GameCameraIntent, GameCameraKind, GameCameraSelection, ViewportSize,
+    select_game_camera_intent,
 };
 use crate::native_2d::{Camera2d, Camera2dDiagnostic};
 use crate::transform::Transform;
@@ -36,9 +36,7 @@ impl PreparedCamera {
             view_projection: camera.view_projection_matrix(&transform, viewport)?,
             view: transform.to_matrix().inverse(),
             position: transform.translation,
-            viewport_aspect: valid_aspect(
-                viewport[0].max(1) as f32 / viewport[1].max(1) as f32,
-            ),
+            viewport_aspect: valid_aspect(viewport[0].max(1) as f32 / viewport[1].max(1) as f32),
             shadow_camera: None,
         })
     }
@@ -113,11 +111,28 @@ mod tests {
     fn higher_priority_camera_2d_wins_shared_arbitration() {
         let mut world = engine_ecs::World::new();
         let three_d = world.spawn().expect("spawn Camera3D");
-        world.add_component(three_d, Camera3D::default()).expect("Camera3D");
-        world.add_component(three_d, Transform::default()).expect("3D transform");
+        world
+            .add_component(three_d, Camera3D::default())
+            .expect("Camera3D");
+        world
+            .add_component(three_d, Transform::default())
+            .expect("3D transform");
         let two_d = world.spawn().expect("spawn Camera2D");
-        world.add_component(two_d, Camera2d { priority: 5, ..Camera2d::default() }).expect("Camera2D");
-        world.add_component(two_d, Transform::from_translation(glam::Vec3::new(0.0, 0.0, 10.0))).expect("2D transform");
+        world
+            .add_component(
+                two_d,
+                Camera2d {
+                    priority: 5,
+                    ..Camera2d::default()
+                },
+            )
+            .expect("Camera2D");
+        world
+            .add_component(
+                two_d,
+                Transform::from_translation(glam::Vec3::new(0.0, 0.0, 10.0)),
+            )
+            .expect("2D transform");
         let prepared = active_camera(&mut world)
             .expect("valid camera")
             .expect("selected camera");

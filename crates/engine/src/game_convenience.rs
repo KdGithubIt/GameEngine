@@ -5,11 +5,11 @@
 //! and physics-world queries behind intent-level methods.
 
 use crate::advanced_geometry::{
-    raycast_plane, raycast_shape, screen_ray, Plane3d, Ray3d, RayHit, ScreenViewport,
-    SpatialQueryError,
+    Plane3d, Ray3d, RayHit, ScreenViewport, SpatialQueryError, raycast_plane, raycast_shape,
+    screen_ray,
 };
-use crate::camera::{camera_selection_key, Camera3D};
-use crate::collision::{world_shapes_overlap, WorldAabb, WorldCapsule, WorldShape, WorldSphere};
+use crate::camera::{Camera3D, camera_selection_key};
+use crate::collision::{WorldAabb, WorldCapsule, WorldShape, WorldSphere, world_shapes_overlap};
 use crate::game_api::Res;
 use crate::game_io::GameEntityHandle;
 use crate::game_module::{GameResource, GameResourceSchema};
@@ -196,12 +196,8 @@ impl PhysicsWorldView {
         self.cameras
             .iter()
             .filter_map(|camera| {
-                camera_selection_key(
-                    camera.entity.id,
-                    camera.entity.generation,
-                    &camera.camera,
-                )
-                .map(|key| (key, camera))
+                camera_selection_key(camera.entity.id, camera.entity.generation, &camera.camera)
+                    .map(|key| (key, camera))
             })
             .min_by_key(|(key, _)| *key)
             .map(|(_, camera)| camera)
@@ -615,8 +611,9 @@ fn unsigned(value: &Value) -> Result<u64, String> {
 fn signed_i32(value: &Value) -> Result<i32, String> {
     let signed = match value {
         Value::I64(value) => *value,
-        Value::U64(value) => i64::try_from(*value)
-            .map_err(|_| "expected a signed 32-bit integer".to_owned())?,
+        Value::U64(value) => {
+            i64::try_from(*value).map_err(|_| "expected a signed 32-bit integer".to_owned())?
+        }
         Value::String(value) => value
             .parse::<i64>()
             .map_err(|_| "expected a signed 32-bit integer string".to_owned())?,

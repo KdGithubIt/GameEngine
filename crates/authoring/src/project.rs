@@ -18,8 +18,8 @@
 //! See `docs/adr/0023-project-root-ownership.md` and §16–17 of
 //! `AI_FRIENDLY_AUTHORING_SPEC.md` for the rationale.
 
-use crate::persist::replace_file_contents;
 use crate::ProjectId;
+use crate::persist::replace_file_contents;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;

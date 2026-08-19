@@ -19,7 +19,9 @@
 use crate::asset::SkeletonRecord;
 use crate::model_import::GltfImportResult;
 use crate::model_ir::{
-    IrClip, IrClipChannel, IrMaterial, IrMesh, IrNode, IrSkin, IrTexture, ModelDocument, IrAnimProperty as AnimProperty, IrKeyframe as Keyframe, IrMeshData as Mesh, IrSkinningVertexData as SkinningVertexData, IrSubmesh, IrVertex as Vertex,
+    IrAnimProperty as AnimProperty, IrClip, IrClipChannel, IrKeyframe as Keyframe, IrMaterial,
+    IrMesh, IrMeshData as Mesh, IrNode, IrSkin, IrSkinningVertexData as SkinningVertexData,
+    IrSubmesh, IrTexture, IrVertex as Vertex, ModelDocument,
 };
 use crate::skinning::MAX_JOINTS;
 use engine_authoring::diagnostic::Diagnostic;
@@ -649,8 +651,8 @@ fn parse_clips(
     skins: &[IrSkin],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<IrClip> {
-    use gltf::animation::util::ReadOutputs;
     use gltf::animation::Interpolation;
+    use gltf::animation::util::ReadOutputs;
 
     let mut clips = Vec::new();
 
@@ -940,8 +942,18 @@ fn parse_materials(
                 },
                 shading_model: MaterialShadingModel::StandardLit,
                 toon_ramp_texture: None,
-                toon_shadow_color: LinearRgba { r: 0.55, g: 0.55, b: 0.62, a: 1.0 },
-                toon_ambient_color: LinearRgba { r: 0.2, g: 0.2, b: 0.2, a: 1.0 },
+                toon_shadow_color: LinearRgba {
+                    r: 0.55,
+                    g: 0.55,
+                    b: 0.62,
+                    a: 1.0,
+                },
+                toon_ambient_color: LinearRgba {
+                    r: 0.2,
+                    g: 0.2,
+                    b: 0.2,
+                    a: 1.0,
+                },
                 toon_specular_color: LinearRgba::WHITE,
                 toon_specular_power: 16.0,
                 sphere_texture: None,
@@ -962,7 +974,7 @@ fn parse_materials(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::asset::{imported_sub_asset_id, ImportedSubAssetKind};
+    use crate::asset::{ImportedSubAssetKind, imported_sub_asset_id};
     use crate::skeleton_asset::BoneId;
     use engine_authoring::id::AssetId;
 
@@ -1354,10 +1366,12 @@ pub(crate) mod tests {
         assert_eq!(skinning[0].weights, [1.0, 0.0, 0.0, 0.0]);
         // Vertex 2 weights summed to 2.0 and must be renormalized.
         assert!((skinning[2].weights.iter().sum::<f32>() - 1.0).abs() < 1.0e-6);
-        assert!(result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "gltf.weights_renormalized"));
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "gltf.weights_renormalized")
+        );
 
         let skin = &result.skins[0];
         assert_eq!(skin.joint_nodes, vec![0, 1]);
@@ -1415,10 +1429,12 @@ pub(crate) mod tests {
         let channel = &animation.clip.channels[0];
         assert_eq!(channel.target_bone, Some(skin.joint_bone_ids[1]));
         assert_eq!(channel.keyframes.len(), 2);
-        assert!(result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "gltf.animation_target_not_joint"));
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "gltf.animation_target_not_joint")
+        );
     }
 
     #[test]
@@ -1502,10 +1518,12 @@ pub(crate) mod tests {
             second_skin.skeleton.next_bone_id, 3,
             "next_bone_id must advance monotonically"
         );
-        assert!(second
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "anim.skeleton_rebind"));
+        assert!(
+            second
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "anim.skeleton_rebind")
+        );
 
         // Reimporting the already-renamed rig again must now dedupe by
         // identity: no further rebind, and next_bone_id never decreases or
@@ -1514,10 +1532,12 @@ pub(crate) mod tests {
             .expect("second renamed import must parse");
         let third_skin = &third.skins[0];
         assert_eq!(third_skin.skeleton.next_bone_id, 3);
-        assert!(!third
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "anim.skeleton_rebind"));
+        assert!(
+            !third
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "anim.skeleton_rebind")
+        );
     }
 
     #[test]

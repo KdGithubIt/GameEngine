@@ -6,108 +6,170 @@ use super::schemas::builtin_asset_id;
 use crate::asset::Assets;
 use crate::lock_on::LockOnTarget;
 use crate::mesh::Mesh;
+use crate::navigation_bake::{NAVIGATION_LINK_COMPONENT, NAVIGATION_MODIFIER_COMPONENT};
 use crate::particles::ParticleEmitter;
 use crate::scene_bridge::*;
-use crate::navigation_bake::{NAVIGATION_LINK_COMPONENT, NAVIGATION_MODIFIER_COMPONENT};
 use engine_authoring::test_fixtures::load_scene_fixture;
 
 #[test]
 fn registry_returns_registered_definition() {
     let registry = builtin_registry();
 
-    assert!(registry
-        .get(&ComponentTypeId::new(TRANSFORM_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(PLAYER_MARKER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(STATIC_MESH_RENDERER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(SKINNED_MESH_RENDERER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(LOD_GROUP_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(CAMERA_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(DIRECTIONAL_LIGHT_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(AMBIENT_LIGHT_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(POINT_LIGHT_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(SPOT_LIGHT_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(SHADOW_SETTINGS_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(ENVIRONMENT_LIGHTING_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(POST_PROCESS_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(PLAYER_CONTROLLER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(PARTICLE_EMITTER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(UI_DOCUMENT_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(COLLIDER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(PHYSICS_BODY_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(CHARACTER_CONTROLLER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(DAMAGE_RECEIVER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(LOCK_ON_TARGET_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(LOCK_ON_CAMERA_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(NAV_MESH_AGENT_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(NAV_MESH_SURFACE_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(RUNTIME_METADATA_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(ANIMATION_CONTROLLER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(BEHAVIOR_TREE_RUNNER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(AUDIO_EMITTER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(AUDIO_LISTENER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(MUSIC_CONTROLLER_COMPONENT))
-        .is_some());
-    assert!(registry
-        .get(&ComponentTypeId::new(FOOT_IK_COMPONENT))
-        .is_some());
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(TRANSFORM_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(PLAYER_MARKER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(STATIC_MESH_RENDERER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(SKINNED_MESH_RENDERER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(LOD_GROUP_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(CAMERA_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(DIRECTIONAL_LIGHT_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(AMBIENT_LIGHT_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(POINT_LIGHT_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(SPOT_LIGHT_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(SHADOW_SETTINGS_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(ENVIRONMENT_LIGHTING_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(POST_PROCESS_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(PLAYER_CONTROLLER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(PARTICLE_EMITTER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(UI_DOCUMENT_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(COLLIDER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(PHYSICS_BODY_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(CHARACTER_CONTROLLER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(DAMAGE_RECEIVER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(LOCK_ON_TARGET_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(LOCK_ON_CAMERA_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(NAV_MESH_AGENT_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(NAV_MESH_SURFACE_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(RUNTIME_METADATA_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(ANIMATION_CONTROLLER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(BEHAVIOR_TREE_RUNNER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(AUDIO_EMITTER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(AUDIO_LISTENER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(MUSIC_CONTROLLER_COMPONENT))
+            .is_some()
+    );
+    assert!(
+        registry
+            .get(&ComponentTypeId::new(FOOT_IK_COMPONENT))
+            .is_some()
+    );
 }
 
 #[test]
@@ -129,9 +191,11 @@ fn camera_schema_defaults_to_an_enabled_camera_at_priority_zero() {
 fn registry_returns_none_for_unknown_type() {
     let registry = builtin_registry();
 
-    assert!(registry
-        .get(&ComponentTypeId::new("gameplay.unknown"))
-        .is_none());
+    assert!(
+        registry
+            .get(&ComponentTypeId::new("gameplay.unknown"))
+            .is_none()
+    );
 }
 
 #[test]
@@ -269,7 +333,10 @@ fn every_declared_component_satisfies_the_declaration_contract() {
             id,
             "`{id}` declares a different schema type id"
         );
-        assert!(!schema.display_name.is_empty(), "`{id}` needs a display name");
+        assert!(
+            !schema.display_name.is_empty(),
+            "`{id}` needs a display name"
+        );
         assert!(!schema.description.is_empty(), "`{id}` needs a description");
         assert!(!schema.category.is_empty(), "`{id}` needs a category");
         assert!(schema.version >= 1, "`{id}` needs a schema version");
@@ -502,15 +569,22 @@ fn builtin_validation_reports_invalid_enum_and_field_type() {
 
     let diagnostics = validate_builtin_component_values(&scene);
 
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.component_enum_value"));
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.component_field_type"));
-    assert!(diagnostics
-        .iter()
-        .all(|diagnostic| matches!(diagnostic.target, Some(DiagnosticTarget::Component { .. }))));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.component_enum_value")
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.component_field_type")
+    );
+    assert!(
+        diagnostics.iter().all(|diagnostic| matches!(
+            diagnostic.target,
+            Some(DiagnosticTarget::Component { .. })
+        ))
+    );
 }
 
 #[test]
@@ -542,9 +616,11 @@ fn builtin_validation_reports_invalid_animation_parameter_rows() {
 
     let diagnostics = validate_builtin_component_values(&scene);
 
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.animation_parameter_invalid"));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.animation_parameter_invalid")
+    );
 }
 
 #[test]
@@ -593,18 +669,26 @@ fn builtin_validation_uses_inspector_ranges_and_active_conditions() {
         .collect::<Vec<_>>();
 
     assert_eq!(range_messages.len(), 2);
-    assert!(range_messages
-        .iter()
-        .any(|message| message.contains("radius")));
-    assert!(range_messages
-        .iter()
-        .any(|message| message.contains("speed")));
-    assert!(!range_messages
-        .iter()
-        .any(|message| message.contains("half_extent")));
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.component_field_relation"));
+    assert!(
+        range_messages
+            .iter()
+            .any(|message| message.contains("radius"))
+    );
+    assert!(
+        range_messages
+            .iter()
+            .any(|message| message.contains("speed"))
+    );
+    assert!(
+        !range_messages
+            .iter()
+            .any(|message| message.contains("half_extent"))
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.component_field_relation")
+    );
 }
 
 #[test]
@@ -671,15 +755,22 @@ fn builtin_asset_validation_reports_category_and_graph_kind_mismatches() {
 
     let diagnostics = validate_builtin_component_assets(&scene, &manifest, Some(directory.path()));
 
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.asset_category_mismatch"));
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.asset_graph_kind_mismatch"));
-    assert!(diagnostics
-        .iter()
-        .all(|diagnostic| matches!(diagnostic.target, Some(DiagnosticTarget::Component { .. }))));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.asset_category_mismatch")
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.asset_graph_kind_mismatch")
+    );
+    assert!(
+        diagnostics.iter().all(|diagnostic| matches!(
+            diagnostic.target,
+            Some(DiagnosticTarget::Component { .. })
+        ))
+    );
 }
 
 /// FBXなどのモデルソースから派生したSkeletonサブアセットを、
@@ -741,8 +832,7 @@ fn builtin_asset_validation_accepts_imported_skeleton_for_skinned_model() {
             }
         }]
     });
-    let scene =
-        load_scene_fixture(&scene_json.to_string()).expect("skinned model scene must load");
+    let scene = load_scene_fixture(&scene_json.to_string()).expect("skinned model scene must load");
 
     // 本番と同じ組み込みコンポーネントのアセット検証を実行する。
     let diagnostics = validate_builtin_component_assets(&scene, &manifest, Some(directory.path()));
@@ -767,8 +857,8 @@ fn filesystem_validation_uses_source_stamp_and_skips_an_entry_without_one() {
         crate::asset::ImportedSubAssetKind::Mesh,
         0,
     );
-    let stamp = crate::asset::SourceStamp::capture(&source_path, &[])
-        .expect("initial metadata stamp");
+    let stamp =
+        crate::asset::SourceStamp::capture(&source_path, &[]).expect("initial metadata stamp");
     let mut manifest = AssetManifest::default();
     manifest.insert(
         source_asset.clone(),
@@ -805,16 +895,20 @@ fn filesystem_validation_uses_source_stamp_and_skips_an_entry_without_one() {
     let scene = load_scene_fixture(&scene_json.to_string()).expect("scene fixture");
 
     let unchanged = validate_builtin_component_asset_files(&scene, &manifest, directory.path());
-    assert!(unchanged
-        .iter()
-        .all(|diagnostic| diagnostic.code != "scene.import_source_changed"));
+    assert!(
+        unchanged
+            .iter()
+            .all(|diagnostic| diagnostic.code != "scene.import_source_changed")
+    );
 
     std::fs::write(&source_path, b"changed model bytes with another length")
         .expect("changed model fixture");
     let changed = validate_builtin_component_asset_files(&scene, &manifest, directory.path());
-    assert!(changed
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.import_source_changed"));
+    assert!(
+        changed
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.import_source_changed")
+    );
 
     manifest
         .get_mut(&source_asset)
@@ -822,9 +916,11 @@ fn filesystem_validation_uses_source_stamp_and_skips_an_entry_without_one() {
         .import_settings
         .source_stamp = None;
     let unstamped = validate_builtin_component_asset_files(&scene, &manifest, directory.path());
-    assert!(unstamped
-        .iter()
-        .all(|diagnostic| diagnostic.code != "scene.import_source_changed"));
+    assert!(
+        unstamped
+            .iter()
+            .all(|diagnostic| diagnostic.code != "scene.import_source_changed")
+    );
 }
 
 #[test]
@@ -920,9 +1016,11 @@ fn material_dependency_validation_reports_oversized_texture() {
     let scene = load_scene_fixture(&scene_json.to_string()).expect("scene fixture");
 
     let diagnostics = validate_builtin_component_assets(&scene, &manifest, Some(directory.path()));
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "renderer.texture_dimension_limit"));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "renderer.texture_dimension_limit")
+    );
 }
 
 #[test]
@@ -1015,12 +1113,16 @@ fn lod_validation_rejects_empty_non_positive_and_unordered_levels() {
     .expect("LOD fixture JSON must load");
 
     let diagnostics = validate_builtin_component_values(&scene);
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.lod_distance_order"));
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.lod_distance_invalid"));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.lod_distance_order")
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.lod_distance_invalid")
+    );
 }
 
 #[test]
@@ -1273,9 +1375,11 @@ fn a_renderer_has_one_unambiguous_model_reference() {
 
     let diagnostics = validate_builtin_component_values(&scene);
 
-    assert!(diagnostics
-        .iter()
-        .all(|diagnostic| diagnostic.code != "scene.render_part_claimed_twice"));
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "scene.render_part_claimed_twice")
+    );
 }
 
 #[test]
@@ -1308,9 +1412,11 @@ fn a_model_reference_that_targets_a_non_model_is_reported() {
 
     let diagnostics = validate_builtin_component_values(&scene);
 
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.entity_reference_wrong_target"));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.entity_reference_wrong_target")
+    );
 }
 
 #[test]
@@ -1365,9 +1471,11 @@ fn an_animation_controller_without_a_skinned_model_is_reported() {
 
     let diagnostics = validate_builtin_component_values(&scene);
 
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "scene.component_dependency_missing"));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "scene.component_dependency_missing")
+    );
 }
 
 #[test]

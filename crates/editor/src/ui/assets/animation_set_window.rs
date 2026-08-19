@@ -40,8 +40,7 @@ fn animation_target_preview_choices(
         let source_label = source.name.as_deref().unwrap_or(&source.path);
         let multiple = source.import_settings.skeleton_records.len() > 1;
         for record in &source.import_settings.skeleton_records {
-            let Ok(skeleton) =
-                AssetId::from_stable_id(engine_authoring::StableId::new(&record.id))
+            let Ok(skeleton) = AssetId::from_stable_id(engine_authoring::StableId::new(&record.id))
             else {
                 continue;
             };
@@ -76,23 +75,22 @@ fn preview_motion_route(
         }
         _ => return None,
     };
-    let source_skeleton = if candidate_kind
-        == engine::motion_binding::AnimationMotionCandidateKind::ModelBound
-    {
-        match preview_model_bound_source_skeleton(
-            manifest,
-            assets_root,
-            preview_residency,
-            owner_source,
-            owner_entry,
-            sub_asset,
-        ) {
-            PreviewSourceSkeletonState::Ready(source_skeleton) => source_skeleton,
-            PreviewSourceSkeletonState::Pending => return None,
-        }
-    } else {
-        None
-    };
+    let source_skeleton =
+        if candidate_kind == engine::motion_binding::AnimationMotionCandidateKind::ModelBound {
+            match preview_model_bound_source_skeleton(
+                manifest,
+                assets_root,
+                preview_residency,
+                owner_source,
+                owner_entry,
+                sub_asset,
+            ) {
+                PreviewSourceSkeletonState::Ready(source_skeleton) => source_skeleton,
+                PreviewSourceSkeletonState::Pending => return None,
+            }
+        } else {
+            None
+        };
     let retarget_maps = assets_root
         .map(|root| engine::load_registered_retarget_maps(root, manifest))
         .unwrap_or_default();
@@ -100,8 +98,7 @@ fn preview_motion_route(
         retarget_maps
             .iter()
             .find(|(_, map)| {
-                &map.source_skeleton == source_skeleton
-                    && &map.target_skeleton == target_skeleton
+                &map.source_skeleton == source_skeleton && &map.target_skeleton == target_skeleton
             })
             .map(|(id, _)| id.clone())
     });
@@ -177,17 +174,18 @@ fn preview_model_bound_source_skeleton(
             return PreviewSourceSkeletonState::Ready(None);
         };
 
-        let mut shared = target_entry
-            .import_settings
-            .skeleton_records
-            .iter()
-            .filter(|target_record| {
-                owner_entry
-                    .import_settings
-                    .skeleton_records
-                    .iter()
-                    .any(|record| record.id == target_record.id)
-            });
+        let mut shared =
+            target_entry
+                .import_settings
+                .skeleton_records
+                .iter()
+                .filter(|target_record| {
+                    owner_entry
+                        .import_settings
+                        .skeleton_records
+                        .iter()
+                        .any(|record| record.id == target_record.id)
+                });
         if let Some(record) = shared.next()
             && shared.next().is_none()
         {
@@ -199,9 +197,7 @@ fn preview_model_bound_source_skeleton(
         return PreviewSourceSkeletonState::Ready(
             (target_entry.import_settings.skeleton_records.len() == 1)
                 .then(|| &target_entry.import_settings.skeleton_records[0].id)
-                .and_then(|id| {
-                    AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
-                }),
+                .and_then(|id| AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()),
         );
     }
 
@@ -366,8 +362,7 @@ fn humanoid_motion_choices(
             if sub_asset.kind != engine::ImportedSubAssetKind::HumanoidMotion {
                 continue;
             }
-            let Ok(id) =
-                AssetId::from_stable_id(engine_authoring::StableId::new(&sub_asset.id))
+            let Ok(id) = AssetId::from_stable_id(engine_authoring::StableId::new(&sub_asset.id))
             else {
                 continue;
             };
@@ -607,13 +602,7 @@ pub(in crate::ui) fn validate_animation_set_clip_references(
 
         for (index, overlay) in binding.overlays.iter().enumerate() {
             validate_imported_animation_motion_source_reference(manifest, overlay).map_err(
-                |error| {
-                    format!(
-                        "binding `{}` overlay {}: {error}",
-                        binding.name,
-                        index + 1
-                    )
-                },
+                |error| format!("binding `{}` overlay {}: {error}", binding.name, index + 1),
             )?;
         }
     }
@@ -629,7 +618,8 @@ impl EditorApp {
             PathBuf::from("visual/adr0154.animset.json"),
             engine_authoring::AnimationSet::empty(),
         );
-        state.target_preview_skeleton = Some(visual_validation_asset_id("00000000000000000000000002"));
+        state.target_preview_skeleton =
+            Some(visual_validation_asset_id("00000000000000000000000002"));
         self.animation_set_editor = Some(state);
     }
 
@@ -1148,16 +1138,15 @@ impl EditorApp {
             .resolve_asset(&entry.path)
             .map_err(|error| error.to_string())?;
         let disk_graph;
-        let graph_document = if let Some((working_copy, _revision)) =
-            graph_working_copy(&self.session, &path)
-        {
-            working_copy
-        } else {
-            let json = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-            disk_graph = serde_json::from_str::<engine_authoring::Graph>(&json)
-                .map_err(|error| error.to_string())?;
-            &disk_graph
-        };
+        let graph_document =
+            if let Some((working_copy, _revision)) = graph_working_copy(&self.session, &path) {
+                working_copy
+            } else {
+                let json = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+                disk_graph = serde_json::from_str::<engine_authoring::Graph>(&json)
+                    .map_err(|error| error.to_string())?;
+                &disk_graph
+            };
         if graph_document.kind.as_str() != "anim.graph" {
             return Err(format!(
                 "{} is `{}`, not an Animation Graph",
@@ -1241,11 +1230,10 @@ impl EditorApp {
                 // On failure the document stays dirty so the author can repair
                 // the reference.
                 let result = validation_result.and_then(|()| {
-                    self
-                    .animation_set_editor
-                    .as_mut()
-                    .ok_or_else(|| "Animation Set editor is closed".to_owned())
-                    .and_then(AnimationSetEditorState::save)
+                    self.animation_set_editor
+                        .as_mut()
+                        .ok_or_else(|| "Animation Set editor is closed".to_owned())
+                        .and_then(AnimationSetEditorState::save)
                 });
                 match result {
                     Ok(()) => {
@@ -1460,22 +1448,10 @@ mod tests {
         );
         let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
 
-        let native = preview_motion_route(
-            &manifest,
-            None,
-            None,
-            &candidate,
-            &source_skeleton,
-        )
-        .expect("registered Animation candidate must produce a route");
-        let failed = preview_motion_route(
-            &manifest,
-            None,
-            None,
-            &candidate,
-            &other_skeleton,
-        )
-        .expect("registered Animation candidate must produce a route");
+        let native = preview_motion_route(&manifest, None, None, &candidate, &source_skeleton)
+            .expect("registered Animation candidate must produce a route");
+        let failed = preview_motion_route(&manifest, None, None, &candidate, &other_skeleton)
+            .expect("registered Animation candidate must produce a route");
 
         assert_eq!(native.badge(), "Native");
         assert_eq!(failed.badge(), "Failed");

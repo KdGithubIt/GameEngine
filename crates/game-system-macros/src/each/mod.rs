@@ -1,7 +1,7 @@
 mod param;
 
-use crate::{register, SystemConfig};
-use param::{add_requirement, classify, ComponentRequirement, EachParam, EachParamKind};
+use crate::{SystemConfig, register};
+use param::{ComponentRequirement, EachParam, EachParamKind, add_requirement, classify};
 use quote::{format_ident, quote};
 use std::collections::BTreeMap;
 use syn::{FnArg, ItemFn, ReturnType, Type};

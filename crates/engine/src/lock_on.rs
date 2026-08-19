@@ -12,14 +12,14 @@ use engine_ecs::{Entity, Query, ResMut};
 use glam::Vec3;
 use hashbrown::HashMap;
 
-use crate::camera::{select_active_game_camera, Camera3D, LockOnCamera};
+use crate::camera::{Camera3D, LockOnCamera, select_active_game_camera};
 use crate::collision::{
-    segment_blocked_by_static, static_obstacle_aabbs, Collider, PhysicsBody, TriggerVolume,
+    Collider, PhysicsBody, TriggerVolume, segment_blocked_by_static, static_obstacle_aabbs,
 };
 use crate::transform::GlobalTransform;
 
-pub use engine_gameplay::lock_on::{LockOnTarget, TargetLock};
 use engine_gameplay::lock_on::LockRequest;
+pub use engine_gameplay::lock_on::{LockOnTarget, TargetLock};
 
 /// Processes the pending [`TargetLock`] request and validates the current
 /// lock, using the world's first [`LockOnCamera`] for selection parameters
@@ -69,9 +69,7 @@ pub fn lock_on_system(
     let request = lock.pending.take();
 
     let Some((_, (_, Some(camera)))) = select_active_game_camera(cameras.iter()) else {
-        log::debug!(
-            "lock_on_system: active camera has no LockOnCamera; lock-on request ignored"
-        );
+        log::debug!("lock_on_system: active camera has no LockOnCamera; lock-on request ignored");
         return;
     };
 
@@ -489,12 +487,13 @@ mod tests {
             .unwrap()
             .request_acquire();
         run(&mut app);
-        assert!(app
-            .world()
-            .get_resource::<TargetLock>()
-            .unwrap()
-            .current()
-            .is_some());
+        assert!(
+            app.world()
+                .get_resource::<TargetLock>()
+                .unwrap()
+                .current()
+                .is_some()
+        );
 
         app.world_mut()
             .get_resource_mut::<TargetLock>()

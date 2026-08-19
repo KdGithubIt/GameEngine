@@ -3,7 +3,7 @@
 //! Asset lookup and component-specific mutation stay in this module so the
 //! top-level command pipeline can preserve atomic preflight.
 
-use super::{bool_field, number_field, object, runtime_id_field, string_field, GameCommandError};
+use super::{GameCommandError, bool_field, number_field, object, runtime_id_field, string_field};
 use crate::anim_graph::AnimGraphPlayer;
 use crate::animation::{AnimationClip, Animator};
 use crate::animation_parameters::AnimationParameterKind;
@@ -122,34 +122,51 @@ pub(super) fn prepare(
             let clip_asset = AssetId::from_stable_id(StableId::new(clip_text)).map_err(|_| {
                 GameCommandError::InvalidPayload {
                     index,
-                    message: format!("field `clip_asset` must be a valid stable AssetId, found `{clip_text}`"),
+                    message: format!(
+                        "field `clip_asset` must be a valid stable AssetId, found `{clip_text}`"
+                    ),
                 }
             })?;
             let initial_frame = match fields.get("initial_frame") {
-                Some(Value::U64(value)) => usize::try_from(*value).map_err(|_| GameCommandError::InvalidPayload {
-                    index,
-                    message: "field `initial_frame` is too large for this runtime".to_owned(),
-                })?,
-                Some(Value::I64(value)) if *value >= 0 => usize::try_from(*value as u64).map_err(|_| GameCommandError::InvalidPayload {
-                    index,
-                    message: "field `initial_frame` is too large for this runtime".to_owned(),
-                })?,
-                _ => return Err(GameCommandError::InvalidPayload {
-                    index,
-                    message: "field `initial_frame` must be a non-negative integer".to_owned(),
-                }),
+                Some(Value::U64(value)) => {
+                    usize::try_from(*value).map_err(|_| GameCommandError::InvalidPayload {
+                        index,
+                        message: "field `initial_frame` is too large for this runtime".to_owned(),
+                    })?
+                }
+                Some(Value::I64(value)) if *value >= 0 => {
+                    usize::try_from(*value as u64).map_err(|_| {
+                        GameCommandError::InvalidPayload {
+                            index,
+                            message: "field `initial_frame` is too large for this runtime"
+                                .to_owned(),
+                        }
+                    })?
+                }
+                _ => {
+                    return Err(GameCommandError::InvalidPayload {
+                        index,
+                        message: "field `initial_frame` must be a non-negative integer".to_owned(),
+                    });
+                }
             };
             let clip = world
                 .get_resource::<SpriteAnimationClipRegistry2d>()
                 .and_then(|registry| registry.get(&clip_asset))
                 .ok_or_else(|| GameCommandError::InvalidPayload {
                     index,
-                    message: format!("Sprite Animation asset `{}` is not loaded in the current runtime", clip_asset.as_str()),
+                    message: format!(
+                        "Sprite Animation asset `{}` is not loaded in the current runtime",
+                        clip_asset.as_str()
+                    ),
                 })?;
             if initial_frame >= clip.frames.len() {
                 return Err(GameCommandError::InvalidPayload {
                     index,
-                    message: format!("initial Sprite Animation frame {initial_frame} is outside {} frames", clip.frames.len()),
+                    message: format!(
+                        "initial Sprite Animation frame {initial_frame} is outside {} frames",
+                        clip.frames.len()
+                    ),
                 });
             }
             Ok(PreparedAnimationCommand::SpriteSelectClip {
@@ -181,12 +198,7 @@ pub(super) fn prepare(
         }
         "trigger" => {
             let player = require_graph_player(world, index, target, entity)?;
-            prepare_trigger_parameter(
-                player,
-                index,
-                entity,
-                string_field(fields, "name", index)?,
-            )
+            prepare_trigger_parameter(player, index, entity, string_field(fields, "name", index)?)
         }
         other => Err(GameCommandError::InvalidPayload {
             index,
@@ -382,10 +394,16 @@ fn require_sprite_animator(
     target: GameEntityHandle,
     entity: Entity,
 ) -> Result<(), GameCommandError> {
-    if world.get_component::<SpriteAnimatorRuntime2d>(entity).is_none() {
+    if world
+        .get_component::<SpriteAnimatorRuntime2d>(entity)
+        .is_none()
+    {
         Err(GameCommandError::InvalidPayload {
             index,
-            message: format!("target {}:{} has no SpriteAnimator2D", target.id, target.generation),
+            message: format!(
+                "target {}:{} has no SpriteAnimator2D",
+                target.id, target.generation
+            ),
         })
     } else {
         Ok(())

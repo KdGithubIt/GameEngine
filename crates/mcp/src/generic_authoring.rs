@@ -3,17 +3,16 @@
 //! These handlers own only tool-shaped DTOs and delegate all authoring meaning
 //! to `engine-authoring` shared services.
 
-use crate::capability::domain_tool_descriptors;
 use crate::McpToolDescriptor;
+use crate::capability::domain_tool_descriptors;
 use engine_authoring::{
-    AuthoringCapabilityRegistry, AuthoringDomain,
-    AuthoringGraphDomain, AuthoringPermissions, Graph, GraphAuthoringError,
-    GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
-    GraphAuthoringValidation, GraphCommand, GraphView, GraphViewAuthoringError,
-    GraphViewAuthoringMutation, GraphViewAuthoringService, GraphViewAuthoringSnapshot,
-    GraphViewAuthoringValidation, GraphViewCommand, UiAuthoringError, UiAuthoringMutation,
-    UiAuthoringService, UiAuthoringSession, UiAuthoringSnapshot, UiAuthoringValidation,
-    UiDocumentCommand, UnsupportedGraphKind,
+    AuthoringCapabilityRegistry, AuthoringDomain, AuthoringGraphDomain, AuthoringPermissions,
+    Graph, GraphAuthoringError, GraphAuthoringMutation, GraphAuthoringService,
+    GraphAuthoringSnapshot, GraphAuthoringValidation, GraphCommand, GraphView,
+    GraphViewAuthoringError, GraphViewAuthoringMutation, GraphViewAuthoringService,
+    GraphViewAuthoringSnapshot, GraphViewAuthoringValidation, GraphViewCommand, UiAuthoringError,
+    UiAuthoringMutation, UiAuthoringService, UiAuthoringSession, UiAuthoringSnapshot,
+    UiAuthoringValidation, UiDocumentCommand, UnsupportedGraphKind,
 };
 use serde::Deserialize;
 use std::fmt;

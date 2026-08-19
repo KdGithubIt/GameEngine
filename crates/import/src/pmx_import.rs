@@ -156,7 +156,10 @@
 use crate::asset::SkeletonRecord;
 use crate::model_import::GltfImportResult;
 use crate::model_ir::{
-    IrJoint, IrMaterial, IrMaterialMorphOffset, IrMaterialMorphOperation, IrMesh, IrMorphTarget, IrNode, IrRigidBody, IrRigidBodyMode, IrRigidBodyRig, IrRigidBodyShape, IrSkin, IrTexture, ModelDocument, SkeletonScope, IrMeshData as Mesh, IrSkinningVertexData as SkinningVertexData, IrSubmesh as Submesh, IrVertex as Vertex,
+    IrJoint, IrMaterial, IrMaterialMorphOffset, IrMaterialMorphOperation, IrMesh,
+    IrMeshData as Mesh, IrMorphTarget, IrNode, IrRigidBody, IrRigidBodyMode, IrRigidBodyRig,
+    IrRigidBodyShape, IrSkin, IrSkinningVertexData as SkinningVertexData, IrSubmesh as Submesh,
+    IrTexture, IrVertex as Vertex, ModelDocument, SkeletonScope,
 };
 use crate::skinning::MAX_JOINTS;
 use engine_authoring::diagnostic::Diagnostic;
@@ -412,8 +415,10 @@ fn build_model_document(model: &PmxParsedModel, source_dir: Option<&Path>) -> Mo
     let bone_count = nodes.len();
 
     let (texture_paths, texture_index_of) = collect_texture_paths(&model.materials);
-    let (mut textures, texture_valid) = parse_textures(&texture_paths, source_dir, &mut diagnostics);
-    let shared_toon_selector = append_shared_toon_textures(&model.materials, &mut textures, texture_paths.len());
+    let (mut textures, texture_valid) =
+        parse_textures(&texture_paths, source_dir, &mut diagnostics);
+    let shared_toon_selector =
+        append_shared_toon_textures(&model.materials, &mut textures, texture_paths.len());
     let mut materials = parse_materials(
         &model.materials,
         &texture_index_of,
@@ -805,7 +810,9 @@ fn parse_materials(
                 (!path.is_empty())
                     .then(|| texture_index_of.get(path).copied())
                     .flatten()
-                    .filter(|&texture_index| texture_valid.get(texture_index).copied().unwrap_or(false))
+                    .filter(|&texture_index| {
+                        texture_valid.get(texture_index).copied().unwrap_or(false)
+                    })
             };
             // `toon_texture_path` (custom) and `shared_toon_index` (one of
             // MikuMikuDance's ten conventional ramps) are mutually
@@ -818,9 +825,18 @@ fn parse_materials(
                 .then(|| texture_ref(&material.sphere_texture_path))
                 .flatten();
             let (sphere_blend, sphere_coordinates) = match material.sphere_mode.as_str() {
-                "add" => (MaterialSphereBlendMode::Add, MaterialSphereCoordinateSource::ViewNormal),
-                "subTexture" => (MaterialSphereBlendMode::Multiply, MaterialSphereCoordinateSource::AdditionalUv0),
-                _ => (MaterialSphereBlendMode::Multiply, MaterialSphereCoordinateSource::ViewNormal),
+                "add" => (
+                    MaterialSphereBlendMode::Add,
+                    MaterialSphereCoordinateSource::ViewNormal,
+                ),
+                "subTexture" => (
+                    MaterialSphereBlendMode::Multiply,
+                    MaterialSphereCoordinateSource::AdditionalUv0,
+                ),
+                _ => (
+                    MaterialSphereBlendMode::Multiply,
+                    MaterialSphereCoordinateSource::ViewNormal,
+                ),
             };
 
             IrMaterial {
@@ -871,7 +887,12 @@ fn parse_materials(
                 },
                 shading_model: MaterialShadingModel::ToonLit,
                 toon_ramp_texture,
-                toon_shadow_color: LinearRgba { r: 0.55, g: 0.55, b: 0.62, a: 1.0 },
+                toon_shadow_color: LinearRgba {
+                    r: 0.55,
+                    g: 0.55,
+                    b: 0.62,
+                    a: 1.0,
+                },
                 toon_ambient_color: LinearRgba {
                     r: material.ambient[0],
                     g: material.ambient[1],
@@ -901,9 +922,7 @@ fn parse_materials(
                     // conventions still identify body surfaces reliably
                     // enough to retain a restrained skin/clothing boundary;
                     // all other materials preserve silhouette-only behavior.
-                    internal_boundary_strength: pmx_skin_internal_boundary_strength(
-                        &material.name,
-                    ),
+                    internal_boundary_strength: pmx_skin_internal_boundary_strength(&material.name),
                 },
                 cast_shadow: material.flags.self_shadow_map,
                 receive_shadow: material.flags.self_shadow,
@@ -981,7 +1000,8 @@ fn refine_alpha_modes_from_sampled_texels(
     let mut coverage = vec![(0usize, 0usize); materials.len()];
 
     for mesh in meshes {
-        for (range, material_index) in model_ir_draw_ranges(&mesh.mesh).iter()
+        for (range, material_index) in model_ir_draw_ranges(&mesh.mesh)
+            .iter()
             .zip(mesh.submesh_materials.iter())
         {
             let Some(material_index) = *material_index else {
@@ -1023,9 +1043,7 @@ fn refine_alpha_modes_from_sampled_texels(
         if sampled == 0 || non_opaque == 0 {
             continue;
         }
-        material.alpha_mode = if non_opaque as f32
-            >= sampled as f32 * TRANSLUCENT_COVERAGE_RATIO
-        {
+        material.alpha_mode = if non_opaque as f32 >= sampled as f32 * TRANSLUCENT_COVERAGE_RATIO {
             MaterialAlphaMode::Blend
         } else {
             MaterialAlphaMode::Mask
@@ -1528,7 +1546,10 @@ fn accumulate_morph(
     visiting.push(index);
 
     for offset in &morph.vertex_offsets {
-        let delta = out.vertex_deltas.entry(offset.vertex_index).or_insert([0.0; 3]);
+        let delta = out
+            .vertex_deltas
+            .entry(offset.vertex_index)
+            .or_insert([0.0; 3]);
         for (axis, value) in offset.position.iter().enumerate() {
             delta[axis] += value * weight;
         }
@@ -1707,7 +1728,10 @@ fn group_triangles_by_bone_locality(
     let mut current_bones: HashSet<usize> = HashSet::new();
     for triangle in order {
         let bones = &triangle_bones[triangle];
-        let additional = bones.iter().filter(|bone| !current_bones.contains(*bone)).count();
+        let additional = bones
+            .iter()
+            .filter(|bone| !current_bones.contains(*bone))
+            .count();
         if !current.is_empty() && current_bones.len() + additional > MAX_JOINTS {
             groups.push(std::mem::take(&mut current));
             current_bones.clear();
@@ -1929,7 +1953,7 @@ fn read_vec2(values: &[f32], index: usize, default: [f32; 2]) -> [f32; 2] {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::asset::{imported_sub_asset_id, ImportedSubAssetKind};
+    use crate::asset::{ImportedSubAssetKind, imported_sub_asset_id};
     use mmd_anim_format::pmx::{
         PmxParsedAppendTransform, PmxParsedBoneFlags, PmxParsedCounts, PmxParsedGroupMorphOffset,
         PmxParsedIndexSizes, PmxParsedJoint, PmxParsedMaterialFlags, PmxParsedMaterialMorphOffset,
@@ -2055,7 +2079,11 @@ pub(crate) mod tests {
         // Every vertex in the fixture is fully weighted to the "child" bone
         // alone, so that mesh's skin carries exactly one joint.
         let skin = &document.skins[0];
-        assert_eq!(skin.joint_nodes.len(), 1, "only the referenced bone is kept");
+        assert_eq!(
+            skin.joint_nodes.len(),
+            1,
+            "only the referenced bone is kept"
+        );
         let child_node = document
             .nodes
             .iter()
@@ -2082,13 +2110,21 @@ pub(crate) mod tests {
         let bytes = skinned_pmx_fixture();
         let document = parse_pmx(&bytes).expect("fixture must parse");
 
-        assert!(!document
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "pmx.toon_shading_unsupported"));
+        assert!(
+            !document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "pmx.toon_shading_unsupported")
+        );
         assert_eq!(document.materials.len(), 2);
-        assert_eq!(document.materials[0].shading_model, MaterialShadingModel::ToonLit);
-        assert_eq!(document.materials[1].shading_model, MaterialShadingModel::ToonLit);
+        assert_eq!(
+            document.materials[0].shading_model,
+            MaterialShadingModel::ToonLit
+        );
+        assert_eq!(
+            document.materials[1].shading_model,
+            MaterialShadingModel::ToonLit
+        );
     }
 
     fn shared_toon_material(name: &str, shared_toon_index: u8) -> PmxParsedMaterial {
@@ -2161,13 +2197,23 @@ pub(crate) mod tests {
         IrMaterial {
             source_index,
             name: format!("material_{source_index}"),
-            base_color: LinearRgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            base_color: LinearRgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
             base_color_texture,
             normal_texture: None,
             metallic_roughness_texture: None,
             occlusion_texture: None,
             emissive_texture: None,
-            emissive_color: LinearRgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            emissive_color: LinearRgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
             normal_scale: 1.0,
             occlusion_strength: 1.0,
             roughness: 0.5,
@@ -2177,16 +2223,36 @@ pub(crate) mod tests {
             cull_mode: MaterialCullMode::Back,
             shading_model: MaterialShadingModel::ToonLit,
             toon_ramp_texture: None,
-            toon_shadow_color: LinearRgba { r: 0.55, g: 0.55, b: 0.62, a: 1.0 },
-            toon_ambient_color: LinearRgba { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
-            toon_specular_color: LinearRgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            toon_shadow_color: LinearRgba {
+                r: 0.55,
+                g: 0.55,
+                b: 0.62,
+                a: 1.0,
+            },
+            toon_ambient_color: LinearRgba {
+                r: 0.5,
+                g: 0.5,
+                b: 0.5,
+                a: 1.0,
+            },
+            toon_specular_color: LinearRgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
             toon_specular_power: 1.0,
             sphere_texture: None,
             sphere_blend: MaterialSphereBlendMode::Multiply,
             sphere_coordinates: MaterialSphereCoordinateSource::ViewNormal,
             outline: MaterialOutline {
                 enabled: false,
-                color: LinearRgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                color: LinearRgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
                 width: 0.0,
                 internal_boundary_strength: 0.0,
             },
@@ -2195,7 +2261,11 @@ pub(crate) mod tests {
         }
     }
 
-    fn single_material_mesh(source_index: usize, material_index: usize, uvs: &[[f32; 2]]) -> IrMesh {
+    fn single_material_mesh(
+        source_index: usize,
+        material_index: usize,
+        uvs: &[[f32; 2]],
+    ) -> IrMesh {
         let vertices = uvs
             .iter()
             .map(|&uv| Vertex {
@@ -2231,7 +2301,9 @@ pub(crate) mod tests {
             name: "atlas".to_owned(),
             width: 2,
             height: 1,
-            rgba8: vec![255, 255, 255, 255, /* opaque */ 0, 0, 0, 0 /* transparent */],
+            rgba8: vec![
+                255, 255, 255, 255, /* opaque */ 0, 0, 0, 0, /* transparent */
+            ],
         }
     }
 
@@ -2386,8 +2458,8 @@ pub(crate) mod tests {
         for mesh in &first.meshes {
             for morph in &mesh.morphs {
                 assert!(
-                    ids.iter()
-                        .any(|(id, index)| *id == morph.id.as_str() && *index as usize == morph.source_index),
+                    ids.iter().any(|(id, index)| *id == morph.id.as_str()
+                        && *index as usize == morph.source_index),
                     "morph `{}` is missing from the catalog under its own selector",
                     morph.name
                 );
@@ -2417,8 +2489,14 @@ pub(crate) mod tests {
             None,
             "PMX -1 is the valid unbound-body sentinel"
         );
-        assert_eq!(resolve_rigid_body_bone_index(1, 2, &mut invalid_bones), Some(1));
-        assert_eq!(resolve_rigid_body_bone_index(5, 2, &mut invalid_bones), None);
+        assert_eq!(
+            resolve_rigid_body_bone_index(1, 2, &mut invalid_bones),
+            Some(1)
+        );
+        assert_eq!(
+            resolve_rigid_body_bone_index(5, 2, &mut invalid_bones),
+            None
+        );
         assert_eq!(invalid_bones, 1);
 
         let mut unsupported_modes = 0;
@@ -2450,9 +2528,11 @@ pub(crate) mod tests {
 
         assert_eq!(rig.bodies.len(), 2);
         assert!(rig.joints.is_empty());
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "pmx.joint_kind_unsupported"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "pmx.joint_kind_unsupported")
+        );
     }
 
     #[test]
@@ -2462,9 +2542,11 @@ pub(crate) mod tests {
         let mut diagnostics = Vec::new();
 
         assert!(parse_rigid_body_rig(&model, &[], &mut diagnostics).is_none());
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "pmx.joint_without_bodies"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "pmx.joint_without_bodies")
+        );
     }
 
     #[test]
@@ -2609,8 +2691,7 @@ pub(crate) mod tests {
             );
         }
         let direct = crate::model_import::build_import_result(&document, &source, &[]);
-        let via_entry_point =
-            import_pmx_bytes(&source, &bytes, &[]).expect("entry point import");
+        let via_entry_point = import_pmx_bytes(&source, &bytes, &[]).expect("entry point import");
         assert_eq!(
             direct.imported_sub_assets(),
             via_entry_point.imported_sub_assets()

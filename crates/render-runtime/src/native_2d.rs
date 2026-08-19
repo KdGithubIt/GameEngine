@@ -347,10 +347,7 @@ pub struct ViewRect2d {
 impl ViewRect2d {
     /// Returns whether one XY bounds pair intersects the view.
     pub fn intersects(self, min: Vec2, max: Vec2) -> bool {
-        self.min.x <= max.x
-            && self.max.x >= min.x
-            && self.min.y <= max.y
-            && self.max.y >= min.y
+        self.min.x <= max.x && self.max.x >= min.x && self.min.y <= max.y && self.max.y >= min.y
     }
 }
 
@@ -384,7 +381,10 @@ pub fn cull_tile_chunks<'a>(
     chunks
         .into_iter()
         .filter(|chunk| view.intersects(chunk.min, chunk.max))
-        .map(|chunk| VisibleTileChunk2d { layer: chunk.layer.clone(), coord: chunk.coord })
+        .map(|chunk| VisibleTileChunk2d {
+            layer: chunk.layer.clone(),
+            coord: chunk.coord,
+        })
         .collect()
 }
 
@@ -413,7 +413,10 @@ mod tests {
         let sprite = SpriteId::generate();
         let make = |entity_key| SpriteInstance2d {
             entity_key,
-            sprite: SpriteRef { atlas: atlas.clone(), sprite: sprite.clone() },
+            sprite: SpriteRef {
+                atlas: atlas.clone(),
+                sprite: sprite.clone(),
+            },
             sorting_layer: layer.clone(),
             layer_rank: 0,
             order_in_layer: 0,

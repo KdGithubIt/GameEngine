@@ -7,13 +7,13 @@
 //! component means adding one entry here plus its spawn callback.
 
 use super::definition::{
-    asset_ref, boolean, entity_ref, enumeration, filtered_entity_ref, float, integer, number, text,
-    BuiltinComponent, FieldDef, FieldDefaultSpec, FieldKind,
+    BuiltinComponent, FieldDef, FieldDefaultSpec, FieldKind, asset_ref, boolean, entity_ref,
+    enumeration, filtered_entity_ref, float, integer, number, text,
 };
 use super::schemas::{authoring_builtin_schema, builtin_asset_id};
 use super::{
-    AssetKind, InspectorFieldCondition, InspectorFieldControl, NumericRange, NON_NEGATIVE,
-    POSITIVE, UNIT_INTERVAL, U32_RANGE,
+    AssetKind, InspectorFieldCondition, InspectorFieldControl, NON_NEGATIVE, NumericRange,
+    POSITIVE, U32_RANGE, UNIT_INTERVAL,
 };
 use crate::asset::Assets;
 use crate::camera::{Camera3D, OrbitCamera};
@@ -65,7 +65,11 @@ const fn list(
 }
 
 /// Declares a free-form string-keyed map field defaulting to empty.
-const fn map(name: &'static str, display_name: &'static str, description: &'static str) -> FieldDef {
+const fn map(
+    name: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+) -> FieldDef {
     FieldDef::new(
         name,
         display_name,
@@ -236,46 +240,223 @@ const CAMERA_FIELDS: &[FieldDef] = &[
 ];
 
 const CAMERA_2D_FIELDS: &[FieldDef] = &[
-    boolean("enabled", "Enabled", "Whether this camera participates in shared Game View arbitration.", true),
-    integer("priority", "Priority", "Shared 2D/3D camera selection priority; higher values win.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
-    number("orthographic_height", "Orthographic Height", "Vertical world-space span before zoom.", 10.0, POSITIVE),
-    number("zoom", "Zoom", "Positive orthographic zoom multiplier.", 1.0, POSITIVE),
-    float("near", "Near", "Near clipping plane in Camera2D space.", -1000.0),
-    float("far", "Far", "Far clipping plane in Camera2D space; must exceed Near.", 1000.0),
-    boolean("pixel_perfect", "Pixel Perfect", "Use deterministic reference-pixel projection without rewriting authored transforms.", false),
-    number("reference_pixels_per_unit", "Reference Pixels Per Unit", "Reference source pixels represented by one world unit.", 100.0, POSITIVE),
-    integer("reference_width", "Reference Width", "Pixel-perfect reference resolution width.", 320, U32_RANGE),
-    integer("reference_height", "Reference Height", "Pixel-perfect reference resolution height.", 180, U32_RANGE),
-    enumeration("fit", "Viewport Fit", "How the reference frame fits the actual viewport.", "fit", &["fit", "fill", "stretch"]),
+    boolean(
+        "enabled",
+        "Enabled",
+        "Whether this camera participates in shared Game View arbitration.",
+        true,
+    ),
+    integer(
+        "priority",
+        "Priority",
+        "Shared 2D/3D camera selection priority; higher values win.",
+        0,
+        NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64),
+    ),
+    number(
+        "orthographic_height",
+        "Orthographic Height",
+        "Vertical world-space span before zoom.",
+        10.0,
+        POSITIVE,
+    ),
+    number(
+        "zoom",
+        "Zoom",
+        "Positive orthographic zoom multiplier.",
+        1.0,
+        POSITIVE,
+    ),
+    float(
+        "near",
+        "Near",
+        "Near clipping plane in Camera2D space.",
+        -1000.0,
+    ),
+    float(
+        "far",
+        "Far",
+        "Far clipping plane in Camera2D space; must exceed Near.",
+        1000.0,
+    ),
+    boolean(
+        "pixel_perfect",
+        "Pixel Perfect",
+        "Use deterministic reference-pixel projection without rewriting authored transforms.",
+        false,
+    ),
+    number(
+        "reference_pixels_per_unit",
+        "Reference Pixels Per Unit",
+        "Reference source pixels represented by one world unit.",
+        100.0,
+        POSITIVE,
+    ),
+    integer(
+        "reference_width",
+        "Reference Width",
+        "Pixel-perfect reference resolution width.",
+        320,
+        U32_RANGE,
+    ),
+    integer(
+        "reference_height",
+        "Reference Height",
+        "Pixel-perfect reference resolution height.",
+        180,
+        U32_RANGE,
+    ),
+    enumeration(
+        "fit",
+        "Viewport Fit",
+        "How the reference frame fits the actual viewport.",
+        "fit",
+        &["fit", "fill", "stretch"],
+    ),
 ];
 
 const SPRITE_RENDERER_2D_FIELDS: &[FieldDef] = &[
-    asset_ref("atlas", "Sprite Atlas", "Sprite Atlas document containing the stable SpriteId region.", AssetKind::SpriteAtlas, FieldDefaultSpec::Unassigned),
-    text("sprite_id", "Sprite ID", "Stable SpriteId inside the selected atlas.", ""),
-    number("tint_r", "Tint R", "Linear red tint multiplier.", 1.0, NON_NEGATIVE),
-    number("tint_g", "Tint G", "Linear green tint multiplier.", 1.0, NON_NEGATIVE),
-    number("tint_b", "Tint B", "Linear blue tint multiplier.", 1.0, NON_NEGATIVE),
-    number("tint_a", "Tint A", "Linear alpha tint multiplier.", 1.0, UNIT_INTERVAL),
-    boolean("flip_x", "Flip X", "Mirror texture coordinates horizontally.", false),
-    boolean("flip_y", "Flip Y", "Mirror texture coordinates vertically.", false),
-    text("sorting_layer", "Sorting Layer ID", "Stable SortingLayerId from Project Settings.", "sorting_layer_00000000000000000000000000"),
-    integer("order_in_layer", "Order In Layer", "Signed authored order inside the logical sorting layer.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
-    boolean("visible", "Visible", "Whether this sprite contributes a runtime draw.", true),
-    enumeration("blend", "Blend", "Supported unlit SpriteRenderer2D blend mode.", "alpha", &["alpha", "premultiplied_alpha", "additive"]),
-    asset_ref("material_override", "Material Override", "Optional material compatibility override used for deterministic batching.", AssetKind::Material, FieldDefaultSpec::Unassigned).optional(),
+    asset_ref(
+        "atlas",
+        "Sprite Atlas",
+        "Sprite Atlas document containing the stable SpriteId region.",
+        AssetKind::SpriteAtlas,
+        FieldDefaultSpec::Unassigned,
+    ),
+    text(
+        "sprite_id",
+        "Sprite ID",
+        "Stable SpriteId inside the selected atlas.",
+        "",
+    ),
+    number(
+        "tint_r",
+        "Tint R",
+        "Linear red tint multiplier.",
+        1.0,
+        NON_NEGATIVE,
+    ),
+    number(
+        "tint_g",
+        "Tint G",
+        "Linear green tint multiplier.",
+        1.0,
+        NON_NEGATIVE,
+    ),
+    number(
+        "tint_b",
+        "Tint B",
+        "Linear blue tint multiplier.",
+        1.0,
+        NON_NEGATIVE,
+    ),
+    number(
+        "tint_a",
+        "Tint A",
+        "Linear alpha tint multiplier.",
+        1.0,
+        UNIT_INTERVAL,
+    ),
+    boolean(
+        "flip_x",
+        "Flip X",
+        "Mirror texture coordinates horizontally.",
+        false,
+    ),
+    boolean(
+        "flip_y",
+        "Flip Y",
+        "Mirror texture coordinates vertically.",
+        false,
+    ),
+    text(
+        "sorting_layer",
+        "Sorting Layer ID",
+        "Stable SortingLayerId from Project Settings.",
+        "sorting_layer_00000000000000000000000000",
+    ),
+    integer(
+        "order_in_layer",
+        "Order In Layer",
+        "Signed authored order inside the logical sorting layer.",
+        0,
+        NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64),
+    ),
+    boolean(
+        "visible",
+        "Visible",
+        "Whether this sprite contributes a runtime draw.",
+        true,
+    ),
+    enumeration(
+        "blend",
+        "Blend",
+        "Supported unlit SpriteRenderer2D blend mode.",
+        "alpha",
+        &["alpha", "premultiplied_alpha", "additive"],
+    ),
+    asset_ref(
+        "material_override",
+        "Material Override",
+        "Optional material compatibility override used for deterministic batching.",
+        AssetKind::Material,
+        FieldDefaultSpec::Unassigned,
+    )
+    .optional(),
 ];
 
 const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
-    asset_ref("clip", "Sprite Animation", "Sprite Animation document evaluated independently for this entity.", AssetKind::SpriteAnimation, FieldDefaultSpec::Unassigned),
-    boolean("autoplay", "Autoplay", "Start clip playback when the runtime entity becomes active.", true),
-    number("speed", "Speed", "Non-negative deterministic playback speed multiplier.", 1.0, NON_NEGATIVE),
-    FieldDef::new("looping_override", "Looping Override", "Optional per-entity looping override; unassigned uses the clip default.", FieldKind::Bool, FieldDefaultSpec::Unassigned).optional(),
-    integer("initial_frame", "Initial Frame", "Zero-based initial frame selected when playback becomes active.", 0, U32_RANGE),
+    asset_ref(
+        "clip",
+        "Sprite Animation",
+        "Sprite Animation document evaluated independently for this entity.",
+        AssetKind::SpriteAnimation,
+        FieldDefaultSpec::Unassigned,
+    ),
+    boolean(
+        "autoplay",
+        "Autoplay",
+        "Start clip playback when the runtime entity becomes active.",
+        true,
+    ),
+    number(
+        "speed",
+        "Speed",
+        "Non-negative deterministic playback speed multiplier.",
+        1.0,
+        NON_NEGATIVE,
+    ),
+    FieldDef::new(
+        "looping_override",
+        "Looping Override",
+        "Optional per-entity looping override; unassigned uses the clip default.",
+        FieldKind::Bool,
+        FieldDefaultSpec::Unassigned,
+    )
+    .optional(),
+    integer(
+        "initial_frame",
+        "Initial Frame",
+        "Zero-based initial frame selected when playback becomes active.",
+        0,
+        U32_RANGE,
+    ),
 ];
 
 const TILE_MAP_2D_FIELDS: &[FieldDef] = &[
-    asset_ref("tile_map", "Tile Map", "Sparse chunked Tile Map document rendered by this scene entity.", AssetKind::TileMap, FieldDefaultSpec::Unassigned),
-    boolean("visible", "Visible", "Whether enabled Tile Map layers contribute runtime render output.", true),
+    asset_ref(
+        "tile_map",
+        "Tile Map",
+        "Sparse chunked Tile Map document rendered by this scene entity.",
+        AssetKind::TileMap,
+        FieldDefaultSpec::Unassigned,
+    ),
+    boolean(
+        "visible",
+        "Visible",
+        "Whether enabled Tile Map layers contribute runtime render output.",
+        true,
+    ),
 ];
 
 const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
@@ -1331,7 +1512,12 @@ const HAS_NAV_TARGET: InspectorFieldCondition = InspectorFieldCondition::Bool {
 };
 
 const NAV_MESH_AGENT_FIELDS: &[FieldDef] = &[
-    text("profile_id", "Agent Profile", "Stable navigation profile ID selected from the bake document.", "default"),
+    text(
+        "profile_id",
+        "Agent Profile",
+        "Stable navigation profile ID selected from the bake document.",
+        "default",
+    ),
     FieldDef::new(
         "speed",
         "Speed",
@@ -1425,16 +1611,72 @@ const NAVIGATION_LINK_FIELDS: &[FieldDef] = &[
 ];
 
 const NAVIGATION_MODIFIER_FIELDS: &[FieldDef] = &[
-    float("center_x", "Center X", "World-space modifier center X.", 0.0),
-    float("center_y", "Center Y", "World-space modifier center Y.", 0.0),
-    float("center_z", "Center Z", "World-space modifier center Z.", 0.0),
-    number("half_extents_x", "Half Extent X", "Modifier half extent X.", 0.5, NON_NEGATIVE),
-    number("half_extents_y", "Half Extent Y", "Modifier half extent Y.", 0.5, NON_NEGATIVE),
-    number("half_extents_z", "Half Extent Z", "Modifier half extent Z.", 0.5, NON_NEGATIVE),
-    list("profiles", "Profiles", "Stable profile IDs affected by this modifier; empty means every profile.", &STRING_KIND),
-    enumeration("mode", "Mode", "Exclude navigation or replace its area/cost.", "exclude", &["exclude", "area"]),
-    integer("area", "Area", "Area ID used when mode is area.", 0, NumericRange::inclusive(0.0, u16::MAX as f64)),
-    number("cost_multiplier", "Cost Multiplier", "Positive traversal-cost multiplier used when mode is area.", 1.0, POSITIVE),
+    float(
+        "center_x",
+        "Center X",
+        "World-space modifier center X.",
+        0.0,
+    ),
+    float(
+        "center_y",
+        "Center Y",
+        "World-space modifier center Y.",
+        0.0,
+    ),
+    float(
+        "center_z",
+        "Center Z",
+        "World-space modifier center Z.",
+        0.0,
+    ),
+    number(
+        "half_extents_x",
+        "Half Extent X",
+        "Modifier half extent X.",
+        0.5,
+        NON_NEGATIVE,
+    ),
+    number(
+        "half_extents_y",
+        "Half Extent Y",
+        "Modifier half extent Y.",
+        0.5,
+        NON_NEGATIVE,
+    ),
+    number(
+        "half_extents_z",
+        "Half Extent Z",
+        "Modifier half extent Z.",
+        0.5,
+        NON_NEGATIVE,
+    ),
+    list(
+        "profiles",
+        "Profiles",
+        "Stable profile IDs affected by this modifier; empty means every profile.",
+        &STRING_KIND,
+    ),
+    enumeration(
+        "mode",
+        "Mode",
+        "Exclude navigation or replace its area/cost.",
+        "exclude",
+        &["exclude", "area"],
+    ),
+    integer(
+        "area",
+        "Area",
+        "Area ID used when mode is area.",
+        0,
+        NumericRange::inclusive(0.0, u16::MAX as f64),
+    ),
+    number(
+        "cost_multiplier",
+        "Cost Multiplier",
+        "Positive traversal-cost multiplier used when mode is area.",
+        1.0,
+        POSITIVE,
+    ),
 ];
 
 const RUNTIME_METADATA_FIELDS: &[FieldDef] = &[

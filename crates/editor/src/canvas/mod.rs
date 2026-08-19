@@ -326,9 +326,10 @@ pub fn show_graph_canvas(
                 pointer,
                 EDGE_HIT_RADIUS,
             )
-        }) {
-            actions.push(GraphCanvasAction::EdgeClicked { edge });
-        }
+        })
+    {
+        actions.push(GraphCanvasAction::EdgeClicked { edge });
+    }
 
     if canvas_response.secondary_clicked() {
         state.context_add_position = canvas_response
@@ -374,9 +375,7 @@ pub fn show_graph_canvas(
                 .into_iter()
                 .filter(|kind| kind.matches_search(&state.node_search))
             {
-                if !session.is_animation_graph()
-                    && kind.category() != last_category.as_str()
-                {
+                if !session.is_animation_graph() && kind.category() != last_category.as_str() {
                     if !last_category.is_empty() {
                         ui.separator();
                     }
@@ -475,10 +474,11 @@ pub fn show_graph_canvas(
         let mut preview_position = position;
         if response.dragged_by(egui::PointerButton::Primary)
             && let Some(drag) = &mut state.drag
-                && drag.node == *node_id {
-                    drag.accumulated_offset += response.drag_motion();
-                    preview_position = drag.position();
-                }
+            && drag.node == *node_id
+        {
+            drag.accumulated_offset += response.drag_motion();
+            preview_position = drag.position();
+        }
 
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             if let Some(drag) = state.drag.take() {
@@ -522,16 +522,17 @@ pub fn show_graph_canvas(
                 });
             }
             if handle_response.drag_stopped_by(egui::PointerButton::Primary)
-                && let Some(source) = state.connect_drag.take() {
-                    let target = ui
-                        .input(|input| input.pointer.latest_pos())
-                        .and_then(|pointer| {
-                            node_at_screen_position(canvas_view, &layout_positions, pointer)
-                        });
-                    if let Some(target) = target.filter(|target| target != &source) {
-                        actions.push(GraphCanvasAction::ConnectNodes { source, target });
-                    }
+                && let Some(source) = state.connect_drag.take()
+            {
+                let target = ui
+                    .input(|input| input.pointer.latest_pos())
+                    .and_then(|pointer| {
+                        node_at_screen_position(canvas_view, &layout_positions, pointer)
+                    });
+                if let Some(target) = target.filter(|target| target != &source) {
+                    actions.push(GraphCanvasAction::ConnectNodes { source, target });
                 }
+            }
         }
 
         preview_positions.insert(node_id.clone(), preview_position);
@@ -607,10 +608,7 @@ pub fn show_graph_canvas(
 }
 
 #[cfg(feature = "visual-validation")]
-pub(crate) fn show_graph_node_palette_visual_fixture(
-    ui: &mut egui::Ui,
-    session: &EditorSession,
-) {
+pub(crate) fn show_graph_node_palette_visual_fixture(ui: &mut egui::Ui, session: &EditorSession) {
     ui.heading("Behavior Tree Add Node");
     ui.small("Schema-driven node palette");
     ui.separator();
@@ -911,10 +909,11 @@ fn paint_edges(
         );
 
         if session.is_animation_graph()
-            && let Some(label) = animation_edge_label(session, edge) {
-                draw_transition_badge(painter, &path, stroke);
-                draw_transition_label(painter, path.label_center, &label, selected, hovered);
-            }
+            && let Some(label) = animation_edge_label(session, edge)
+        {
+            draw_transition_badge(painter, &path, stroke);
+            draw_transition_label(painter, path.label_center, &label, selected, hovered);
+        }
     }
 }
 
@@ -1366,12 +1365,7 @@ fn draw_debug_overlay(
             Color32::from_rgb(22, 24, 28),
         );
         if badge == GraphDebugBadge::Running {
-            painter.rect_stroke(
-                rect,
-                4.0,
-                Stroke::new(4.0_f32, color),
-                StrokeKind::Inside,
-            );
+            painter.rect_stroke(rect, 4.0, Stroke::new(4.0_f32, color), StrokeKind::Inside);
         }
     }
 
@@ -1599,9 +1593,11 @@ mod tests {
         positions.insert(NodeId::generate(), Vec2::new(4200.0, -3100.0));
         positions.insert(NodeId::generate(), Vec2::new(4400.0, -2900.0));
         let stranded = CanvasView::new(canvas, EguiVec2::ZERO);
-        assert!(positions
-            .values()
-            .all(|position| !stranded.node_rect(*position).intersects(canvas)));
+        assert!(
+            positions
+                .values()
+                .all(|position| !stranded.node_rect(*position).intersects(canvas))
+        );
 
         let framed = CanvasView::new(canvas, frame_all_pan(canvas, &positions));
 

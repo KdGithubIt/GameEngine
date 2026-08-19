@@ -1,7 +1,7 @@
 //! Level-of-detail (LOD) component and selection system (Phase 47).
 
 use crate::asset::Handle;
-use crate::camera::{select_active_game_camera, Camera3D};
+use crate::camera::{Camera3D, select_active_game_camera};
 use crate::mesh::Mesh;
 use crate::transform::GlobalTransform;
 use engine_ecs::Query;
@@ -149,8 +149,7 @@ mod tests {
             .add_component(low_priority_camera, Camera3D::default())
             .expect("low-priority camera must accept Camera3D");
 
-        let high_priority_camera =
-            spawn_with_global(&mut world, Vec3::new(0.0, 0.0, -49.0));
+        let high_priority_camera = spawn_with_global(&mut world, Vec3::new(0.0, 0.0, -49.0));
         let high_priority = Camera3D {
             priority: 10,
             ..Camera3D::default()

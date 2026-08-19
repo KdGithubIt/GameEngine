@@ -1,9 +1,9 @@
 use engine::camera::default_camera_transform;
 use engine::scene_bridge::spawn_from_authoring_scene;
 use engine::{
-    character_controller_system, player_character_motor_system, player_controller_system, App,
-    Camera3D, Collider, GlobalTransform, KinematicCharacterController, MovePlane, PhysicsBody,
-    PlayerController, PlayerMarker, Query,
+    App, Camera3D, Collider, GlobalTransform, KinematicCharacterController, MovePlane, PhysicsBody,
+    PlayerController, PlayerMarker, Query, character_controller_system,
+    player_character_motor_system, player_controller_system,
 };
 use engine_authoring::load_scene_from_json;
 

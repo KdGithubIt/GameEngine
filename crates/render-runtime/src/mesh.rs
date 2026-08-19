@@ -379,20 +379,22 @@ impl Mesh {
         }
 
         if let Some(skinning) = &self.skinning
-            && skinning.len() != self.vertices.len() {
-                return Err(MeshValidationError::SkinningLengthMismatch {
-                    skinning_count: skinning.len(),
-                    vertex_count: self.vertices.len(),
-                });
-            }
+            && skinning.len() != self.vertices.len()
+        {
+            return Err(MeshValidationError::SkinningLengthMismatch {
+                skinning_count: skinning.len(),
+                vertex_count: self.vertices.len(),
+            });
+        }
 
         if let Some(tangents) = &self.tangents
-            && tangents.len() != self.vertices.len() {
-                return Err(MeshValidationError::TangentLengthMismatch {
-                    tangent_count: tangents.len(),
-                    vertex_count: self.vertices.len(),
-                });
-            }
+            && tangents.len() != self.vertices.len()
+        {
+            return Err(MeshValidationError::TangentLengthMismatch {
+                tangent_count: tangents.len(),
+                vertex_count: self.vertices.len(),
+            });
+        }
 
         Ok(())
     }
@@ -676,12 +678,7 @@ fn gpu_tangent_data(mesh: &Mesh) -> Vec<TangentVertexData> {
             .copied()
             .map(|tangent| TangentVertexData { tangent })
             .collect(),
-        None => vec![
-            TangentVertexData {
-                tangent: [0.0; 4],
-            };
-            mesh.vertices.len()
-        ],
+        None => vec![TangentVertexData { tangent: [0.0; 4] }; mesh.vertices.len()],
     }
 }
 
@@ -1092,7 +1089,10 @@ impl SharedGpuMeshCache {
     /// Returns an upload already shared for identical mesh contents on `device`.
     #[doc(hidden)]
     pub fn get(&self, device: &wgpu::Device, mesh: &Mesh) -> Option<GpuMesh> {
-        let key = (device as *const wgpu::Device as usize, mesh_content_key(mesh));
+        let key = (
+            device as *const wgpu::Device as usize,
+            mesh_content_key(mesh),
+        );
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1103,7 +1103,10 @@ impl SharedGpuMeshCache {
     /// Shares a GPU upload under the device and mesh's stable content key.
     #[doc(hidden)]
     pub fn insert(&self, device: &wgpu::Device, mesh: &Mesh, gpu_mesh: GpuMesh) {
-        let key = (device as *const wgpu::Device as usize, mesh_content_key(mesh));
+        let key = (
+            device as *const wgpu::Device as usize,
+            mesh_content_key(mesh),
+        );
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1306,9 +1309,11 @@ mod tests {
         let mut sourced = Mesh::triangle();
         sourced.tangents = Some(vec![[1.0, 0.0, 0.0, -1.0]; sourced.vertices.len()]);
         let sourced_gpu = gpu_tangent_data(&sourced);
-        assert!(sourced_gpu
-            .iter()
-            .all(|entry| entry.tangent == [1.0, 0.0, 0.0, -1.0]));
+        assert!(
+            sourced_gpu
+                .iter()
+                .all(|entry| entry.tangent == [1.0, 0.0, 0.0, -1.0])
+        );
     }
 
     #[test]
@@ -1328,10 +1333,11 @@ mod tests {
         let mesh = Mesh::plane(2.0, 4.0);
 
         assert!(mesh.vertices.iter().all(|vertex| vertex.position[1] == 0.0));
-        assert!(mesh
-            .vertices
-            .iter()
-            .all(|vertex| vertex.normal == [0.0, 1.0, 0.0]));
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|vertex| vertex.normal == [0.0, 1.0, 0.0])
+        );
     }
 
     #[test]
@@ -1433,12 +1439,14 @@ mod tests {
             "one quad face has at most 4 distinct vertices"
         );
         assert_eq!(baked.indices.as_ref().map(Vec::len), Some(6));
-        assert!(baked
-            .indices
-            .as_ref()
-            .unwrap()
-            .iter()
-            .all(|&index| (index as usize) < baked.vertices.len()));
+        assert!(
+            baked
+                .indices
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|&index| (index as usize) < baked.vertices.len())
+        );
     }
 
     #[test]

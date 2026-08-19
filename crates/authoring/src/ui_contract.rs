@@ -239,10 +239,16 @@ impl fmt::Display for UiContractError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BlankDeclaration { category } => {
-                write!(formatter, "UI {category} declaration name must not be blank")
+                write!(
+                    formatter,
+                    "UI {category} declaration name must not be blank"
+                )
             }
             Self::DuplicateDeclaration { category, name } => {
-                write!(formatter, "UI {category} `{name}` is declared more than once")
+                write!(
+                    formatter,
+                    "UI {category} `{name}` is declared more than once"
+                )
             }
             Self::BlankInitialFocus => write!(formatter, "UI initial focus must not be blank"),
             Self::MissingFocusNode { node } => {
@@ -361,9 +367,11 @@ mod tests {
         let errors = contract
             .validate(&document_with_buttons())
             .expect_err("duplicate direction must fail validation");
-        assert!(errors
-            .iter()
-            .any(|error| matches!(error, UiContractError::DuplicateFocusDirection { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, UiContractError::DuplicateFocusDirection { .. }))
+        );
     }
 
     #[test]

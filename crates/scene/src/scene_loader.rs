@@ -5,7 +5,7 @@
 //! [`engine_authoring::ProjectRoot::resolve_asset`] to prevent traversal
 //! outside the project.
 
-use engine_authoring::{load_scene_from_json, AuthoringScene, Diagnostic, ProjectRoot};
+use engine_authoring::{AuthoringScene, Diagnostic, ProjectRoot, load_scene_from_json};
 use std::{fmt, io};
 
 /// Error returned by [`SceneLoader::load`].
@@ -97,7 +97,7 @@ impl SceneLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_authoring::{ProjectConfig, PROJECT_SCHEMA_VERSION};
+    use engine_authoring::{PROJECT_SCHEMA_VERSION, ProjectConfig};
 
     fn make_project() -> (tempfile::TempDir, ProjectRoot) {
         let dir = tempfile::tempdir().unwrap();

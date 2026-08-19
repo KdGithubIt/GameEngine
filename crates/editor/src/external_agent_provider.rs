@@ -448,13 +448,13 @@ fn translate_codex_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
                             success: None,
                         });
                     }
-                    Some("command_execution") => events.push(
-                        ExternalAgentSemanticEvent::ToolAction {
+                    Some("command_execution") => {
+                        events.push(ExternalAgentSemanticEvent::ToolAction {
                             tool: "provider.command".to_owned(),
                             action: "provider command activity",
                             success: None,
-                        },
-                    ),
+                        })
+                    }
                     Some("file_change") => events.push(ExternalAgentSemanticEvent::ToolAction {
                         tool: "workspace.file_change".to_owned(),
                         action: "provider workspace edit",
@@ -480,10 +480,7 @@ fn translate_codex_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
 
 fn collect_protocol_payloads(text: &str, events: &mut Vec<ExternalAgentSemanticEvent>) {
     for line in text.lines() {
-        if let Some(payload) = line
-            .trim()
-            .strip_prefix(GAMEENGINE_AGENT_EVENT_PREFIX)
-        {
+        if let Some(payload) = line.trim().strip_prefix(GAMEENGINE_AGENT_EVENT_PREFIX) {
             events.push(ExternalAgentSemanticEvent::GameEngineProtocolPayload(
                 payload.to_owned(),
             ));
@@ -542,7 +539,9 @@ impl ExternalAgentDiagnostics {
         }
         if self.mcp {
             return ExternalAgentFailureClassification {
-                message: format!("{provider} could not use the injected GameEngine MCP connection."),
+                message: format!(
+                    "{provider} could not use the injected GameEngine MCP connection."
+                ),
                 retryable: true,
             };
         }

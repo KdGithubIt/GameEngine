@@ -1,12 +1,12 @@
 //! Behavior Tree runtime snapshot presentation for Editor Play mode.
 
 use super::*;
-use crate::canvas::{
-    show_graph_debug_canvas, GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation,
-    GraphDebugOverlay,
-};
 #[cfg(feature = "visual-validation")]
 use crate::canvas::show_graph_node_palette_visual_fixture;
+use crate::canvas::{
+    GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation, GraphDebugOverlay,
+    show_graph_debug_canvas,
+};
 use engine::behavior_tree::{
     BehaviorExecutionSnapshot, BehaviorExecutionTransitionKind, BehaviorResetReason, BehaviorStatus,
 };
@@ -103,7 +103,8 @@ impl BehaviorTreeDebugState {
         }
 
         let Some(project) = project else {
-            self.message = Some("The Play session has no project root for source graph lookup.".into());
+            self.message =
+                Some("The Play session has no project root for source graph lookup.".into());
             return;
         };
         let Some(path) = find_graph_source(&project.assets_root(), &snapshot.tree_source) else {
@@ -115,7 +116,9 @@ impl BehaviorTreeDebugState {
         };
         let mut session = EditorSession::empty_behavior_tree();
         match session.open_graph_discarding_changes(path.clone()) {
-            Ok(()) if session.graph().id == snapshot.tree_source && !session.is_animation_graph() => {
+            Ok(())
+                if session.graph().id == snapshot.tree_source && !session.is_animation_graph() =>
+            {
                 self.source_fingerprint = GraphFileFingerprint::read(&path);
                 self.source_path = Some(path);
                 self.graph_session = Some(session);
@@ -129,7 +132,9 @@ impl BehaviorTreeDebugState {
                 );
             }
             Err(error) => {
-                self.message = Some(format!("Could not load the source Behavior Tree graph: {error}"));
+                self.message = Some(format!(
+                    "Could not load the source Behavior Tree graph: {error}"
+                ));
             }
         }
     }
@@ -167,10 +172,12 @@ impl BehaviorTreeDebugState {
             .iter()
             .take(3)
             .enumerate()
-            .map(|(index, node)| engine::behavior_tree::BehaviorActiveNodeSnapshot {
-                node: node.clone(),
-                elapsed_seconds: 0.35 + index as f64 * 0.42,
-            })
+            .map(
+                |(index, node)| engine::behavior_tree::BehaviorActiveNodeSnapshot {
+                    node: node.clone(),
+                    elapsed_seconds: 0.35 + index as f64 * 0.42,
+                },
+            )
             .collect();
         let mut recent_transitions = Vec::new();
         recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
@@ -671,8 +678,7 @@ mod tests {
         };
         let before = snapshot.clone();
 
-        let presentation =
-            BehaviorTreeDebugPresentation::from_snapshot(Some((5, 2)), &snapshot);
+        let presentation = BehaviorTreeDebugPresentation::from_snapshot(Some((5, 2)), &snapshot);
 
         assert_eq!(snapshot, before);
         assert_eq!(presentation.runtime_entity, Some((5, 2)));

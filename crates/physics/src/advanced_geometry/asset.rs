@@ -9,7 +9,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use super::core::{LayeredNavMesh, NavMeshLayer, NavMeshLayerLink, StaticTriangleMesh};
-use crate::navmesh::{bake_from_obstacles, NavMeshSettings};
+use crate::navmesh::{NavMeshSettings, bake_from_obstacles};
 
 /// Current persisted advanced-geometry schema version.
 pub const ADVANCED_GEOMETRY_SCHEMA_VERSION: u32 = 1;
@@ -161,7 +161,8 @@ impl AdvancedGeometryDocument {
     /// Returns an error for malformed JSON, unsupported schemas, or geometry
     /// rejected by the same runtime constructors used during gameplay.
     pub fn from_json_str(json: &str) -> Result<Self, AdvancedGeometryAssetError> {
-        let document: Self = serde_json::from_str(json).map_err(AdvancedGeometryAssetError::Json)?;
+        let document: Self =
+            serde_json::from_str(json).map_err(AdvancedGeometryAssetError::Json)?;
         document.build()?;
         Ok(document)
     }
@@ -323,10 +324,7 @@ fn build_layer(
     })
 }
 
-fn invalid_layer(
-    layer: &AdvancedGeometryNavLayer,
-    message: &str,
-) -> AdvancedGeometryAssetError {
+fn invalid_layer(layer: &AdvancedGeometryNavLayer, message: &str) -> AdvancedGeometryAssetError {
     AdvancedGeometryAssetError::Invalid(format!("layer `{}` {message}", layer.id))
 }
 
@@ -406,7 +404,9 @@ mod tests {
     #[test]
     fn default_document_roundtrips_and_builds_runtime_queries() {
         let document = AdvancedGeometryDocument::default();
-        let json = document.to_json_string().expect("default document is valid");
+        let json = document
+            .to_json_string()
+            .expect("default document is valid");
         let decoded = AdvancedGeometryDocument::from_json_str(&json)
             .expect("serialized document should decode");
         assert_eq!(decoded, document);
@@ -430,6 +430,10 @@ mod tests {
             ..AdvancedGeometryDocument::default()
         };
         let error = document.build().expect_err("future schema must fail");
-        assert!(error.to_string().contains("unsupported advanced geometry schema"));
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported advanced geometry schema")
+        );
     }
 }

@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::canvas::{
-    show_graph_debug_canvas, GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation,
-    GraphDebugOverlay,
+    GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation, GraphDebugOverlay,
+    show_graph_debug_canvas,
 };
 use engine_authoring::GraphId;
 use std::collections::BTreeMap;
@@ -116,7 +116,11 @@ impl EditorApp {
             self.graph_debug.selected = Some(targets[0].key.clone());
         }
 
-        let selected_key = self.graph_debug.selected.clone().expect("target list is non-empty");
+        let selected_key = self
+            .graph_debug
+            .selected
+            .clone()
+            .expect("target list is non-empty");
         let selected_label = targets
             .iter()
             .find(|target| target.key == selected_key)
@@ -148,8 +152,15 @@ impl EditorApp {
         });
         ui.separator();
 
-        let selected_key = self.graph_debug.selected.clone().expect("selection retained");
-        let Some(target) = targets.into_iter().find(|target| target.key == selected_key) else {
+        let selected_key = self
+            .graph_debug
+            .selected
+            .clone()
+            .expect("selection retained");
+        let Some(target) = targets
+            .into_iter()
+            .find(|target| target.key == selected_key)
+        else {
             return;
         };
         self.selected_runtime_entity = Some(target.key.runtime_entity);
@@ -248,20 +259,14 @@ impl EditorApp {
             if let Some(node) = &snapshot.previous_state
                 && session.graph().nodes.contains_key(node)
             {
-                overlay
-                    .nodes
-                    .entry(node.clone())
-                    .or_default()
-                    .detail = Some("Transition source state".to_owned());
+                overlay.nodes.entry(node.clone()).or_default().detail =
+                    Some("Transition source state".to_owned());
             }
             if let Some(node) = &snapshot.next_state
                 && session.graph().nodes.contains_key(node)
             {
-                overlay
-                    .nodes
-                    .entry(node.clone())
-                    .or_default()
-                    .detail = Some("Transition destination state".to_owned());
+                overlay.nodes.entry(node.clone()).or_default().detail =
+                    Some("Transition destination state".to_owned());
             }
         }
 
@@ -271,7 +276,9 @@ impl EditorApp {
             .default_size(320.0)
             .min_size(250.0)
             .max_size(460.0)
-            .show_inside(ui, |ui| show_animation_graph_debug_details(ui, snapshot, selected_node.as_ref()));
+            .show_inside(ui, |ui| {
+                show_animation_graph_debug_details(ui, snapshot, selected_node.as_ref())
+            });
 
         show_graph_debug_canvas(
             ui,
@@ -408,7 +415,10 @@ fn show_animation_graph_debug_details(
                     .unwrap_or("Unresolved"),
                 source.asset.as_str()
             ));
-            ui.small(format!("Concrete runtime clip {}", snapshot.clip_runtime_id));
+            ui.small(format!(
+                "Concrete runtime clip {}",
+                snapshot.clip_runtime_id
+            ));
         }
         _ => {
             ui.small("Active state has no resolved Motion Slot evidence.");

@@ -176,11 +176,7 @@ fn finite_non_negative(value: f32) -> f32 {
 }
 
 fn subtract(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-    [
-        left[0] - right[0],
-        left[1] - right[1],
-        left[2] - right[2],
-    ]
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
 
 fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
@@ -290,14 +286,22 @@ mod tests {
         let mut settings = settings(AudioRolloffMode::Linear);
         settings.min_distance = 10.0;
         settings.max_distance = 20.0;
-        let emitter = AudioEmitterPose { position: [1.0, 0.0, 0.0] };
+        let emitter = AudioEmitterPose {
+            position: [1.0, 0.0, 0.0],
+        };
         let from_left = spatial_stereo_gains(
-            AudioListenerPose { position: [0.0, 0.0, 0.0], right: [1.0, 0.0, 0.0] },
+            AudioListenerPose {
+                position: [0.0, 0.0, 0.0],
+                right: [1.0, 0.0, 0.0],
+            },
             emitter,
             settings,
         );
         let from_right = spatial_stereo_gains(
-            AudioListenerPose { position: [2.0, 0.0, 0.0], right: [1.0, 0.0, 0.0] },
+            AudioListenerPose {
+                position: [2.0, 0.0, 0.0],
+                right: [1.0, 0.0, 0.0],
+            },
             emitter,
             settings,
         );

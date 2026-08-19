@@ -416,7 +416,9 @@ pub enum RuntimeDebugError {
 impl fmt::Display for RuntimeDebugError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidPlan(message) => write!(formatter, "invalid runtime debug plan: {message}"),
+            Self::InvalidPlan(message) => {
+                write!(formatter, "invalid runtime debug plan: {message}")
+            }
             Self::InvalidPredicate(message) => {
                 write!(formatter, "invalid runtime debug predicate: {message}")
             }
@@ -950,17 +952,14 @@ mod tests {
 
     #[test]
     fn invalid_numeric_input_is_rejected_before_play() {
-        let error = RuntimeDebugScheduledInput::at_tick(
-            0,
-            InputCommand::MouseScroll { amount: f32::NAN },
-        )
-        .unwrap_err();
+        let error =
+            RuntimeDebugScheduledInput::at_tick(0, InputCommand::MouseScroll { amount: f32::NAN })
+                .unwrap_err();
         assert!(matches!(error, RuntimeDebugError::InvalidPlan(_)));
     }
 
     fn runtime_fixture() -> RuntimePlayState {
-        const MINIMAL_SCENE: &str =
-            include_str!("../../engine/assets/scenes/minimal.scene.json");
+        const MINIMAL_SCENE: &str = include_str!("../../engine/assets/scenes/minimal.scene.json");
         let scene = engine_authoring::load_scene_from_json(MINIMAL_SCENE)
             .expect("minimal runtime-debug fixture must load");
         RuntimePlayState::start(&scene, None)
@@ -995,8 +994,7 @@ mod tests {
         )
         .unwrap();
 
-        let outcome =
-            execute_plan(&mut runtime, &plan, &[]).expect("fixed-tick plan must execute");
+        let outcome = execute_plan(&mut runtime, &plan, &[]).expect("fixed-tick plan must execute");
 
         assert_eq!(outcome.report.start_fixed_tick(), 0);
         assert_eq!(outcome.report.end_fixed_tick(), 3);
@@ -1004,11 +1002,13 @@ mod tests {
         assert_eq!(outcome.report.cleanup_inputs(), 0);
         assert!(outcome.report.replay_recorded());
         assert!(runtime.is_paused());
-        assert!(!runtime
-            .input_debug_snapshot()
-            .keyboard
-            .iter()
-            .any(|key| key == "KeyW"));
+        assert!(
+            !runtime
+                .input_debug_snapshot()
+                .keyboard
+                .iter()
+                .any(|key| key == "KeyW")
+        );
     }
 
     #[test]
@@ -1016,37 +1016,45 @@ mod tests {
         let mut runtime = runtime_fixture();
         runtime.set_paused(true);
         let plan = RuntimeDebugPlan::new(
-            vec![RuntimeDebugScheduledInput::at_tick(
-                0,
-                InputCommand::Key {
-                    key: KeyCode::KeyW,
-                    pressed: true,
-                },
-            )
-            .unwrap()],
+            vec![
+                RuntimeDebugScheduledInput::at_tick(
+                    0,
+                    InputCommand::Key {
+                        key: KeyCode::KeyW,
+                        pressed: true,
+                    },
+                )
+                .unwrap(),
+            ],
             1,
         )
         .unwrap();
 
         let outcome = execute_plan(&mut runtime, &plan, &[]).expect("hold plan must execute");
         assert_eq!(outcome.report.cleanup_inputs(), 1);
-        assert!(!runtime
-            .input_debug_snapshot()
-            .keyboard
-            .iter()
-            .any(|key| key == "KeyW"));
+        assert!(
+            !runtime
+                .input_debug_snapshot()
+                .keyboard
+                .iter()
+                .any(|key| key == "KeyW")
+        );
 
-        let replay = outcome.replay.expect("managed plan must retain ADR 0064 replay");
+        let replay = outcome
+            .replay
+            .expect("managed plan must retain ADR 0064 replay");
         let mut reproduced = runtime_fixture();
         let report = replay_to_completion(&mut reproduced, replay, &[])
             .expect("recorded fixed-tick plan must replay");
         assert!(reproduced.is_paused());
         assert!(report.end_fixed_tick() >= report.start_fixed_tick());
-        assert!(!reproduced
-            .input_debug_snapshot()
-            .keyboard
-            .iter()
-            .any(|key| key == "KeyW"));
+        assert!(
+            !reproduced
+                .input_debug_snapshot()
+                .keyboard
+                .iter()
+                .any(|key| key == "KeyW")
+        );
     }
 
     #[test]
@@ -1101,10 +1109,7 @@ mod tests {
             "message text is intentionally not copied into provider-safe runtime evidence",
         )];
         diagnostics.extend((0..MAX_OBSERVED_DIAGNOSTICS).map(|index| {
-            Diagnostic::warning(
-                format!("editor.runtime.warning_{index}"),
-                "bounded warning",
-            )
+            Diagnostic::warning(format!("editor.runtime.warning_{index}"), "bounded warning")
         }));
 
         let observation = capture_observation(&runtime, &diagnostics);
@@ -1113,7 +1118,10 @@ mod tests {
         assert_eq!(observation.diagnostics.len(), MAX_OBSERVED_DIAGNOSTICS);
         assert!(observation.diagnostics_truncated);
         assert_eq!(observation.diagnostics[0].severity, "error");
-        assert_eq!(observation.diagnostics[0].code, "editor.runtime.test_failure");
+        assert_eq!(
+            observation.diagnostics[0].code,
+            "editor.runtime.test_failure"
+        );
         assert!(observation.diagnostics[0].blocking);
         let summary = observation.summary();
         assert!(summary.contains("editor.runtime.test_failure"));

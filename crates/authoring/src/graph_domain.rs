@@ -653,14 +653,18 @@ mod tests {
     #[test]
     fn test_domain_provides_schema_registry() {
         let domain = TestGraphDomain::new();
-        assert!(domain
-            .schema_registry()
-            .node_schema(domain.root_type())
-            .is_some());
-        assert!(domain
-            .schema_registry()
-            .node_schema(domain.action_type())
-            .is_some());
+        assert!(
+            domain
+                .schema_registry()
+                .node_schema(domain.root_type())
+                .is_some()
+        );
+        assert!(
+            domain
+                .schema_registry()
+                .node_schema(domain.action_type())
+                .is_some()
+        );
     }
 
     #[test]
@@ -708,9 +712,11 @@ mod tests {
             domain.bool_to_action_number_edge(edge, bool_node, action),
         );
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.port_type_mismatch"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.port_type_mismatch")
+        );
     }
 
     #[test]
@@ -728,10 +734,12 @@ mod tests {
             domain.bool_to_action_number_edge(edge, bool_node, action),
         );
 
-        assert!(!graph
-            .validate(domain.schema_registry())
-            .iter()
-            .any(|diagnostic| diagnostic.code.contains("type_mismatch")));
+        assert!(
+            !graph
+                .validate(domain.schema_registry())
+                .iter()
+                .any(|diagnostic| diagnostic.code.contains("type_mismatch"))
+        );
     }
 
     #[test]
@@ -745,12 +753,16 @@ mod tests {
             .insert(edge.clone(), domain.root_to_action_edge(edge, root, action));
 
         let diagnostics = validate_graph_with_domain(&graph, &domain);
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph.missing_endpoint_node"));
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code.starts_with("test_domain.")));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph.missing_endpoint_node")
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.starts_with("test_domain."))
+        );
     }
 
     #[test]
@@ -758,9 +770,11 @@ mod tests {
         let domain = TestGraphDomain::new();
         let graph = Graph::new(GraphId::generate(), GraphKind::new("other.graph"), "other");
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.unsupported_graph_kind"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.unsupported_graph_kind")
+        );
     }
 
     #[test]
@@ -776,9 +790,11 @@ mod tests {
             .nodes
             .insert(action.clone(), domain.action_node(action, "act"));
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.missing_root"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.missing_root")
+        );
     }
 
     #[test]
@@ -790,9 +806,11 @@ mod tests {
             .nodes
             .insert(extra_root.clone(), domain.root_node(extra_root));
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.multiple_roots"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.multiple_roots")
+        );
     }
 
     #[test]
@@ -826,9 +844,11 @@ mod tests {
             domain.action_to_action_edge(back, second_action, first_action),
         );
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.cycle_not_allowed"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.cycle_not_allowed")
+        );
     }
 
     #[test]
@@ -839,9 +859,11 @@ mod tests {
             .nodes
             .insert(action.clone(), domain.action_node_without_label(action));
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.missing_required_property"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.missing_required_property")
+        );
     }
 
     #[test]
@@ -861,9 +883,11 @@ mod tests {
         transaction
             .commit(&mut graph, domain.schema_registry())
             .expect("structurally valid but domain-invalid graph must commit");
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "test_domain.port_type_mismatch"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "test_domain.port_type_mismatch")
+        );
     }
 
     #[test]

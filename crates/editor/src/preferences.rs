@@ -141,7 +141,9 @@ impl EditorPreferences {
     /// Silently ignores I/O failures so a missing config directory does not
     /// crash the editor.
     pub fn save(&self) {
-        let Some(path) = self.storage_path.as_ref() else { return };
+        let Some(path) = self.storage_path.as_ref() else {
+            return;
+        };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -165,9 +167,10 @@ impl EditorPreferences {
             return open::that(path).map_err(|error| error.to_string());
         };
         if is_rustrover_executable(executable)
-            && let Some(game_dir) = game_project_dir_for_source(path) {
-                return open_rustrover_source(executable, &game_dir, path, line, column);
-            }
+            && let Some(game_dir) = game_project_dir_for_source(path)
+        {
+            return open_rustrover_source(executable, &game_dir, path, line, column);
+        }
         let rendered_path = path.to_string_lossy();
         let arguments = split_arguments(&self.external_editor_arguments)
             .into_iter()

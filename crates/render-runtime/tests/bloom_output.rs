@@ -33,11 +33,7 @@ fn clear_hdr_source(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::Tex
     queue.submit(Some(encoder.finish()));
 }
 
-fn readback_pixel(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-) -> [u8; 4] {
+fn readback_pixel(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> [u8; 4] {
     let bytes_per_row = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Bloom functional readback"),
@@ -167,7 +163,10 @@ fn bloom_changes_final_pixels_when_a_gpu_adapter_is_available() {
     tone_map.execute(device, queue, &output_view, &without_bloom);
     let restored = readback_pixel(device, queue, &output);
 
-    assert_eq!(baseline, restored, "disabling bloom must restore the HDR source path");
+    assert_eq!(
+        baseline, restored,
+        "disabling bloom must restore the HDR source path"
+    );
     assert_eq!(baseline[3], 255);
     assert_eq!(bloomed[3], 255);
     assert!(

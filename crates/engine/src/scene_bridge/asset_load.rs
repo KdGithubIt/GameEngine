@@ -173,22 +173,21 @@ pub(super) fn load_material_asset(
                 let parsed = &imported_material.material;
                 // Use the same resolver as standalone materials so imported
                 // Texture IDs can honor model-level texture overrides too.
-                let mut decode_slot =
-                    |texture_id: &Option<AssetId>, slot: &'static str| {
-                        texture_id
-                            .as_ref()
-                            .map(|texture_id| {
-                                decode_material_texture(
-                                    asset,
-                                    texture_id,
-                                    slot,
-                                    asset_root,
-                                    manifest,
-                                    asset_state,
-                                )
-                            })
-                            .transpose()
-                    };
+                let mut decode_slot = |texture_id: &Option<AssetId>, slot: &'static str| {
+                    texture_id
+                        .as_ref()
+                        .map(|texture_id| {
+                            decode_material_texture(
+                                asset,
+                                texture_id,
+                                slot,
+                                asset_root,
+                                manifest,
+                                asset_state,
+                            )
+                        })
+                        .transpose()
+                };
                 let base = decode_slot(&parsed.base_color_texture, "base color");
                 let normal = decode_slot(&parsed.normal_texture, "normal");
                 let metallic_roughness =
@@ -265,14 +264,16 @@ pub(super) fn load_material_asset(
     let Some(entry) = manifest.get(asset) else {
         return (
             fallback_material(),
-            vec![Diagnostic::warning(
-                "asset.unregistered_file",
-                format!(
-                    "material `{}` is not registered; using diagnostic checker",
-                    asset.as_str()
-                ),
-            )
-            .with_target(DiagnosticTarget::Asset { id: asset.clone() })],
+            vec![
+                Diagnostic::warning(
+                    "asset.unregistered_file",
+                    format!(
+                        "material `{}` is not registered; using diagnostic checker",
+                        asset.as_str()
+                    ),
+                )
+                .with_target(DiagnosticTarget::Asset { id: asset.clone() }),
+            ],
         );
     };
     let material_path = asset_root
@@ -307,28 +308,20 @@ pub(super) fn load_material_asset(
                     ),
                 )
                 .with_target(DiagnosticTarget::Asset { id: asset.clone() })],
-            )
+            );
         }
     };
     let mut decode_slot = |texture_id: &Option<AssetId>, slot: &'static str| {
         texture_id
             .as_ref()
             .map(|texture_id| {
-                decode_material_texture(
-                    asset,
-                    texture_id,
-                    slot,
-                    asset_root,
-                    manifest,
-                    asset_state,
-                )
+                decode_material_texture(asset, texture_id, slot, asset_root, manifest, asset_state)
             })
             .transpose()
     };
     let base = decode_slot(&parsed.base_color_texture, "base color");
     let normal = decode_slot(&parsed.normal_texture, "normal");
-    let metallic_roughness =
-        decode_slot(&parsed.metallic_roughness_texture, "metallic/roughness");
+    let metallic_roughness = decode_slot(&parsed.metallic_roughness_texture, "metallic/roughness");
     let occlusion = decode_slot(&parsed.occlusion_texture, "occlusion");
     let emissive = decode_slot(&parsed.emissive_texture, "emissive");
     let ramp = decode_slot(&parsed.toon.ramp_texture, "toon ramp");
@@ -375,10 +368,10 @@ pub(super) fn load_material_asset(
                 results.5.err(),
                 results.6.err(),
             ]
-                .into_iter()
-                .flatten()
-                .map(|diagnostic| *diagnostic)
-                .collect();
+            .into_iter()
+            .flatten()
+            .map(|diagnostic| *diagnostic)
+            .collect();
             (fallback_material(), diagnostics)
         }
     }
@@ -395,12 +388,13 @@ pub(super) fn decoded_imported_texture(
         return Some(Arc::clone(texture));
     }
     if let Some(shared) = &asset_state.shared_gltf_cache
-        && let Some(texture) = shared.lookup_texture(texture_id, imported) {
-            asset_state
-                .gltf_textures
-                .insert(texture_id.clone(), Arc::clone(&texture));
-            return Some(texture);
-        }
+        && let Some(texture) = shared.lookup_texture(texture_id, imported)
+    {
+        asset_state
+            .gltf_textures
+            .insert(texture_id.clone(), Arc::clone(&texture));
+        return Some(texture);
+    }
     let texture = imported
         .textures
         .iter()

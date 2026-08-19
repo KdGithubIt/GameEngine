@@ -1228,10 +1228,11 @@ mod tests {
         let (graph, _, _, _, _) = graph();
         let mut view = GraphView::new(GraphId::generate());
         view.nodes.clear();
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.graph_mismatch"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.graph_mismatch")
+        );
     }
 
     #[test]
@@ -1240,10 +1241,11 @@ mod tests {
         let mut view = view(&graph);
         view.nodes
             .insert(NodeId::generate(), NodeLayout::new(Vec2::new(10.0, 20.0)));
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.missing_node"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.missing_node")
+        );
     }
 
     #[test]
@@ -1254,10 +1256,11 @@ mod tests {
             GroupId::generate(),
             GroupLayout::new(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0))),
         );
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.missing_group"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.missing_group")
+        );
     }
 
     #[test]
@@ -1268,15 +1271,21 @@ mod tests {
         view.selection.edges.insert(EdgeId::generate());
         view.selection.groups.insert(GroupId::generate());
         let diagnostics = view.validate(&graph);
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.selection_missing_node"));
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.selection_missing_edge"));
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.selection_missing_group"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.selection_missing_node")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.selection_missing_edge")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.selection_missing_group")
+        );
     }
 
     #[test]
@@ -1285,10 +1294,11 @@ mod tests {
         let mut view = view(&graph);
         view.nodes
             .insert(first, NodeLayout::new(Vec2::new(f64::NAN, 0.0)));
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.invalid_node_position"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.invalid_node_position")
+        );
     }
 
     #[test]
@@ -1296,10 +1306,11 @@ mod tests {
         let (graph, _, _, _, _) = graph();
         let mut view = view(&graph);
         view.viewport.zoom = 0.0;
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.invalid_viewport"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.invalid_viewport")
+        );
     }
 
     #[test]
@@ -1307,10 +1318,11 @@ mod tests {
         let (graph, _, _, _, _) = graph();
         let mut view = view(&graph);
         view.viewport.pan = Vec2::new(f64::INFINITY, 0.0);
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.invalid_viewport"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.invalid_viewport")
+        );
     }
 
     #[test]
@@ -1321,10 +1333,11 @@ mod tests {
             group,
             GroupLayout::new(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(-1.0, 1.0))),
         );
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.invalid_group_bounds"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.invalid_group_bounds")
+        );
     }
 
     #[test]
@@ -1338,10 +1351,11 @@ mod tests {
                 Vec2::new(1.0, 1.0),
             )),
         );
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.invalid_group_bounds"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.invalid_group_bounds")
+        );
     }
 
     #[test]
@@ -1355,10 +1369,11 @@ mod tests {
                 Vec2::new(f64::INFINITY, 1.0),
             )),
         );
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.invalid_group_bounds"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.invalid_group_bounds")
+        );
     }
 
     #[test]
@@ -1366,10 +1381,11 @@ mod tests {
         let (graph, _, _, _, _) = graph();
         let mut view = view(&graph);
         view.annotations.insert("bad".into(), Value::F64(f64::NAN));
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.non_finite_annotation_value"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.non_finite_annotation_value")
+        );
     }
 
     #[test]
@@ -1381,10 +1397,11 @@ mod tests {
             .annotations
             .insert("bad".into(), Value::F64(f64::INFINITY));
         view.nodes.insert(first, layout);
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.non_finite_annotation_value"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.non_finite_annotation_value")
+        );
     }
 
     #[test]
@@ -1396,10 +1413,11 @@ mod tests {
             .annotations
             .insert("bad".into(), Value::F64(f64::NEG_INFINITY));
         view.groups.insert(group, layout);
-        assert!(view
-            .validate(&graph)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "graph_view.non_finite_annotation_value"));
+        assert!(
+            view.validate(&graph)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "graph_view.non_finite_annotation_value")
+        );
     }
 
     #[test]

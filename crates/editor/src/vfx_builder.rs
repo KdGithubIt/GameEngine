@@ -10,9 +10,8 @@ mod completion;
 
 use eframe::egui;
 use engine_authoring::{
-    ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEmitter, VfxEmitterId, VfxEffect,
-    VfxGradient, VfxModule, VfxModuleOperation, VfxPhase, VfxScalarValue, VfxShape,
-    VfxVectorValue,
+    ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEffect, VfxEmitter, VfxEmitterId,
+    VfxGradient, VfxModule, VfxModuleOperation, VfxPhase, VfxScalarValue, VfxShape, VfxVectorValue,
 };
 use std::path::{Path, PathBuf};
 
@@ -103,12 +102,9 @@ impl VfxBuilderState {
                 .as_ref()
                 .and_then(|compilation| compilation.compiled_effect.as_ref())
                 .map(|compiled| {
-                    compiled
-                        .emitters
-                        .iter()
-                        .fold(0_u32, |total, emitter| {
-                            total.saturating_add(emitter.estimated_capacity)
-                        })
+                    compiled.emitters.iter().fold(0_u32, |total, emitter| {
+                        total.saturating_add(emitter.estimated_capacity)
+                    })
                 })
                 .unwrap_or(0);
             ui.label(format!("Estimated live {estimated}"));
@@ -144,10 +140,7 @@ impl VfxBuilderState {
                         });
                         if selected {
                             ui.horizontal(|ui| {
-                                if ui
-                                    .add_enabled(index > 0, egui::Button::new("Up"))
-                                    .clicked()
-                                {
+                                if ui.add_enabled(index > 0, egui::Button::new("Up")).clicked() {
                                     pending_command = Some(VfxCommand::MoveEmitter {
                                         emitter: emitter.id.clone(),
                                         index: index - 1,
@@ -200,7 +193,9 @@ impl VfxBuilderState {
                 });
                 ui.horizontal(|ui| {
                     ui.label("Max particles");
-                    ui.add(egui::DragValue::new(&mut self.emitter_max_particles).range(1..=u32::MAX));
+                    ui.add(
+                        egui::DragValue::new(&mut self.emitter_max_particles).range(1..=u32::MAX),
+                    );
                 });
                 if ui.button("Apply Emitter Properties").clicked() {
                     let commands = vec![
@@ -342,7 +337,8 @@ impl VfxBuilderState {
             return;
         };
         if !is_project_vfx_path(project, &path) {
-            self.status = Some("VFX Builder only opens project-local *.vfx.json assets.".to_owned());
+            self.status =
+                Some("VFX Builder only opens project-local *.vfx.json assets.".to_owned());
             return;
         }
         self.background.open(path, ctx);
@@ -382,7 +378,9 @@ impl VfxBuilderState {
                 effect,
                 result,
             } => match result {
-                Ok(()) => self.install_effect(path, effect, "Created VFX asset from shared template."),
+                Ok(()) => {
+                    self.install_effect(path, effect, "Created VFX asset from shared template.")
+                }
                 Err(error) => self.status = Some(format!("Template save failed: {error}")),
             },
         }
@@ -470,10 +468,12 @@ impl VfxBuilderState {
     }
 
     fn normalize_selection(&mut self, effect: &VfxEffect) {
-        let selection_is_valid = self
-            .selected_emitter
-            .as_ref()
-            .is_some_and(|selected| effect.emitters.iter().any(|emitter| &emitter.id == selected));
+        let selection_is_valid = self.selected_emitter.as_ref().is_some_and(|selected| {
+            effect
+                .emitters
+                .iter()
+                .any(|emitter| &emitter.id == selected)
+        });
         if selection_is_valid {
             return;
         }
@@ -491,7 +491,12 @@ impl VfxBuilderState {
         let emitter = self.effect.as_ref().and_then(|effect| {
             selected
                 .as_ref()
-                .and_then(|selected| effect.emitters.iter().find(|emitter| &emitter.id == selected))
+                .and_then(|selected| {
+                    effect
+                        .emitters
+                        .iter()
+                        .find(|emitter| &emitter.id == selected)
+                })
                 .cloned()
         });
         if let Some(emitter) = emitter {
@@ -576,9 +581,7 @@ fn default_module(type_id: &str) -> Option<VfxModule> {
                 value: [0.0, 1.0, 0.0],
             },
         },
-        "engine.vfx.initial_color" => VfxModuleOperation::InitialColor {
-            color: [1.0; 4],
-        },
+        "engine.vfx.initial_color" => VfxModuleOperation::InitialColor { color: [1.0; 4] },
         "engine.vfx.initial_size" => VfxModuleOperation::InitialSize {
             value: VfxScalarValue::Constant { value: 1.0 },
         },
@@ -707,10 +710,12 @@ mod tests {
     #[test]
     fn duplicate_emitter_regenerates_stable_ids() {
         let mut source = VfxEmitter::new("Smoke", 128);
-        source.modules.push(VfxModule::new(VfxModuleOperation::Billboard {
-            material: None,
-            texture_sheet: None,
-        }));
+        source
+            .modules
+            .push(VfxModule::new(VfxModuleOperation::Billboard {
+                material: None,
+                texture_sheet: None,
+            }));
 
         let duplicate = duplicate_emitter(&source);
 
@@ -756,6 +761,9 @@ mod tests {
         assert_eq!(original.emitters[0].name, "Emitter");
 
         let redone = service.apply(&original, &undone.undo_commands);
-        assert_eq!(redone.effect.expect("redo commits").emitters[0].name, "Renamed");
+        assert_eq!(
+            redone.effect.expect("redo commits").emitters[0].name,
+            "Renamed"
+        );
     }
 }

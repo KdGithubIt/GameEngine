@@ -215,13 +215,9 @@ impl SharedGltfImportCache {
             },
         );
         for (texture_id, texture) in textures {
-            inner.textures.insert(
-                texture_id,
-                CachedGltfTexture {
-                    document,
-                    texture,
-                },
-            );
+            inner
+                .textures
+                .insert(texture_id, CachedGltfTexture { document, texture });
         }
     }
 

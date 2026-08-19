@@ -11,8 +11,8 @@ use crate::graph::{
     NodeSchema, NodeTypeId, PortArity, PortDirection, PortRef, PortSchema, PortValueTypeId,
 };
 use crate::graph_domain::{
-    apply_graph_commands_with_domain, validate_graph_with_domain, GraphCommandApplication,
-    GraphDomain,
+    GraphCommandApplication, GraphDomain, apply_graph_commands_with_domain,
+    validate_graph_with_domain,
 };
 use crate::graph_view::{GraphView, LayoutPolicyId, NodeLayout, Vec2};
 use crate::id::{EdgeId, GraphId, NodeId, PortId, StableId};
@@ -1588,9 +1588,11 @@ mod tests {
         let diagnostics = domain
             .compile(&graph)
             .expect_err("missing order must block");
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.missing_child_order"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.missing_child_order")
+        );
     }
 
     #[test]
@@ -1608,12 +1610,16 @@ mod tests {
         let diagnostics = domain
             .compile(&graph)
             .expect_err("invalid order must block");
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_order"));
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.missing_child_order"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_order")
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.missing_child_order")
+        );
     }
 
     #[test]
@@ -1627,9 +1633,11 @@ mod tests {
         let edge = domain.child_edge(EdgeId::generate(), selector, extra, 1);
         graph.edges.insert(edge.id.clone(), edge);
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.duplicate_child_order"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.duplicate_child_order")
+        );
         assert!(graph.nodes.contains_key(&action));
     }
 
@@ -1639,9 +1647,11 @@ mod tests {
         let (mut graph, _, _, condition, _) = valid_graph(&domain);
         graph.nodes.get_mut(&condition).unwrap().properties = empty_object();
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.missing_behavior"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.missing_behavior")
+        );
     }
 
     #[test]
@@ -1653,9 +1663,11 @@ mod tests {
             .nodes
             .insert(orphan.clone(), domain.action_node(orphan, "idle"));
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.unreachable_node"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.unreachable_node")
+        );
     }
 
     #[test]
@@ -1671,9 +1683,11 @@ mod tests {
             .nodes
             .insert(root.clone(), domain.root_node(root.clone()));
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_count"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_count")
+        );
     }
 
     #[test]
@@ -1681,9 +1695,11 @@ mod tests {
         let domain = BehaviorTreeDomain::new();
         let graph = Graph::new(GraphId::generate(), GraphKind::new("other.graph"), "other");
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.unsupported_graph_kind"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.unsupported_graph_kind")
+        );
     }
 
     #[test]
@@ -1699,9 +1715,11 @@ mod tests {
             .nodes
             .insert(action.clone(), domain.action_node(action, "idle"));
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.missing_root"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.missing_root")
+        );
     }
 
     #[test]
@@ -1711,9 +1729,11 @@ mod tests {
         let extra = NodeId::generate();
         graph.nodes.insert(extra.clone(), domain.root_node(extra));
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.multiple_roots"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.multiple_roots")
+        );
     }
 
     #[test]
@@ -1745,9 +1765,11 @@ mod tests {
             Node::new(unknown, unknown_type, empty_object()),
         );
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.unknown_node_type"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.unknown_node_type")
+        );
     }
 
     #[test]
@@ -1765,9 +1787,11 @@ mod tests {
             .value_type = PortValueTypeId::new("behavior_tree.other_node");
         let (graph, _, _, _, _) = valid_graph(&domain);
 
-        assert!(validate_graph_with_domain(&graph, &domain)
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.port_type_mismatch"));
+        assert!(
+            validate_graph_with_domain(&graph, &domain)
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.port_type_mismatch")
+        );
     }
 
     #[test]
@@ -1778,12 +1802,16 @@ mod tests {
         graph.edges.insert(edge.id.clone(), edge);
 
         let diagnostics = domain.validate_domain(&graph);
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.cycle_not_allowed"));
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.unreachable_node"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.cycle_not_allowed")
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.unreachable_node")
+        );
     }
 
     #[test]
@@ -1825,12 +1853,16 @@ mod tests {
             .insert(unordered_edge.id.clone(), unordered_edge);
 
         let diagnostics = validate_graph_with_domain(&graph, &domain);
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.missing_child_order"));
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_count"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.missing_child_order")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_count")
+        );
     }
 
     #[test]
@@ -1866,14 +1898,20 @@ mod tests {
         let diagnostics = domain
             .auto_layout(&graph)
             .expect_err("excessive depth must block before layout");
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.max_depth_exceeded"));
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.unreachable_node"));
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_count"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.max_depth_exceeded")
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.unreachable_node")
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "behavior_tree.invalid_child_count")
+        );
     }
 }

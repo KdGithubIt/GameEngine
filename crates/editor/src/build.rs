@@ -6,8 +6,8 @@
 //! unit-tested (it requires a real toolchain).
 
 use engine::AssetManifest;
-use engine_authoring::id::AssetId;
 use engine_authoring::StableId;
+use engine_authoring::id::AssetId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -259,32 +259,31 @@ pub fn analyze_build(config: &BuildConfig, manifest: &AssetManifest) -> BuildRep
             }
             dependency_paths.push(dependency_path);
         }
-        if dependencies_present
-            && let Some(expected) = &entry.import_settings.source_fingerprint {
-                match engine::fingerprint_model_source(&abs, &dependency_paths) {
-                    Ok(actual) if &actual != expected => {
-                        diagnostics.push(BuildDiagnostic::blocking(
-                            BuildDiagnosticKind::StaleImportedSource {
-                                path: entry.path.clone(),
-                            },
-                            format!(
-                                "source '{}' changed after its last import; reimport before building",
-                                entry.path
-                            ),
-                        ));
-                    }
-                    Ok(_) => {}
-                    Err(error) => diagnostics.push(BuildDiagnostic::blocking(
+        if dependencies_present && let Some(expected) = &entry.import_settings.source_fingerprint {
+            match engine::fingerprint_model_source(&abs, &dependency_paths) {
+                Ok(actual) if &actual != expected => {
+                    diagnostics.push(BuildDiagnostic::blocking(
                         BuildDiagnosticKind::StaleImportedSource {
                             path: entry.path.clone(),
                         },
                         format!(
-                            "source '{}' could not be fingerprinted: {error}",
+                            "source '{}' changed after its last import; reimport before building",
                             entry.path
                         ),
-                    )),
+                    ));
                 }
+                Ok(_) => {}
+                Err(error) => diagnostics.push(BuildDiagnostic::blocking(
+                    BuildDiagnosticKind::StaleImportedSource {
+                        path: entry.path.clone(),
+                    },
+                    format!(
+                        "source '{}' could not be fingerprinted: {error}",
+                        entry.path
+                    ),
+                )),
             }
+        }
     }
 
     let success = !diagnostics.iter().any(|d| d.blocking);
@@ -733,9 +732,7 @@ fn bake_registered_humanoid_clips(
     let mut motion_sources = Vec::<(AssetId, Vec<AssetId>)>::new();
     for (source_id, entry) in manifest.iter() {
         for profile in &entry.import_settings.humanoid_profiles {
-            let Ok(skeleton_id) =
-                AssetId::from_stable_id(StableId::new(&profile.skeleton))
-            else {
+            let Ok(skeleton_id) = AssetId::from_stable_id(StableId::new(&profile.skeleton)) else {
                 continue;
             };
             first_profiles
@@ -747,12 +744,8 @@ fn bake_registered_humanoid_clips(
             .import_settings
             .sub_assets
             .iter()
-            .filter(|sub_asset| {
-                sub_asset.kind == engine::ImportedSubAssetKind::HumanoidMotion
-            })
-            .filter_map(|sub_asset| {
-                AssetId::from_stable_id(StableId::new(&sub_asset.id)).ok()
-            })
+            .filter(|sub_asset| sub_asset.kind == engine::ImportedSubAssetKind::HumanoidMotion)
+            .filter_map(|sub_asset| AssetId::from_stable_id(StableId::new(&sub_asset.id)).ok())
             .collect::<Vec<_>>();
         if !motion_ids.is_empty() {
             motion_sources.push((source_id.clone(), motion_ids));
@@ -797,7 +790,10 @@ fn bake_registered_humanoid_clips(
         let source_path = entry.path.clone();
         let Some(source_fingerprint) = entry.import_settings.source_fingerprint.as_deref() else {
             for motion_id in registered_motion_ids {
-                if required_bakes.iter().any(|(required, _)| required == &motion_id) {
+                if required_bakes
+                    .iter()
+                    .any(|(required, _)| required == &motion_id)
+                {
                     diagnostics.push(BuildDiagnostic::blocking(
                         BuildDiagnosticKind::HumanoidBakeFailed {
                             motion: motion_id.as_str().to_owned(),
@@ -820,7 +816,10 @@ fn bake_registered_humanoid_clips(
             .as_deref()
             .and_then(|id| AssetId::from_stable_id(StableId::new(id)).ok());
         for motion_id in registered_motion_ids {
-            if !required_bakes.iter().any(|(required, _)| required == &motion_id) {
+            if !required_bakes
+                .iter()
+                .any(|(required, _)| required == &motion_id)
+            {
                 continue;
             }
             let Some(portable) = engine::humanoid_motion::load_imported_humanoid_motion(
@@ -926,9 +925,8 @@ fn bake_registered_humanoid_clips(
             key.file_stem(),
             engine::humanoid_motion::HUMANOID_BAKED_CLIP_FILE_EXTENSION
         );
-        let package_file_name = engine::humanoid_motion::humanoid_packaged_bake_file_name(
-            motion_id, target_id,
-        );
+        let package_file_name =
+            engine::humanoid_motion::humanoid_packaged_bake_file_name(motion_id, target_id);
         copies.push(PackageCopy {
             source: PathBuf::from(".engine/cache")
                 .join(engine::humanoid_motion::HUMANOID_CACHE_DOMAIN)
@@ -986,18 +984,21 @@ fn collect_needed_humanoid_bakes(
             continue;
         };
         for entity in &entities {
-            let Some(controller) = entity.components.get(
-                &engine_authoring::id::ComponentTypeId::new(
-                    engine::scene_bridge::ANIMATION_CONTROLLER_COMPONENT,
-                ),
-            ) else {
+            let Some(controller) =
+                entity
+                    .components
+                    .get(&engine_authoring::id::ComponentTypeId::new(
+                        engine::scene_bridge::ANIMATION_CONTROLLER_COMPONENT,
+                    ))
+            else {
                 continue;
             };
-            let Some(model) = entity.components.get(
-                &engine_authoring::id::ComponentTypeId::new(
+            let Some(model) = entity
+                .components
+                .get(&engine_authoring::id::ComponentTypeId::new(
                     engine::scene_bridge::SKINNED_MODEL_COMPONENT,
-                ),
-            ) else {
+                ))
+            else {
                 continue;
             };
             if matches!(
@@ -1013,12 +1014,8 @@ fn collect_needed_humanoid_bakes(
             else {
                 continue;
             };
-            let target_humanoid_usable = target_humanoid_profile_is_usable(
-                &target_skeleton,
-                manifest,
-                assets_root,
-                imports,
-            );
+            let target_humanoid_usable =
+                target_humanoid_profile_is_usable(&target_skeleton, manifest, assets_root, imports);
             let engine_authoring::Value::Object(fields) = controller else {
                 continue;
             };
@@ -1087,19 +1084,19 @@ fn collect_needed_humanoid_bakes(
                             continue;
                         }
                     };
-                    let source_skeleton =
-                        (candidate_kind == engine::motion_binding::AnimationMotionCandidateKind::ModelBound)
-                            .then(|| {
-                                resolve_clip_source_skeleton_ids(
-                                    &source.asset,
-                                    manifest,
-                                    assets_root,
-                                    imports,
-                                )
-                                .into_iter()
-                                .next()
-                            })
-                            .flatten();
+                    let source_skeleton = (candidate_kind
+                        == engine::motion_binding::AnimationMotionCandidateKind::ModelBound)
+                        .then(|| {
+                            resolve_clip_source_skeleton_ids(
+                                &source.asset,
+                                manifest,
+                                assets_root,
+                                imports,
+                            )
+                            .into_iter()
+                            .next()
+                        })
+                        .flatten();
                     let retarget_map = source_skeleton.as_ref().and_then(|source_skeleton| {
                         retarget_maps
                             .iter()
@@ -1182,8 +1179,7 @@ fn target_humanoid_profile_is_usable(
         .iter()
         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
         .find(|profile| {
-            profile.skeleton == target_id.as_str()
-                && profile.skeleton_identity == target.identity.0
+            profile.skeleton == target_id.as_str() && profile.skeleton_identity == target.identity.0
         })
         .is_some_and(|profile| {
             engine::humanoid::validate_humanoid_profile(profile, &target).is_ok()
@@ -1216,9 +1212,7 @@ fn animation_controller_document_paths(
     document_paths
 }
 
-fn load_animation_document_entities(
-    path: &Path,
-) -> Option<Vec<engine_authoring::AuthoringEntity>> {
+fn load_animation_document_entities(path: &Path) -> Option<Vec<engine_authoring::AuthoringEntity>> {
     let json = std::fs::read_to_string(path).ok()?;
     let lower = path.to_string_lossy().to_ascii_lowercase();
     if lower.ends_with(".scene.json") {
@@ -1400,21 +1394,16 @@ fn resolve_clip_source_skeleton_ids(
             return Vec::new();
         }
         if manifest.get(source_id).is_some_and(|entry| {
-            engine::asset_path_matches_kind(
-                engine::AssetKind::MotionSource,
-                Path::new(&entry.path),
-            )
+            engine::asset_path_matches_kind(engine::AssetKind::MotionSource, Path::new(&entry.path))
         }) {
             let target = sub_asset.target_model_source.as_deref().or_else(|| {
-                manifest
-                    .get(source_id)
-                    .and_then(|entry| {
-                        entry
-                            .import_settings
-                            .resolved_motion_model_sources()
-                            .first()
-                            .copied()
-                    })
+                manifest.get(source_id).and_then(|entry| {
+                    entry
+                        .import_settings
+                        .resolved_motion_model_sources()
+                        .first()
+                        .copied()
+                })
             });
             let Some(target) = target.and_then(|target| {
                 AssetId::from_stable_id(engine_authoring::StableId::new(target)).ok()
@@ -1762,9 +1751,10 @@ pub fn find_player_binary() -> Option<PathBuf> {
     };
     let mut candidates = Vec::new();
     if let Ok(editor_executable) = std::env::current_exe()
-        && let Some(directory) = editor_executable.parent() {
-            candidates.push(directory.join(executable_name));
-        }
+        && let Some(directory) = editor_executable.parent()
+    {
+        candidates.push(directory.join(executable_name));
+    }
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -1821,10 +1811,12 @@ mod tests {
     fn no_start_scene_produces_blocking_diagnostic() {
         let report = analyze_build(&config_no_scene(), &AssetManifest::default());
         assert!(!report.success, "missing start scene must block the build");
-        assert!(report
-            .diagnostics
-            .iter()
-            .any(|d| d.kind == BuildDiagnosticKind::MissingStartScene));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.kind == BuildDiagnosticKind::MissingStartScene)
+        );
     }
 
     #[test]
@@ -1880,8 +1872,7 @@ mod tests {
     #[test]
     fn humanoid_motion_sub_assets_use_the_manifest_stable_id_contract() {
         let source = AssetId::generate();
-        let native =
-            engine::imported_sub_asset_id(&source, ImportedSubAssetKind::Animation, 0);
+        let native = engine::imported_sub_asset_id(&source, ImportedSubAssetKind::Animation, 0);
         let humanoid = engine::asset::imported_humanoid_motion_sub_asset_id(&native);
         let mut manifest = AssetManifest::default();
         manifest.insert(
@@ -2000,10 +1991,11 @@ mod tests {
         let plan = plan_package(&config_with_scene(), &manifest);
 
         assert!(!plan.success, "missing asset must block packaging");
-        assert!(plan
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.blocking));
+        assert!(
+            plan.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.blocking)
+        );
         assert!(plan.copies.is_empty(), "failed plans must not list copies");
     }
 
@@ -2050,11 +2042,13 @@ mod tests {
         assert!(output_dir.join("asset_manifest.json").exists());
         assert!(output_dir.join("build_report.json").exists());
         assert!(output_dir.join("THIRD_PARTY_NOTICES.txt").exists());
-        assert!(output_dir
-            .join("assets")
-            .join("meshes")
-            .join("tri.obj")
-            .exists());
+        assert!(
+            output_dir
+                .join("assets")
+                .join("meshes")
+                .join("tri.obj")
+                .exists()
+        );
     }
 
     #[test]
@@ -2122,9 +2116,11 @@ mod tests {
         )
         .expect("packaging with a game module must succeed");
 
-        assert!(output_dir
-            .join(engine::game_module::packaged_game_module_file_name())
-            .is_file());
+        assert!(
+            output_dir
+                .join(engine::game_module::packaged_game_module_file_name())
+                .is_file()
+        );
     }
 
     #[test]

@@ -4,55 +4,56 @@
 //! lifecycle, permissions, persistence, provider process management, and code
 //! workspace rules live in the GUI-free `agent_host` module.
 
-mod benchmark_child;
 mod benchmark_campaign_ui;
+mod benchmark_child;
 mod benchmark_experiment_ui;
 
 use crate::agent_benchmark::{
-    agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
+    AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
-    CuratedModelCatalog, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
+    CuratedModelCatalog, agent_run_record, benchmark_task, read_question_record,
+};
+use crate::agent_host::{
+    AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
+    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentHostError, AgentProposal,
+    AgentRunState, AgentWorkClaim, ApprovalScope, AuthoritativeStateSnapshot, CodeChange,
+    CodeWorkspace, CompletionStatus, ConversationRole, ExternalAgentProcess,
+    ManagedValidationAttemptStatus, PermissionCheck, ProcessStream, ResumeDisposition,
+    project_storage_key,
 };
 use crate::ai_studio_theme as theme;
-use crate::agent_host::{
-    project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
-    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentHostError, AgentProposal,
-    AgentRunState,
-    AgentWorkClaim,
-    ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,
-    ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
-    ProcessStream, ResumeDisposition,
-};
 use crate::external_agent_provider::{
-    build_launch_plan, probe_provider, translate_provider_line, ExternalAgentDiagnostics,
-    ExternalAgentProviderKind, ExternalAgentProviderStatus, ExternalAgentSemanticEvent,
+    ExternalAgentDiagnostics, ExternalAgentProviderKind, ExternalAgentProviderStatus,
+    ExternalAgentSemanticEvent, build_launch_plan, probe_provider, translate_provider_line,
 };
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::managed_local_runtime::{
-    ManagedEnvironmentProbe, ManagedEnvironmentProbeTask, ManagedExecutionEnvironment,
-    ManagedLocalModelConfig, ManagedLocalRuntime, ManagedSetupOperation, ManagedSetupResult,
-    ManagedSetupStatus, ManagedSetupTask, MANAGED_BACKEND_ID, PINNED_LLAMA_CPP_REVISION,
-    PINNED_LLAMA_CPP_TAG,
+    MANAGED_BACKEND_ID, ManagedEnvironmentProbe, ManagedEnvironmentProbeTask,
+    ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
+    ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
+    PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
 };
-use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
+use crate::model_router::{MODEL_ROUTER_POLICY_VERSION, ModelRoutingPolicy};
 use crate::native_agent::{
-    InstalledLocalModel, InstalledModelDiscoveryTask, InstalledModelInventory,
-    LocalModelConfig, LocalModelResourceConfig, ModelCapabilityProfile, ModelResourceTask,
-    NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask, QuestionMessage,
-    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+    DEFAULT_LOCAL_MODEL_ENDPOINT, InstalledLocalModel, InstalledModelDiscoveryTask,
+    InstalledModelInventory, LocalModelConfig, LocalModelResourceConfig, ModelCapabilityProfile,
+    ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
+    QuestionMessage, QuestionRole,
 };
-use crate::native_agent_runtime::{mcp_write, NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
-use crate::resource_arbitration::{
-    classify_workload, resolve_resource_plan, resource_operation_for_residency_request,
-    CapabilityAvailability, InferenceWorkload, MemoryPressure, ModelResidencyRequest,
-    ModelResourceOperation, ModelResourceTelemetry, PresentationPosture, QualityPreference,
-    ReclaimLevel, ResourcePlan, TelemetryValue, WorkloadSignals,
+use crate::native_agent_runtime::{
+    NativeAgentAction, NativeAgentRuntime, NativeMcpTask, mcp_write,
 };
 use crate::remote_ai_studio::{
-    events_json, frame_bytes, sessions_json, snapshot_json, RemoteAiStudioRequest,
-    RemoteAiStudioResponse, RemoteAiStudioServer, RemoteOperation, RemotePermissionScope,
+    RemoteAiStudioRequest, RemoteAiStudioResponse, RemoteAiStudioServer, RemoteOperation,
+    RemotePermissionScope, events_json, frame_bytes, sessions_json, snapshot_json,
+};
+use crate::resource_arbitration::{
+    CapabilityAvailability, InferenceWorkload, MemoryPressure, ModelResidencyRequest,
+    ModelResourceOperation, ModelResourceTelemetry, PresentationPosture, QualityPreference,
+    ReclaimLevel, ResourcePlan, TelemetryValue, WorkloadSignals, classify_workload,
+    resolve_resource_plan, resource_operation_for_residency_request,
 };
 use crate::runtime_debug::{
     RuntimeDebugExecutionReport, RuntimeDebugObservation, RuntimeDebugPlan, RuntimeDebugPredicate,
@@ -216,7 +217,9 @@ enum AgentRuntimeMode {
 
 enum ModelResourceContinuation {
     RestoreForEditing,
-    LaunchManagedPlay { run_id: String },
+    LaunchManagedPlay {
+        run_id: String,
+    },
     ResumeAfterEditing {
         run_id: Option<String>,
         state: AiStudioAuthoritativeState,
@@ -262,11 +265,28 @@ struct NativeRunBenchmarkContext {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ProviderAgentEvent {
-    Progress { step: String, detail: String },
-    ToolAction { tool: String, action: String, success: Option<bool> },
-    CompletionGate { gate: String, status: CompletionStatus, message: String },
-    PlaytestResult { launched: bool, interactions_passed: Option<bool>, message: String },
-    RuntimeInput { input: ProviderRuntimeInput },
+    Progress {
+        step: String,
+        detail: String,
+    },
+    ToolAction {
+        tool: String,
+        action: String,
+        success: Option<bool>,
+    },
+    CompletionGate {
+        gate: String,
+        status: CompletionStatus,
+        message: String,
+    },
+    PlaytestResult {
+        launched: bool,
+        interactions_passed: Option<bool>,
+        message: String,
+    },
+    RuntimeInput {
+        input: ProviderRuntimeInput,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,20 +358,34 @@ impl ProviderRuntimeInput {
             RuntimeDebugScheduledInput::at_tick(tick, command).map_err(|error| error.to_string())
         };
         match self {
-            Self::Key { key, pressed, at_tick } => Ok(vec![schedule(
+            Self::Key {
+                key,
+                pressed,
+                at_tick,
+            } => Ok(vec![schedule(
                 at_tick.unwrap_or(default_tick),
                 InputCommand::Key {
                     key: provider_key_code(key)?,
                     pressed: *pressed,
                 },
             )?]),
-            Self::HoldKey { key, ticks, at_tick } => {
+            Self::HoldKey {
+                key,
+                ticks,
+                at_tick,
+            } => {
                 let start = at_tick.unwrap_or(default_tick);
                 let end = runtime_hold_end_tick(start, *ticks)?;
                 let key = provider_key_code(key)?;
                 Ok(vec![
                     schedule(start, InputCommand::Key { key, pressed: true })?,
-                    schedule(end, InputCommand::Key { key, pressed: false })?,
+                    schedule(
+                        end,
+                        InputCommand::Key {
+                            key,
+                            pressed: false,
+                        },
+                    )?,
                 ])
             }
             Self::MouseButton {
@@ -419,18 +453,18 @@ impl ProviderRuntimeInput {
             Self::GamepadAxis { .. } => {
                 Err("runtime gamepad axis values must be finite".to_owned())
             }
-            Self::MouseMove { x, y, at_tick } if x.is_finite() && y.is_finite() => Ok(vec![
-                schedule(
+            Self::MouseMove { x, y, at_tick } if x.is_finite() && y.is_finite() => {
+                Ok(vec![schedule(
                     at_tick.unwrap_or(default_tick),
                     InputCommand::MouseMove { position: (*x, *y) },
-                )?,
-            ]),
-            Self::MouseDelta { x, y, at_tick } if x.is_finite() && y.is_finite() => Ok(vec![
-                schedule(
+                )?])
+            }
+            Self::MouseDelta { x, y, at_tick } if x.is_finite() && y.is_finite() => {
+                Ok(vec![schedule(
                     at_tick.unwrap_or(default_tick),
                     InputCommand::MouseDelta { delta: (*x, *y) },
-                )?,
-            ]),
+                )?])
+            }
             Self::MouseScroll { amount, at_tick } if amount.is_finite() => Ok(vec![schedule(
                 at_tick.unwrap_or(default_tick),
                 InputCommand::MouseScroll { amount: *amount },
@@ -757,8 +791,10 @@ impl AiStudioPanel {
             .unwrap_or_else(std::env::temp_dir)
             .join("GameEngine")
             .join("ai");
-        let data_root =
-            ai_root.join(project_storage_key(project.project_id().as_str(), project.path()));
+        let data_root = ai_root.join(project_storage_key(
+            project.project_id().as_str(),
+            project.path(),
+        ));
         let preferences_path = data_root.join("preferences.json");
         let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
         let preferences = load_ai_studio_preferences(&preferences_path);
@@ -1008,10 +1044,12 @@ impl AiStudioPanel {
         ];
         proposal.playtest_plan =
             vec!["Launch managed Play and capture one Game View frame.".to_owned()];
-        proposal.requested_capabilities =
-            [AgentCapability::RuntimeLaunch, AgentCapability::FrameCapture]
-                .into_iter()
-                .collect();
+        proposal.requested_capabilities = [
+            AgentCapability::RuntimeLaunch,
+            AgentCapability::FrameCapture,
+        ]
+        .into_iter()
+        .collect();
         let proposal_version = self
             .host
             .update_proposal(&session_id, proposal)
@@ -1188,8 +1226,9 @@ impl AiStudioPanel {
                 self.hosted_model_name = "enterprise-governed-model".to_owned();
                 self.hosted_secret_draft.clear();
                 self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
-                self.external_provider_status =
-                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+                self.external_provider_status = ExternalAgentProviderStatus::visual_fixture(
+                    ExternalAgentProviderKind::ClaudeCode,
+                );
                 self.status = Some(
                     "Enterprise backend selected · organization-managed remote processing · credential value hidden."
                         .to_owned(),
@@ -1206,8 +1245,9 @@ impl AiStudioPanel {
                 self.confinement_requirement =
                     AgentConfinementRequirement::RequireProviderOrOsConfinement;
                 self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
-                self.external_provider_status =
-                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+                self.external_provider_status = ExternalAgentProviderStatus::visual_fixture(
+                    ExternalAgentProviderKind::ClaudeCode,
+                );
                 self.status = Some(
                     "Confinement required · provider/OS enforcement must be proven before launch · fail closed when unavailable · no OS-sandbox claim is active."
                         .to_owned(),
@@ -1273,13 +1313,19 @@ impl AiStudioPanel {
             }
             Err(error) => {
                 self.live_observation.report_capture_failure();
-                self.status = Some(format!("Live Game View observation is unavailable: {error}"));
+                self.status = Some(format!(
+                    "Live Game View observation is unavailable: {error}"
+                ));
             }
         }
     }
 
     /// Records the result of an Editor-owned managed runtime action.
-    pub fn report_runtime_result(&mut self, context: &egui::Context, result: AiStudioRuntimeResult) {
+    pub fn report_runtime_result(
+        &mut self,
+        context: &egui::Context,
+        result: AiStudioRuntimeResult,
+    ) {
         match &result {
             AiStudioRuntimeResult::InferenceFocusedEntered { reclaim } => {
                 self.status = Some(format!(
@@ -1295,11 +1341,11 @@ impl AiStudioPanel {
             AiStudioRuntimeResult::EditorRestorePending { state } => {
                 if self.restore_for_editing {
                     self.interrupt_snapshot = Some(state.clone());
-                    self.status = Some(
-                        "Restoring Editor presentation before manual editing...".to_owned(),
-                    );
+                    self.status =
+                        Some("Restoring Editor presentation before manual editing...".to_owned());
                 } else {
-                    self.status = Some("Restoring Editor presentation after native inference...".to_owned());
+                    self.status =
+                        Some("Restoring Editor presentation after native inference...".to_owned());
                 }
                 return;
             }
@@ -1307,9 +1353,8 @@ impl AiStudioPanel {
                 if self.restore_for_editing {
                     if let (Some(run_id), Some(snapshot)) =
                         (self.active_run_id.clone(), self.interrupt_snapshot.take())
-                        && let Err(error) = self
-                            .host
-                            .interrupt_for_editing(&run_id, snapshot.into())
+                        && let Err(error) =
+                            self.host.interrupt_for_editing(&run_id, snapshot.into())
                     {
                         self.status = Some(error.to_string());
                         self.restore_for_editing = false;
@@ -1321,7 +1366,8 @@ impl AiStudioPanel {
                             .to_owned(),
                     );
                 } else {
-                    self.status = Some("Editor presentation restored after native inference.".to_owned());
+                    self.status =
+                        Some("Editor presentation restored after native inference.".to_owned());
                 }
                 self.restore_for_editing = false;
                 return;
@@ -1332,7 +1378,9 @@ impl AiStudioPanel {
             }
             _ => {}
         }
-        let Some(run_id) = self.active_run_id.clone() else { return; };
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
         match result {
             AiStudioRuntimeResult::InferenceFocusedEntered { .. }
             | AiStudioRuntimeResult::EditorRestorePending { .. }
@@ -1357,7 +1405,9 @@ impl AiStudioPanel {
                 }
             }
             AiStudioRuntimeResult::PlayStartPending => {
-                self.status = Some("Managed Play is waiting for the engine-managed game-code build.".to_owned());
+                self.status = Some(
+                    "Managed Play is waiting for the engine-managed game-code build.".to_owned(),
+                );
             }
             AiStudioRuntimeResult::RuntimeInputQueued(command) => {
                 if let Err(error) = self
@@ -1366,7 +1416,8 @@ impl AiStudioPanel {
                 {
                     self.status = Some(error.to_string());
                 } else {
-                    self.status = Some("Queued one compatibility AI Agent runtime input.".to_owned());
+                    self.status =
+                        Some("Queued one compatibility AI Agent runtime input.".to_owned());
                 }
             }
             AiStudioRuntimeResult::RuntimePaused(observation) => {
@@ -1419,12 +1470,10 @@ impl AiStudioPanel {
             AiStudioRuntimeResult::RuntimeDebugPlanFailed(message) => {
                 self.managed_runtime_plan_completed = true;
                 self.managed_playtest_started_at = None;
-                if let Err(error) = self.host.record_playtest_result(
-                    &run_id,
-                    true,
-                    Some(false),
-                    message.clone(),
-                ) {
+                if let Err(error) =
+                    self.host
+                        .record_playtest_result(&run_id, true, Some(false), message.clone())
+                {
                     self.status = Some(error.to_string());
                 } else {
                     self.status = Some(message);
@@ -1433,11 +1482,9 @@ impl AiStudioPanel {
             AiStudioRuntimeResult::RuntimeWaited(wait) => {
                 let summary = wait.summary();
                 self.managed_runtime_debug_observation = Some(summary.clone());
-                let _ = self.host.record_semantic_progress(
-                    &run_id,
-                    "runtime_wait",
-                    summary.clone(),
-                );
+                let _ =
+                    self.host
+                        .record_semantic_progress(&run_id, "runtime_wait", summary.clone());
                 self.status = Some(summary);
             }
             AiStudioRuntimeResult::RuntimeAsserted(assertion) => {
@@ -1464,13 +1511,14 @@ impl AiStudioPanel {
                 }
             }
             AiStudioRuntimeResult::RuntimeReplayCompleted(report) => {
-                let summary = format!("ADR 0064 replay reproduction completed; {}", report.summary());
-                self.managed_runtime_debug_observation = Some(summary.clone());
-                let _ = self.host.record_semantic_progress(
-                    &run_id,
-                    "runtime_replay",
-                    summary.clone(),
+                let summary = format!(
+                    "ADR 0064 replay reproduction completed; {}",
+                    report.summary()
                 );
+                self.managed_runtime_debug_observation = Some(summary.clone());
+                let _ =
+                    self.host
+                        .record_semantic_progress(&run_id, "runtime_replay", summary.clone());
                 self.status = Some(summary);
             }
             AiStudioRuntimeResult::PlayStopped => {
@@ -1480,10 +1528,16 @@ impl AiStudioPanel {
             AiStudioRuntimeResult::FrameCaptured(capture) => {
                 match encode_agent_frame_png(&capture)
                     .map_err(|error| error.to_string())
-                    .and_then(|png| self.host.store_captured_frame_artifact(
-                        &run_id, capture.width, capture.height, &png,
-                    ).map_err(|error| error.to_string()))
-                {
+                    .and_then(|png| {
+                        self.host
+                            .store_captured_frame_artifact(
+                                &run_id,
+                                capture.width,
+                                capture.height,
+                                &png,
+                            )
+                            .map_err(|error| error.to_string())
+                    }) {
                     Ok((artifact_id, path)) => {
                         let image = egui::ColorImage::from_rgba_unmultiplied(
                             [capture.width as usize, capture.height as usize],
@@ -1494,7 +1548,8 @@ impl AiStudioPanel {
                             image,
                             egui::TextureOptions::LINEAR,
                         );
-                        self.last_captured_frame = Some((texture, artifact_id.clone(), capture.width, capture.height));
+                        self.last_captured_frame =
+                            Some((texture, artifact_id.clone(), capture.width, capture.height));
                         self.managed_runtime_observation = Some(ManagedRuntimeObservation {
                             artifact_id: artifact_id.clone(),
                             path,
@@ -1502,7 +1557,9 @@ impl AiStudioPanel {
                             height: capture.height,
                         });
                         self.managed_capture_requested = false;
-                        self.status = Some(format!("Captured managed Play frame {artifact_id}; scheduling provider evaluation."));
+                        self.status = Some(format!(
+                            "Captured managed Play frame {artifact_id}; scheduling provider evaluation."
+                        ));
                         self.request_managed_runtime_evaluation_if_ready(&run_id);
                     }
                     Err(error) => {
@@ -1678,7 +1735,9 @@ impl AiStudioPanel {
                                 let message = format!(
                                     "Remote AI Studio visual-validation URL could not be published: {error}"
                                 );
-                                eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
+                                eprintln!(
+                                    "[editor.remote_ai_studio_visual_validation_failed] {message}"
+                                );
                                 self.status = Some(message);
                             }
                         }
@@ -1686,7 +1745,9 @@ impl AiStudioPanel {
                             let message = format!(
                                 "Remote AI Studio visual-validation fixture failed: {error}"
                             );
-                            eprintln!("[editor.remote_ai_studio_visual_validation_failed] {message}");
+                            eprintln!(
+                                "[editor.remote_ai_studio_visual_validation_failed] {message}"
+                            );
                             self.status = Some(message.clone());
                             let _ = fs::write(&path, format!("ERROR: {message}"));
                         }
@@ -1719,9 +1780,10 @@ impl AiStudioPanel {
                 RemoteAiStudioResponse::json(sessions_json(&self.host, &self.project_id))
             }
             RemoteOperation::Snapshot { session_id } => {
-                let pending = self.pending_permission.as_ref().map(|permission| {
-                    (permission.run_id.as_str(), permission.capability)
-                });
+                let pending = self
+                    .pending_permission
+                    .as_ref()
+                    .map(|permission| (permission.run_id.as_str(), permission.capability));
                 match snapshot_json(&self.host, &self.project_id, &session_id, pending) {
                     Ok(mut snapshot) => {
                         if let Some(object) = snapshot.as_object_mut() {
@@ -1755,13 +1817,25 @@ impl AiStudioPanel {
                         }
                         RemoteAiStudioResponse::json(snapshot)
                     }
-                    Err(error) => RemoteAiStudioResponse::error(404, "session_not_found", error, false),
+                    Err(error) => {
+                        RemoteAiStudioResponse::error(404, "session_not_found", error, false)
+                    }
                 }
             }
-            RemoteOperation::Message { session_id, text, .. } => {
-                match self.host.append_message(&session_id, ConversationRole::User, text) {
+            RemoteOperation::Message {
+                session_id, text, ..
+            } => {
+                match self
+                    .host
+                    .append_message(&session_id, ConversationRole::User, text)
+                {
                     Ok(()) => RemoteAiStudioResponse::json(serde_json::json!({"accepted": true})),
-                    Err(error) => RemoteAiStudioResponse::error(404, "message_rejected", error.to_string(), false),
+                    Err(error) => RemoteAiStudioResponse::error(
+                        404,
+                        "message_rejected",
+                        error.to_string(),
+                        false,
+                    ),
                 }
             }
             RemoteOperation::Go {
@@ -1770,62 +1844,125 @@ impl AiStudioPanel {
                 ..
             } => {
                 let proposal = match self.host.session(&session_id) {
-                    Ok(session) if session.proposal.version == proposal_version => session.proposal.clone(),
+                    Ok(session) if session.proposal.version == proposal_version => {
+                        session.proposal.clone()
+                    }
                     Ok(session) => {
                         return RemoteAiStudioResponse::error(
                             409,
                             "stale_proposal",
-                            format!("Proposal version {proposal_version} is stale; current version is {}.", session.proposal.version),
+                            format!(
+                                "Proposal version {proposal_version} is stale; current version is {}.",
+                                session.proposal.version
+                            ),
                             false,
                         );
                     }
                     Err(error) => {
-                        return RemoteAiStudioResponse::error(404, "session_not_found", error.to_string(), false);
+                        return RemoteAiStudioResponse::error(
+                            404,
+                            "session_not_found",
+                            error.to_string(),
+                            false,
+                        );
                     }
                 };
                 self.selected_session = session_id;
                 self.proposal_draft = proposal;
                 match self.begin_run_authorized(proposal_version) {
-                    Ok(run_id) => RemoteAiStudioResponse::json(serde_json::json!({"run_id": run_id})),
+                    Ok(run_id) => {
+                        RemoteAiStudioResponse::json(serde_json::json!({"run_id": run_id}))
+                    }
                     Err(error) => RemoteAiStudioResponse::error(409, "go_rejected", error, false),
                 }
             }
             RemoteOperation::Stop { run_id, .. } => match self.stop_run_exact(&run_id) {
-                Ok(()) => RemoteAiStudioResponse::json(serde_json::json!({"stopped": true, "run_id": run_id})),
+                Ok(()) => RemoteAiStudioResponse::json(
+                    serde_json::json!({"stopped": true, "run_id": run_id}),
+                ),
                 Err(error) => RemoteAiStudioResponse::error(409, "stop_rejected", error, false),
             },
             RemoteOperation::AwaitingUser { run_id, text, .. } => {
                 let state = match self.host.run(&run_id) {
                     Ok(run) => run.state,
-                    Err(error) => return RemoteAiStudioResponse::error(404, "run_not_found", error.to_string(), false),
+                    Err(error) => {
+                        return RemoteAiStudioResponse::error(
+                            404,
+                            "run_not_found",
+                            error.to_string(),
+                            false,
+                        );
+                    }
                 };
                 if state != AgentRunState::AwaitingUser {
-                    return RemoteAiStudioResponse::error(409, "not_awaiting_user", "The run is no longer waiting for user input.", false);
+                    return RemoteAiStudioResponse::error(
+                        409,
+                        "not_awaiting_user",
+                        "The run is no longer waiting for user input.",
+                        false,
+                    );
                 }
                 let session_id = self.host.session_ids().into_iter().find(|session_id| {
-                    self.host.session(session_id).is_ok_and(|session| {
-                        session.runs.iter().any(|run| run.id == run_id)
-                    })
+                    self.host
+                        .session(session_id)
+                        .is_ok_and(|session| session.runs.iter().any(|run| run.id == run_id))
                 });
                 let Some(session_id) = session_id else {
-                    return RemoteAiStudioResponse::error(404, "run_not_found", "The run session was not found.", false);
+                    return RemoteAiStudioResponse::error(
+                        404,
+                        "run_not_found",
+                        "The run session was not found.",
+                        false,
+                    );
                 };
-                if let Err(error) = self.host.append_message(&session_id, ConversationRole::User, text) {
-                    return RemoteAiStudioResponse::error(409, "response_rejected", error.to_string(), false);
+                if let Err(error) =
+                    self.host
+                        .append_message(&session_id, ConversationRole::User, text)
+                {
+                    return RemoteAiStudioResponse::error(
+                        409,
+                        "response_rejected",
+                        error.to_string(),
+                        false,
+                    );
                 }
-                match self.host.transition_run(&run_id, AgentRunState::Executing, "User response received; execution may continue.") {
-                    Ok(()) => RemoteAiStudioResponse::json(serde_json::json!({"accepted": true, "run_id": run_id})),
-                    Err(error) => RemoteAiStudioResponse::error(409, "response_rejected", error.to_string(), false),
+                match self.host.transition_run(
+                    &run_id,
+                    AgentRunState::Executing,
+                    "User response received; execution may continue.",
+                ) {
+                    Ok(()) => RemoteAiStudioResponse::json(
+                        serde_json::json!({"accepted": true, "run_id": run_id}),
+                    ),
+                    Err(error) => RemoteAiStudioResponse::error(
+                        409,
+                        "response_rejected",
+                        error.to_string(),
+                        false,
+                    ),
                 }
             }
             RemoteOperation::Permission {
-                run_id, capability, scope, ..
+                run_id,
+                capability,
+                scope,
+                ..
             } => {
                 let Some(pending) = self.pending_permission.as_ref() else {
-                    return RemoteAiStudioResponse::error(409, "permission_not_pending", "No permission decision is pending.", false);
+                    return RemoteAiStudioResponse::error(
+                        409,
+                        "permission_not_pending",
+                        "No permission decision is pending.",
+                        false,
+                    );
                 };
                 if pending.run_id != run_id || pending.capability != capability {
-                    return RemoteAiStudioResponse::error(409, "permission_stale", "The permission request no longer matches the active decision.", false);
+                    return RemoteAiStudioResponse::error(
+                        409,
+                        "permission_stale",
+                        "The permission request no longer matches the active decision.",
+                        false,
+                    );
                 }
                 let action = pending.action.clone();
                 let approval = match scope {
@@ -1835,17 +1972,26 @@ impl AiStudioPanel {
                     RemotePermissionScope::Deny => ApprovalScope::Deny,
                 };
                 self.resolve_pending_permission(&run_id, capability, action, approval);
-                RemoteAiStudioResponse::json(serde_json::json!({"resolved": true, "run_id": run_id}))
+                RemoteAiStudioResponse::json(
+                    serde_json::json!({"resolved": true, "run_id": run_id}),
+                )
             }
-            RemoteOperation::Events { run_id, after } => match events_json(&self.host, &run_id, after) {
-                Ok(events) => RemoteAiStudioResponse::sse(events),
-                Err(error) => RemoteAiStudioResponse::error(404, "run_not_found", error, false),
-            },
-            RemoteOperation::Frame { run_id, artifact_id } => match frame_bytes(&self.host, &run_id, &artifact_id) {
+            RemoteOperation::Events { run_id, after } => {
+                match events_json(&self.host, &run_id, after) {
+                    Ok(events) => RemoteAiStudioResponse::sse(events),
+                    Err(error) => RemoteAiStudioResponse::error(404, "run_not_found", error, false),
+                }
+            }
+            RemoteOperation::Frame {
+                run_id,
+                artifact_id,
+            } => match frame_bytes(&self.host, &run_id, &artifact_id) {
                 Ok(bytes) => RemoteAiStudioResponse::png(bytes),
                 Err(error) => RemoteAiStudioResponse::error(404, "frame_not_found", error, false),
             },
-            RemoteOperation::StartLiveObservation { run_id, max_fps, .. } => {
+            RemoteOperation::StartLiveObservation {
+                run_id, max_fps, ..
+            } => {
                 let run = match self.host.run(&run_id) {
                     Ok(run) => run,
                     Err(error) => {
@@ -1920,18 +2066,29 @@ impl AiStudioPanel {
 
     fn stop_run_exact(&mut self, run_id: &str) -> Result<(), String> {
         if self.active_run_id.as_deref() != Some(run_id) {
-            return Err("The requested run is not the active run; stale Stop was rejected.".to_owned());
+            return Err(
+                "The requested run is not the active run; stale Stop was rejected.".to_owned(),
+            );
         }
-        if self.host.run(run_id).is_ok_and(|run| matches!(run.state, AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled)) {
+        if self.host.run(run_id).is_ok_and(|run| {
+            matches!(
+                run.state,
+                AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+            )
+        }) {
             return Ok(());
         }
         if let Some(process) = self.process.as_mut() {
-            process.cancel().map_err(|error| format!("Could not stop agent process: {error}"))?;
+            process
+                .cancel()
+                .map_err(|error| format!("Could not stop agent process: {error}"))?;
         }
         self.process = None;
         self.process_purpose = None;
         self.pending_external_work_owner = None;
-        self.host.cancel_run(run_id).map_err(|error| error.to_string())
+        self.host
+            .cancel_run(run_id)
+            .map_err(|error| error.to_string())
     }
 
     fn show_remote_companion(&mut self, ui: &mut egui::Ui) {
@@ -2786,9 +2943,9 @@ impl AiStudioPanel {
 
     fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
         let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');
-        self.installed_model_inventory.as_ref().filter(|inventory| {
-            inventory.endpoint.trim().trim_end_matches('/') == endpoint
-        })
+        self.installed_model_inventory
+            .as_ref()
+            .filter(|inventory| inventory.endpoint.trim().trim_end_matches('/') == endpoint)
     }
 
     fn start_model_discovery(&mut self) {
@@ -2844,10 +3001,12 @@ impl AiStudioPanel {
                 self.managed_setup_task = Some(task);
                 self.status = Some(message.to_owned());
             }
-            Err(error) => self.status = Some(format!(
-                "Managed Local AI setup failed to start ({}): {error}",
-                error.layer().label()
-            )),
+            Err(error) => {
+                self.status = Some(format!(
+                    "Managed Local AI setup failed to start ({}): {error}",
+                    error.layer().label()
+                ))
+            }
         }
     }
 
@@ -2985,7 +3144,9 @@ impl AiStudioPanel {
     /// startup.
     fn described_managed_model_config(&mut self) -> Result<ManagedLocalModelConfig, String> {
         if self.managed_model_id.trim().is_empty() {
-            return Err("Register or select a managed GGUF model before starting inference.".to_owned());
+            return Err(
+                "Register or select a managed GGUF model before starting inference.".to_owned(),
+            );
         }
         match self.managed_probe_for_panel() {
             Some(probe) => probe.described_config,
@@ -3008,10 +3169,7 @@ impl AiStudioPanel {
         config: &ManagedLocalModelConfig,
     ) -> InstalledModelInventory {
         InstalledModelInventory {
-            endpoint: format!(
-                "managed://{}",
-                config.environment.benchmark_id()
-            ),
+            endpoint: format!("managed://{}", config.environment.benchmark_id()),
             backend_version: Some(config.benchmark_runtime_identity()),
             models: vec![InstalledLocalModel {
                 name: config.model_id.clone(),
@@ -3171,7 +3329,10 @@ impl AiStudioPanel {
         match self.model_backend {
             ModelBackendPreference::Local => {
                 if self.local_model_name.trim().is_empty() {
-                    return Err("Set an installed external local model before starting inference.".to_owned());
+                    return Err(
+                        "Set an installed external local model before starting inference."
+                            .to_owned(),
+                    );
                 }
                 Ok(NativeModelConfig::Local(LocalModelConfig {
                     endpoint: self.local_model_endpoint.clone(),
@@ -3191,7 +3352,10 @@ impl AiStudioPanel {
                 if self.model_backend == ModelBackendPreference::HostedApi
                     && !hosted_model_backend::credential_is_configured(&self.hosted_secret_path)
                 {
-                    return Err("Store a hosted API credential before starting hosted inference.".to_owned());
+                    return Err(
+                        "Store a hosted API credential before starting hosted inference."
+                            .to_owned(),
+                    );
                 }
                 Ok(NativeModelConfig::Hosted(HostedModelConfig {
                     endpoint: self.hosted_model_endpoint.clone(),
@@ -3248,7 +3412,8 @@ impl AiStudioPanel {
                         config,
                         conversation,
                     });
-                    self.status = Some("Hosted inference requires Network access approval.".to_owned());
+                    self.status =
+                        Some("Hosted inference requires Network access approval.".to_owned());
                 }
                 Ok(PermissionCheck::Denied) => {
                     self.status = Some("Permission denied: Network access.".to_owned());
@@ -3332,9 +3497,8 @@ impl AiStudioPanel {
             self.pending_runtime_action = Some(AiStudioRuntimeAction::EnterInferenceFocused {
                 reclaim: self.resource_plan.reclaim.into(),
             });
-            self.status = Some(
-                "Preparing InferenceFocused presentation before native inference.".to_owned(),
-            );
+            self.status =
+                Some("Preparing InferenceFocused presentation before native inference.".to_owned());
         } else {
             self.spawn_native_question(config, conversation, session_id);
         }
@@ -3455,8 +3619,7 @@ impl AiStudioPanel {
             return;
         };
         let capabilities = config.capability_profile().resource_capabilities;
-        let Some(operation) =
-            resource_operation_for_residency_request(request, capabilities)
+        let Some(operation) = resource_operation_for_residency_request(request, capabilities)
         else {
             self.finish_model_resource_continuation(continuation);
             return;
@@ -3607,7 +3770,9 @@ impl AiStudioPanel {
                 }
             }
             Err(error) => {
-                self.status = Some(format!("Could not serialize AI Studio preferences: {error}"));
+                self.status = Some(format!(
+                    "Could not serialize AI Studio preferences: {error}"
+                ));
             }
         }
     }
@@ -3646,15 +3811,16 @@ impl AiStudioPanel {
                     self.last_model_resource_telemetry = answer.resource_telemetry.clone();
                 }
                 let message = format_native_answer(&answer);
-                match self.host.append_message(
-                    &session_id,
-                    ConversationRole::Assistant,
-                    message,
-                ) {
+                match self
+                    .host
+                    .append_message(&session_id, ConversationRole::Assistant, message)
+                {
                     Ok(()) => {
                         self.status = Some(format!(
                             "Model backend {} answered with {} retrieved evidence source(s) in {} ms.",
-                            answer.metrics.backend_id, answer.sources.len(), answer.metrics.elapsed_ms
+                            answer.metrics.backend_id,
+                            answer.sources.len(),
+                            answer.metrics.elapsed_ms
                         ));
                     }
                     Err(error) => self.status = Some(error.to_string()),
@@ -3663,11 +3829,10 @@ impl AiStudioPanel {
             Err(error) => {
                 let diagnostic = format!("Inference failed: {error}");
                 self.status = Some(diagnostic.clone());
-                if let Err(append_error) = self.host.append_message(
-                    &session_id,
-                    ConversationRole::System,
-                    diagnostic,
-                ) {
+                if let Err(append_error) =
+                    self.host
+                        .append_message(&session_id, ConversationRole::System, diagnostic)
+                {
                     self.status = Some(format!(
                         "Inference failed: {error}; Conversation diagnostic could not be recorded: {append_error}"
                     ));
@@ -3712,8 +3877,16 @@ impl AiStudioPanel {
                     "Planned code changes",
                     &mut self.proposal_draft.planned_code_changes,
                 );
-                edit_lines(ui, "Planned assets", &mut self.proposal_draft.planned_assets);
-                edit_lines(ui, "Validation plan", &mut self.proposal_draft.validation_plan);
+                edit_lines(
+                    ui,
+                    "Planned assets",
+                    &mut self.proposal_draft.planned_assets,
+                );
+                edit_lines(
+                    ui,
+                    "Validation plan",
+                    &mut self.proposal_draft.validation_plan,
+                );
                 edit_lines(ui, "Playtest plan", &mut self.proposal_draft.playtest_plan);
                 if ui.button("Save proposal version").clicked() {
                     match self
@@ -3745,12 +3918,9 @@ impl AiStudioPanel {
             .host
             .workspace_paths(run_id)
             .map_err(|error| error.to_string())?;
-        let workspace = CodeWorkspace::open_or_create(
-            &self.project_root,
-            workspace_root,
-            baseline_path,
-        )
-        .map_err(|error| error.to_string())?;
+        let workspace =
+            CodeWorkspace::open_or_create(&self.project_root, workspace_root, baseline_path)
+                .map_err(|error| error.to_string())?;
         self.host
             .record_event(
                 run_id,
@@ -3789,7 +3959,11 @@ impl AiStudioPanel {
         context: Option<String>,
         images: Vec<Vec<u8>>,
     ) -> Result<(), String> {
-        let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
+        let run = self
+            .host
+            .run(run_id)
+            .map_err(|error| error.to_string())?
+            .clone();
         let benchmark_single_model = self.benchmark_child_active();
         let (backend_label, routing_summary, routing_decisions) = {
             let runtime = self
@@ -3811,7 +3985,9 @@ impl AiStudioPanel {
                 runtime.take_routing_decisions(),
             )
         };
-        if routing_decisions.iter().any(|decision| decision.context_handoff)
+        if routing_decisions
+            .iter()
+            .any(|decision| decision.context_handoff)
             && let Some(benchmark) = self.native_run_benchmark_context.as_mut()
             && benchmark.run_id == run_id
         {
@@ -3824,9 +4000,7 @@ impl AiStudioPanel {
         }
         self.status = Some(format!(
             "{} is reasoning in {:?}; {}. Managed tools remain host-owned.",
-            backend_label,
-            run.state,
-            routing_summary
+            backend_label, run.state, routing_summary
         ));
         Ok(())
     }
@@ -3908,12 +4082,9 @@ impl AiStudioPanel {
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = action_validation {
-            let _ = self.host.record_tool_action(
-                &run_id,
-                "native.policy",
-                error.clone(),
-                Some(false),
-            );
+            let _ =
+                self.host
+                    .record_tool_action(&run_id, "native.policy", error.clone(), Some(false));
             self.record_native_result_and_continue(&run_id, "native.policy", false, error);
             return;
         }
@@ -3929,9 +4100,7 @@ impl AiStudioPanel {
                         [AgentWorkClaim::shared_resource("canonical_authoring")],
                     )
                 {
-                    let message = format!(
-                        "MCP mutation is waiting for work ownership: {error}"
-                    );
+                    let message = format!("MCP mutation is waiting for work ownership: {error}");
                     let _ = self.host.record_tool_action(
                         run_id,
                         tool.clone(),
@@ -3970,9 +4139,8 @@ impl AiStudioPanel {
                     .host
                     .acquire_work_claims(run_id, [AgentWorkClaim::code_path(path.clone())])
                 {
-                    let message = format!(
-                        "Managed code write is waiting for work ownership: {error}"
-                    );
+                    let message =
+                        format!("Managed code write is waiting for work ownership: {error}");
                     let _ = self.host.record_tool_action(
                         run_id,
                         "workspace.code_write",
@@ -4026,7 +4194,7 @@ impl AiStudioPanel {
                                 format!("tick {} {:?}", input.tick_offset(), input.command())
                             })
                             .collect::<Vec<_>>()
-                            .join(", " );
+                            .join(", ");
                         self.managed_candidate_input_recipe
                             .extend(scheduled.iter().cloned());
                         let _ = self.host.record_semantic_progress(
@@ -4114,7 +4282,9 @@ impl AiStudioPanel {
                     run_id,
                     format!("progress:{step}"),
                     success,
-                    result.map(|()| "Progress recorded.".to_owned()).unwrap_or_else(|e| e),
+                    result
+                        .map(|()| "Progress recorded.".to_owned())
+                        .unwrap_or_else(|e| e),
                 );
             }
             NativeAgentAction::AwaitUser { question } => {
@@ -4174,12 +4344,7 @@ impl AiStudioPanel {
                     "typed live Editor MCP call",
                     Some(true),
                 );
-                self.record_native_result_and_continue(
-                    &run_id,
-                    tool,
-                    true,
-                    value.to_string(),
-                );
+                self.record_native_result_and_continue(&run_id, tool, true, value.to_string());
             }
             Err(error) => {
                 let _ = self.host.record_tool_action(
@@ -4384,7 +4549,10 @@ impl AiStudioPanel {
                     )
                 })
             });
-            if ui.add_enabled(can_stop, egui::Button::new("Stop")).clicked() {
+            if ui
+                .add_enabled(can_stop, egui::Button::new("Stop"))
+                .clicked()
+            {
                 stop_requested = true;
             }
             let can_interrupt = !self.editing_interrupted
@@ -4427,8 +4595,12 @@ impl AiStudioPanel {
             self.pending_native_question_start = None;
             self.model_resource_continuation = None;
             self.restore_for_editing = false;
-            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
-            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
+            if let Some(runtime) = self.native_agent_runtime.as_mut() {
+                runtime.interrupt();
+            }
+            if let Some(task) = self.native_mcp_task.as_ref() {
+                task.interrupt();
+            }
             self.native_mcp_task = None;
             self.pending_native_mcp_tool = None;
             if let Some(process) = self.process.as_mut()
@@ -4452,9 +4624,15 @@ impl AiStudioPanel {
             self.pending_external_work_owner = None;
         }
         if interrupt_requested {
-            if let Some(task) = self.native_question.as_ref() { task.interrupt(); }
-            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
-            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
+            if let Some(task) = self.native_question.as_ref() {
+                task.interrupt();
+            }
+            if let Some(runtime) = self.native_agent_runtime.as_mut() {
+                runtime.interrupt();
+            }
+            if let Some(task) = self.native_mcp_task.as_ref() {
+                task.interrupt();
+            }
             self.native_mcp_task = None;
             self.pending_native_mcp_tool = None;
             self.pending_native_question_start = None;
@@ -4473,9 +4651,8 @@ impl AiStudioPanel {
         }
         if resume_requested {
             self.pending_runtime_action = Some(AiStudioRuntimeAction::InspectAuthoritativeState);
-            self.status = Some(
-                "Re-inspecting authoritative Editor state before Resume...".to_owned(),
-            );
+            self.status =
+                Some("Re-inspecting authoritative Editor state before Resume...".to_owned());
         }
     }
 
@@ -4511,7 +4688,9 @@ impl AiStudioPanel {
         ui.group(|ui| {
             ui.strong("Approval required");
             ui.label(capability.label());
-            ui.small("Project-level approval persists as user application state; credentials never do.");
+            ui.small(
+                "Project-level approval persists as user application state; credentials never do.",
+            );
             ui.horizontal(|ui| {
                 for (label, scope) in [
                     ("Allow once", ApprovalScope::Once),
@@ -4520,12 +4699,7 @@ impl AiStudioPanel {
                     ("Deny", ApprovalScope::Deny),
                 ] {
                     if ui.button(label).clicked() {
-                        self.resolve_pending_permission(
-                            &run_id,
-                            capability,
-                            action.clone(),
-                            scope,
-                        );
+                        self.resolve_pending_permission(&run_id, capability, action.clone(), scope);
                     }
                 }
             });
@@ -4619,18 +4793,35 @@ impl AiStudioPanel {
                 && !self.managed_capture_requested
                 && self.pending_permission.is_none()
                 && self.pending_runtime_action.is_none();
-            if ui.add_enabled(can_capture, egui::Button::new("Capture managed frame")).clicked() {
+            if ui
+                .add_enabled(can_capture, egui::Button::new("Capture managed frame"))
+                .clicked()
+            {
                 self.managed_capture_requested = true;
-                self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
+                self.request_permission(
+                    run_id.to_owned(),
+                    AgentCapability::FrameCapture,
+                    PendingPermissionAction::CaptureFrame,
+                );
             }
-            if ui.add_enabled(self.managed_playtest_started_at.is_some(), egui::Button::new("Stop managed Play")).clicked() {
+            if ui
+                .add_enabled(
+                    self.managed_playtest_started_at.is_some(),
+                    egui::Button::new("Stop managed Play"),
+                )
+                .clicked()
+            {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
             }
         });
         if let Some((texture, artifact_id, width, height)) = &self.last_captured_frame {
             ui.group(|ui| {
                 ui.strong(format!("Captured frame · {artifact_id} · {width}x{height}"));
-                ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(480.0, 270.0)).maintain_aspect_ratio(true));
+                ui.add(
+                    egui::Image::new(texture)
+                        .fit_to_exact_size(egui::vec2(480.0, 270.0))
+                        .maintain_aspect_ratio(true),
+                );
             });
         }
         if ui.button("Complete run").clicked() {
@@ -4698,7 +4889,14 @@ impl AiStudioPanel {
             };
             (config.backend_id().to_owned(), config.model_id(), inventory)
         });
-        let run_id = self.host.start_run_authorized(&self.selected_session, authorized_proposal_version, provider_label).map_err(|error| error.to_string())?;
+        let run_id = self
+            .host
+            .start_run_authorized(
+                &self.selected_session,
+                authorized_proposal_version,
+                provider_label,
+            )
+            .map_err(|error| error.to_string())?;
         self.active_run_id = Some(run_id.clone());
         self.active_runtime_mode = Some(mode);
         self.active_external_provider = external_provider;
@@ -4721,19 +4919,20 @@ impl AiStudioPanel {
                 )
             }
         });
-        self.native_run_benchmark_context = native_benchmark_identity.map(
-            |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
-                run_id: run_id.clone(),
-                task_id: self.benchmark_task_id.clone(),
-                backend_id,
-                model_id,
-                quality: self.quality_preference,
-                workload: benchmark_workload,
-                hardware: self.benchmark_hardware.clone(),
-                inventory,
-                routed: false,
-            },
-        );
+        self.native_run_benchmark_context =
+            native_benchmark_identity.map(|(backend_id, model_id, inventory)| {
+                NativeRunBenchmarkContext {
+                    run_id: run_id.clone(),
+                    task_id: self.benchmark_task_id.clone(),
+                    backend_id,
+                    model_id,
+                    quality: self.quality_preference,
+                    workload: benchmark_workload,
+                    hardware: self.benchmark_hardware.clone(),
+                    inventory,
+                    routed: false,
+                }
+            });
         self.native_mcp_task = None;
         self.pending_native_mcp_tool = None;
         self.code_workspace = None;
@@ -4802,7 +5001,10 @@ impl AiStudioPanel {
         action: PendingPermissionAction,
     ) {
         if self.benchmark_child_allows(capability) {
-            match self.host.resolve_permission(&run_id, capability, ApprovalScope::Run) {
+            match self
+                .host
+                .resolve_permission(&run_id, capability, ApprovalScope::Run)
+            {
                 Ok(()) => self.execute_permission_action(&run_id, action),
                 Err(error) => self.status = Some(error.to_string()),
             }
@@ -4842,10 +5044,7 @@ impl AiStudioPanel {
         scope: ApprovalScope,
     ) {
         self.pending_permission = None;
-        if let Err(error) = self
-            .host
-            .resolve_permission(run_id, capability, scope)
-        {
+        if let Err(error) = self.host.resolve_permission(run_id, capability, scope) {
             self.status = Some(error.to_string());
             return;
         }
@@ -4954,9 +5153,11 @@ impl AiStudioPanel {
         ) {
             self.status = Some(error.to_string());
         }
-        let proposal_json = match self.host.run(run_id).and_then(|run| {
-            serde_json::to_string(&run.proposal_snapshot).map_err(Into::into)
-        }) {
+        let proposal_json = match self
+            .host
+            .run(run_id)
+            .and_then(|run| serde_json::to_string(&run.proposal_snapshot).map_err(Into::into))
+        {
             Ok(json) => json,
             Err(error) => {
                 self.fail_run(run_id, format!("Could not serialize proposal: {error}"));
@@ -4980,7 +5181,9 @@ impl AiStudioPanel {
                 Some(observation) => Some(observation),
                 None => {
                     self.managed_evaluation_requested = false;
-                    self.status = Some("Runtime evaluation requires a host-captured frame artifact.".to_owned());
+                    self.status = Some(
+                        "Runtime evaluation requires a host-captured frame artifact.".to_owned(),
+                    );
                     return;
                 }
             }
@@ -5145,8 +5348,7 @@ impl AiStudioPanel {
             }
             Err(error) => {
                 if let Some(profile) = error.confinement_profile().cloned()
-                    && let Err(audit_error) =
-                        self.host.record_confinement_profile(run_id, profile)
+                    && let Err(audit_error) = self.host.record_confinement_profile(run_id, profile)
                 {
                     self.status = Some(format!(
                         "Could not record rejected confinement profile: {audit_error}"
@@ -5180,7 +5382,9 @@ impl AiStudioPanel {
                 run_id,
                 [AgentWorkClaim::shared_resource("canonical_authoring")],
             )
-            .map_err(|error| format!("Could not release external agent authoring ownership: {error}"))
+            .map_err(|error| {
+                format!("Could not release external agent authoring ownership: {error}")
+            })
     }
 
     fn poll_external_process(&mut self, context: &egui::Context) {
@@ -5202,7 +5406,8 @@ impl AiStudioPanel {
                 if let Some(payload) = line.text.strip_prefix(PROVIDER_EVENT_PREFIX) {
                     match serde_json::from_str::<ProviderAgentEvent>(payload) {
                         Ok(event) => {
-                            if let Err(error) = self.record_provider_semantic_event(&run_id, event) {
+                            if let Err(error) = self.record_provider_semantic_event(&run_id, event)
+                            {
                                 self.status = Some(error);
                             }
                             continue;
@@ -5230,9 +5435,8 @@ impl AiStudioPanel {
                                 action,
                                 success,
                             } => {
-                                if let Err(error) = self
-                                    .host
-                                    .record_tool_action(&run_id, tool, action, success)
+                                if let Err(error) =
+                                    self.host.record_tool_action(&run_id, tool, action, success)
                                 {
                                     self.status = Some(error.to_string());
                                 }
@@ -5265,7 +5469,9 @@ impl AiStudioPanel {
             if let Err(error) = self.host.record_event(
                 &run_id,
                 AgentEventKind::ProviderOutput,
-                format!("{stream} output received; raw provider text omitted from persisted history."),
+                format!(
+                    "{stream} output received; raw provider text omitted from persisted history."
+                ),
             ) {
                 self.status = Some(error.to_string());
             }
@@ -5300,7 +5506,10 @@ impl AiStudioPanel {
                         .external_provider_diagnostics
                         .classify_exit(provider_kind, status.code());
                     let message = if failure.retryable {
-                        format!("{} The provider classified this failure as retryable.", failure.message)
+                        format!(
+                            "{} The provider classified this failure as retryable.",
+                            failure.message
+                        )
                     } else {
                         failure.message
                     };
@@ -5318,8 +5527,7 @@ impl AiStudioPanel {
                     .process_purpose
                     .take()
                     .unwrap_or(ExternalAgentPurpose::BuildOrRepair);
-                if let Err(release_error) =
-                    self.release_external_authoring_claim(&run_id, purpose)
+                if let Err(release_error) = self.release_external_authoring_claim(&run_id, purpose)
                 {
                     self.fail_run(&run_id, release_error);
                     return;
@@ -5393,7 +5601,9 @@ impl AiStudioPanel {
                     Err(error) => {
                         self.record_runtime_evaluation_failure(
                             run_id,
-                            format!("Could not read host-captured frame for native evaluation: {error}"),
+                            format!(
+                                "Could not read host-captured frame for native evaluation: {error}"
+                            ),
                         );
                         return;
                     }
@@ -5403,8 +5613,7 @@ impl AiStudioPanel {
                     "Evaluate the attached host-captured managed Play frame {} ({}x{}). Resolve visual_evaluation with host-reportable evidence. Deterministic structured runtime evidence: {structured}",
                     observation.artifact_id, observation.width, observation.height
                 );
-                if let Err(error) =
-                    self.start_native_agent_turn(run_id, Some(context), vec![image])
+                if let Err(error) = self.start_native_agent_turn(run_id, Some(context), vec![image])
                 {
                     self.record_runtime_evaluation_failure(run_id, error);
                 }
@@ -5412,8 +5621,7 @@ impl AiStudioPanel {
                 let context = format!(
                     "The selected Native ModelBackend has no verified image-input route. Do not claim visual inspection. Evaluate only deterministic structured host runtime evidence and report visual_evaluation as not_applicable unless host evidence proves a failure: {structured}"
                 );
-                if let Err(error) =
-                    self.start_native_agent_turn(run_id, Some(context), Vec::new())
+                if let Err(error) = self.start_native_agent_turn(run_id, Some(context), Vec::new())
                 {
                     self.record_runtime_evaluation_failure(run_id, error);
                 }
@@ -5465,10 +5673,24 @@ impl AiStudioPanel {
                     self.status = Some(error.to_string());
                 }
                 if self.active_runtime_mode == Some(AgentRuntimeMode::Native) {
-                    let context = self.host.run(&run_id).map(managed_source_repair_context).unwrap_or_else(|error| format!("Re-inspect after validation failure: {error}"));
-                    if let Err(error) = self.start_native_agent_turn(&run_id, Some(context), Vec::new()) { self.fail_run(&run_id, error); }
+                    let context = self
+                        .host
+                        .run(&run_id)
+                        .map(managed_source_repair_context)
+                        .unwrap_or_else(|error| {
+                            format!("Re-inspect after validation failure: {error}")
+                        });
+                    if let Err(error) =
+                        self.start_native_agent_turn(&run_id, Some(context), Vec::new())
+                    {
+                        self.fail_run(&run_id, error);
+                    }
                 } else {
-                    self.request_permission(run_id, AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchExternalAgent);
+                    self.request_permission(
+                        run_id,
+                        AgentCapability::ExternalAgentProcess,
+                        PendingPermissionAction::LaunchExternalAgent,
+                    );
                 }
             }
             SourceRepairDecision::Exhausted => {
@@ -5531,10 +5753,26 @@ impl AiStudioPanel {
                     self.status = Some(error.to_string());
                 }
                 if self.active_runtime_mode == Some(AgentRuntimeMode::Native) {
-                    let context = self.host.run(&run_id).map(|run| managed_repair_context(run, self.managed_runtime_observation.as_ref())).unwrap_or_else(|error| format!("Re-inspect after runtime failure: {error}"));
-                    if let Err(error) = self.start_native_agent_turn(&run_id, Some(context), Vec::new()) { self.fail_run(&run_id, error); }
+                    let context = self
+                        .host
+                        .run(&run_id)
+                        .map(|run| {
+                            managed_repair_context(run, self.managed_runtime_observation.as_ref())
+                        })
+                        .unwrap_or_else(|error| {
+                            format!("Re-inspect after runtime failure: {error}")
+                        });
+                    if let Err(error) =
+                        self.start_native_agent_turn(&run_id, Some(context), Vec::new())
+                    {
+                        self.fail_run(&run_id, error);
+                    }
                 } else {
-                    self.request_permission(run_id, AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchExternalAgent);
+                    self.request_permission(
+                        run_id,
+                        AgentCapability::ExternalAgentProcess,
+                        PendingPermissionAction::LaunchExternalAgent,
+                    );
                 }
             }
             RuntimeRepairDecision::Exhausted => {
@@ -5559,8 +5797,14 @@ impl AiStudioPanel {
         {
             return;
         }
-        let Some(run_id) = self.active_run_id.clone() else { return; };
-        if !self.host.run(&run_id).is_ok_and(|run| run.state == AgentRunState::Playtesting) {
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        if !self
+            .host
+            .run(&run_id)
+            .is_ok_and(|run| run.state == AgentRunState::Playtesting)
+        {
             return;
         }
         self.managed_runtime_plan_completed = false;
@@ -5627,13 +5871,20 @@ impl AiStudioPanel {
     }
 
     fn poll_managed_playtest_timeout(&mut self) {
-        let Some(started_at) = self.managed_playtest_started_at else { return; };
+        let Some(started_at) = self.managed_playtest_started_at else {
+            return;
+        };
         if started_at.elapsed() < std::time::Duration::from_secs(120) {
             return;
         }
-        let Some(run_id) = self.active_run_id.clone() else { return; };
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
         let state = self.host.run(&run_id).map(|run| run.state).ok();
-        if matches!(state, Some(AgentRunState::Playtesting | AgentRunState::Evaluating)) {
+        if matches!(
+            state,
+            Some(AgentRunState::Playtesting | AgentRunState::Evaluating)
+        ) {
             let _ = self.host.record_playtest_result(
                 &run_id,
                 true,
@@ -5738,10 +5989,7 @@ impl AiStudioPanel {
         self.managed_runtime_plan_completed = false;
         self.managed_runtime_debug_observation = None;
         self.managed_repair_requested = false;
-        if let Err(error) = self
-            .host
-            .begin_managed_validation(run_id, has_code_changes)
-        {
+        if let Err(error) = self.host.begin_managed_validation(run_id, has_code_changes) {
             self.status = Some(error.to_string());
         } else {
             self.status = Some(format!(
@@ -5755,9 +6003,7 @@ impl AiStudioPanel {
             .pending_code_changes
             .iter()
             .map(|change| {
-                AgentWorkClaim::code_path(
-                    change.relative_path.to_string_lossy().replace('\\', "/"),
-                )
+                AgentWorkClaim::code_path(change.relative_path.to_string_lossy().replace('\\', "/"))
             })
             .collect::<Vec<_>>();
         if let Err(error) = self.host.acquire_work_claims(run_id, claims) {
@@ -5788,21 +6034,55 @@ impl AiStudioPanel {
         }
     }
 
-    fn record_provider_semantic_event(&mut self, run_id: &str, event: ProviderAgentEvent) -> Result<(), String> {
+    fn record_provider_semantic_event(
+        &mut self,
+        run_id: &str,
+        event: ProviderAgentEvent,
+    ) -> Result<(), String> {
         match event {
-            ProviderAgentEvent::Progress { step, detail } => self.host.record_semantic_progress(run_id, step, detail).map_err(|error| error.to_string()),
-            ProviderAgentEvent::ToolAction { tool, action, success } => self.host.record_tool_action(run_id, tool, action, success).map_err(|error| error.to_string()),
-            ProviderAgentEvent::CompletionGate { gate, status, message } => self.host.record_completion_gate(run_id, &gate, status, message).map_err(|error| error.to_string()),
-            ProviderAgentEvent::PlaytestResult { launched, interactions_passed, message } => {
-                self.host.record_playtest_result(run_id, launched, interactions_passed, message).map_err(|error| error.to_string())?;
+            ProviderAgentEvent::Progress { step, detail } => self
+                .host
+                .record_semantic_progress(run_id, step, detail)
+                .map_err(|error| error.to_string()),
+            ProviderAgentEvent::ToolAction {
+                tool,
+                action,
+                success,
+            } => self
+                .host
+                .record_tool_action(run_id, tool, action, success)
+                .map_err(|error| error.to_string()),
+            ProviderAgentEvent::CompletionGate {
+                gate,
+                status,
+                message,
+            } => self
+                .host
+                .record_completion_gate(run_id, &gate, status, message)
+                .map_err(|error| error.to_string()),
+            ProviderAgentEvent::PlaytestResult {
+                launched,
+                interactions_passed,
+                message,
+            } => {
+                self.host
+                    .record_playtest_result(run_id, launched, interactions_passed, message)
+                    .map_err(|error| error.to_string())?;
                 if launched
                     && interactions_passed == Some(true)
                     && self.managed_playtest_started_at.is_some()
-                    && self.host.run(run_id).is_ok_and(|run| run.audit.managed_runtime_inputs > 0)
+                    && self
+                        .host
+                        .run(run_id)
+                        .is_ok_and(|run| run.audit.managed_runtime_inputs > 0)
                     && !self.managed_capture_requested
                 {
                     self.managed_capture_requested = true;
-                    self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
+                    self.request_permission(
+                        run_id.to_owned(),
+                        AgentCapability::FrameCapture,
+                        PendingPermissionAction::CaptureFrame,
+                    );
                 }
                 Ok(())
             }
@@ -5820,7 +6100,7 @@ impl AiStudioPanel {
                     .iter()
                     .map(|input| format!("tick {} {:?}", input.tick_offset(), input.command()))
                     .collect::<Vec<_>>()
-                    .join(", " );
+                    .join(", ");
                 self.managed_candidate_input_recipe
                     .extend(scheduled.iter().cloned());
                 self.host
@@ -5853,12 +6133,9 @@ fn live_observation_error_response(error: LiveObservationError) -> RemoteAiStudi
             error.to_string(),
             false,
         ),
-        LiveObservationError::TooManySessions => RemoteAiStudioResponse::error(
-            409,
-            "live_observation_capacity",
-            error.to_string(),
-            true,
-        ),
+        LiveObservationError::TooManySessions => {
+            RemoteAiStudioResponse::error(409, "live_observation_capacity", error.to_string(), true)
+        }
         LiveObservationError::NotFound => RemoteAiStudioResponse::error(
             404,
             "live_observation_not_found",
@@ -5972,9 +6249,10 @@ fn managed_source_repair_context(run: &crate::agent_host::AgentRun) -> String {
         .gate_results
         .iter()
         .filter_map(|result| {
-            result.failure.as_ref().map(|failure| {
-                format!("{:?}: {}", result.gate, failure.message)
-            })
+            result
+                .failure
+                .as_ref()
+                .map(|failure| format!("{:?}: {}", result.gate, failure.message))
         })
         .collect::<Vec<_>>();
     let detail = if failures.is_empty() {
@@ -6065,7 +6343,9 @@ fn provider_mouse_button(button: &str) -> Result<MouseButton, String> {
         "left" | "primary" => Ok(MouseButton::Left),
         "right" | "secondary" => Ok(MouseButton::Right),
         "middle" => Ok(MouseButton::Middle),
-        _ => Err(format!("unsupported managed runtime mouse button `{button}`")),
+        _ => Err(format!(
+            "unsupported managed runtime mouse button `{button}`"
+        )),
     }
 }
 
@@ -6079,7 +6359,9 @@ fn provider_gamepad_button(button: &str) -> Result<GamepadButton, String> {
         "right_shoulder" | "rb" => Ok(GamepadButton::RightShoulder),
         "select" | "back" => Ok(GamepadButton::Select),
         "start" | "menu" => Ok(GamepadButton::Start),
-        _ => Err(format!("unsupported managed runtime gamepad button `{button}`")),
+        _ => Err(format!(
+            "unsupported managed runtime gamepad button `{button}`"
+        )),
     }
 }
 
@@ -6302,11 +6584,7 @@ fn format_native_answer(answer: &NativeAnswer) -> String {
         );
     } else {
         for source in &answer.sources {
-            message.push_str(&format!(
-                "- {}:{}\n",
-                source.kind.label(),
-                source.path
-            ));
+            message.push_str(&format!("- {}:{}\n", source.kind.label(), source.path));
         }
         message.push_str(
             "- General model knowledge may supplement the retrieved evidence where the answer says so.\n",
@@ -6416,9 +6694,9 @@ mod tests {
 
     #[test]
     fn provider_semantic_progress_is_structured_json() {
-        let event: ProviderAgentEvent = serde_json::from_str(
-            r#"{"type":"progress","step":"inspect","detail":"scene"}"#,
-        ).expect("semantic event");
+        let event: ProviderAgentEvent =
+            serde_json::from_str(r#"{"type":"progress","step":"inspect","detail":"scene"}"#)
+                .expect("semantic event");
         assert!(matches!(
             event,
             ProviderAgentEvent::Progress { step, detail } if step == "inspect" && detail == "scene"
@@ -6469,43 +6747,23 @@ mod tests {
     #[test]
     fn autonomous_source_repair_is_bounded_and_source_failure_only() {
         assert_eq!(
-            source_repair_decision(
-                AgentRunState::Repairing,
-                CompletionStatus::Failed,
-                1,
-            ),
+            source_repair_decision(AgentRunState::Repairing, CompletionStatus::Failed, 1,),
             SourceRepairDecision::Retry(1)
         );
         assert_eq!(
-            source_repair_decision(
-                AgentRunState::Repairing,
-                CompletionStatus::Failed,
-                2,
-            ),
+            source_repair_decision(AgentRunState::Repairing, CompletionStatus::Failed, 2,),
             SourceRepairDecision::Retry(2)
         );
         assert_eq!(
-            source_repair_decision(
-                AgentRunState::Repairing,
-                CompletionStatus::Failed,
-                3,
-            ),
+            source_repair_decision(AgentRunState::Repairing, CompletionStatus::Failed, 3,),
             SourceRepairDecision::Exhausted
         );
         assert_eq!(
-            source_repair_decision(
-                AgentRunState::Repairing,
-                CompletionStatus::Pending,
-                1,
-            ),
+            source_repair_decision(AgentRunState::Repairing, CompletionStatus::Pending, 1,),
             SourceRepairDecision::Wait
         );
         assert_eq!(
-            source_repair_decision(
-                AgentRunState::Evaluating,
-                CompletionStatus::Failed,
-                1,
-            ),
+            source_repair_decision(AgentRunState::Evaluating, CompletionStatus::Failed, 1,),
             SourceRepairDecision::Wait
         );
     }
@@ -6573,10 +6831,7 @@ mod tests {
         );
         assert!(preferences.managed_model_id.is_empty());
         assert_eq!(preferences.local_model_name, "legacy-model");
-        assert_eq!(
-            preferences.local_model_endpoint,
-            "http://127.0.0.1:11434"
-        );
+        assert_eq!(preferences.local_model_endpoint, "http://127.0.0.1:11434");
         assert_eq!(
             AiStudioPreferences::default().model_backend,
             ModelBackendPreference::Local
@@ -6608,10 +6863,9 @@ mod tests {
         // A studio that was reattached must stay reattached across Editor
         // restarts, so the chosen mode is machine-local preference state rather
         // than a per-session default.
-        let reattached: AiStudioPreferences = serde_json::from_str(
-            r#"{"schema_version":1,"presentation_mode":"embedded"}"#,
-        )
-        .expect("deserialize reattached presentation preferences");
+        let reattached: AiStudioPreferences =
+            serde_json::from_str(r#"{"schema_version":1,"presentation_mode":"embedded"}"#)
+                .expect("deserialize reattached presentation preferences");
         assert_eq!(
             reattached.presentation_mode,
             AiStudioPresentationMode::Embedded
@@ -6828,8 +7082,7 @@ mod tests {
         let capabilities = local_resource_capabilities();
         let interrupt_request = interrupt_model_residency_request();
         let play_plan = managed_play_resource_plan(QualityPreference::Balanced, capabilities);
-        let reload =
-            resume_model_resource_operation_after_authoritative_inspection(capabilities);
+        let reload = resume_model_resource_operation_after_authoritative_inspection(capabilities);
         assert_eq!(interrupt_request, ModelResidencyRequest::ReleaseIfSupported);
         assert_eq!(
             play_plan.priority,

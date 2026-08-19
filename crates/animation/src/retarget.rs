@@ -11,7 +11,7 @@ use crate::animation::{AnimChannel, AnimProperty, AnimationClip, Keyframe};
 use crate::asset::AssetManifest;
 use crate::derived_cache::{CacheKey, DerivedCache};
 use crate::skeleton_asset::{
-    fnv1a_seed, hash_bytes, hash_u64, BoneId, SkeletonAsset, SkeletonIdentity,
+    BoneId, SkeletonAsset, SkeletonIdentity, fnv1a_seed, hash_bytes, hash_u64,
 };
 use engine_authoring::diagnostic::{Diagnostic, DiagnosticTarget};
 use engine_authoring::id::AssetId;
@@ -1095,9 +1095,10 @@ pub fn resolve_or_bake_retargeted_clip(
     .map_err(RetargetResolveError::Serialize)?;
 
     if let Some(bytes) = cache.get(RETARGET_CACHE_DOMAIN, &key, BAKED_CLIP_FILE_EXTENSION)
-        && let Ok(clip) = deserialize_baked_clip(&bytes) {
-            return Ok(clip);
-        }
+        && let Ok(clip) = deserialize_baked_clip(&bytes)
+    {
+        return Ok(clip);
+    }
 
     let baked = retarget_clip(clip, source, target, map, target_contact_bone_names)
         .map_err(RetargetResolveError::Retarget)?;
@@ -1121,7 +1122,7 @@ pub fn resolve_or_bake_retargeted_clip(
 mod tests {
     use super::*;
     use crate::animation::AnimEvent;
-    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef};
+    use crate::skeleton_asset::{BoneDef, compute_skeleton_identity};
     use std::f32::consts::FRAC_PI_2;
 
     fn bone(

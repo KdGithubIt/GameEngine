@@ -330,11 +330,7 @@ mod tests {
         assert_eq!(states.len(), 1);
         assert!(!states[0].enabled);
 
-        set_humanoid_bone_mapping(
-            &mut states[0],
-            engine::asset::HumanoidBone::Hips,
-            Some(1),
-        );
+        set_humanoid_bone_mapping(&mut states[0], engine::asset::HumanoidBone::Hips, Some(1));
         set_humanoid_motion_root(&mut states[0], Some(1));
 
         let persisted = persisted_humanoid_profiles(&states);
@@ -355,17 +351,16 @@ mod tests {
     fn editing_automatic_mapping_marks_it_authored_and_clears_uncertainty() {
         let mut settings = skeleton_settings();
         let skeleton = settings.skeleton_records[0].id.clone();
-        settings.humanoid_profiles.push(engine::asset::HumanoidProfile {
-            skeleton,
-            skeleton_identity: 42,
-            bones: std::collections::BTreeMap::from([(
-                engine::asset::HumanoidBone::Hips,
-                1,
-            )]),
-            motion_root: None,
-            uncertain_bones: vec![engine::asset::HumanoidBone::Hips],
-            origin: engine::asset::HumanoidProfileOrigin::Automatic,
-        });
+        settings
+            .humanoid_profiles
+            .push(engine::asset::HumanoidProfile {
+                skeleton,
+                skeleton_identity: 42,
+                bones: std::collections::BTreeMap::from([(engine::asset::HumanoidBone::Hips, 1)]),
+                motion_root: None,
+                uncertain_bones: vec![engine::asset::HumanoidBone::Hips],
+                origin: engine::asset::HumanoidProfileOrigin::Automatic,
+            });
 
         let mut states = humanoid_profile_editor_states(&settings);
         assert!(states[0].enabled);
@@ -374,11 +369,7 @@ mod tests {
             engine::asset::HumanoidProfileOrigin::Automatic
         );
 
-        set_humanoid_bone_mapping(
-            &mut states[0],
-            engine::asset::HumanoidBone::Hips,
-            Some(2),
-        );
+        set_humanoid_bone_mapping(&mut states[0], engine::asset::HumanoidBone::Hips, Some(2));
 
         assert_eq!(
             states[0].profile.origin,

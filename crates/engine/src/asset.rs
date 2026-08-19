@@ -23,8 +23,12 @@ impl std::fmt::Display for AssetPathError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Empty => formatter.write_str("asset path must not be empty"),
-            Self::NotRelative => formatter.write_str("asset path must be relative to the asset root"),
-            Self::ParentTraversal => formatter.write_str("asset path must not contain parent directory segments"),
+            Self::NotRelative => {
+                formatter.write_str("asset path must be relative to the asset root")
+            }
+            Self::ParentTraversal => {
+                formatter.write_str("asset path must not contain parent directory segments")
+            }
             Self::OutsideRoot => formatter.write_str("asset path resolves outside the asset root"),
         }
     }
@@ -91,14 +95,42 @@ pub enum AssetLoadError {
 impl std::fmt::Display for AssetLoadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidPath { path, source } => write!(formatter, "invalid asset path {}: {source}", path.display()),
-            Self::Io { path, source } => write!(formatter, "failed to read asset {}: {source}", path.display()),
-            Self::Texture { path, source } => write!(formatter, "failed to load texture {}: {source}", path.display()),
-            Self::UnsupportedMeshFormat { path } => write!(formatter, "mesh loading is not implemented for {}", path.display()),
-            Self::UnsupportedAudioFormat { path } => write!(formatter, "audio loading is not implemented for {}", path.display()),
-            Self::MeshParse { path, message } => write!(formatter, "failed to parse mesh {}: {message}", path.display()),
-            Self::AudioDecode { path, message } => write!(formatter, "failed to decode audio {}: {message}", path.display()),
-            Self::InvalidAsset { path, message } => write!(formatter, "invalid asset {}: {message}", path.display()),
+            Self::InvalidPath { path, source } => {
+                write!(formatter, "invalid asset path {}: {source}", path.display())
+            }
+            Self::Io { path, source } => write!(
+                formatter,
+                "failed to read asset {}: {source}",
+                path.display()
+            ),
+            Self::Texture { path, source } => write!(
+                formatter,
+                "failed to load texture {}: {source}",
+                path.display()
+            ),
+            Self::UnsupportedMeshFormat { path } => write!(
+                formatter,
+                "mesh loading is not implemented for {}",
+                path.display()
+            ),
+            Self::UnsupportedAudioFormat { path } => write!(
+                formatter,
+                "audio loading is not implemented for {}",
+                path.display()
+            ),
+            Self::MeshParse { path, message } => write!(
+                formatter,
+                "failed to parse mesh {}: {message}",
+                path.display()
+            ),
+            Self::AudioDecode { path, message } => write!(
+                formatter,
+                "failed to decode audio {}: {message}",
+                path.display()
+            ),
+            Self::InvalidAsset { path, message } => {
+                write!(formatter, "invalid asset {}: {message}", path.display())
+            }
         }
     }
 }
@@ -207,9 +239,14 @@ impl AssetServer {
         path: &str,
         meshes: &mut Assets<crate::mesh::Mesh>,
     ) -> Result<Handle<crate::mesh::Mesh>, AssetLoadError> {
-        let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
         if !ext.eq_ignore_ascii_case("obj") {
-            return Err(AssetLoadError::UnsupportedMeshFormat { path: PathBuf::from(path) });
+            return Err(AssetLoadError::UnsupportedMeshFormat {
+                path: PathBuf::from(path),
+            });
         }
         let full_path = self.resolve_path(path)?;
         let mesh = load_obj(&full_path)?;
@@ -230,11 +267,12 @@ impl AssetServer {
     ) -> Result<Handle<std::sync::Arc<crate::material::Texture>>, AssetLoadError> {
         let full_path = self.resolve_path(path)?;
         let bytes = Self::read_file(&full_path)?;
-        let texture = crate::material::Texture::from_bytes(device, queue, &bytes, path)
-            .map_err(|source| AssetLoadError::Texture {
+        let texture = crate::material::Texture::from_bytes(device, queue, &bytes, path).map_err(
+            |source| AssetLoadError::Texture {
                 path: full_path,
                 source,
-            })?;
+            },
+        )?;
         Ok(textures.add(std::sync::Arc::new(texture)))
     }
 
@@ -252,9 +290,14 @@ impl AssetServer {
         if let Some(handle) = self.cached_audio(&asset_id) {
             return Ok(handle);
         }
-        let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
         if !ext.eq_ignore_ascii_case("wav") && !ext.eq_ignore_ascii_case("ogg") {
-            return Err(AssetLoadError::UnsupportedAudioFormat { path: PathBuf::from(path) });
+            return Err(AssetLoadError::UnsupportedAudioFormat {
+                path: PathBuf::from(path),
+            });
         }
         let full_path = self.resolve_path(path)?;
         let bytes = Self::read_file(&full_path)?;
@@ -281,7 +324,10 @@ impl AssetServer {
                     return Err(Self::invalid_path(requested, AssetPathError::NotRelative));
                 }
                 PathComponent::ParentDir => {
-                    return Err(Self::invalid_path(requested, AssetPathError::ParentTraversal));
+                    return Err(Self::invalid_path(
+                        requested,
+                        AssetPathError::ParentTraversal,
+                    ));
                 }
                 PathComponent::CurDir | PathComponent::Normal(_) => {}
             }
@@ -374,7 +420,11 @@ pub(crate) fn load_obj(path: &Path) -> Result<crate::mesh::Mesh, AssetLoadError>
             let normal = if mesh.normals.is_empty() {
                 [0.0, 1.0, 0.0]
             } else {
-                [mesh.normals[3 * i], mesh.normals[3 * i + 1], mesh.normals[3 * i + 2]]
+                [
+                    mesh.normals[3 * i],
+                    mesh.normals[3 * i + 1],
+                    mesh.normals[3 * i + 2],
+                ]
             };
             let uv = if mesh.texcoords.is_empty() {
                 [0.0, 0.0]

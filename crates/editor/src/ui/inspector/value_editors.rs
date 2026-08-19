@@ -413,13 +413,14 @@ pub(in crate::ui) fn show_typed_array_editor(
         });
     }
     if let Some(default) = default_value_for_field_type(element_type)
-        && ui.small_button("+ Add").clicked() {
-            values.push(default);
-            return Some(ComponentEdit::Property {
-                path: Vec::new(),
-                value: Value::Array(values.clone()),
-            });
-        }
+        && ui.small_button("+ Add").clicked()
+    {
+        values.push(default);
+        return Some(ComponentEdit::Property {
+            path: Vec::new(),
+            value: Value::Array(values.clone()),
+        });
+    }
     None
 }
 

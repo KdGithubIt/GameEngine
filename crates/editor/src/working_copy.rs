@@ -20,8 +20,12 @@ pub(crate) fn capture_authoring_overlay(
     let mut overlay = AuthoringDocumentOverlay::new();
 
     for session in workspace.sessions() {
-        let Some(path) = session.current_document_path() else { continue; };
-        let Some(serialized) = session.graph_working_copy_json() else { continue; };
+        let Some(path) = session.current_document_path() else {
+            continue;
+        };
+        let Some(serialized) = session.graph_working_copy_json() else {
+            continue;
+        };
         let revision = session.document_revision();
         let snapshot = match serialized {
             Ok(contents) => AuthoringDocumentSnapshot::text(revision, revision, contents),
@@ -34,14 +38,18 @@ pub(crate) fn capture_authoring_overlay(
         let (revision, generation) = state.revision_generation();
         let snapshot = match state.document.to_canonical_json() {
             Ok(contents) => AuthoringDocumentSnapshot::text(revision, generation, contents),
-            Err(error) => AuthoringDocumentSnapshot::invalid(revision, generation, error.to_string()),
+            Err(error) => {
+                AuthoringDocumentSnapshot::invalid(revision, generation, error.to_string())
+            }
         };
         overlay.insert(state.absolute_path.clone(), snapshot);
     }
 
     if let Some(project) = project {
         for (relative, material) in &materials.materials {
-            let Some((revision, generation)) = materials.revision_generation(relative) else { continue; };
+            let Some((revision, generation)) = materials.revision_generation(relative) else {
+                continue;
+            };
             let serialized = material
                 .validate()
                 .map_err(|error| error.to_string())
@@ -62,17 +70,14 @@ pub(crate) fn graph_working_copy<'a>(
     path: &Path,
 ) -> Option<(&'a Graph, u64)> {
     let session = workspace.session_for_path(path)?;
-    Some((
-        session.graph_working_copy()?,
-        session.document_revision(),
-    ))
+    Some((session.graph_working_copy()?, session.document_revision()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::{DocumentWorkspace, WorkspaceDocumentKind};
     use crate::EditorSession;
+    use crate::workspace::{DocumentWorkspace, WorkspaceDocumentKind};
 
     #[test]
     fn open_graph_is_captured_without_touching_disk() {
@@ -81,8 +86,11 @@ mod tests {
         let mut session = EditorSession::empty_animation_graph();
         session.save_as(path.clone()).expect("save fixture");
         let mut workspace = DocumentWorkspace::new(EditorSession::empty_behavior_tree());
-        workspace.open_document(WorkspaceDocumentKind::Graph, path.clone()).expect("open");
-        let overlay = capture_authoring_overlay(&workspace, None, &MaterialEditorPanel::new(), None);
+        workspace
+            .open_document(WorkspaceDocumentKind::Graph, path.clone())
+            .expect("open");
+        let overlay =
+            capture_authoring_overlay(&workspace, None, &MaterialEditorPanel::new(), None);
         assert!(overlay.get(&path).is_some());
     }
 }

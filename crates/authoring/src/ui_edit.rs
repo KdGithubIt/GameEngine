@@ -461,7 +461,7 @@ fn ensure_unique_subtree_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{UiNodeKind, UiString, UI_SCHEMA_VERSION};
+    use crate::ui::{UI_SCHEMA_VERSION, UiNodeKind, UiString};
 
     fn text_node(id: &str, text: &str) -> UiNode {
         UiNode {
