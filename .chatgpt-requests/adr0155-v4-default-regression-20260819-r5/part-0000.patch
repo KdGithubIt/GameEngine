@@ -1,0 +1,19 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 19656012238e2e3ba71b9b5eabc33651ef9ba03a..1dad0da432c2ee312be8906706816f8cad61bb7b 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -6054,9 +6054,13 @@ mod tests {
+         );
+         assert!(preferences.managed_model_id.is_empty());
+         assert_eq!(preferences.local_model_name, "legacy-model");
++        assert_eq!(
++            preferences.local_model_endpoint,
++            "http://127.0.0.1:11434"
++        );
+         assert_eq!(
+             AiStudioPreferences::default().model_backend,
+-            ModelBackendPreference::ManagedLocal
++            ModelBackendPreference::Local
+         );
+     }
+ 
