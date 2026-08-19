@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"        assert_eq!(WSL_CUDA_TOOLKIT_PACKAGE, \"cuda-toolkit-12-4\");","new":"        assert_eq!(WSL_CUDA_COMPILER_PACKAGE, \"cuda-compiler-12-4\");\n        assert_eq!(\n            WSL_CUDA_LIBRARIES_DEV_PACKAGE,\n            \"cuda-libraries-dev-12-4\"\n        );"}
