@@ -533,9 +533,7 @@ mod tests {
     #[test]
     fn clip_exit_is_reported_on_the_step_that_lands_at_its_end() {
         let mut document = TimelineDocument::new(TimelineTick(48_000));
-        document.tracks.push(property_track(vec![property_clip(
-            0, 48_000, 0.0, 1.0,
-        )]));
+        document.tracks.push(property_track(vec![property_clip(0, 48_000, 0.0, 1.0)]));
         let timeline = compile_timeline(&document).expect("compile");
         let clip = timeline.tracks[0].clips[0].id.clone();
         let mut player = TimelinePlayer::new();

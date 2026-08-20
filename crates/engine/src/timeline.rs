@@ -849,12 +849,8 @@ mod tests {
             .expect("graph player");
 
         let timeline = Arc::new(
-            compile_timeline(&animation_document(
-                &authoring,
-                &animation_set,
-                &motion_slot,
-            ))
-            .expect("compile"),
+            compile_timeline(&animation_document(&authoring, &animation_set, &motion_slot))
+                .expect("compile"),
         );
         let player = world.spawn().expect("player");
         let mut component = TimelinePlayerComponent::new(timeline);
