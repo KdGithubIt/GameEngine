@@ -211,6 +211,22 @@ pub struct VfxInstance {
     elapsed_seconds: f32,
 }
 
+/// Exact transient state captured for deterministic VFX reconstruction.
+///
+/// Checkpoints are runtime/editor cache data. They are never serialized and
+/// must be discarded when the compiled effect or other replay inputs change.
+#[derive(Debug, Clone)]
+pub struct VfxCheckpoint {
+    instance: VfxInstance,
+}
+
+impl VfxCheckpoint {
+    /// Simulated effect time represented by this checkpoint.
+    pub fn elapsed_seconds(&self) -> f32 {
+        self.instance.elapsed_seconds()
+    }
+}
+
 impl VfxInstance {
     /// Creates a stopped-at-zero runtime instance from backend-neutral IR.
     ///
@@ -251,6 +267,47 @@ impl VfxInstance {
     /// Current seed override, if one was supplied for this instance.
     pub fn seed_override(&self) -> Option<u32> {
         self.seed_override
+    }
+
+    /// Captures the exact transient state of this instance.
+    ///
+    /// The returned checkpoint includes deterministic stream positions,
+    /// particle pools, counters, and elapsed time. It is valid only while the
+    /// same replay inputs remain authoritative.
+    pub fn checkpoint(&self) -> VfxCheckpoint {
+        VfxCheckpoint {
+            instance: self.clone(),
+        }
+    }
+
+    /// Restores an exact transient state captured by [`Self::checkpoint`].
+    pub fn restore_checkpoint(&mut self, checkpoint: &VfxCheckpoint) {
+        *self = checkpoint.instance.clone();
+    }
+
+    /// Advances from the current state to a later preview time using fixed steps.
+    ///
+    /// This function never integrates a negative delta. A non-finite target or
+    /// a target before the current elapsed time is rejected without mutating
+    /// the instance. ReplayRequired Timeline adapters can therefore restore a
+    /// checkpoint and call this method to reconstruct the same deterministic
+    /// forward state.
+    pub fn replay_forward_to(&mut self, elapsed_seconds: f32, origin: Vec3) -> bool {
+        if !elapsed_seconds.is_finite() || elapsed_seconds < self.elapsed_seconds {
+            return false;
+        }
+
+        let mut remaining = elapsed_seconds - self.elapsed_seconds;
+        while remaining > 0.0 {
+            let step = remaining.min(VFX_PREVIEW_STEP_SECONDS);
+            self.step(step, origin);
+            let next_remaining = (remaining - step).max(0.0);
+            if next_remaining >= remaining {
+                break;
+            }
+            remaining = next_remaining;
+        }
+        true
     }
 
     /// Aggregate live/spawned/dropped counters and backend identity.
@@ -393,19 +450,11 @@ impl VfxInstance {
     /// Rebuilds deterministic preview state at an arbitrary non-negative time.
     ///
     /// Seeking backwards is implemented as Restart + fixed-step replay. The
-    /// same path is also used for forward seeks so preview results do not
-    /// depend on the Editor frame rate.
+    /// same forward-only primitive is also used after checkpoint restoration,
+    /// so seek reconstruction cannot drift into a separate simulation path.
     pub fn seek_preview(&mut self, elapsed_seconds: f32, origin: Vec3) {
         self.restart();
-        if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 {
-            return;
-        }
-        let mut remaining = elapsed_seconds;
-        while remaining > 0.0 {
-            let step = remaining.min(VFX_PREVIEW_STEP_SECONDS);
-            self.step(step, origin);
-            remaining -= step;
-        }
+        let _ = self.replay_forward_to(elapsed_seconds, origin);
     }
 
     fn enforce_effect_cap(&mut self) {
@@ -1037,6 +1086,63 @@ mod tests {
         instance.seek_preview(2.0, Vec3::ZERO);
         instance.seek_preview(1.0, Vec3::ZERO);
         assert_eq!(instance.emitters()[0].particles(), first.as_slice());
+    }
+
+    #[test]
+    fn preview_seek_matches_fixed_step_forward_replay_from_start() {
+        let origin = Vec3::new(1.0, 2.0, 3.0);
+        let mut forward = VfxInstance::new(effect(128), Some(7));
+        let mut sought = VfxInstance::new(effect(128), Some(7));
+
+        assert!(forward.replay_forward_to(1.25, origin));
+        sought.seek_preview(1.25, origin);
+
+        assert_eq!(sought.elapsed_seconds(), forward.elapsed_seconds());
+        assert_eq!(sought.stats(), forward.stats());
+        assert_eq!(
+            sought.emitters()[0].particles(),
+            forward.emitters()[0].particles()
+        );
+    }
+
+    #[test]
+    fn checkpoint_restore_matches_forward_playback_from_the_same_state() {
+        let origin = Vec3::new(-2.0, 0.5, 4.0);
+        let mut forward = VfxInstance::new(effect(128), Some(17));
+        assert!(forward.replay_forward_to(0.75, origin));
+        let checkpoint = forward.checkpoint();
+
+        let mut reconstructed = VfxInstance::new(effect(128), Some(999));
+        reconstructed.restore_checkpoint(&checkpoint);
+        assert_eq!(
+            reconstructed.elapsed_seconds(),
+            checkpoint.elapsed_seconds()
+        );
+
+        assert!(forward.replay_forward_to(1.75, origin));
+        assert!(reconstructed.replay_forward_to(1.75, origin));
+
+        assert_eq!(reconstructed.elapsed_seconds(), forward.elapsed_seconds());
+        assert_eq!(reconstructed.stats(), forward.stats());
+        assert_eq!(
+            reconstructed.emitters()[0].particles(),
+            forward.emitters()[0].particles()
+        );
+    }
+
+    #[test]
+    fn forward_replay_rejects_backward_time_without_mutating_state() {
+        let mut instance = VfxInstance::new(effect(128), Some(5));
+        assert!(instance.replay_forward_to(1.0, Vec3::ZERO));
+        let elapsed = instance.elapsed_seconds();
+        let stats = instance.stats();
+        let particles = instance.emitters()[0].particles().to_vec();
+
+        assert!(!instance.replay_forward_to(0.5, Vec3::ZERO));
+
+        assert_eq!(instance.elapsed_seconds(), elapsed);
+        assert_eq!(instance.stats(), stats);
+        assert_eq!(instance.emitters()[0].particles(), particles.as_slice());
     }
 
     #[test]
