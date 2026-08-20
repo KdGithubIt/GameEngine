@@ -1,0 +1,17 @@
+diff --git a/crates/engine/src/timeline/vfx.rs b/crates/engine/src/timeline/vfx.rs
+index e790adedd0086f01e0127324bef6c8e66a784b58..b5bd86172f0653d62a1b25c9d71891bc7dcf90ec 100644
+--- a/crates/engine/src/timeline/vfx.rs
++++ b/crates/engine/src/timeline/vfx.rs
+@@ -292,7 +292,11 @@ struct Boundary {
+ }
+ 
+ fn boundary_phase(tick: TimelineTick, previous_tick: TimelineTick, wrapped: bool) -> u8 {
+-    if wrapped && tick < previous_tick { 1 } else { 0 }
++    if wrapped && tick < previous_tick {
++        1
++    } else {
++        0
++    }
+ }
+ 
+ fn find_transition(
