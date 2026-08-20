@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"                && matches!(active.output, TimelineTrackOutput::Animation { .. })","new":"                && matches!(&active.output, TimelineTrackOutput::Animation { .. })"}
