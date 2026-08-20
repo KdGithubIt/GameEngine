@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/render-runtime/src/vfx.rs",
+  "old": "/// Deterministic CPU reference instance for one compiled VFX effect.\n#[derive(Debug, Clone)]\npub struct VfxInstance {\n    effect: CompiledVfxEffect,\n    emitters: Vec<VfxEmitterRuntime>,\n    seed_override: Option<u32>,\n    active_seed: u32,\n    elapsed_seconds: f32,\n}\n\nimpl VfxInstance {\n",
+  "new": "/// Deterministic CPU reference instance for one compiled VFX effect.\n#[derive(Debug, Clone)]\npub struct VfxInstance {\n    effect: CompiledVfxEffect,\n    emitters: Vec<VfxEmitterRuntime>,\n    seed_override: Option<u32>,\n    active_seed: u32,\n    elapsed_seconds: f32,\n}\n\n/// Exact transient state captured for deterministic VFX reconstruction.\n///\n/// Checkpoints are runtime/editor cache data. They are never serialized and\n/// must be discarded when the compiled effect or other replay inputs change.\n#[derive(Debug, Clone)]\npub struct VfxCheckpoint {\n    instance: VfxInstance,\n}\n\nimpl VfxCheckpoint {\n    /// Simulated effect time represented by this checkpoint.\n    pub fn elapsed_seconds(&self) -> f32 {\n        self.instance.elapsed_seconds()\n    }\n}\n\nimpl VfxInstance {\n"
+}
