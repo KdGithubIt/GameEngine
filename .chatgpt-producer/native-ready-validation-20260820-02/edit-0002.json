@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "    use crate::agent_host::{\n        AgentProposal, AgentRunAudit, AgentWorkingState, CompletionReport,\n    };",
+  "new": "    use crate::agent_host::{\n        AgentEvent, AgentEventKind, AgentProposal, AgentRunAudit, AgentWorkingState,\n        CompletionReport,\n    };"
+}
