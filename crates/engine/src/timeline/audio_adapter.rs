@@ -141,9 +141,7 @@ pub(super) fn apply_audio_evaluation(
     let entered = evaluation
         .entered
         .iter()
-        .map(|transition| {
-            TimelineAudioVoiceKey::new(source, &transition.track, &transition.clip)
-        })
+        .map(|transition| TimelineAudioVoiceKey::new(source, &transition.track, &transition.clip))
         .collect::<HashSet<_>>();
 
     for desired in desired {
@@ -242,11 +240,7 @@ fn stop_undesired_voices(
     }
 }
 
-fn stop_source_voices(
-    source: Entity,
-    runtime: &mut TimelineAudioRuntime,
-    audio: &mut AudioSystem,
-) {
+fn stop_source_voices(source: Entity, runtime: &mut TimelineAudioRuntime, audio: &mut AudioSystem) {
     let keys = runtime
         .voices
         .keys()
@@ -582,7 +576,10 @@ mod tests {
 
     #[test]
     fn tick_offsets_convert_to_audio_time_without_frame_rate_rounding() {
-        assert_eq!(ticks_to_duration(TIMELINE_TICKS_PER_SECOND), Duration::from_secs(1));
+        assert_eq!(
+            ticks_to_duration(TIMELINE_TICKS_PER_SECOND),
+            Duration::from_secs(1)
+        );
         assert_eq!(
             ticks_to_duration(TIMELINE_TICKS_PER_SECOND / 2),
             Duration::from_millis(500)

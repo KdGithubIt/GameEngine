@@ -1095,9 +1095,11 @@ fn play_voice_on_thread(
 ) -> Result<ActiveVoice, AudioError> {
     let mut decoder = decoder_for_encoded(encoded)?;
     if !offset.is_zero() {
-        decoder.try_seek(offset).map_err(|source| AudioError::Playback {
-            message: format!("failed to seek managed audio voice: {source}"),
-        })?;
+        decoder
+            .try_seek(offset)
+            .map_err(|source| AudioError::Playback {
+                message: format!("failed to seek managed audio voice: {source}"),
+            })?;
     }
     let initial = gains.lock().map(|gains| *gains).unwrap_or([0.0, 0.0]);
     let shared = Arc::clone(&gains);
