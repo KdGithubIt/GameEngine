@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "            compiled,\n            player: TimelinePlayer::new(),\n            preview_tick: TimelineTick::ZERO,\n            diagnostics: Vec::new(),\n        }\n    }",
+  "new": "            compiled,\n            player: TimelinePlayer::new(),\n            preview_tick: TimelineTick::ZERO,\n            pending_preview: None,\n            diagnostics: Vec::new(),\n        }\n    }"
+}
