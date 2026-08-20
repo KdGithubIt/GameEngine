@@ -6,6 +6,8 @@
 //! camera-selection override, and forwards sequence events to the ordinary
 //! host event path. The neutral core stays free of every domain touched here.
 
+mod audio_adapter;
+
 pub use engine_timeline::{
     ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,
     CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,
@@ -258,15 +260,31 @@ pub fn advance_timelines(
         return;
     };
     let players = query.iter().map(|(entity, _)| entity).collect::<Vec<_>>();
-    for entity in players {
-        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
-            continue;
+    for entity in players.iter().copied() {
+        let (timeline, evaluation, state, generation) = {
+            let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+                continue;
+            };
+            if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
+                component.player.play();
+            }
+            let timeline = Arc::clone(&component.timeline);
+            let evaluation = component.player.advance(&timeline, delta_seconds);
+            (
+                timeline,
+                evaluation,
+                component.player.state(),
+                component.player.generation(),
+            )
         };
-        if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
-            component.player.play();
-        }
-        let timeline = Arc::clone(&component.timeline);
-        let evaluation = component.player.advance(&timeline, delta_seconds);
+        let audio_input = audio_adapter::AudioEvaluationInput::new(
+            entity,
+            &timeline,
+            &evaluation,
+            state,
+            generation,
+        );
+        audio_adapter::apply_audio_evaluation(audio_input, world, bindings, diagnostics);
         apply_evaluation(
             entity,
             &evaluation,
@@ -277,6 +295,7 @@ pub fn advance_timelines(
             diagnostics,
         );
     }
+    audio_adapter::cleanup_stale_sources(world, &players);
 }
 
 /// Applies one already-computed evaluation to the world.
@@ -332,9 +351,9 @@ pub fn apply_evaluation(
                     source,
                 });
             }
-            // Animation, Audio, and VFX adapters land with the runtime controls
-            // their ADRs define. Until then the evaluation still reports them,
-            // so nothing silently claims to have played a cue or an effect.
+            // Audio is applied by the stateful adapter in `advance_timelines`
+            // before this stateless world pass. Animation and VFX keep reporting
+            // typed outputs until their composition adapters are installed.
             TimelineTrackOutput::Animation { .. }
             | TimelineTrackOutput::Audio { .. }
             | TimelineTrackOutput::Vfx { .. }
