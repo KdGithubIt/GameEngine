@@ -2571,14 +2571,11 @@ impl AgentHost {
         } else {
             AgentRunState::Evaluating
         };
+        let source_validation = self.run(run_id)?.completion.source_validation;
         self.transition_run(
             run_id,
             next,
-            if playtest_required {
-                "Managed source validation passed; playtest evidence is still required."
-            } else {
-                "Managed source validation passed; no playtest was requested by this proposal."
-            },
+            managed_validation_advance_message(source_validation, playtest_required),
         )
     }
 
@@ -2872,6 +2869,32 @@ fn push_validation_event(run: &mut AgentRun, message: String, validation: Manage
         Some(validation),
         None,
     );
+}
+
+fn managed_validation_advance_message(
+    source_validation: CompletionStatus,
+    playtest_required: bool,
+) -> &'static str {
+    match (source_validation, playtest_required) {
+        (CompletionStatus::Passed, true) => {
+            "Managed source validation passed; playtest evidence is still required."
+        }
+        (CompletionStatus::Passed, false) => {
+            "Managed source validation passed; no playtest was requested by this proposal."
+        }
+        (CompletionStatus::NotApplicable, true) => {
+            "Managed source validation was not applicable; playtest evidence is still required."
+        }
+        (CompletionStatus::NotApplicable, false) => {
+            "Managed source validation was not applicable; no playtest was requested by this proposal."
+        }
+        (CompletionStatus::Pending | CompletionStatus::Failed, true) => {
+            "Managed source validation is unresolved; playtest evidence remains blocked."
+        }
+        (CompletionStatus::Pending | CompletionStatus::Failed, false) => {
+            "Managed source validation is unresolved; run completion remains blocked."
+        }
+    }
 }
 
 fn managed_validation_plan(
@@ -3750,6 +3773,18 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gameengine-agent-{name}-{}", next_id("test")))
+    }
+
+    #[test]
+    fn not_applicable_source_validation_is_not_presented_as_passed() {
+        assert_eq!(
+            managed_validation_advance_message(CompletionStatus::NotApplicable, false),
+            "Managed source validation was not applicable; no playtest was requested by this proposal."
+        );
+        assert_eq!(
+            managed_validation_advance_message(CompletionStatus::NotApplicable, true),
+            "Managed source validation was not applicable; playtest evidence is still required."
+        );
     }
 
     #[test]
