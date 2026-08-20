@@ -7,7 +7,10 @@
 mod benchmark_campaign_ui;
 mod benchmark_child;
 mod benchmark_experiment_ui;
+mod execution_routing;
 mod settings_ui;
+
+pub(crate) use execution_routing::{AiExecutionDriver, AiExecutionResolution};
 
 use crate::agent_benchmark::{
     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
@@ -367,6 +370,20 @@ fn ai_entry_id(selection: SelectedAi, managed_model_id: &str) -> String {
             format!("model:managed_local:{managed_model_id}")
         }
         SelectedAi::Model(backend) => format!("model:{}", backend.remote_id()),
+    }
+}
+
+/// Returns the process-local routing family for one stable AI selection.
+///
+/// Managed Local keeps the model ID in its user-visible identity while all
+/// registered models share the same execution driver family. Every other
+/// selection routes by its existing stable AI identity.
+fn ai_execution_route_key(selection: SelectedAi) -> String {
+    match selection {
+        SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
+            "model:managed_local".to_owned()
+        }
+        _ => ai_entry_id(selection, ""),
     }
 }
 
@@ -1061,6 +1078,11 @@ pub struct AiStudioPanel {
     /// [`AiStudioPanel::select_ai`], so the family and the entry cannot drift
     /// apart into the two independent selections ADR 0164 §1 replaced.
     selected_ai_family: SelectedAiFamily,
+    /// Process-local mapping from the stable selection to Legacy or ACP execution.
+    ///
+    /// This is deliberately absent from `AiStudioPreferences`: migration driver
+    /// choice is an internal rollout boundary, not a replacement user identity.
+    execution_routing: execution_routing::AiExecutionRouter,
     /// The provider process answering the current Ask turn, if one is running.
     external_question: Option<ExternalAgentQuestionTask>,
     /// Which session a provider-served answer belongs to.
@@ -1278,6 +1300,7 @@ impl AiStudioPanel {
                 preferences.external_agent_provider,
             ),
             selected_ai_family,
+            execution_routing: execution_routing::AiExecutionRouter::default(),
             external_question: None,
             external_question_session: None,
             external_setup: None,
@@ -3179,17 +3202,106 @@ impl AiStudioPanel {
     /// executor while another performed the work, and no audit of the
     /// transcript could recover which one ran.
     fn selected_ai_unavailable(&mut self) -> Option<String> {
-        match self.selected_ai() {
+        let target_unavailable = match self.selected_ai() {
             SelectedAi::Agent(kind) => {
                 agent_unavailable_for_mode(kind, self.conversation_mode, self.agent_readiness(kind))
             }
             SelectedAi::Model(_) => self.described_native_model_config().err(),
+        };
+        if target_unavailable.is_some() {
+            return target_unavailable;
         }
+        self.selected_execution_resolution().err()
     }
 
     /// Returns the identity the companion uses for the selected AI.
     fn selected_ai_id(&self) -> String {
         ai_entry_id(self.selected_ai(), &self.managed_model_id)
+    }
+
+    /// Resolves the current user-visible selection to its process-local driver.
+    ///
+    /// The returned logical identity is exactly the one exposed to Remote AI
+    /// Studio. ACP registry identity remains a separate internal field.
+    pub(crate) fn selected_execution_resolution(&self) -> Result<AiExecutionResolution, String> {
+        let selection = self.selected_ai();
+        self.execution_routing
+            .resolve(
+                ai_entry_id(selection, &self.managed_model_id),
+                ai_execution_route_key(selection),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Routes one existing external-agent selection through a registered ACP adapter.
+    ///
+    /// Adapter integration calls this after registering the concrete runtime.
+    /// The saved AI identity remains `agent:<existing-provider-id>`.
+    #[allow(dead_code)]
+    pub(crate) fn route_external_agent_via_acp(
+        &mut self,
+        kind: ExternalAgentProviderKind,
+        acp_agent_id: impl Into<String>,
+    ) -> Result<(), String> {
+        self.execution_routing
+            .set_acp_route(
+                ai_execution_route_key(SelectedAi::Agent(kind)),
+                acp_agent_id,
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Routes every Managed Local model identity through one ACP adapter family.
+    ///
+    /// The selected model ID is still carried by `model:managed_local:<id>`; it
+    /// does not become part of the ACP adapter's own registry identity.
+    #[allow(dead_code)]
+    pub(crate) fn route_managed_local_via_acp(
+        &mut self,
+        acp_agent_id: impl Into<String>,
+    ) -> Result<(), String> {
+        self.execution_routing
+            .set_acp_route(
+                ai_execution_route_key(SelectedAi::Model(
+                    ModelBackendPreference::ManagedLocal,
+                )),
+                acp_agent_id,
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Explicit rollback boundary for an external-agent ACP migration.
+    #[allow(dead_code)]
+    pub(crate) fn route_external_agent_via_legacy(
+        &mut self,
+        kind: ExternalAgentProviderKind,
+    ) -> Result<(), String> {
+        self.execution_routing
+            .set_legacy_route(ai_execution_route_key(SelectedAi::Agent(kind)))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Explicit rollback boundary for the Managed Local ACP migration.
+    #[allow(dead_code)]
+    pub(crate) fn route_managed_local_via_legacy(&mut self) -> Result<(), String> {
+        self.execution_routing
+            .set_legacy_route(ai_execution_route_key(SelectedAi::Model(
+                ModelBackendPreference::ManagedLocal,
+            )))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Refreshes ACP descriptor availability without moving runtime ownership into AI Studio.
+    ///
+    /// Agent Host / integration code remains responsible for the authoritative
+    /// registry and for opening ACP sessions. AI Studio keeps only descriptor IDs
+    /// so it can present fail-closed selection diagnostics before submission.
+    #[allow(dead_code)]
+    pub(crate) fn sync_acp_agent_registry(
+        &mut self,
+        registry: &dyn crate::acp_agent_runtime::AcpAgentRegistry,
+    ) {
+        self.execution_routing.sync_registry(registry);
     }
 
     /// Returns every AI this machine offers, as the companion receives it.
@@ -4526,6 +4638,20 @@ impl AiStudioPanel {
     /// keeps that preference, so one provider subscription serves both Ask and
     /// Build. Every other case keeps the ModelBackend answer path unchanged.
     fn start_question(&mut self) {
+        let resolution = match self.selected_execution_resolution() {
+            Ok(resolution) => resolution,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        if let AiExecutionDriver::Acp { agent_id } = resolution.driver {
+            self.status = Some(format!(
+                "ACP driver `{agent_id}` is selected for `{}`. ACP session dispatch is supplied by the integration layer and is not attached in this routing-only branch; Legacy execution was not used.",
+                resolution.logical_ai_id
+            ));
+            return;
+        }
         if self.provider_answers_questions() {
             self.start_external_question();
             return;
@@ -6394,6 +6520,13 @@ impl AiStudioPanel {
     }
 
     fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {
+        let resolution = self.selected_execution_resolution()?;
+        if let AiExecutionDriver::Acp { agent_id } = resolution.driver {
+            return Err(format!(
+                "ACP driver `{agent_id}` is selected for `{}`. ACP AgentRun dispatch is supplied by the integration layer and is not attached in this routing-only branch; Legacy execution was not used.",
+                resolution.logical_ai_id
+            ));
+        }
         let external_provider = self.selected_external_provider()?;
         let (mode, provider_label, native_config) = if let Some(provider) = external_provider {
             (
@@ -8793,6 +8926,27 @@ mod tests {
             ),
             RuntimeRepairDecision::Exhausted
         );
+    }
+
+    #[test]
+    fn logical_ai_identity_is_separate_from_execution_route_identity() {
+        assert_eq!(
+            ai_entry_id(SelectedAi::Agent(ExternalAgentProviderKind::Codex), ""),
+            "agent:codex"
+        );
+        assert_eq!(
+            ai_entry_id(
+                SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode),
+                "",
+            ),
+            "agent:claude-code"
+        );
+        let managed = SelectedAi::Model(ModelBackendPreference::ManagedLocal);
+        assert_eq!(
+            ai_entry_id(managed, "sha256-model-a"),
+            "model:managed_local:sha256-model-a"
+        );
+        assert_eq!(ai_execution_route_key(managed), "model:managed_local");
     }
 
     #[test]
