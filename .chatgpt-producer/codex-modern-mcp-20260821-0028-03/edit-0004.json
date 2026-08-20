@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/external_agent_provider.rs",
+  "old": "        assert!(codex_args.iter().any(|argument| argument == \"read-only\"));\n        assert!(codex_args.iter().any(|argument| argument.contains(\".url=\")));\n",
+  "new": "        let feature_index = codex_args\n            .iter()\n            .position(|argument| argument == \"--enable\")\n            .expect(\"Codex modern MCP feature flag\");\n        assert_eq!(\n            codex_args.get(feature_index + 1).map(String::as_str),\n            Some(CODEX_MCP_FEATURE)\n        );\n        assert!(codex_args.iter().any(|argument| argument == \"read-only\"));\n        assert!(codex_args.iter().any(|argument| argument.contains(\".url=\")));\n"
+}
