@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/external_agent_provider.rs","old":"fn command_output<I, S>(\n","new":"pub(crate) fn command_output<I, S>(\n"}
