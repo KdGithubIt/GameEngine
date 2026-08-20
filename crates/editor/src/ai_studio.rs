@@ -5069,6 +5069,66 @@ impl AiStudioPanel {
                     }
                 }
             }
+            NativeAgentAction::CodeList { path } => {
+                let result = self
+                    .code_workspace
+                    .as_ref()
+                    .ok_or_else(|| "Managed code workspace is unavailable.".to_owned())
+                    .and_then(|workspace| {
+                        workspace
+                            .list_files(PathBuf::from(&path).as_path())
+                            .map_err(|error| error.to_string())
+                    });
+                let success = result.is_ok();
+                let message = result
+                    .and_then(|paths| {
+                        serde_json::to_string(
+                            &paths
+                                .iter()
+                                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                                .collect::<Vec<_>>(),
+                        )
+                        .map_err(|error| error.to_string())
+                    })
+                    .unwrap_or_else(|error| error);
+                let _ = self.host.record_tool_action(
+                    run_id,
+                    "workspace.code_list",
+                    path.clone(),
+                    Some(success),
+                );
+                self.record_native_result_and_continue(
+                    run_id,
+                    format!("code_list:{path}"),
+                    success,
+                    message,
+                );
+            }
+            NativeAgentAction::CodeRead { path } => {
+                let result = self
+                    .code_workspace
+                    .as_ref()
+                    .ok_or_else(|| "Managed code workspace is unavailable.".to_owned())
+                    .and_then(|workspace| {
+                        workspace
+                            .read_text(PathBuf::from(&path).as_path())
+                            .map_err(|error| error.to_string())
+                    });
+                let success = result.is_ok();
+                let message = result.unwrap_or_else(|error| error);
+                let _ = self.host.record_tool_action(
+                    run_id,
+                    "workspace.code_read",
+                    path.clone(),
+                    Some(success),
+                );
+                self.record_native_result_and_continue(
+                    run_id,
+                    format!("code_read:{path}"),
+                    success,
+                    message,
+                );
+            }
             NativeAgentAction::CodeWrite { path, text } => {
                 if let Err(error) = self
                     .host

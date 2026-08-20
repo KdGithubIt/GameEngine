@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent_benchmark_campaign::campaign_task_agent_policy;
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
 };
@@ -73,15 +74,8 @@ impl AiStudioPanel {
         let Some(child) = self.benchmark_child.as_ref() else {
             return false;
         };
-        match child.spec.task_id.as_str() {
-            "runtime_interaction_v1" | "visual_evaluation_v1" => matches!(
-                capability,
-                AgentCapability::RuntimeLaunch
-                    | AgentCapability::RuntimeInputControl
-                    | AgentCapability::FrameCapture
-            ),
-            _ => false,
-        }
+        campaign_task_agent_policy(&child.spec.task_id)
+            .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
     }
 
     pub(super) fn poll_benchmark_child(&mut self) {
@@ -364,6 +358,9 @@ impl AiStudioPanel {
 
 fn benchmark_proposal(task_id: &str) -> Result<AgentProposal, String> {
     let mut proposal = AgentProposal::default();
+    let agent_policy = campaign_task_agent_policy(task_id)?;
+    proposal.requested_capabilities = agent_policy.requested_capabilities;
+    proposal.work_claims = agent_policy.work_claims;
     proposal.goal = match task_id {
         "project_inspection_v1" => "Inspect the repository-owned benchmark project using actual project/authoring evidence and identify its main scene plus Rust fixture source.",
         "code_implementation_v1" => "Change game/src/benchmark_target.rs so fixture_score(4) returns 8, update the test accordingly, and pass managed source validation.",
@@ -379,6 +376,9 @@ fn benchmark_proposal(task_id: &str) -> Result<AgentProposal, String> {
     ];
     proposal.acceptance_criteria = vec![proposal.goal.clone()];
     match task_id {
+        "project_inspection_v1" => {
+            proposal.validation_plan = vec!["authoring validation".to_owned()];
+        }
         "code_implementation_v1" | "validation_repair_v1" => {
             proposal.planned_code_changes = vec!["game/src/benchmark_target.rs".to_owned()];
             proposal.validation_plan = vec!["all".to_owned()];
@@ -411,4 +411,31 @@ fn unix_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn benchmark_proposals_include_the_frozen_task_authorization() {
+        let code = benchmark_proposal("code_implementation_v1").expect("code proposal");
+        assert_eq!(
+            code.requested_capabilities,
+            BTreeSet::from([AgentCapability::CodeWorkspaceApply])
+        );
+        assert_eq!(
+            code.work_claims,
+            BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
+        );
+
+        let inspection = benchmark_proposal("project_inspection_v1").expect("inspection proposal");
+        assert!(inspection.requested_capabilities.is_empty());
+        assert!(inspection.work_claims.is_empty());
+        assert_eq!(
+            inspection.validation_plan,
+            vec!["authoring validation".to_owned()]
+        );
+    }
 }

@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
-pub(crate) const NATIVE_WRITE_HARNESS_VERSION: &str = "native-write-v1";
+pub(crate) const NATIVE_WRITE_HARNESS_VERSION: &str = "native-write-v2";
 const MAX_TOOL_RESULT_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +134,12 @@ pub(crate) enum NativeAgentAction {
         tool: String,
         #[serde(default)]
         arguments: Value,
+    },
+    CodeList {
+        path: String,
+    },
+    CodeRead {
+        path: String,
     },
     CodeWrite {
         path: String,
@@ -506,6 +512,11 @@ impl NativeAgentRuntime {
             {
                 return reject("MCP mutation is outside immutable proposal project changes");
             }
+            NativeAgentAction::CodeList { path } | NativeAgentAction::CodeRead { path }
+                if !executing || !managed_code_path(Path::new(path)) =>
+            {
+                return reject("code inspection is outside execution/managed workspace scope");
+            }
             NativeAgentAction::CodeWrite { path, .. }
                 if !executing
                     || run.proposal_snapshot.planned_code_changes.is_empty()
@@ -612,7 +623,7 @@ fn build_prompt(
     context: Option<&str>,
 ) -> String {
     let mut prompt = format!(
-        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?} streaming={:?} usage={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation only after every planned implementation mutation has completed successfully; inspection or progress alone is not implementation evidence. If the immutable proposal has no implementation, validation, or playtest work, use await_user instead of ready_for_validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
+        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?} streaming={:?} usage={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; inspect isolated managed source via code_list/code_read and mutate it ONLY via code_write. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation only after every planned implementation mutation has completed successfully; inspection or progress alone is not implementation evidence. A read-only inspection proposal must gather its requested evidence, report acceptance_criteria, and use await_user when no host validation is planned. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
         serde_json::to_string(&run.proposal_snapshot).unwrap_or_default(),
         run.state,
         serde_json::to_string(&run.working_state).unwrap_or_default(),
@@ -650,6 +661,8 @@ fn build_prompt(
     prompt.push_str(concat!(
         "Output {\"summary\":\"persistable facts\",\"working_state\":{},\"action\":ACTION}. ACTION one of:\n",
         "{\"type\":\"mcp_call\",\"tool\":\"...\",\"arguments\":{}}\n",
+        "{\"type\":\"code_list\",\"path\":\"game/...\"}\n",
+        "{\"type\":\"code_read\",\"path\":\"game/...\"}\n",
         "{\"type\":\"code_write\",\"path\":\"game/...\",\"text\":\"complete text\"}\n",
         "{\"type\":\"runtime_input\",\"input\":{\"kind\":\"key|hold_key|mouse_button|hold_mouse_button|gamepad_button|gamepad_axis|mouse_move|mouse_delta|mouse_scroll\",\"at_tick\":0,...}} -- at_tick is a fixed simulation tick offset; hold_* requires integer ticks and expands host-side without model wall-clock timing\n",
         "{\"type\":\"completion_gate\",\"gate\":\"acceptance_criteria|authoring_validation|visual_evaluation\",\"status\":\"passed|failed|not_applicable\",\"message\":\"...\"}\n",
@@ -713,6 +726,16 @@ pub(crate) fn agent_turn_response_schema() -> Value {
                         "mcp_call",
                         json!({ "tool": { "type": "string" }, "arguments": { "type": "object" } }),
                         json!(["tool", "arguments"]),
+                    ),
+                    action(
+                        "code_list",
+                        json!({ "path": { "type": "string" } }),
+                        json!(["path"]),
+                    ),
+                    action(
+                        "code_read",
+                        json!({ "path": { "type": "string" } }),
+                        json!(["path"]),
                     ),
                     action(
                         "code_write",
@@ -976,6 +999,8 @@ mod tests {
             actions,
             vec![
                 "mcp_call",
+                "code_list",
+                "code_read",
                 "code_write",
                 "runtime_input",
                 "completion_gate",
@@ -989,6 +1014,8 @@ mod tests {
                 "summary": "",
                 "action": match action.as_str() {
                     "mcp_call" => json!({"type": action, "tool": "project.describe", "arguments": {}}),
+                    "code_list" => json!({"type": action, "path": "game"}),
+                    "code_read" => json!({"type": action, "path": "game/a.rs"}),
                     "code_write" => json!({"type": action, "path": "game/a.rs", "text": ""}),
                     "runtime_input" => json!({"type": action, "input": {}}),
                     "completion_gate" => json!({
@@ -1058,6 +1085,52 @@ mod tests {
         assert!(!mcp_write("project.describe"));
         assert!(!mcp_write("authoring.inspect"));
         assert!(!mcp_write("authoring.preview"));
+    }
+
+    #[test]
+    fn source_inspection_actions_require_execution_and_managed_paths() {
+        let runtime = validation_test_runtime();
+        let proposal = AgentProposal::default();
+        let mut run = executing_run(proposal);
+        assert!(
+            runtime
+                .validate_action(
+                    &run,
+                    &NativeAgentAction::CodeList {
+                        path: "game/src".to_owned(),
+                    },
+                )
+                .is_ok()
+        );
+        assert!(
+            runtime
+                .validate_action(
+                    &run,
+                    &NativeAgentAction::CodeRead {
+                        path: "game/src/lib.rs".to_owned(),
+                    },
+                )
+                .is_ok()
+        );
+        assert!(matches!(
+            runtime.validate_action(
+                &run,
+                &NativeAgentAction::CodeRead {
+                    path: "../outside.rs".to_owned(),
+                },
+            ),
+            Err(NativeAgentRuntimeError::Rejected(_))
+        ));
+        run.state = AgentRunState::AwaitingUser;
+        assert!(matches!(
+            runtime.validate_action(
+                &run,
+                &NativeAgentAction::CodeList {
+                    path: "game".to_owned(),
+                },
+            ),
+            Err(NativeAgentRuntimeError::Rejected(_))
+        ));
     }
 
     fn executing_run(proposal: AgentProposal) -> AgentRun {

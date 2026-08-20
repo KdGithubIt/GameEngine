@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 3;
 const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
 pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
-pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
+pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v2";
 pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
 const CATALOG_SCHEMA_VERSION: u32 = 1;
 
@@ -1328,6 +1328,30 @@ fn completion_report_satisfies_task(
 fn task_completion_success(task: &BenchmarkTaskDescriptor, run: &AgentRun) -> bool {
     run.state == AgentRunState::Completed
         && completion_report_satisfies_task(task, &run.completion, run.validation_attempts.len())
+        && task_required_tool_evidence_satisfied(task, run)
+}
+
+fn task_required_tool_evidence_satisfied(task: &BenchmarkTaskDescriptor, run: &AgentRun) -> bool {
+    if task.kind != BenchmarkTaskKind::ProjectInspection {
+        return true;
+    }
+    let mut scene_inspected = false;
+    let mut source_read = false;
+    for evidence in run
+        .events
+        .iter()
+        .filter_map(|event| event.evidence.as_ref())
+    {
+        let AgentEventEvidence::ToolAction { tool, success, .. } = evidence else {
+            continue;
+        };
+        if *success != Some(true) {
+            continue;
+        }
+        scene_inspected |= matches!(tool.as_str(), "scene.inspect" | "scene.validate");
+        source_read |= tool == "workspace.code_read";
+    }
+    scene_inspected && source_read
 }
 
 fn optional_measured(value: Option<u64>) -> TelemetryValue<u64> {
@@ -1366,7 +1390,7 @@ fn safe_file_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_host::{AgentHost, ModelExchangeRecord};
+    use crate::agent_host::{AgentEvent, AgentHost, ModelExchangeRecord};
 
     fn benchmark_temp_path(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -1454,6 +1478,47 @@ mod tests {
         assert_eq!(record.metrics.prompt_tokens, TelemetryValue::Unavailable);
         assert_eq!(record.metrics.response_tokens, TelemetryValue::Unavailable);
         assert_eq!(record.metrics.model_turns, TelemetryValue::Measured(0));
+        for directory in directories {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
+    fn project_inspection_requires_scene_and_source_tool_evidence() {
+        let (mut run, directories) = failing_run_with_exchanges("inspection-evidence", 1);
+        run.state = AgentRunState::Completed;
+        run.completion.acceptance_criteria = CompletionStatus::Passed;
+        run.completion.authoring_validation = CompletionStatus::Passed;
+        let task = benchmark_task("project_inspection_v1").expect("inspection task");
+
+        assert!(!task_completion_success(task, &run));
+        run.events.push(AgentEvent {
+            sequence: run.events.last().map_or(1, |event| event.sequence + 1),
+            created_unix_ms: 0,
+            kind: AgentEventKind::ToolAction,
+            message: "scene inspected".to_owned(),
+            validation: None,
+            evidence: Some(AgentEventEvidence::ToolAction {
+                tool: "scene.inspect".to_owned(),
+                action: "test".to_owned(),
+                success: Some(true),
+            }),
+        });
+        assert!(!task_completion_success(task, &run));
+        run.events.push(AgentEvent {
+            sequence: run.events.last().map_or(1, |event| event.sequence + 1),
+            created_unix_ms: 0,
+            kind: AgentEventKind::ToolAction,
+            message: "source read".to_owned(),
+            validation: None,
+            evidence: Some(AgentEventEvidence::ToolAction {
+                tool: "workspace.code_read".to_owned(),
+                action: "test".to_owned(),
+                success: Some(true),
+            }),
+        });
+        assert!(task_completion_success(task, &run));
+
         for directory in directories {
             let _ = std::fs::remove_dir_all(directory);
         }

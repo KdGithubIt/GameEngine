@@ -6,11 +6,13 @@
 use crate::agent_benchmark::{
     BenchmarkModelIdentity, BenchmarkTaskKind, BenchmarkToolBudget, benchmark_task,
 };
+use crate::agent_host::{AgentCapability, AgentWorkClaim};
 use crate::managed_local_runtime::ManagedExecutionEnvironment;
 use crate::native_agent::BASELINE_HARNESS_VERSION;
 use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
 use crate::resource_arbitration::{InferenceWorkload, TelemetryValue};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 1;
 pub(crate) const CAMPAIGN_HARNESS_VERSION: &str = "gameengine-agent-benchmark-campaign-v1";
@@ -114,9 +116,61 @@ pub(crate) fn campaign_task_workload(task_id: &str) -> Result<InferenceWorkload,
     })
 }
 
-fn task_tool_budget(task_id: &str) -> Result<BenchmarkToolBudget, String> {
+/// Frozen AgentHost authorization and ownership declared by one campaign task.
+///
+/// Both campaign metadata and the actual immutable proposal consume this type,
+/// preventing displayed budgets from drifting away from runtime authorization.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct CampaignTaskAgentPolicy {
+    pub(crate) requested_capabilities: BTreeSet<AgentCapability>,
+    pub(crate) work_claims: BTreeSet<AgentWorkClaim>,
+}
+
+pub(crate) fn campaign_task_agent_policy(task_id: &str) -> Result<CampaignTaskAgentPolicy, String> {
     let task =
         benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+    let mut policy = CampaignTaskAgentPolicy::default();
+    match task.kind {
+        BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair => {
+            policy
+                .requested_capabilities
+                .insert(AgentCapability::CodeWorkspaceApply);
+            policy
+                .work_claims
+                .insert(AgentWorkClaim::code_path("game/src/benchmark_target.rs"));
+        }
+        BenchmarkTaskKind::TypedAuthoringMutation => {
+            policy
+                .work_claims
+                .insert(AgentWorkClaim::authoring_document(
+                    "assets/scenes/main.scene.json",
+                ));
+        }
+        BenchmarkTaskKind::RuntimeInteraction => {
+            policy
+                .requested_capabilities
+                .insert(AgentCapability::RuntimeLaunch);
+            policy
+                .requested_capabilities
+                .insert(AgentCapability::RuntimeInputControl);
+        }
+        BenchmarkTaskKind::VisualEvaluation => {
+            policy
+                .requested_capabilities
+                .insert(AgentCapability::RuntimeLaunch);
+            policy
+                .requested_capabilities
+                .insert(AgentCapability::RuntimeInputControl);
+            policy
+                .requested_capabilities
+                .insert(AgentCapability::FrameCapture);
+        }
+        BenchmarkTaskKind::ReadQuestion | BenchmarkTaskKind::ProjectInspection => {}
+    }
+    Ok(policy)
+}
+
+fn task_tool_budget(task_id: &str) -> Result<BenchmarkToolBudget, String> {
     if campaign_task_harness(task_id)? == CampaignTaskHarness::NativeReadQuestion {
         return Ok(BenchmarkToolBudget {
             max_model_turns: 1,
@@ -127,30 +181,29 @@ fn task_tool_budget(task_id: &str) -> Result<BenchmarkToolBudget, String> {
         });
     }
     let policy = HarnessPolicy::default();
-    let permission_budget = match task.kind {
-        BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair => {
-            vec!["code_workspace_apply".to_owned()]
-        }
-        BenchmarkTaskKind::RuntimeInteraction => {
-            vec![
-                "runtime_launch".to_owned(),
-                "runtime_input_control".to_owned(),
-            ]
-        }
-        BenchmarkTaskKind::VisualEvaluation => vec![
-            "runtime_launch".to_owned(),
-            "runtime_input_control".to_owned(),
-            "frame_capture".to_owned(),
-        ],
-        _ => Vec::new(),
-    };
-    let work_claims = match task.kind {
-        BenchmarkTaskKind::CodeImplementation | BenchmarkTaskKind::ValidationRepair => {
-            vec!["code_path".to_owned()]
-        }
-        BenchmarkTaskKind::TypedAuthoringMutation => vec!["authoring_document".to_owned()],
-        _ => Vec::new(),
-    };
+    let agent_policy = campaign_task_agent_policy(task_id)?;
+    let permission_budget = agent_policy
+        .requested_capabilities
+        .into_iter()
+        .map(|capability| {
+            serde_json::to_value(capability)
+                .map_err(|error| error.to_string())?
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "capability did not serialize as a string".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let work_claims = agent_policy
+        .work_claims
+        .into_iter()
+        .map(|claim| {
+            serde_json::to_value(claim.kind)
+                .map_err(|error| error.to_string())?
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "work claim kind did not serialize as a string".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(BenchmarkToolBudget {
         max_model_turns: policy.max_model_turns,
         max_tool_failures: policy.max_tool_failures,
@@ -395,5 +448,30 @@ mod tests {
                 .expect("representation JSON")
                 .contains("windows-runtime")
         );
+    }
+
+    #[test]
+    fn task_budget_and_proposal_policy_share_one_authorization_source() {
+        let code_policy =
+            campaign_task_agent_policy("code_implementation_v1").expect("code policy");
+        assert_eq!(
+            code_policy.requested_capabilities,
+            BTreeSet::from([AgentCapability::CodeWorkspaceApply])
+        );
+        assert_eq!(
+            code_policy.work_claims,
+            BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
+        );
+        let code_budget = task_tool_budget("code_implementation_v1").expect("code budget");
+        assert_eq!(
+            code_budget.permission_budget,
+            vec!["code_workspace_apply".to_owned()]
+        );
+        assert_eq!(code_budget.work_claims, vec!["code_path".to_owned()]);
+
+        let inspection =
+            campaign_task_agent_policy("project_inspection_v1").expect("inspection policy");
+        assert!(inspection.requested_capabilities.is_empty());
+        assert!(inspection.work_claims.is_empty());
     }
 }

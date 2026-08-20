@@ -2930,6 +2930,12 @@ fn managed_validation_plan(
         if normalized.is_empty() {
             continue;
         }
+        // Authoring validation is resolved from governed Editor/MCP evidence,
+        // not by launching a source-validation subprocess. Treating this
+        // marker as managed prevents it from becoming an unresolved command.
+        if normalized == "authoring validation" {
+            continue;
+        }
         let all = matches!(
             normalized.as_str(),
             "all" | "full" | "full validation" | "source validation"
@@ -3269,6 +3275,42 @@ impl CodeWorkspace {
 
     pub(crate) fn root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    /// Lists managed source files inside the isolated code workspace.
+    ///
+    /// The returned paths remain project-relative and are filtered through the
+    /// same managed-root and managed-file rules used by workspace collection.
+    pub(crate) fn list_files(&self, relative: &Path) -> Result<Vec<PathBuf>, AgentHostError> {
+        validate_code_relative_path(relative)?;
+        let target = self.workspace_root.join(relative);
+        if !target.exists() {
+            return Err(AgentHostError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("managed code path `{}` does not exist", relative.display()),
+            )));
+        }
+        if target.is_file() && !is_managed_code_file(relative) {
+            return Err(AgentHostError::InvalidRelativePath(relative.to_path_buf()));
+        }
+        let mut paths = BTreeSet::new();
+        collect_files_recursive(&self.workspace_root, &target, &mut paths)?;
+        Ok(paths
+            .into_iter()
+            .filter(|path| is_managed_code_file(path))
+            .collect())
+    }
+
+    /// Reads one UTF-8 managed source file from the isolated code workspace.
+    ///
+    /// This deliberately never falls back to the live project, so inspection
+    /// and mutation share one stable workspace snapshot.
+    pub(crate) fn read_text(&self, relative: &Path) -> Result<String, AgentHostError> {
+        validate_code_relative_path(relative)?;
+        if !is_managed_code_file(relative) {
+            return Err(AgentHostError::InvalidRelativePath(relative.to_path_buf()));
+        }
+        read_utf8(&self.workspace_root.join(relative), relative)
     }
 
     /// Writes one UTF-8 file inside the isolated managed code workspace.
@@ -4268,6 +4310,47 @@ mod tests {
     }
 
     #[test]
+    fn code_workspace_exposes_only_managed_source_for_read_only_inspection() {
+        let project = temp_path("code-read-project");
+        let workspace = temp_path("code-read-workspace");
+        fs::create_dir_all(project.join("game/src")).expect("project tree");
+        fs::write(
+            project.join("game/src/benchmark_target.rs"),
+            "pub fn fixture_score(value: u32) -> u32 { value + 1 }\n",
+        )
+        .expect("benchmark source");
+        fs::write(project.join("game/src/lib.rs"), "mod benchmark_target;\n")
+            .expect("library source");
+        fs::write(project.join("game/src/ignored.bin"), [0_u8, 1_u8]).expect("unmanaged source");
+
+        let code = CodeWorkspace::create(&project, workspace.clone()).expect("workspace");
+        assert_eq!(
+            code.list_files(Path::new("game/src"))
+                .expect("managed source listing"),
+            vec![
+                PathBuf::from("game/src/benchmark_target.rs"),
+                PathBuf::from("game/src/lib.rs"),
+            ]
+        );
+        assert_eq!(
+            code.read_text(Path::new("game/src/benchmark_target.rs"))
+                .expect("managed source read"),
+            "pub fn fixture_score(value: u32) -> u32 { value + 1 }\n"
+        );
+        assert!(matches!(
+            code.read_text(Path::new("../outside.rs")),
+            Err(AgentHostError::InvalidRelativePath(_))
+        ));
+        assert!(matches!(
+            code.read_text(Path::new("game/src/ignored.bin")),
+            Err(AgentHostError::InvalidRelativePath(_))
+        ));
+
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn reopened_session_workspace_preserves_stale_apply_baseline() {
         let project = temp_path("reopen-workspace-project");
         let workspace = temp_path("reopen-workspace");
@@ -4605,6 +4688,19 @@ mod tests {
         let (gates, unmanaged) = managed_validation_plan(&proposal, false);
         assert!(gates.is_empty());
         assert_eq!(unmanaged, 2);
+    }
+
+    #[test]
+    fn authoring_validation_plan_does_not_request_a_source_command() {
+        let proposal = AgentProposal {
+            validation_plan: vec!["authoring validation".to_owned()],
+            ..AgentProposal::default()
+        };
+
+        let (gates, unmanaged) = managed_validation_plan(&proposal, false);
+
+        assert!(gates.is_empty());
+        assert_eq!(unmanaged, 0);
     }
 
     #[test]
