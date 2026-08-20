@@ -193,6 +193,22 @@ pub(crate) fn hint(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(egui::RichText::new(text.into()).small().color(TEXT_MUTED));
 }
 
+/// Draws a short label with its normative sentence available on demand.
+///
+/// ADR 0158 keeps control labels readable as labels: the specification text
+/// that explains a control stays reachable from it rather than being drawn
+/// beside it on every frame. Consequences of irreversible or outward-facing
+/// actions are stated at the action itself and do not use this.
+pub(crate) fn spec_note(ui: &mut egui::Ui, label: &str, specification: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(label).small().color(TEXT_MUTED));
+        ui.menu_button("?", |ui| {
+            ui.set_max_width(420.0);
+            ui.label(specification);
+        });
+    });
+}
+
 /// Draws a filled dot used as a compact status marker.
 pub(crate) fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());

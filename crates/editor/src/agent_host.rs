@@ -769,6 +769,13 @@ pub(crate) enum AgentEventKind {
     Cancellation,
     Failure,
     Completion,
+    /// An event kind written by a build newer than this one.
+    ///
+    /// Sessions are persisted, so a newer build's kind must not make an entire
+    /// session unreadable. The event keeps its message, its ordering, and its
+    /// place in the transcript; only its specific presentation is lost.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2057,6 +2064,17 @@ impl AgentHost {
             }),
         );
         self.persist_session(&session_id)
+    }
+
+    /// Machine-local path of one captured frame artifact.
+    ///
+    /// Navigation from the transcript opens this file, so the path is derived
+    /// here beside the writer rather than rebuilt by drawing code.
+    pub(crate) fn captured_frame_artifact_path(&self, run_id: &str, artifact_id: &str) -> PathBuf {
+        self.storage_root
+            .join("artifacts")
+            .join(run_id)
+            .join(format!("{artifact_id}.png"))
     }
 
     /// Machine-local path of one recorded model transcript.
