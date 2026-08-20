@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "enum HeaderAction {\n    None,\n    Save,\n    Undo,\n    Close,\n}",
+  "new": "enum HeaderAction {\n    None,\n    Save,\n    Undo,\n    Redo,\n    Close,\n}"
+}
