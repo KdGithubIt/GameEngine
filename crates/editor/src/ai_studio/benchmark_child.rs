@@ -428,7 +428,8 @@ fn benchmark_proposal(task_id: &str) -> Result<AgentProposal, String> {
     Ok(proposal)
 }
 
-fn unix_ms() -> u64 {
+/// Current wall-clock time in milliseconds since the Unix epoch.
+pub(super) fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -416,6 +416,15 @@ impl BenchmarkExperimentCoordinator {
         fs::create_dir_all(&child_root).map_err(|error| error.to_string())?;
         let child_spec_path = child_root.join(format!("run-{:04}.json", run.ordinal));
         let result_path = child_root.join(format!("run-{:04}-result.json", run.ordinal));
+        // Result paths are derived from the ordinal, so re-running an experiment
+        // finds the previous execution's file already there. A child that dies
+        // before reporting would otherwise inherit that stale result and record
+        // an earlier attempt's outcome as this run's measured evidence.
+        match fs::remove_file(&result_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
         let child_spec = BenchmarkChildRunSpec {
             schema_version: BENCHMARK_CHILD_SCHEMA_VERSION,
             experiment_id: self.spec.experiment_id.clone(),
@@ -843,6 +852,48 @@ mod coordinator_tests {
                 .is_some_and(|message| message.contains("without a valid result"))
         );
         assert!(matches!(state, BenchmarkCoordinatorState::Complete { .. }));
+    }
+
+    #[test]
+    fn a_rerun_never_inherits_the_previous_executions_child_result() {
+        let root = tempfile::tempdir().expect("root");
+        let spec = experiment(root.path(), &["model-a"], &["read_question_v1"], 1);
+        let child_root = root.path().join("results").join("isolation").join("child");
+        fs::create_dir_all(&child_root).expect("child directory");
+        let stale = BenchmarkExperimentResult {
+            experiment_id: "isolation".to_owned(),
+            engine_commit_head: HEAD.to_owned(),
+            fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
+            routing_mode: BenchmarkRoutingMode::SingleModel,
+            run: BenchmarkPlannedRun {
+                ordinal: 0,
+                model_id: "model-a".to_owned(),
+                task_id: "read_question_v1".to_owned(),
+                repetition: 0,
+            },
+            started_unix_ms: 1,
+            finished_unix_ms: 2,
+            outcome: BenchmarkRunOutcome::Passed,
+            failure_kind: None,
+            routed_to_another_model: false,
+            harness_message: None,
+            record: None,
+        };
+        fs::write(
+            child_root.join("run-0000-result.json"),
+            serde_json::to_vec_pretty(&stale).expect("stale result"),
+        )
+        .expect("write stale result");
+
+        let (outcome, _, results, _) = drive(spec, root.path(), vec![None]);
+        outcome.expect("suite ran");
+        let result = results.first().expect("the dead run was still recorded");
+        assert_eq!(
+            result.outcome,
+            BenchmarkRunOutcome::Failed,
+            "a re-run reported the previous execution's outcome"
+        );
+        assert_eq!(result.failure_kind, Some(BenchmarkRunFailureKind::Harness));
     }
 
     #[test]

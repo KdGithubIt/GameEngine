@@ -5395,6 +5395,12 @@ impl AiStudioPanel {
         if self.external_provider_probe_requested {
             return;
         }
+        // A benchmark child executes the backend its campaign froze and has no
+        // settings surface to report provider status on. Probing would only run
+        // provider processes beside the measured run.
+        if self.benchmark_child_active() {
+            return;
+        }
         self.external_provider_probe_requested = true;
         self.begin_external_provider_probe();
     }
@@ -5439,6 +5445,13 @@ impl AiStudioPanel {
             return;
         }
         self.external_provider_adoption_done = true;
+        // A campaign froze which executor produces this child's evidence, which
+        // outranks any detection: adopting a signed-in provider here would swap
+        // the measured backend for whatever happens to be installed, and the
+        // child's managed model is still describing itself when probes land.
+        if self.benchmark_child_active() {
+            return;
+        }
         // ADR 0164 §1 made this one selection, so a usable model is now
         // something that has been configured: seeding over it would overwrite
         // an explicit choice, which ADR 0163 §3 does not permit.

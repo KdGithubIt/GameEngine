@@ -10,6 +10,7 @@
 //! on-disk result into the campaign state machine, which is what enforces
 //! schedule order, retry policy, and identity matching.
 
+use super::benchmark_child::unix_ms;
 use super::benchmark_experiment_ui::experiment_directory_name;
 use super::*;
 use crate::agent_benchmark_campaign::{
@@ -33,6 +34,9 @@ use std::process::{Child, Command, Stdio};
 struct RunningCampaign {
     process: Child,
     experiment_root: PathBuf,
+    /// When this execution started, so results left by an earlier execution of
+    /// the same frozen plan are never admitted as this one's evidence.
+    started_unix_ms: u64,
     admitted: BTreeSet<u64>,
     finished: bool,
 }
@@ -783,6 +787,7 @@ impl AiStudioPanel {
         Ok(RunningCampaign {
             process,
             experiment_root,
+            started_unix_ms: unix_ms(),
             admitted: BTreeSet::new(),
             finished: false,
         })
@@ -817,6 +822,7 @@ impl AiStudioPanel {
             running.finished = true;
         }
         let runs_root = running.experiment_root.join("runs");
+        let execution_started_unix_ms = running.started_unix_ms;
         let Ok(entries) = fs::read_dir(&runs_root) else {
             return;
         };
@@ -828,6 +834,7 @@ impl AiStudioPanel {
                     .is_some_and(|extension| extension == "json")
             })
             .filter_map(|path| read_campaign_result(&path).ok())
+            .filter(|result| result_belongs_to_execution(result, execution_started_unix_ms))
             .collect();
         results.sort_by_key(|result| result.run.ordinal);
         let Some(run) = self.benchmark_campaign.run.as_mut() else {
@@ -864,6 +871,19 @@ fn managed_model_is_campaign_candidate(model: &ManagedModelRegistration) -> bool
     model.has_exact_representation_identity()
 }
 
+/// Reports whether one on-disk run result was produced by this execution.
+///
+/// A frozen plan always resolves to the same experiment directory, so starting
+/// the same campaign again finds the previous execution's results still on disk
+/// until each run is overwritten. Admitting those would report an earlier
+/// attempt's outcome as this campaign's evidence.
+fn result_belongs_to_execution(
+    result: &BenchmarkExperimentResult,
+    execution_started_unix_ms: u64,
+) -> bool {
+    result.finished_unix_ms >= execution_started_unix_ms
+}
+
 fn read_campaign_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
@@ -872,6 +892,7 @@ fn read_campaign_result(path: &Path) -> Result<BenchmarkExperimentResult, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::benchmark_experiment::{BenchmarkPlannedRun, BenchmarkRoutingMode};
 
     fn managed_registration(representation: Option<&str>) -> ManagedModelRegistration {
         ManagedModelRegistration {
@@ -899,5 +920,44 @@ mod tests {
             "gguf-repr-v1;gguf=3;file_type=none;quantization_version=2;types=Q4_K:2,Q6_K:1",
         ));
         assert!(managed_model_is_campaign_candidate(&exact));
+    }
+
+    fn campaign_result(finished_unix_ms: u64) -> BenchmarkExperimentResult {
+        BenchmarkExperimentResult {
+            experiment_id: "local-model-campaign-test".to_owned(),
+            engine_commit_head: "a".repeat(40),
+            fixture_version: "gameengine-agent-fixture-v1".to_owned(),
+            routing_mode: BenchmarkRoutingMode::SingleModel,
+            run: BenchmarkPlannedRun {
+                ordinal: 0,
+                model_id: "gguf:test".to_owned(),
+                task_id: "project_inspection_v1".to_owned(),
+                repetition: 0,
+            },
+            started_unix_ms: finished_unix_ms.saturating_sub(1_000),
+            finished_unix_ms,
+            outcome: BenchmarkRunOutcome::Failed,
+            failure_kind: None,
+            routed_to_another_model: false,
+            harness_message: None,
+            record: None,
+        }
+    }
+
+    #[test]
+    fn a_restarted_campaign_ignores_the_previous_executions_results() {
+        let execution_started = 2_000;
+        assert!(!result_belongs_to_execution(
+            &campaign_result(execution_started - 1),
+            execution_started
+        ));
+        assert!(result_belongs_to_execution(
+            &campaign_result(execution_started),
+            execution_started
+        ));
+        assert!(result_belongs_to_execution(
+            &campaign_result(execution_started + 1),
+            execution_started
+        ));
     }
 }
