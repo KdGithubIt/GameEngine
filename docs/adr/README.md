@@ -129,8 +129,9 @@ the beginning:
   [0159](0159-benchmark-model-exchange-observability-and-failure-diagnosis.md),
   [0160](0160-external-agent-execution-environment-and-wsl-placement.md),
   [0161](0161-managed-local-multimodal-input-and-projector-registration.md),
+  [0162](0162-intent-driven-ai-studio-execution-and-progressive-configuration-disclosure.md),
   and
-  [0162](0162-intent-driven-ai-studio-execution-and-progressive-configuration-disclosure.md).
+  [0163](0163-provider-served-ask-and-in-editor-provider-setup.md).
 
 ## Proposed Decisions
 
@@ -317,3 +318,4 @@ implementation contract.
 | [0160](0160-external-agent-execution-environment-and-wsl-placement.md) | External Agent Execution Environment and WSL Placement |
 | [0161](0161-managed-local-multimodal-input-and-projector-registration.md) | Managed Local Multimodal Input and Projector Registration |
 | [0162](0162-intent-driven-ai-studio-execution-and-progressive-configuration-disclosure.md) | Intent-Driven AI Studio Execution and Progressive Configuration Disclosure |
+| [0163](0163-provider-served-ask-and-in-editor-provider-setup.md) | Provider-Served Ask and In-Editor Provider Setup |

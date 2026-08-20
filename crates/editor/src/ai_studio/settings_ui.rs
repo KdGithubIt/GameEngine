@@ -909,10 +909,19 @@ impl AiStudioPanel {
             self.save_preferences();
         }
         if refresh_provider {
-            self.refresh_external_provider_status();
+            if self.external_provider_kind == ExternalAgentProviderKind::Generic {
+                // A generic command is checked from configuration alone, so it
+                // needs no worker and answers immediately.
+                self.refresh_external_provider_status();
+            } else {
+                self.begin_external_provider_probe();
+            }
         }
         let provider_status = self.current_external_provider_status();
         let capabilities = self.external_provider_kind.capabilities();
+        let mut install_requested = false;
+        let mut sign_in_requested = false;
+        let mut cancel_setup_requested = false;
         ui.group(|ui| {
             ui.strong(format!("{} status", self.external_provider_kind.label()));
             ui.label(format!(
@@ -930,7 +939,141 @@ impl AiStudioPanel {
             ui.small(
                 "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
             );
+            let report = self.external_provider_report(self.external_provider_kind);
+            if let Some(report) = report {
+                if !report.locations.is_empty() {
+                    ui.small(format!("Resolved to: {}", report.locations.join(" · ")));
+                }
+                if report.has_shadowed_copies() {
+                    ui.small(
+                        "More than one directory on PATH provides this program. The first one is the copy that runs, so an update installed elsewhere will not take effect until PATH is changed.",
+                    );
+                }
+            }
         });
+        if self.external_provider_kind.can_sign_in() {
+            ui.group(|ui| {
+                ui.strong(format!("Set up {}", self.external_provider_kind.label()));
+                if let Some(task_action) = self
+                    .external_setup
+                    .as_ref()
+                    .map(ExternalAgentSetupTask::action)
+                {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.small(format!("{}…", task_action.progress_label()));
+                        if ui.button("Cancel").clicked() {
+                            cancel_setup_requested = true;
+                        }
+                    });
+                } else {
+                    let installer_available = self
+                        .external_provider_report(self.external_provider_kind)
+                        .is_none_or(|report| report.installer_available);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                installer_available,
+                                egui::Button::new(format!(
+                                    "{} {}",
+                                    ExternalAgentSetupAction::Install.label(),
+                                    self.external_provider_kind.label()
+                                )),
+                            )
+                            .clicked()
+                        {
+                            install_requested = true;
+                        }
+                        if ui
+                            .button(format!(
+                                "{} to {}",
+                                ExternalAgentSetupAction::SignIn.label(),
+                                self.external_provider_kind.label()
+                            ))
+                            .clicked()
+                        {
+                            sign_in_requested = true;
+                        }
+                    });
+                    if !installer_available {
+                        ui.small(
+                            "npm was not found, so GameEngine cannot install this provider for you. Install Node.js, or install the provider CLI yourself, then use Refresh status.",
+                        );
+                    }
+                    for action in [
+                        ExternalAgentSetupAction::Install,
+                        ExternalAgentSetupAction::SignIn,
+                    ] {
+                        if let Some(command) = setup_command_text(
+                            action,
+                            self.external_provider_kind,
+                            &self.external_agent_placement(),
+                        ) {
+                            ui.small(format!("{}: {command}", action.label()));
+                        }
+                    }
+                    ui.small(
+                        "These run the provider's own commands from the Editor, so no terminal has to be opened. GameEngine neither hosts the download nor stores the credential.",
+                    );
+                }
+                if let Some(url) = self.external_sign_in_url.clone() {
+                    ui.hyperlink_to("Open the provider sign-in page", &url);
+                    ui.small(
+                        "Open this only if the provider could not open your browser by itself.",
+                    );
+                }
+                if !self.external_setup_log.is_empty() {
+                    egui::CollapsingHeader::new("Provider setup output")
+                        .id_salt("ai_studio_provider_setup_output")
+                        .default_open(self.external_setup.is_some())
+                        .show(ui, |ui| {
+                            for line in &self.external_setup_log {
+                                ui.small(line);
+                            }
+                        });
+                }
+            });
+        }
+        if install_requested {
+            self.begin_external_provider_setup(ExternalAgentSetupAction::Install);
+        }
+        if sign_in_requested {
+            self.begin_external_provider_setup(ExternalAgentSetupAction::SignIn);
+        }
+        if cancel_setup_requested {
+            self.cancel_external_provider_setup();
+        }
+        if self.external_provider_probe.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.small("Checking which providers are installed and signed in…");
+            });
+        } else if !self.external_provider_probe_results.is_empty() {
+            ui.group(|ui| {
+                ui.strong("Providers detected on this machine");
+                for report in &self.external_provider_probe_results {
+                    ui.small(format!(
+                        "{} · discovery {} · authentication {}",
+                        report.status.kind.label(),
+                        report.status.discovery.label(),
+                        report.status.auth.label(),
+                    ));
+                }
+            });
+        }
+        let previous_ask_routing = self.ask_uses_external_provider;
+        ui.checkbox(
+            &mut self.ask_uses_external_provider,
+            "Answer Ask with this provider when it is ready",
+        );
+        if previous_ask_routing != self.ask_uses_external_provider {
+            self.save_preferences();
+        }
+        theme::spec_note(
+            ui,
+            "What Ask sends where",
+            "With this on, an Ask turn is answered by the signed-in provider under a read-only launch: no file writes, no Editor MCP credential, and no AgentRun. The provider uses its own account and its own subscription entitlement, and your conversation and the project evidence it reads reach that provider's service. With it off, or when the provider is not ready, Ask keeps using the selected ModelBackend.",
+        );
         #[cfg(feature = "visual-validation")]
         if self.visual_external_provider_evidence {
             ui.group(|ui| {

@@ -25,9 +25,12 @@ use crate::agent_host::{
 use crate::ai_studio_theme as theme;
 use crate::external_agent_provider::{
     ExternalAgentDiagnostics, ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement,
-    ExternalAgentProviderKind, ExternalAgentProviderStatus, ExternalAgentSemanticEvent,
-    build_launch_plan, probe_provider, probe_wsl_loopback_reachability, translate_provider_line,
-    wsl_environment_forwarding,
+    ExternalAgentProbeTask, ExternalAgentProviderKind, ExternalAgentProviderReport,
+    ExternalAgentProviderStatus, ExternalAgentQuestionRole, ExternalAgentQuestionTask,
+    ExternalAgentQuestionTurn, ExternalAgentSemanticEvent, ExternalAgentSetupAction,
+    ExternalAgentSetupTask, build_launch_plan, build_question_launch_plan, build_question_prompt,
+    probe_provider, probe_wsl_loopback_reachability, setup_command_text, sign_in_url,
+    translate_provider_line, wsl_environment_forwarding,
 };
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
@@ -77,6 +80,8 @@ const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
 const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
 /// How long a managed-environment snapshot is reused before a worker re-probes it.
 const MANAGED_PROBE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+/// How many provider setup output lines the settings surface keeps.
+const MAX_SETUP_LOG_LINES: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -164,6 +169,9 @@ struct AiStudioPreferences {
     external_agent_execution_environment: ExternalAgentExecutionEnvironment,
     #[serde(default)]
     external_agent_wsl_distribution: String,
+    /// Whether Ask is answered by the ready external provider (ADR 0163 §1).
+    #[serde(default = "default_ask_uses_external_provider")]
+    ask_uses_external_provider: bool,
     #[serde(default)]
     model_backend: ModelBackendPreference,
     #[serde(default)]
@@ -192,6 +200,7 @@ impl Default for AiStudioPreferences {
             external_agent_provider: ExternalAgentProviderKind::default(),
             external_agent_execution_environment: ExternalAgentExecutionEnvironment::default(),
             external_agent_wsl_distribution: String::new(),
+            ask_uses_external_provider: default_ask_uses_external_provider(),
             model_backend: ModelBackendPreference::Local,
             managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
             managed_model_id: String::new(),
@@ -206,6 +215,26 @@ impl Default for AiStudioPreferences {
 
 fn default_local_model_endpoint() -> String {
     DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned()
+}
+
+/// Ask prefers a ready external provider so one signed-in provider serves both
+/// modes without a second runtime to configure (ADR 0163 §1).
+const fn default_ask_uses_external_provider() -> bool {
+    true
+}
+
+/// Whether an Ask turn is answered by the external provider.
+///
+/// ADR 0163 §1: the provider answers only when the user keeps that preference,
+/// the provider is one whose read-only launch GameEngine can construct, and the
+/// status being read describes that same provider and reports it ready. Every
+/// other combination keeps the ModelBackend answer path.
+fn ask_is_provider_served(
+    prefers_provider: bool,
+    kind: ExternalAgentProviderKind,
+    status: &ExternalAgentProviderStatus,
+) -> bool {
+    prefers_provider && kind.can_answer_questions() && status.kind == kind && status.ready()
 }
 
 /// Authoritative Editor identity captured across native-inference interruption boundaries.
@@ -794,6 +823,29 @@ pub struct AiStudioPanel {
     external_provider_environment: ExternalAgentExecutionEnvironment,
     external_provider_wsl_distribution: String,
     external_provider_status: ExternalAgentProviderStatus,
+    /// Whether Ask is answered by the ready external provider (ADR 0163 §1).
+    ask_uses_external_provider: bool,
+    /// The provider process answering the current Ask turn, if one is running.
+    external_question: Option<ExternalAgentQuestionTask>,
+    /// Which session a provider-served answer belongs to.
+    external_question_session: Option<String>,
+    /// A provider install or sign-in the Editor started (ADR 0163 §2, §4).
+    external_setup: Option<ExternalAgentSetupTask>,
+    /// Provider output retained while a setup step is in progress.
+    external_setup_log: Vec<String>,
+    /// The sign-in URL the provider printed, when it printed one.
+    external_sign_in_url: Option<String>,
+    /// A background discovery/authentication probe of first-class providers.
+    external_provider_probe: Option<ExternalAgentProbeTask>,
+    /// Whether the once-per-session provider probe has already been requested.
+    external_provider_probe_requested: bool,
+    /// The most recent probe report for every first-class provider.
+    external_provider_probe_results: Vec<ExternalAgentProviderReport>,
+    /// Whether a ready provider has already been offered as the selection.
+    ///
+    /// ADR 0163 §3 adopts a detected provider only while nothing else has been
+    /// configured, and only once per Editor session.
+    external_provider_adoption_done: bool,
     model_backend: ModelBackendPreference,
     managed_local_runtime: ManagedLocalRuntime,
     managed_execution_environment: ManagedExecutionEnvironment,
@@ -940,6 +992,16 @@ impl AiStudioPanel {
             external_provider_status: ExternalAgentProviderStatus::unchecked(
                 preferences.external_agent_provider,
             ),
+            ask_uses_external_provider: preferences.ask_uses_external_provider,
+            external_question: None,
+            external_question_session: None,
+            external_setup: None,
+            external_setup_log: Vec::new(),
+            external_sign_in_url: None,
+            external_provider_probe: None,
+            external_provider_probe_requested: false,
+            external_provider_probe_results: Vec::new(),
+            external_provider_adoption_done: false,
             model_backend: preferences.model_backend,
             managed_local_runtime,
             managed_execution_environment: preferences.managed_execution_environment,
@@ -1826,6 +1888,10 @@ impl AiStudioPanel {
         self.poll_managed_setup(context);
         self.poll_managed_probe(context);
         self.poll_native_question(context);
+        self.request_external_provider_probe_once();
+        self.poll_external_provider_probe(context);
+        self.poll_external_question(context);
+        self.poll_external_setup(context);
         self.poll_model_resource_task(context);
         self.poll_native_mcp(context);
         self.poll_native_agent_runtime(context);
@@ -2849,8 +2915,10 @@ impl AiStudioPanel {
         };
         let can_send = !self.message_draft.trim().is_empty()
             && self.native_question.is_none()
+            && self.external_question.is_none()
             && self.pending_question_permission.is_none()
             && commit_blocked.is_none();
+        let mut stop_answer_requested = false;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(can_send, egui::Button::new("Send"))
@@ -2861,6 +2929,21 @@ impl AiStudioPanel {
             if self.native_question.is_some() {
                 ui.spinner();
                 ui.small("Reading current GameEngine/project evidence…");
+                return;
+            }
+            if let Some(kind) = self
+                .external_question
+                .as_ref()
+                .map(ExternalAgentQuestionTask::kind)
+            {
+                ui.spinner();
+                ui.small(format!(
+                    "{} is reading the project read-only…",
+                    kind.label()
+                ));
+                if ui.button("Stop answering").clicked() {
+                    stop_answer_requested = true;
+                }
                 return;
             }
             if awaiting_native {
@@ -2874,6 +2957,12 @@ impl AiStudioPanel {
             match self.conversation_mode {
                 ConversationMode::Ask => {
                     ui.small(ConversationMode::Ask.description());
+                    if self.provider_answers_questions() {
+                        ui.small(format!(
+                            "Answered by {}.",
+                            self.external_provider_kind.label()
+                        ));
+                    }
                 }
                 ConversationMode::Build if run_active => {
                     ui.small(
@@ -2885,6 +2974,21 @@ impl AiStudioPanel {
                 }
             }
         });
+        if stop_answer_requested {
+            self.cancel_external_question();
+        }
+    }
+
+    /// Stops a provider-served answer without recording a transcript entry.
+    ///
+    /// The user asked for the answer to stop, so the terminated process is not
+    /// reported as a provider failure.
+    fn cancel_external_question(&mut self) {
+        if let Some(task) = self.external_question.take() {
+            task.cancel();
+            self.status = Some(format!("Stopped the {} answer.", task.kind().label()));
+        }
+        self.external_question_session = None;
     }
 
     /// Whether the active run is a native run waiting on the user.
@@ -2917,6 +3021,9 @@ impl AiStudioPanel {
     fn intent_commit_blocked(&mut self) -> Option<&'static str> {
         if self.process.is_some() || self.native_runtime_busy() {
             return Some("An agent process is already running.");
+        }
+        if self.external_question.is_some() {
+            return Some("The external agent provider is answering a question.");
         }
         if self.pending_permission.is_some() || self.pending_question_permission.is_some() {
             return Some("Resolve the pending approval first.");
@@ -2956,7 +3063,7 @@ impl AiStudioPanel {
             return;
         }
         match self.conversation_mode {
-            ConversationMode::Ask => self.start_native_question(),
+            ConversationMode::Ask => self.start_question(),
             ConversationMode::Build if self.run_is_active() => {
                 // ADR 0162 §3: the running snapshot stays immutable, so the
                 // instruction is carried to the next run and the user is told
@@ -3470,6 +3577,124 @@ impl AiStudioPanel {
         }
     }
 
+    /// Answers the submitted Ask turn with whichever runtime is ready for it.
+    ///
+    /// ADR 0163 §1: a signed-in external provider answers Ask when the user
+    /// keeps that preference, so one provider subscription serves both Ask and
+    /// Build. Every other case keeps the ModelBackend answer path unchanged.
+    fn start_question(&mut self) {
+        if self.provider_answers_questions() {
+            self.start_external_question();
+            return;
+        }
+        self.start_native_question();
+    }
+
+    /// Whether the selected provider is ready to answer this Ask turn.
+    fn provider_answers_questions(&self) -> bool {
+        ask_is_provider_served(
+            self.ask_uses_external_provider,
+            self.external_provider_kind,
+            &self.current_external_provider_status(),
+        )
+    }
+
+    /// Starts the read-only provider process that answers one Ask turn.
+    ///
+    /// ADR 0163 §1: the answer never enters the run lifecycle. It takes no work
+    /// claim, prepares no code workspace, and receives no Editor MCP connection
+    /// material, so Ask cannot acquire write capability through the provider.
+    fn start_external_question(&mut self) {
+        let kind = self.external_provider_kind;
+        let session_id = self.selected_session.clone();
+        let turns = match self.host.session(&session_id) {
+            Ok(session) => session
+                .messages
+                .iter()
+                .map(|message| ExternalAgentQuestionTurn {
+                    role: match message.role {
+                        ConversationRole::User => ExternalAgentQuestionRole::User,
+                        ConversationRole::Assistant => ExternalAgentQuestionRole::Assistant,
+                        ConversationRole::System => ExternalAgentQuestionRole::System,
+                    },
+                    text: message.text.clone(),
+                })
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                self.status = Some(error.to_string());
+                return;
+            }
+        };
+        let prompt = build_question_prompt(&turns);
+        let plan = match build_question_launch_plan(kind, &self.external_agent_placement(), &prompt)
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        match ExternalAgentQuestionTask::spawn(kind, plan, self.project_root.clone()) {
+            Ok(task) => {
+                self.external_question = Some(task);
+                self.external_question_session = Some(session_id);
+                self.status = Some(format!(
+                    "{} is answering with its own provider account; no GameEngine model credential is used.",
+                    kind.label()
+                ));
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    /// Records a provider-served answer on the session it belongs to.
+    fn poll_external_question(&mut self, context: &egui::Context) {
+        let Some(task) = self.external_question.as_ref() else {
+            return;
+        };
+        let Some(result) = task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        let kind = task.kind();
+        self.external_question = None;
+        let session_id = self
+            .external_question_session
+            .take()
+            .unwrap_or_else(|| self.selected_session.clone());
+        match result {
+            Ok(answer) => {
+                match self.host.append_message(
+                    &session_id,
+                    ConversationRole::Assistant,
+                    answer.text.clone(),
+                ) {
+                    Ok(()) => {
+                        self.status = Some(format!(
+                            "{} answered read-only in {} ms.",
+                            kind.label(),
+                            answer.elapsed_ms
+                        ));
+                    }
+                    Err(error) => self.status = Some(error.to_string()),
+                }
+            }
+            Err(error) => {
+                let diagnostic = format!("{} could not answer: {error}", kind.label());
+                self.status = Some(diagnostic.clone());
+                if let Err(append_error) =
+                    self.host
+                        .append_message(&session_id, ConversationRole::System, diagnostic)
+                {
+                    self.status = Some(format!(
+                        "{} could not answer: {error}; Conversation diagnostic could not be recorded: {append_error}",
+                        kind.label()
+                    ));
+                }
+            }
+        }
+    }
+
     fn start_native_question(&mut self) {
         let config = match self.selected_native_model_config() {
             Ok(config) => config,
@@ -3850,6 +4075,7 @@ impl AiStudioPanel {
             external_agent_provider: self.external_provider_kind,
             external_agent_execution_environment: self.external_provider_environment,
             external_agent_wsl_distribution: self.external_provider_wsl_distribution.clone(),
+            ask_uses_external_provider: self.ask_uses_external_provider,
             model_backend: self.model_backend,
             managed_execution_environment: self.managed_execution_environment,
             managed_model_id: self.managed_model_id.clone(),
@@ -4529,6 +4755,190 @@ impl AiStudioPanel {
         );
     }
 
+    /// Probes providers once per Editor session, before anything needs them.
+    ///
+    /// ADR 0163 §3: the first thing a user needs is to know whether a provider
+    /// they already signed into is usable, so the probe does not wait for the
+    /// settings surface to be opened.
+    fn request_external_provider_probe_once(&mut self) {
+        if self.external_provider_probe_requested {
+            return;
+        }
+        self.external_provider_probe_requested = true;
+        self.begin_external_provider_probe();
+    }
+
+    /// Starts the background probe of every first-class provider.
+    ///
+    /// ADR 0163 §3: discovery and authentication both run provider processes,
+    /// so they never run on the UI thread. One probe is in flight at a time.
+    pub(super) fn begin_external_provider_probe(&mut self) {
+        if self.external_provider_probe.is_some() {
+            return;
+        }
+        match ExternalAgentProbeTask::spawn(self.external_agent_placement()) {
+            Ok(task) => self.external_provider_probe = Some(task),
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    /// Applies a finished provider probe.
+    ///
+    /// ADR 0163 §3: a detected, signed-in provider is adopted as the selection
+    /// only while nothing else has been configured, so an explicit choice is
+    /// never overwritten.
+    fn poll_external_provider_probe(&mut self, context: &egui::Context) {
+        let Some(task) = self.external_provider_probe.as_ref() else {
+            return;
+        };
+        let Some(reports) = task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(200));
+            return;
+        };
+        self.external_provider_probe = None;
+        self.external_provider_probe_results = reports;
+        if let Some(report) = self
+            .external_provider_probe_results
+            .iter()
+            .find(|report| report.status.kind == self.external_provider_kind)
+        {
+            self.external_provider_status = report.status.clone();
+        }
+        if self.external_provider_adoption_done {
+            return;
+        }
+        self.external_provider_adoption_done = true;
+        let nothing_configured = self.external_provider_kind == ExternalAgentProviderKind::Generic
+            && self.provider_program.trim().is_empty();
+        if !nothing_configured {
+            return;
+        }
+        let Some(detected) = self
+            .external_provider_probe_results
+            .iter()
+            .map(|report| &report.status)
+            .find(|status| status.ready())
+            .cloned()
+        else {
+            return;
+        };
+        self.external_provider_kind = detected.kind;
+        self.external_provider_status = detected.clone();
+        self.save_preferences();
+        self.status = Some(format!(
+            "Detected a signed-in {} on this machine and selected it as the external agent provider.",
+            detected.kind.label()
+        ));
+    }
+
+    /// Returns the probe report for one provider, when one has been produced.
+    pub(super) fn external_provider_report(
+        &self,
+        kind: ExternalAgentProviderKind,
+    ) -> Option<&ExternalAgentProviderReport> {
+        self.external_provider_probe_results
+            .iter()
+            .find(|report| report.status.kind == kind)
+    }
+
+    /// Starts one provider setup step from the Editor.
+    ///
+    /// ADR 0163 §2 and §4: install and sign-in are both provider-owned work.
+    /// GameEngine starts the provider's own command so the setup path does not
+    /// leave the Editor, and owns neither the installed artifact nor the
+    /// credential the provider stores.
+    pub(super) fn begin_external_provider_setup(&mut self, action: ExternalAgentSetupAction) {
+        if self.external_setup.is_some() {
+            return;
+        }
+        let kind = self.external_provider_kind;
+        self.external_setup_log.clear();
+        self.external_sign_in_url = None;
+        match ExternalAgentSetupTask::spawn(
+            kind,
+            action,
+            &self.external_agent_placement(),
+            &self.project_root,
+        ) {
+            Ok(task) => {
+                self.external_setup = Some(task);
+                self.status = Some(match action {
+                    ExternalAgentSetupAction::Install => format!(
+                        "Installing or updating {}. This runs the provider's own package installer.",
+                        kind.label()
+                    ),
+                    ExternalAgentSetupAction::SignIn => format!(
+                        "{} sign-in started. Complete it in the browser window the provider opens.",
+                        kind.label()
+                    ),
+                });
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    /// Stops a setup step that has not finished.
+    pub(super) fn cancel_external_provider_setup(&mut self) {
+        let Some(mut task) = self.external_setup.take() else {
+            return;
+        };
+        task.cancel();
+        self.status = Some(format!("{} was cancelled.", task.action().progress_label()));
+    }
+
+    /// Relays setup output and re-probes the provider once a step finishes.
+    fn poll_external_setup(&mut self, context: &egui::Context) {
+        let Some(task) = self.external_setup.as_mut() else {
+            return;
+        };
+        let kind = task.kind();
+        let action = task.action();
+        for line in task.drain_output() {
+            if action == ExternalAgentSetupAction::SignIn
+                && self.external_sign_in_url.is_none()
+                && let Some(url) = sign_in_url(&line)
+            {
+                self.external_sign_in_url = Some(url);
+            }
+            self.external_setup_log.push(line);
+            if self.external_setup_log.len() > MAX_SETUP_LOG_LINES {
+                self.external_setup_log.remove(0);
+            }
+        }
+        let exit = match task.poll_exit() {
+            Ok(exit) => exit,
+            Err(error) => {
+                self.external_setup = None;
+                self.status = Some(error);
+                return;
+            }
+        };
+        let Some(status) = exit else {
+            context.request_repaint_after(std::time::Duration::from_millis(200));
+            return;
+        };
+        self.external_setup = None;
+        self.status = Some(match (action, status.success()) {
+            (ExternalAgentSetupAction::Install, true) => format!(
+                "{} was installed or updated. Re-checking provider status…",
+                kind.label()
+            ),
+            (ExternalAgentSetupAction::Install, false) => format!(
+                "Installing {} did not succeed. The installer output is shown in Settings.",
+                kind.label()
+            ),
+            (ExternalAgentSetupAction::SignIn, true) => format!(
+                "{} sign-in finished. Re-checking provider status…",
+                kind.label()
+            ),
+            (ExternalAgentSetupAction::SignIn, false) => format!(
+                "{} sign-in did not complete. Provider output is shown in Settings.",
+                kind.label()
+            ),
+        });
+        self.begin_external_provider_probe();
+    }
+
     fn external_provider_is_requested(&self) -> bool {
         self.external_provider_kind != ExternalAgentProviderKind::Generic
             || !self.provider_program.trim().is_empty()
@@ -4659,6 +5069,7 @@ impl AiStudioPanel {
         if let Some(task) = self.native_question.as_ref() {
             task.interrupt();
         }
+        self.cancel_external_question();
         self.pending_native_question_start = None;
         self.model_resource_continuation = None;
         self.restore_for_editing = false;
@@ -6929,6 +7340,7 @@ fn completion_label(status: CompletionStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external_agent_provider::{ExternalAgentAuthStatus, ExternalAgentDiscoveryStatus};
 
     #[test]
     fn direct_args_do_not_invoke_shell_parsing() {
@@ -7052,6 +7464,7 @@ mod tests {
             external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
             external_agent_execution_environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
             external_agent_wsl_distribution: "Ubuntu-24.04".to_owned(),
+            ask_uses_external_provider: true,
             model_backend: ModelBackendPreference::HostedApi,
             managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
             managed_model_id: String::new(),
@@ -7075,6 +7488,57 @@ mod tests {
             serde_json::from_str(r#"{"schema_version":1,"model_backend":"local"}"#)
                 .expect("deserialize preferences without a conversation mode");
         assert_eq!(preferences.conversation_mode, ConversationMode::Ask);
+    }
+
+    #[test]
+    fn ask_is_provider_served_only_by_a_ready_first_class_provider() {
+        let ready = |kind| ExternalAgentProviderStatus {
+            kind,
+            discovery: ExternalAgentDiscoveryStatus::Available,
+            auth: ExternalAgentAuthStatus::Authenticated,
+        };
+        assert!(ask_is_provider_served(
+            true,
+            ExternalAgentProviderKind::Codex,
+            &ready(ExternalAgentProviderKind::Codex)
+        ));
+        assert!(!ask_is_provider_served(
+            false,
+            ExternalAgentProviderKind::Codex,
+            &ready(ExternalAgentProviderKind::Codex)
+        ));
+        // A generic command has no launch shape GameEngine can prove read-only.
+        assert!(!ask_is_provider_served(
+            true,
+            ExternalAgentProviderKind::Generic,
+            &ready(ExternalAgentProviderKind::Generic)
+        ));
+        assert!(!ask_is_provider_served(
+            true,
+            ExternalAgentProviderKind::ClaudeCode,
+            &ExternalAgentProviderStatus {
+                kind: ExternalAgentProviderKind::ClaudeCode,
+                discovery: ExternalAgentDiscoveryStatus::Available,
+                auth: ExternalAgentAuthStatus::SignInRequired,
+            }
+        ));
+        // A status left over from another provider never authorizes this one.
+        assert!(!ask_is_provider_served(
+            true,
+            ExternalAgentProviderKind::ClaudeCode,
+            &ready(ExternalAgentProviderKind::Codex)
+        ));
+    }
+
+    #[test]
+    fn preferences_written_before_provider_answering_keep_one_signed_in_runtime() {
+        // ADR 0163 §1: Ask has no write capability, so an installation that
+        // already selected and signed into a provider gets that provider's
+        // answers without a second runtime to configure.
+        let preferences: AiStudioPreferences =
+            serde_json::from_str(r#"{"schema_version":1,"model_backend":"local"}"#)
+                .expect("deserialize preferences without an Ask routing preference");
+        assert!(preferences.ask_uses_external_provider);
     }
 
     #[test]
