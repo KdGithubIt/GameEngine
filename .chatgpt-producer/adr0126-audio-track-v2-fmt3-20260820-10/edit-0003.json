@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/platform/src/audio.rs",
+  "old": "        decoder.try_seek(offset).map_err(|source| AudioError::Playback {\n            message: format!(\"failed to seek managed audio voice: {source}\"),\n        })?;",
+  "new": "        decoder\n            .try_seek(offset)\n            .map_err(|source| AudioError::Playback {\n                message: format!(\"failed to seek managed audio voice: {source}\"),\n            })?;"
+}
