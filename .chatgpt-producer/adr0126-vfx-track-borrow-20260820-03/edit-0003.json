@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/vfx.rs",
+  "old": "        let active_play = track.clips.iter().any(|clip| {\n            clip.contains(evaluation.tick)\n                && matches!(\n                    clip.payload,",
+  "new": "        let active_play = track.clips.iter().any(|clip| {\n            clip.contains(evaluation.tick)\n                && matches!(\n                    &clip.payload,"
+}
