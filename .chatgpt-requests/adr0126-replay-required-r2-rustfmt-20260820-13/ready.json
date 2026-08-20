@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-replay-required-r2-rustfmt-20260820-13",
+  "target_branch": "chatgpt/gameengine-adr0126-replay-required-r2",
+  "expected_head_sha": "4eaeba927f73394a16b4a7a65b2279cd9d3b5f1c",
+  "baseline_main_sha": "4ed269c2f3830ef2447026a26d1cc1600340b987",
+  "patch_sha256": "2513a4f064ac7f066fcf56b9f2f36e0653db09b19878399d5231fa5f0b23875a",
+  "patch_bytes": 1196,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Apply exact ReplayRequired r2 rustfmt output",
+  "pr_title": "Complete ADR 0126 ReplayRequired reconstruction",
+  "pr_body": "## Summary\n- add bounded transient ReplayRequired checkpoints with deterministic forward-only reconstruction\n- add scrub debounce plus generation-based cooperative cancellation\n- add exact VFX transient checkpoint/restore and fixed-step forward replay\n- retain lazy checkpoint fallback and BTreeMap entry insertion\n- apply the exact Rust 1.97.1 formatting reported by Windows Validation\n- keep the current-main rebuild as the canonical ReplayRequired branch\n\n## Validation\nRun GameEngine Windows Validation for the affected scope. No Editor/Launcher presentation is changed, so Visual Validation is not required."
+}
