@@ -1099,10 +1099,7 @@ mod tests {
 
         assert_eq!(sought.elapsed_seconds(), forward.elapsed_seconds());
         assert_eq!(sought.stats(), forward.stats());
-        assert_eq!(
-            sought.emitters()[0].particles(),
-            forward.emitters()[0].particles()
-        );
+        assert_eq!(sought.emitters()[0].particles(), forward.emitters()[0].particles());
     }
 
     #[test]
@@ -1114,20 +1111,14 @@ mod tests {
 
         let mut reconstructed = VfxInstance::new(effect(128), Some(999));
         reconstructed.restore_checkpoint(&checkpoint);
-        assert_eq!(
-            reconstructed.elapsed_seconds(),
-            checkpoint.elapsed_seconds()
-        );
+        assert_eq!(reconstructed.elapsed_seconds(), checkpoint.elapsed_seconds());
 
         assert!(forward.replay_forward_to(1.75, origin));
         assert!(reconstructed.replay_forward_to(1.75, origin));
 
         assert_eq!(reconstructed.elapsed_seconds(), forward.elapsed_seconds());
         assert_eq!(reconstructed.stats(), forward.stats());
-        assert_eq!(
-            reconstructed.emitters()[0].particles(),
-            forward.emitters()[0].particles()
-        );
+        assert_eq!(reconstructed.emitters()[0].particles(), forward.emitters()[0].particles());
     }
 
     #[test]
