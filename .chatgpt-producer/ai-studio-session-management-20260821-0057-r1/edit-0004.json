@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    live_observation: LiveObservationManager,\n    selected_session: String,\n    proposal_draft: AgentProposal,\n",
+  "new": "    live_observation: LiveObservationManager,\n    selected_session: String,\n    session_title_draft: Option<String>,\n    session_delete_confirmation: Option<String>,\n    proposal_draft: AgentProposal,\n"
+}
