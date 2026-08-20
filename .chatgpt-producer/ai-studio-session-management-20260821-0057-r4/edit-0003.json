@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "        fs::write(asset_staging_path.join(\"asset.bin\"), \"asset\")\n            .expect(\"asset staging file\");",
+  "new": "        fs::write(asset_staging_path.join(\"asset.bin\"), \"asset\").expect(\"asset staging file\");"
+}
