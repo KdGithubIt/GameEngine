@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-curve-editor-plot-inset-20260820-1429-09",
+  "target_branch": "chatgpt/gameengine-adr0126-curve-editor-current-main",
+  "expected_head_sha": "c42e590988faf687dfcffc5defa8896077def1c2",
+  "baseline_main_sha": "4ed269c2f3830ef2447026a26d1cc1600340b987",
+  "patch_sha256": "b158d1b69ac5f71cd6dd258c709ddedbb249caa7b88216e6a37640c23eacd816",
+  "patch_bytes": 2307,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Inset Curve Editor plot content",
+  "pr_title": "GameEngine: complete Sequencer curve editing",
+  "pr_body": "## Summary\n\n- add a Sequencer Curve Editor for all Transform-backed Property Track numeric channels\n- edit key time, value, interpolation, add/delete keys, and preserve clip-local ticks\n- integrate Redo with the existing validated Timeline edit/compile/save path\n- cover undo/redo and save/reopen preservation of stable IDs and exact key ticks\n- keep key editing and the responsive curve graph fully visible in constrained Sequencer height\n- inset curve/key/playhead content so endpoint handles remain visible in a compact graph\n- rebuild on current main after overlapping engine-editor main drift invalidated the prior stage\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
