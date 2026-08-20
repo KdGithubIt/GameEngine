@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/audio_adapter.rs",
+  "old": "fn stop_source_voices(\n    source: Entity,\n    runtime: &mut TimelineAudioRuntime,\n    audio: &mut AudioSystem,\n) {",
+  "new": "fn stop_source_voices(source: Entity, runtime: &mut TimelineAudioRuntime, audio: &mut AudioSystem) {"
+}
