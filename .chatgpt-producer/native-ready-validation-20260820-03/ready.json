@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "native-ready-validation-20260820-03",
+  "target_branch": "chatgpt/gameengine-native-ready-validation",
+  "expected_head_sha": "fab5c5eba38d2d3ca6b329d771b64ffe35aeda12",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json"
+  ],
+  "commit_message": "Restrict native readiness to registered MCP mutations",
+  "pr_title": "Fix premature NativeAgentRuntime validation",
+  "pr_body": "Require NativeAgentRuntime readiness to be proven by Agent Host-recorded successful mutations rather than generic model-loop exchange strings. Planned source work requires a successful managed workspace write event. Planned project work requires a successful host-recorded tool action whose name is present in the canonical Editor MCP descriptor inventory and is classified as mutating, so unrelated host tool actions such as workspace.code_write cannot satisfy project-authoring work. Planned asset work requires managed acquisition or governed MCP mutation evidence. Regression tests cover exchange-only false positives, unrelated host actions, registered read-only MCP actions, and registered mutating MCP actions. The existing NotApplicable source-validation wording fix remains. Logic-only change; Visual Validation is not required."
+}
