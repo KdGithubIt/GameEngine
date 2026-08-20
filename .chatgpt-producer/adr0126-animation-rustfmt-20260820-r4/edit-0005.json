@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"        world.add_component(player, component).expect(\"player component\");","new":"        world\n            .add_component(player, component)\n            .expect(\"player component\");"}
