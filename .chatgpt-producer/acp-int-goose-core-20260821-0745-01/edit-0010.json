@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"#[allow(dead_code)]\nmod codex_acp_adapter;\n\n// ADR 0146 defines","new":"#[allow(dead_code)]\nmod codex_acp_adapter;\n#[allow(dead_code)]\nmod goose_local_acp;\n\n// ADR 0146 defines"}
