@@ -175,6 +175,10 @@ iPhone / remote personal device
   -> 127.0.0.1 Remote AI Studio Gateway
 ```
 
+The concrete reference deployment, its setup steps, and the checks that prove
+a deployment matches this topology are documented in
+`docs/REMOTE_AI_STUDIO_DEPLOYMENT.md`.
+
 Public ingress mechanisms such as an Internet-wide tunnel or public reverse
 proxy are outside the initial supported deployment. Adding supported public
 Internet access requires an explicit threat model, authentication design,
