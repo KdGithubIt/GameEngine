@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/timeline/src/replay.rs",
+  "old": "        self.cancellation.is_current(pending.request).then_some(pending.request)",
+  "new": "        self.cancellation\n            .is_current(pending.request)\n            .then_some(pending.request)"
+}
