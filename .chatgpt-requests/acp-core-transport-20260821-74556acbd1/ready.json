@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-core-transport-20260821-74556acbd1",
+  "target_branch": "chatgpt/gameengine-acp-core-transport",
+  "expected_head_sha": "694de8724308c3acdd171fd9e2293876821f86ee",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "1033a879f48a0431bd6d4bd47548c429e78eaeb165a8a4cda501557381db09e5",
+  "patch_bytes": 51990,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement provider-neutral ACP core transport",
+  "pr_title": "GameEngine: implement ACP core transport",
+  "pr_body": "## Summary\n\n- add the provider-neutral ACP subprocess/stdin-stdout transport on top of the official `agent-client-protocol` Rust SDK\n- negotiate stable ACP v1 capabilities and support explicit new/load/resume, prompt, cancel, updates, permission transport, EOF/protocol/process failure handling, and shutdown\n- expose the session-open and negotiated-session interfaces needed by the later AgentHost bridge while keeping completion semantics in AgentHost\n\n## Scope\n\nNo Codex, Claude, Goose, AI Studio UI, GameEngine MCP tool-content, work-claim, validation, or completion-policy implementation is included.\n\n## Validation\n\nThis is a parallel authoring subtask. Heavy cargo, Windows Validation, and Visual Validation are intentionally deferred to the final integration chat. Canonical producer/request preflight remains required."
+}
