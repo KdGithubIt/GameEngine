@@ -1,0 +1,721 @@
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index aa225a090abcf9929feba5615d3986720b4dc0b8..311fdbbc73119105592bf86a7c4757beb1f49f6a 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -49,8 +49,29 @@ impl AuthoringWindows {
+ 
+     /// Loads the deterministic Sequencer fixture used by visual validation.
+     #[cfg(feature = "visual-validation")]
+-    pub fn prepare_sequencer_visual_validation(&mut self) {
+-        self.sequencer.prepare_visual_validation();
++    pub fn prepare_sequencer_visual_validation(
++        &mut self,
++        subject: Option<engine_authoring::EntityId>,
++    ) {
++        self.sequencer.prepare_visual_validation(subject);
++    }
++
++    /// Advances Sequencer preview state and publishes it to the persistent Scene View.
++    ///
++    /// Returns `true` while the Sequencer clock is playing so the Editor shell
++    /// can keep requesting frames even when no pointer or keyboard input occurs.
++    pub fn update_sequencer_preview(
++        &mut self,
++        app: &mut crate::EditorApp,
++        delta_seconds: f32,
++    ) -> bool {
++        let evaluation = self
++            .sequencer_open
++            .then(|| self.sequencer.advance_preview(delta_seconds))
++            .flatten();
++        let playing = self.sequencer_open && self.sequencer.preview_is_playing();
++        app.set_sequencer_timeline_preview(evaluation);
++        playing
+     }
+ 
+     /// Opens one Timeline document in the Sequencer workspace.
+@@ -92,17 +113,22 @@ impl AuthoringWindows {
+                 .with(engine_authoring::AuthoringPermission::ProjectDataWrite)
+                 .with(engine_authoring::AuthoringPermission::AssetWrite);
+             let sequencer = &mut self.sequencer;
+-            egui::Window::new("Sequencer")
++            let window = egui::Window::new("Sequencer")
+                 .id(egui::Id::new("embedded_sequencer"))
+                 .open(&mut self.sequencer_open)
+                 .default_width(1_180.0)
+                 .default_height(720.0)
+-                .resizable(true)
+-                .show(context, |ui| {
+-                    egui::ScrollArea::both().show(ui, |ui| {
+-                        sequencer.show(ui, &permissions);
+-                    });
++                .resizable(true);
++            #[cfg(feature = "visual-validation")]
++            let window = window
++                .default_width(610.0)
++                .default_height(620.0)
++                .default_pos(egui::pos2(650.0, 42.0));
++            window.show(context, |ui| {
++                egui::ScrollArea::both().show(ui, |ui| {
++                    sequencer.show(ui, &permissions);
+                 });
++            });
+         }
+         if self.vfx_open {
+             let vfx_open = &mut self.vfx_open;
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index dadc192588d7d144f11e4386b4b15e67930bcda0..07cb72f0cfffd1dcb26bd487a826766a7c0aef1c 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -148,7 +148,8 @@ impl EditorShell {
+                     app.prepare_vfx_visual_validation();
+                 }
+                 if requested == "Sequencer" {
+-                    authoring_windows.prepare_sequencer_visual_validation();
++                    let subject = app.prepare_sequencer_visual_validation();
++                    authoring_windows.prepare_sequencer_visual_validation(subject);
+                 }
+                 let tool = AuthoringTool::ALL
+                     .into_iter()
+@@ -401,6 +402,13 @@ impl eframe::App for EditorShell {
+             self.ai_studio
+                 .report_live_observation_capture(result, readback_started.elapsed());
+         }
++        let sequencer_delta = context.input(|input| input.stable_dt).clamp(0.0, 0.1);
++        if self
++            .authoring_windows
++            .update_sequencer_preview(&mut self.app, sequencer_delta)
++        {
++            context.request_repaint();
++        }
+         eframe::App::logic(&mut self.app, context, frame);
+         if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {
+             self.ai_studio.report_runtime_result(
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index eaf7e07e74a4ae996056bcfbe40088e3d73d4ec3..7b4d8492ccdc1cd334740f060786be593dd619fe 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -814,6 +814,12 @@ pub struct SceneView {
+     /// when [`PreviewKey`] changes; an idle frame reuses it wholesale, doing
+     /// no scene conversion, mesh copy, or GPU re-upload.
+     preview: Option<PreviewWorld>,
++    /// Latest Sequencer evaluation to apply to the persistent preview world.
++    ///
++    /// This is transient Editor state. Closing Sequencer sets it back to
++    /// `None`, which restores any runtime transforms the previous evaluation
++    /// overrode without rebuilding the preview world.
++    timeline_preview_evaluation: Option<engine::timeline::TimelineEvaluation>,
+     /// Immutable Editor working-copy snapshot consumed by the next preview conversion.
+     authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay,
+ }
+@@ -832,6 +838,8 @@ struct PreviewWorld {
+     /// frame so a cancelled gesture restores the committed pose without a
+     /// rebuild.
+     transform_overrides: Vec<EntityId>,
++    /// Runtime state owned by the Sequencer preview inside this persistent world.
++    timeline: TimelinePreviewRuntime,
+     /// Whether the animation and pose-composition preview pipeline has already
+     /// been installed in this world's fixed schedule. Installing it more than
+     /// once would advance animation and secondary physics multiple times.
+@@ -852,6 +860,29 @@ struct PreviewWorld {
+     animation_transition_started: bool,
+ }
+ 
++/// Production Timeline adapter state retained with the Scene View world.
++#[derive(Debug, Default)]
++struct TimelinePreviewRuntime {
++    source: Option<engine::ecs::Entity>,
++    bindings: engine::timeline::TimelineBindings,
++    transform_overrides: Vec<EntityId>,
++    camera_override: engine::timeline::TimelineCameraOverride,
++    events: engine::timeline::TimelineEvents,
++    diagnostics: engine::timeline::TimelineDiagnostics,
++}
++
++impl TimelinePreviewRuntime {
++    fn from_bridge(bridge: Option<&engine::scene_bridge::AuthoringToRuntimeMap>) -> Self {
++        let mut runtime = Self::default();
++        if let Some(bridge) = bridge {
++            for (authoring, entity) in bridge.entities() {
++                runtime.bindings.bind(authoring, entity);
++            }
++        }
++        runtime
++    }
++}
++
+ /// The inputs that determine whether the persistent preview world is still
+ /// valid (ADR 0072).
+ ///
+@@ -956,6 +987,7 @@ impl SceneView {
+             waiting_for_residency: false,
+             manifest_hash_cache: None,
+             preview: None,
++            timeline_preview_evaluation: None,
+             authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),
+         }
+     }
+@@ -1244,9 +1276,18 @@ impl SceneView {
+         self.waiting_for_residency = false;
+     }
+ 
++    /// Publishes the latest Sequencer evaluation to the persistent Scene View world.
++    pub(crate) fn set_timeline_preview_evaluation(
++        &mut self,
++        evaluation: Option<engine::timeline::TimelineEvaluation>,
++    ) {
++        self.timeline_preview_evaluation = evaluation;
++    }
++
+     /// Releases preview-world state owned by the old project.
+     pub fn clear_project_caches(&mut self) {
+         self.preview = None;
++        self.timeline_preview_evaluation = None;
+         self.manifest_hash_cache = None;
+         self.waiting_for_residency = false;
+     }
+@@ -1713,11 +1754,13 @@ impl SceneView {
+                     if self.renderer_failure_device != self.renderer_device {
+                         self.preview_notice = spawn_notice;
+                     }
++                    let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());
+                     self.preview = Some(PreviewWorld {
+                         app,
+                         key: key.clone(),
+                         bridge,
+                         transform_overrides: Vec::new(),
++                        timeline,
+                         animation_system_installed: false,
+                         animation_graph_system_installed: false,
+                         animation_sampled_elapsed: -1.0,
+@@ -1745,11 +1788,13 @@ impl SceneView {
+                             size,
+                             self.show_sky,
+                         );
++                        let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());
+                         self.preview = Some(PreviewWorld {
+                             app,
+                             key: key.clone(),
+                             bridge,
+                             transform_overrides: Vec::new(),
++                            timeline,
+                             animation_system_installed: false,
+                             animation_graph_system_installed: false,
+                             animation_sampled_elapsed: -1.0,
+@@ -1779,11 +1824,13 @@ impl SceneView {
+                             size,
+                             self.show_sky,
+                         );
++                        let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());
+                         self.preview = Some(PreviewWorld {
+                             app,
+                             key: key.clone(),
+                             bridge,
+                             transform_overrides: Vec::new(),
++                            timeline,
+                             animation_system_installed: false,
+                             animation_graph_system_installed: false,
+                             animation_sampled_elapsed: -1.0,
+@@ -1800,6 +1847,7 @@ impl SceneView {
+             && let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer)
+         {
+             let animation_preview_request = self.animation_preview_request.clone();
++            let timeline_preview_evaluation = self.timeline_preview_evaluation.clone();
+             let preview = self
+                 .preview
+                 .as_mut()
+@@ -1842,6 +1890,14 @@ impl SceneView {
+                 preview.transform_overrides.clear();
+             }
+ 
++            apply_timeline_preview(
++                app,
++                preview.bridge.as_ref(),
++                render_scene,
++                &mut preview.timeline,
++                timeline_preview_evaluation.as_ref(),
++            );
++
+             if self.particle_preview_enabled {
+                 simulate_particle_preview(app.world_mut(), self.particle_preview_elapsed);
+             }
+@@ -3126,6 +3182,182 @@ fn manifest_content_hash(manifest: &engine::AssetManifest) -> u64 {
+     hasher.finish()
+ }
+ 
++/// Applies one Sequencer sample through the production Timeline composition layer.
++///
++/// The persistent Scene View world is deliberately not a second Timeline
++/// simulator. Before each sample, property targets from the previous frame are
++/// restored from authoring state. The normal engine adapter then applies the
++/// new evaluation, and the regular Scene View `App::update` propagates those
++/// transforms before rendering. The camera override is retained as production
++/// runtime state but never replaces the editor-owned Scene View camera.
++fn apply_timeline_preview(
++    app: &mut engine::App,
++    bridge: Option<&engine::scene_bridge::AuthoringToRuntimeMap>,
++    render_scene: &AuthoringScene,
++    runtime: &mut TimelinePreviewRuntime,
++    evaluation: Option<&engine::timeline::TimelineEvaluation>,
++) {
++    let current = evaluation
++        .map(timeline_transform_override_ids)
++        .unwrap_or_default();
++    apply_transform_overrides(
++        app,
++        bridge,
++        render_scene,
++        &mut runtime.transform_overrides,
++        current,
++    );
++
++    runtime.camera_override.clear();
++    runtime.events.clear();
++    runtime.diagnostics.clear();
++    let Some(evaluation) = evaluation else {
++        return;
++    };
++    if bridge.is_none() {
++        return;
++    }
++
++    let source = match runtime
++        .source
++        .filter(|source| app.world().contains_entity(*source))
++    {
++        Some(source) => source,
++        None => {
++            let Ok(source) = app.world_mut().spawn() else {
++                return;
++            };
++            runtime.source = Some(source);
++            source
++        }
++    };
++    engine::timeline::apply_evaluation(
++        source,
++        evaluation,
++        app.world_mut(),
++        &runtime.bindings,
++        &mut runtime.camera_override,
++        &mut runtime.events,
++        &mut runtime.diagnostics,
++    );
++}
++
++fn timeline_transform_override_ids(
++    evaluation: &engine::timeline::TimelineEvaluation,
++) -> Vec<EntityId> {
++    let mut ids = Vec::new();
++    for active in &evaluation.active {
++        if let engine::timeline::TimelineTrackOutput::Property {
++            entity: Some(entity),
++            ..
++        } = &active.output
++            && !ids.contains(entity)
++        {
++            ids.push(entity.clone());
++        }
++    }
++    ids
++}
++
++#[cfg(test)]
++mod timeline_preview_tests {
++    use super::*;
++    use engine_authoring::{
++        AuthoringCommand, ComponentTypeId, TimelineBinding, TimelineClip, TimelineClipId,
++        TimelineClipPayload, TimelineDocument, TimelineInterpolation, TimelineKey,
++        TimelineProperty, TimelineTick, TimelineTrack, TimelineTrackId, TimelineTrackKind,
++        Transaction, Value,
++    };
++
++    #[test]
++    fn production_timeline_preview_applies_and_restores_runtime_transform() {
++        let mut scene = AuthoringScene::new();
++        let target = EntityId::generate();
++        let mut transaction = Transaction::begin(&scene);
++        transaction.apply(AuthoringCommand::CreateEntity {
++            id: target.clone(),
++            name: "timeline_target".to_owned(),
++            parent: None,
++        });
++        transaction.apply(AuthoringCommand::AddComponent {
++            entity: target.clone(),
++            component_type: ComponentTypeId::new("engine.transform"),
++            value: Value::Object(std::collections::BTreeMap::from([
++                ("x".to_owned(), Value::F64(1.0)),
++                ("y".to_owned(), Value::F64(0.0)),
++                ("z".to_owned(), Value::F64(0.0)),
++            ])),
++        });
++        transaction
++            .commit(&mut scene)
++            .expect("timeline preview scene must commit");
++
++        let mut app = engine::App::new();
++        let bridge = engine::scene_bridge::spawn_from_authoring_scene(app.world_mut(), &scene)
++            .expect("timeline preview scene must bridge");
++        let mut runtime = TimelinePreviewRuntime::from_bridge(Some(&bridge));
++        let runtime_target = bridge.get(&target).expect("target must resolve");
++
++        let mut document = TimelineDocument::new(TimelineTick(48_000));
++        document.tracks.push(TimelineTrack {
++            id: TimelineTrackId::generate(),
++            kind: TimelineTrackKind::Property,
++            name: "Position".to_owned(),
++            enabled: true,
++            binding: TimelineBinding {
++                entity: Some(target),
++                asset: None,
++            },
++            clips: vec![TimelineClip {
++                id: TimelineClipId::generate(),
++                start: TimelineTick::ZERO,
++                end: TimelineTick(48_000),
++                payload: TimelineClipPayload::Property {
++                    property: TimelineProperty::TranslationX,
++                    keys: vec![TimelineKey {
++                        tick: TimelineTick::ZERO,
++                        value: 7.0,
++                        interpolation: TimelineInterpolation::Linear,
++                    }],
++                },
++            }],
++        });
++        let compiled = engine_timeline::compile_timeline(&document).expect("timeline compiles");
++        let mut player = engine_timeline::TimelinePlayer::new();
++        let evaluation = player.seek(
++            &compiled,
++            TimelineTick(24_000),
++            engine_timeline::TimelineSeek::Scrub,
++        );
++
++        apply_timeline_preview(
++            &mut app,
++            Some(&bridge),
++            &scene,
++            &mut runtime,
++            Some(&evaluation),
++        );
++        assert_eq!(
++            app.world()
++                .get_component::<Transform>(runtime_target)
++                .expect("runtime target has Transform")
++                .translation
++                .x,
++            7.0
++        );
++
++        apply_timeline_preview(&mut app, Some(&bridge), &scene, &mut runtime, None);
++        assert_eq!(
++            app.world()
++                .get_component::<Transform>(runtime_target)
++                .expect("runtime target has Transform")
++                .translation
++                .x,
++            1.0
++        );
++    }
++}
++
+ /// Returns the authoring entities whose transform is being previewed this
+ /// frame: the gizmo target and any Inspector transform drag (ADR 0072).
+ fn current_transform_override_ids(
+diff --git a/crates/editor/src/sequencer.rs b/crates/editor/src/sequencer.rs
+index 9792372001d2d510ef9a1fe4b89e6d12ba622065..1c34e5555a174197b65d122445cc0bbb3fd04d68 100644
+--- a/crates/editor/src/sequencer.rs
++++ b/crates/editor/src/sequencer.rs
+@@ -13,7 +13,8 @@ use engine_authoring::{
+     replace_file_contents,
+ };
+ use engine_timeline::{
+-    CompiledTimeline, TimelinePlayer, TimelineSeek, TrackRegistry, compile_timeline,
++    CompiledTimeline, LoopRegion, TimelineEvaluation, TimelinePlayState, TimelinePlayer,
++    TimelineSeek, TrackRegistry, compile_timeline,
+ };
+ use std::path::{Path, PathBuf};
+ 
+@@ -75,6 +76,12 @@ struct LoadedTimeline {
+     player: TimelinePlayer,
+     /// Ticks the last preview evaluation reported as its playhead.
+     preview_tick: TimelineTick,
++    /// One seek evaluation waiting for the Scene View preview bridge.
++    ///
++    /// Keeping this one-shot result preserves explicit Preview Events semantics;
++    /// recomputing a paused sample on the next frame would correctly sample the
++    /// pose but would discard the event the user deliberately opted into.
++    pending_preview: Option<TimelineEvaluation>,
+     /// Diagnostics from the most recent compile or validation.
+     diagnostics: Vec<String>,
+ }
+@@ -99,6 +106,7 @@ impl LoadedTimeline {
+             compiled,
+             player: TimelinePlayer::new(),
+             preview_tick: TimelineTick::ZERO,
++            pending_preview: None,
+             diagnostics: Vec::new(),
+         })
+     }
+@@ -129,6 +137,10 @@ impl LoadedTimeline {
+             self.undo.remove(0);
+         }
+         self.compiled = compiled;
++        self.pending_preview = None;
++        if self.player.loop_region().is_some() {
++            self.set_loop_enabled(true);
++        }
+         self.diagnostics.clear();
+         self.dirty = true;
+         Ok(())
+@@ -142,6 +154,10 @@ impl LoadedTimeline {
+             Ok(compiled) => {
+                 self.document = previous;
+                 self.compiled = compiled;
++                self.pending_preview = None;
++                if self.player.loop_region().is_some() {
++                    self.set_loop_enabled(true);
++                }
+                 self.dirty = true;
+                 true
+             }
+@@ -167,6 +183,25 @@ impl LoadedTimeline {
+         };
+         let evaluation = self.player.seek(&self.compiled, tick, mode);
+         self.preview_tick = evaluation.tick;
++        self.pending_preview = Some(evaluation);
++    }
++
++    fn set_loop_enabled(&mut self, enabled: bool) {
++        let region = enabled.then_some(LoopRegion {
++            start: TimelineTick::ZERO,
++            end: self.document.duration,
++            count: None,
++        });
++        let _ = self.player.set_loop_region(region);
++    }
++
++    fn advance_preview(&mut self, delta_seconds: f32) -> TimelineEvaluation {
++        let evaluation = self
++            .pending_preview
++            .take()
++            .unwrap_or_else(|| self.player.advance(&self.compiled, delta_seconds));
++        self.preview_tick = evaluation.tick;
++        evaluation
+     }
+ }
+ 
+@@ -178,13 +213,16 @@ impl SequencerState {
+     /// document, and this fixture is compiled only for visual validation so no
+     /// normal Editor launch can reach it.
+     #[cfg(feature = "visual-validation")]
+-    pub(crate) fn prepare_visual_validation(&mut self) {
++    pub(crate) fn prepare_visual_validation(
++        &mut self,
++        subject: Option<engine_authoring::EntityId>,
++    ) {
+         use engine_authoring::{
+             EntityId, TimelineAudioAction, TimelineBinding, TimelineInterpolation, TimelineKey,
+         };
+ 
+         let camera = EntityId::generate();
+-        let subject = EntityId::generate();
++        let subject = subject.unwrap_or_else(EntityId::generate);
+         let mut document = TimelineDocument::new(TimelineTick::from_seconds(6.0));
+         document.tracks.push(TimelineTrack {
+             id: TimelineTrackId::generate(),
+@@ -232,7 +270,7 @@ impl SequencerState {
+                         },
+                         TimelineKey {
+                             tick: TimelineTick::from_seconds(3.5),
+-                            value: 8.0,
++                            value: 3.0,
+                             interpolation: TimelineInterpolation::Linear,
+                         },
+                     ],
+@@ -297,15 +335,21 @@ impl SequencerState {
+             compiled,
+             player: TimelinePlayer::new(),
+             preview_tick: TimelineTick::ZERO,
++            pending_preview: None,
+             diagnostics: Vec::new(),
+         };
++        loaded.set_loop_enabled(true);
++        loaded.player.pause();
+         loaded.seek(TimelineTick::from_seconds(2.0), false);
+         self.selected_track = 1;
+         self.selected_clip = loaded.document.tracks[1]
+             .clips
+             .first()
+             .map(|clip| clip.id.clone());
+-        self.status = Some("Scrubbed to 2.000s; gameplay events stay suppressed.".to_owned());
++        self.status = Some(
++            "Scene View preview · Paused · Loop · 2.000s; gameplay events stay suppressed."
++                .to_owned(),
++        );
+         self.open = Some(loaded);
+     }
+ 
+@@ -325,6 +369,20 @@ impl SequencerState {
+         }
+     }
+ 
++    /// Advances the Editor-owned preview clock and returns one runtime evaluation.
++    pub(crate) fn advance_preview(&mut self, delta_seconds: f32) -> Option<TimelineEvaluation> {
++        self.open
++            .as_mut()
++            .map(|loaded| loaded.advance_preview(delta_seconds.max(0.0)))
++    }
++
++    /// Returns whether the preview clock needs continuous Editor repaints.
++    pub(crate) fn preview_is_playing(&self) -> bool {
++        self.open
++            .as_ref()
++            .is_some_and(|loaded| loaded.player.state() == TimelinePlayState::Playing)
++    }
++
+     /// Draws the Sequencer workspace.
+     pub(crate) fn show(&mut self, ui: &mut egui::Ui, permissions: &AuthoringPermissions) {
+         if self.open.is_none() {
+@@ -744,6 +802,7 @@ fn transport_controls(
+         }
+         if ui.button("Stop").clicked() {
+             loaded.player.stop();
++            loaded.pending_preview = None;
+             loaded.preview_tick = TimelineTick::ZERO;
+         }
+         if ui.button("Step −").clicked() {
+@@ -754,6 +813,16 @@ fn transport_controls(
+             let tick = step_tick(loaded, 1, snap_to_frames);
+             loaded.seek(tick, preview_events);
+         }
++        let mut loop_enabled = loaded.player.loop_region().is_some();
++        if ui.checkbox(&mut loop_enabled, "Loop").changed() {
++            loaded.set_loop_enabled(loop_enabled);
++        }
++        let state = match loaded.player.state() {
++            TimelinePlayState::Playing => "Playing",
++            TimelinePlayState::Paused => "Paused",
++            TimelinePlayState::Stopped => "Stopped",
++        };
++        ui.label(state);
+         ui.label(format!(
+             "{:.3}s / {:.3}s",
+             loaded.preview_tick.as_seconds(),
+@@ -834,6 +903,7 @@ mod tests {
+             compiled,
+             player: TimelinePlayer::new(),
+             preview_tick: TimelineTick::ZERO,
++            pending_preview: None,
+             diagnostics: Vec::new(),
+         }
+     }
+@@ -935,6 +1005,44 @@ mod tests {
+         assert_eq!(preview.events.len(), 1);
+     }
+ 
++    #[test]
++    fn preview_clock_plays_pauses_and_loops_without_losing_the_playhead() {
++        let mut loaded = loaded_timeline();
++        loaded.set_loop_enabled(true);
++        loaded.player.play();
++
++        let evaluation = loaded.advance_preview(1.25);
++        assert_eq!(evaluation.tick, TimelineTick(12_000));
++        assert_eq!(loaded.player.loops_completed(), 1);
++        assert_eq!(loaded.player.state(), TimelinePlayState::Playing);
++
++        loaded.player.pause();
++        let paused = loaded.advance_preview(0.5);
++        assert_eq!(paused.tick, TimelineTick(12_000));
++        assert_eq!(loaded.preview_tick, TimelineTick(12_000));
++    }
++
++    #[test]
++    fn explicit_event_preview_reaches_the_next_scene_view_sample_once() {
++        let mut loaded = loaded_timeline();
++        loaded
++            .edit(&writable(), |document| {
++                document.markers.push(TimelineMarker {
++                    id: TimelineMarkerId::generate(),
++                    tick: TimelineTick(1_000),
++                    name: "hit".to_owned(),
++                    event: "hit".to_owned(),
++                });
++            })
++            .expect("valid edit");
++
++        loaded.seek(TimelineTick(1_000), true);
++        let preview = loaded.advance_preview(0.0);
++        assert_eq!(preview.events.len(), 1);
++        let held = loaded.advance_preview(0.0);
++        assert!(held.events.is_empty());
++    }
++
+     #[test]
+     fn a_default_payload_matches_the_track_kind_it_was_created_for() {
+         for kind in TimelineTrackKind::ALL {
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 5548c0b440a5b1f7bf0d1f443da931332e73312d..b7d049492a3f7822e0869c15f8965ab21d1fc322 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -547,6 +547,33 @@ impl EditorApp {
+         }
+     }
+ 
++    /// Publishes one Sequencer evaluation into the persistent Scene View.
++    pub(crate) fn set_sequencer_timeline_preview(
++        &mut self,
++        evaluation: Option<engine::timeline::TimelineEvaluation>,
++    ) {
++        self.scene_view.set_timeline_preview_evaluation(evaluation);
++    }
++
++    /// Creates a visible Scene View target for the Sequencer visual-validation fixture.
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_sequencer_visual_validation(&mut self) -> Option<EntityId> {
++        self.session.scene()?;
++        let mesh = AssetId::from_stable_id(StableId::new(
++            engine::scene_bridge::BUILTIN_TRIANGLE_ASSET_ID,
++        ))
++        .ok()?;
++        let entity = self
++            .session
++            .create_entity_from_mesh_asset(mesh, None)
++            .ok()?;
++        self.select_single_entity(Some(entity.clone()));
++        if let Some(scene) = self.session.scene() {
++            let _ = self.scene_view.focus_entity(scene, &entity);
++        }
++        Some(entity)
++    }
++
+     /// Initializes project-scoped services for the concrete workspace root.
+     ///
+     /// This stays private because ADR 0117 forbids rebinding one Editor
+diff --git a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+index 14b422b6d05c3cffbe4e766e88f7916e8c9622f7..823dbc2c8120e0dc7db21e501590faa7f2726070 100644
+--- a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
++++ b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+@@ -277,14 +277,16 @@ landed so far, on 2026-08-20:
+   override and the bounded sequence-event queue; the `engine.timeline_player`
+   component and its scene conversion; project-Rust deferred Timeline commands
+   and copied views; a Sequencer workspace with transport, track and clip
+-  editing, markers, frame snapping, seek-policy presentation, and undo; and
+-  Editor, CLI, and MCP parity through the shared typed-document capability
++  editing, markers, frame snapping, seek-policy presentation, and undo;
++  persistent Scene View Timeline preview that drives scrub/play/pause/loop
++  through the production composition adapter while retaining the Editor camera;
++  and Editor, CLI, and MCP parity through the shared typed-document capability
+   registry.
+ - **Not yet landed:** the Animation track adapter that drives Animation Set
+   motion slots; the Audio and VFX adapters, which ADR 0126 §14 already defers
+-  until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
+-  the persistent Scene View world; the curve editor and `ReplayRequired`
+-  checkpoint reconstruction; and the packaged-player proving project.
++  until ADR 0122 and ADR 0125 runtime controls exist; the curve editor and
++  `ReplayRequired` checkpoint reconstruction; and the packaged-player proving
++  project.
+ 
+ Evaluation already reports Animation, Audio, and VFX outputs, so nothing in the
+ implemented path silently claims to have played a motion slot, a cue, or an
