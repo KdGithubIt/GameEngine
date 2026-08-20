@@ -32,6 +32,9 @@ use crate::rig_pose::{publish_final_rig_pose_system, rig_pose_clear_transient_sy
 use crate::secondary_motion::{
     SecondaryMotionWorlds, secondary_motion_presentation_system, secondary_motion_system,
 };
+use crate::timeline::{
+    TimelineCameraOverride, TimelineDiagnostics, TimelineEvents, timeline_fixed_system,
+};
 use crate::transform::transform_propagation_system;
 use engine_ecs::{SystemDescriptor, SystemOrigin, SystemRegistrationError};
 
@@ -51,6 +54,19 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     }
     if app.world().get_resource::<AnimationEvents>().is_none() {
         app.insert_resource(AnimationEvents::default());
+    }
+    if app
+        .world()
+        .get_resource::<TimelineCameraOverride>()
+        .is_none()
+    {
+        app.insert_resource(TimelineCameraOverride::default());
+    }
+    if app.world().get_resource::<TimelineEvents>().is_none() {
+        app.insert_resource(TimelineEvents::default());
+    }
+    if app.world().get_resource::<TimelineDiagnostics>().is_none() {
+        app.insert_resource(TimelineDiagnostics::default());
     }
     if app.world().get_resource::<PoseArena>().is_none() {
         app.insert_resource(PoseArena::new());
@@ -237,6 +253,18 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
             "Evaluates project animation graph conditions before sampling.",
         ),
         anim_graph_system,
+    )?;
+    app.ecs_mut().try_add_exclusive_fixed_system_with_descriptor(
+        engine_system(
+            "engine.timeline",
+            "Timeline",
+            "Advances Timeline players and applies cross-domain track outputs.",
+        )
+        .try_before("engine.animation_graph")
+        .expect("built-in system IDs are valid")
+        .try_before("engine.animation")
+        .expect("built-in system IDs are valid"),
+        timeline_fixed_system,
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
@@ -491,6 +519,7 @@ mod tests {
             .collect();
         for required in [
             "engine.rig_pose_clear_transient",
+            "engine.timeline",
             "engine.animation_graph",
             "engine.animation",
             "engine.root_motion_motor",
@@ -517,6 +546,18 @@ mod tests {
                 .map(|info| &info.descriptor)
                 .unwrap()
         };
+        assert!(
+            descriptor("engine.timeline")
+                .before()
+                .iter()
+                .any(|id| id.as_str() == "engine.animation_graph")
+        );
+        assert!(
+            descriptor("engine.timeline")
+                .before()
+                .iter()
+                .any(|id| id.as_str() == "engine.animation")
+        );
         assert!(
             descriptor("engine.animation")
                 .after()
@@ -599,6 +640,19 @@ mod tests {
             editor_play
                 .world()
                 .get_resource::<AnimationEvents>()
+                .is_some()
+        );
+        assert!(
+            editor_play
+                .world()
+                .get_resource::<TimelineCameraOverride>()
+                .is_some()
+        );
+        assert!(editor_play.world().get_resource::<TimelineEvents>().is_some());
+        assert!(
+            editor_play
+                .world()
+                .get_resource::<TimelineDiagnostics>()
                 .is_some()
         );
         assert!(

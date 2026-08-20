@@ -295,6 +295,7 @@ pub struct AnimGraphPlayer {
     last_transition_index: Option<usize>,
     transition_sequence: u64,
     debug_source: Option<AnimationGraphDebugSource>,
+    external_override_depth: u32,
 }
 
 impl AnimGraphPlayer {
@@ -330,6 +331,7 @@ impl AnimGraphPlayer {
             last_transition_index: None,
             transition_sequence: 0,
             debug_source: None,
+            external_override_depth: 0,
         }
     }
 
@@ -438,6 +440,23 @@ impl AnimGraphPlayer {
         self.transition_sequence
     }
 
+    /// Suspends graph evaluation while a top-level composition adapter owns
+    /// the sibling Animator. Nested overrides are reference counted so one
+    /// adapter cannot resume the graph while another override is still active.
+    pub fn begin_external_override(&mut self) {
+        self.external_override_depth = self.external_override_depth.saturating_add(1);
+    }
+
+    /// Releases one external Animator override.
+    pub fn end_external_override(&mut self) {
+        self.external_override_depth = self.external_override_depth.saturating_sub(1);
+    }
+
+    /// Returns whether graph evaluation is suspended by a composition adapter.
+    pub fn external_override_active(&self) -> bool {
+        self.external_override_depth != 0
+    }
+
     /// Starts a motion registered in this player's resolved motion table.
     pub fn play_clip(&self, animator: &mut Animator, motion_key: &str, fade_duration: f32) -> bool {
         let Some(clip) = self.clip_handle(motion_key) else {
@@ -481,6 +500,9 @@ impl AnimGraphPlayer {
 /// consumed only after its target state has been resolved successfully.
 pub fn anim_graph_system(mut query: engine_ecs::Query<(&mut AnimGraphPlayer, &mut Animator)>) {
     for (_entity, (player, animator)) in query.iter_mut() {
+        if player.external_override_active() {
+            continue;
+        }
         if !player.entered {
             player.entered = true;
             if let Some(state) = player.graph.states.get(player.current_state).cloned() {

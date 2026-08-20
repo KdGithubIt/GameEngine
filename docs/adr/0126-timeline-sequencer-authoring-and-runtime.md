@@ -279,10 +279,12 @@ landed so far, on 2026-08-20:
   and copied views; a Sequencer workspace with transport, track and clip
   editing, markers, frame snapping, seek-policy presentation, and undo; and
   Editor, CLI, and MCP parity through the shared typed-document capability
-  registry.
-- **Not yet landed:** the Animation track adapter that drives Animation Set
-  motion slots; the Audio and VFX adapters, which ADR 0126 §14 already defers
-  until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
+  registry; the Animation track adapter that resolves Animation Set motion
+  slots, drives exact Timeline-owned sample time, and restores suspended
+  Animator/Animation Graph playback state; and shared fixed-step Timeline
+  registration for Editor Play and packaged Player using scene runtime identity.
+- **Not yet landed:** the Audio and VFX adapters, which ADR 0126 §14 already
+  defers until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
   the persistent Scene View world; the curve editor and `ReplayRequired`
   checkpoint reconstruction; and the packaged-player proving project.
 
