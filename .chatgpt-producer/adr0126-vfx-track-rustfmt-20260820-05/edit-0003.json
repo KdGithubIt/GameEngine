@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/vfx/tests.rs",
+  "old": "    advance_timelines(\n        seconds,\n        world,\n        bindings,\n        camera,\n        events,\n        diagnostics,\n    );",
+  "new": "    advance_timelines(seconds, world, bindings, camera, events, diagnostics);"
+}
