@@ -531,7 +531,7 @@ mod tests {
         let mut player = TimelinePlayer::new();
         player.play();
         let evaluation = player.seek(&timeline, TimelineTick(75), TimelineSeek::Playback);
-        let desired = desired_audio_voices(Entity::new(7, 0), &timeline, &evaluation);
+        let desired = desired_audio_voices(Entity::from_raw(7, 0), &timeline, &evaluation);
 
         assert_eq!(desired.len(), 1);
         assert_eq!(desired[0].cue, cue);
@@ -548,12 +548,12 @@ mod tests {
 
         let before_stop = player.seek(&timeline, TimelineTick(75), TimelineSeek::Playback);
         assert_eq!(
-            desired_audio_voices(Entity::new(7, 0), &timeline, &before_stop).len(),
+            desired_audio_voices(Entity::from_raw(7, 0), &timeline, &before_stop).len(),
             1
         );
 
         let after_stop = player.seek(&timeline, TimelineTick(150), TimelineSeek::Playback);
-        assert!(desired_audio_voices(Entity::new(7, 0), &timeline, &after_stop).is_empty());
+        assert!(desired_audio_voices(Entity::from_raw(7, 0), &timeline, &after_stop).is_empty());
     }
 
     #[test]
