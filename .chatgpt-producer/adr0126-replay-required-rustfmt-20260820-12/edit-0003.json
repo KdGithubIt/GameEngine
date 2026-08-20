@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/timeline/src/replay.rs",
+  "old": "        self.checkpoints.range(..=target).next_back().map(|(tick, _)| *tick)",
+  "new": "        self.checkpoints\n            .range(..=target)\n            .next_back()\n            .map(|(tick, _)| *tick)"
+}
