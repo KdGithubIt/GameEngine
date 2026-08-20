@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/platform/src/audio.rs","old":"        gains: Arc<Mutex<[f32; 2]>>,\n        looping: bool,\n        respond_to: mpsc::Sender<Result<(), AudioError>>,","new":"        gains: Arc<Mutex<[f32; 2]>>,\n        looping: bool,\n        offset: Duration,\n        respond_to: mpsc::Sender<Result<(), AudioError>>,"}
