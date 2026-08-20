@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/vfx.rs",
+  "old": "    // `ClipTransition::exited` uses crossing intervals, so a step that lands\n    // exactly on the half-open clip end may report the exit on the next\n    // traversal. Reconcile interval ownership at the sampled tick so VFX stops\n    // at the authored exclusive end without adding a frame of emission.\n    for track in timeline.tracks.iter().filter(|track| track.enabled) {\n        if !track\n            .clips\n            .iter()\n            .any(|clip| matches!(clip.payload, CompiledClipPayload::Vfx { .. }))",
+  "new": "    // `ClipTransition::exited` uses crossing intervals, so a step that lands\n    // exactly on the half-open clip end may report the exit on the next\n    // traversal. Reconcile interval ownership at the sampled tick so VFX stops\n    // at the authored exclusive end without adding a frame of emission.\n    for track in timeline.tracks.iter().filter(|track| track.enabled) {\n        if !track\n            .clips\n            .iter()\n            .any(|clip| matches!(&clip.payload, CompiledClipPayload::Vfx { .. }))"
+}
