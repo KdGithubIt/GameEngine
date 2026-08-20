@@ -1020,6 +1020,8 @@ pub struct AiStudioPanel {
     remote_phone_url_base: String,
     live_observation: LiveObservationManager,
     selected_session: String,
+    session_title_draft: Option<String>,
+    session_delete_confirmation: Option<String>,
     proposal_draft: AgentProposal,
     message_draft: String,
     /// What submitting the draft will do (ADR 0162 §1).
@@ -1253,6 +1255,8 @@ impl AiStudioPanel {
             remote_phone_url_base: preferences.remote_phone_url_base,
             live_observation: LiveObservationManager::default(),
             selected_session,
+            session_title_draft: None,
+            session_delete_confirmation: None,
             proposal_draft,
             message_draft: String::new(),
             conversation_mode: preferences.conversation_mode,
@@ -3556,48 +3560,253 @@ impl AiStudioPanel {
             .session(&self.selected_session)
             .map(|session| session.title.clone())
             .unwrap_or_else(|_| "Unavailable session".to_owned());
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("ai_studio_session")
-                .selected_text(current_title)
-                .width(260.0)
-                .show_ui(ui, |ui| {
-                    for id in session_ids {
-                        let title = self
-                            .host
-                            .session(&id)
-                            .map(|session| session.title.as_str())
-                            .unwrap_or("Unavailable session");
-                        if ui
-                            .selectable_value(&mut self.selected_session, id.clone(), title)
-                            .changed()
-                            && let Ok(session) = self.host.session(&id)
-                        {
-                            self.proposal_draft = session.proposal.clone();
+        ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                egui::ComboBox::from_id_salt("ai_studio_session")
+                    .selected_text(current_title.clone())
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for id in session_ids {
+                            let title = self
+                                .host
+                                .session(&id)
+                                .map(|session| session.title.as_str())
+                                .unwrap_or("Unavailable session");
+                            if ui
+                                .selectable_value(&mut self.selected_session, id.clone(), title)
+                                .changed()
+                                && let Ok(session) = self.host.session(&id)
+                            {
+                                self.proposal_draft = session.proposal.clone();
+                                self.session_title_draft = None;
+                                self.session_delete_confirmation = None;
+                            }
                         }
+                    });
+                if ui.button("New session").clicked() {
+                    match self.host.create_session("New AI Studio session") {
+                        Ok(id) => {
+                            self.selected_session = id;
+                            self.proposal_draft = AgentProposal::default();
+                            self.session_title_draft =
+                                Some("New AI Studio session".to_owned());
+                            self.session_delete_confirmation = None;
+                            self.status = Some("Created a private local AI session.".to_owned());
+                        }
+                        Err(error) => self.status = Some(error.to_string()),
+                    }
+                }
+                let has_session = self.host.session(&self.selected_session).is_ok();
+                if ui
+                    .add_enabled(has_session, egui::Button::new("Rename"))
+                    .clicked()
+                {
+                    self.session_title_draft = Some(current_title.clone());
+                    self.session_delete_confirmation = None;
+                }
+                if ui
+                    .add_enabled(has_session, egui::Button::new("Delete"))
+                    .clicked()
+                {
+                    self.session_delete_confirmation = Some(self.selected_session.clone());
+                    self.session_title_draft = None;
+                }
+                if ui
+                    .add_enabled(has_session, egui::Button::new("Share with project"))
+                    .clicked()
+                {
+                    match self.host.export_shared_session(&self.selected_session) {
+                        Ok(path) => {
+                            let relative = path
+                                .strip_prefix(&self.project_root)
+                                .unwrap_or(path.as_path());
+                            self.status = Some(format!(
+                                "Wrote sanitized project-shared history to {}.",
+                                relative.display()
+                            ));
+                        }
+                        Err(error) => self.status = Some(error.to_string()),
+                    }
+                }
+            });
+
+            let mut rename_to = None;
+            let mut cancel_rename = false;
+            if let Some(title_draft) = self.session_title_draft.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.label("Session name");
+                    ui.add(egui::TextEdit::singleline(title_draft).desired_width(260.0));
+                    let can_save = !title_draft.trim().is_empty();
+                    if ui
+                        .add_enabled(can_save, egui::Button::new("Save"))
+                        .clicked()
+                    {
+                        rename_to = Some(title_draft.clone());
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel_rename = true;
                     }
                 });
-            if ui.button("New session").clicked() {
-                match self.host.create_session("New AI Studio session") {
-                    Ok(id) => {
-                        self.selected_session = id;
-                        self.proposal_draft = AgentProposal::default();
-                        self.status = Some("Created a private local AI session.".to_owned());
+            }
+            if cancel_rename {
+                self.session_title_draft = None;
+            }
+            if let Some(title) = rename_to {
+                match self.host.rename_session(&self.selected_session, title) {
+                    Ok(()) => {
+                        self.session_title_draft = None;
+                        self.status = Some("Renamed AI session.".to_owned());
                     }
                     Err(error) => self.status = Some(error.to_string()),
                 }
             }
-            if ui.button("Share with project").clicked() {
-                match self.host.export_shared_session(&self.selected_session) {
-                    Ok(path) => {
-                        let relative = path
-                            .strip_prefix(&self.project_root)
-                            .unwrap_or(path.as_path());
-                        self.status = Some(format!(
-                            "Wrote sanitized project-shared history to {}.",
-                            relative.display()
-                        ));
+
+            let delete_is_pending = self
+                .session_delete_confirmation
+                .as_deref()
+                .is_some_and(|id| id == self.selected_session);
+            if delete_is_pending {
+                let (shared_with_project, has_active_run) = self
+                    .host
+                    .session(&self.selected_session)
+                    .map(|session| {
+                        (
+                            session.shared_with_project,
+                            session.runs.iter().any(|run| !run.state.is_terminal()),
+                        )
+                    })
+                    .unwrap_or((false, false));
+                let question_busy = (self.native_question.is_some()
+                    && self.native_question_session.as_deref()
+                        == Some(self.selected_session.as_str()))
+                    || (self.external_question.is_some()
+                        && self.external_question_session.as_deref()
+                            == Some(self.selected_session.as_str()))
+                    || self
+                        .pending_question_permission
+                        .as_ref()
+                        .is_some_and(|pending| pending.session_id == self.selected_session);
+                let delete_block_reason = if has_active_run {
+                    Some("Stop the session's active run before deleting it.")
+                } else if question_busy {
+                    Some("Stop the in-progress answer before deleting this session.")
+                } else {
+                    None
+                };
+                let mut confirm_delete = false;
+                let mut cancel_delete = false;
+                ui.group(|ui| {
+                    if shared_with_project {
+                        ui.label(
+                            "Delete this session from this machine? Its local conversation, code workspace, and artifacts will be removed. The project-shared history is kept.",
+                        );
+                    } else {
+                        ui.label(
+                            "Delete this session from this machine? Its local conversation, code workspace, and artifacts will be removed.",
+                        );
                     }
-                    Err(error) => self.status = Some(error.to_string()),
+                    if let Some(reason) = delete_block_reason {
+                        ui.small(reason);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                delete_block_reason.is_none(),
+                                egui::Button::new("Delete permanently"),
+                            )
+                            .clicked()
+                        {
+                            confirm_delete = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel_delete = true;
+                        }
+                    });
+                });
+                if cancel_delete {
+                    self.session_delete_confirmation = None;
+                }
+                if confirm_delete {
+                    let deleted_session = self.selected_session.clone();
+                    let deleted_run_ids = self
+                        .host
+                        .session(&deleted_session)
+                        .map(|session| {
+                            session
+                                .runs
+                                .iter()
+                                .map(|run| run.id.clone())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    match self.host.delete_session(&deleted_session) {
+                        Ok(()) => {
+                            let deleted_active_run =
+                                self.active_run_id.as_ref().is_some_and(|active_run_id| {
+                                    deleted_run_ids
+                                        .iter()
+                                        .any(|run_id| run_id == active_run_id)
+                                });
+                            if deleted_active_run {
+                                self.active_run_id = None;
+                                self.active_runtime_mode = None;
+                                self.active_external_provider = None;
+                                self.active_external_program = None;
+                                self.active_external_args = None;
+                                self.native_agent_runtime = None;
+                                self.native_mcp_task = None;
+                                self.pending_native_mcp_tool = None;
+                                self.process = None;
+                                self.process_purpose = None;
+                                self.code_workspace = None;
+                                self.pending_code_changes.clear();
+                                self.pending_permission = None;
+                                self.pending_runtime_action = None;
+                                self.managed_runtime_observation = None;
+                                self.managed_runtime_debug_observation = None;
+                                self.managed_playtest_started_at = None;
+                                self.last_captured_frame = None;
+                            }
+                            self.session_delete_confirmation = None;
+                            self.session_title_draft = None;
+                            self.message_draft.clear();
+                            self.deferred_intent = None;
+
+                            let (replacement, created_replacement) =
+                                match self.host.session_ids().into_iter().next_back() {
+                                    Some(id) => (Ok(id), false),
+                                    None => (
+                                        self.host.create_session("New AI Studio session"),
+                                        true,
+                                    ),
+                                };
+                            match replacement {
+                                Ok(id) => {
+                                    self.selected_session = id.clone();
+                                    self.proposal_draft = self
+                                        .host
+                                        .session(&id)
+                                        .map(|session| session.proposal.clone())
+                                        .unwrap_or_default();
+                                    self.session_title_draft = created_replacement
+                                        .then(|| "New AI Studio session".to_owned());
+                                    self.status = Some(if created_replacement {
+                                        "Deleted the local AI session and created a new empty session."
+                                            .to_owned()
+                                    } else {
+                                        "Deleted the local AI session and its local artifacts."
+                                            .to_owned()
+                                    });
+                                }
+                                Err(error) => {
+                                    self.status = Some(format!(
+                                        "Deleted the session, but could not create a replacement: {error}"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(error) => self.status = Some(error.to_string()),
+                    }
                 }
             }
         });

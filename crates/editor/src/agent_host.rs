@@ -26,6 +26,8 @@ static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub(crate) enum AgentHostError {
     SessionNotFound(String),
+    InvalidSessionTitle,
+    SessionHasActiveRun(String),
     RunNotFound(String),
     InvalidWorkClaim(String),
     WorkClaimConflict {
@@ -53,6 +55,13 @@ impl fmt::Display for AgentHostError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SessionNotFound(id) => write!(formatter, "agent session `{id}` was not found"),
+            Self::InvalidSessionTitle => {
+                write!(formatter, "agent session title must not be empty")
+            }
+            Self::SessionHasActiveRun(id) => write!(
+                formatter,
+                "agent session `{id}` cannot be deleted while one of its runs is active"
+            ),
             Self::RunNotFound(id) => write!(formatter, "agent run `{id}` was not found"),
             Self::InvalidWorkClaim(message) => {
                 write!(formatter, "invalid agent work claim: {message}")
@@ -1268,6 +1277,93 @@ impl AgentHost {
         self.sessions.insert(id.clone(), session);
         self.persist_session(&id)?;
         Ok(id)
+    }
+
+    pub(crate) fn rename_session(
+        &mut self,
+        id: &str,
+        title: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let title = title.into();
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(AgentHostError::InvalidSessionTitle);
+        }
+        let session = self.session_mut(id)?;
+        if session.title == title {
+            return Ok(());
+        }
+        session.title = title.to_owned();
+        self.persist_session(id)
+    }
+
+    /// Deletes one session's machine-local state after all of its runs are terminal.
+    ///
+    /// A project-shared export is deliberately left untouched because it is project
+    /// collaboration metadata rather than machine-local session storage.
+    pub(crate) fn delete_session(&mut self, id: &str) -> Result<(), AgentHostError> {
+        let run_ids = {
+            let session = self.session(id)?;
+            if session.runs.iter().any(|run| !run.state.is_terminal()) {
+                return Err(AgentHostError::SessionHasActiveRun(id.to_owned()));
+            }
+            session
+                .runs
+                .iter()
+                .map(|run| run.id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        if self
+            .active_validation
+            .as_ref()
+            .is_some_and(|process| run_ids.iter().any(|run_id| run_id == &process.run_id))
+        {
+            return Err(AgentHostError::SessionHasActiveRun(id.to_owned()));
+        }
+
+        let workspace_path = self.storage_root.join("workspaces").join(id);
+        if workspace_path.try_exists()? {
+            fs::remove_dir_all(&workspace_path)?;
+        }
+
+        let baseline_path = self
+            .storage_root
+            .join("workspace-baselines")
+            .join(format!("{id}.json"));
+        if baseline_path.try_exists()? {
+            fs::remove_file(&baseline_path)?;
+        }
+
+        for run_id in &run_ids {
+            let artifact_path = self.storage_root.join("artifacts").join(run_id);
+            if artifact_path.try_exists()? {
+                fs::remove_dir_all(&artifact_path)?;
+            }
+            let asset_staging_path = self
+                .storage_root
+                .join("asset-acquisition")
+                .join(run_id);
+            if asset_staging_path.try_exists()? {
+                fs::remove_dir_all(&asset_staging_path)?;
+            }
+        }
+
+        let session_path = self
+            .storage_root
+            .join("sessions")
+            .join(format!("{id}.json"));
+        if session_path.try_exists()? {
+            fs::remove_file(&session_path)?;
+        }
+
+        for run_id in run_ids {
+            self.active_writer_runs.remove(&run_id);
+            self.permissions.clear_run(&run_id);
+        }
+        self.permissions.clear_run(&format!("question:{id}"));
+        self.sessions.remove(id);
+        Ok(())
     }
 
     pub(crate) fn append_message(
@@ -4073,6 +4169,101 @@ mod tests {
             AgentProcessLaunchError::InvalidConfinementRequest(_)
         ));
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn session_rename_persists_without_changing_identity() {
+        let project = temp_path("session-rename-project");
+        let storage = temp_path("session-rename-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Original").expect("session");
+
+        host.rename_session(&session, "  Named session  ")
+            .expect("rename");
+        assert_eq!(
+            host.session(&session).expect("renamed session").title,
+            "Named session"
+        );
+        assert!(matches!(
+            host.rename_session(&session, "   "),
+            Err(AgentHostError::InvalidSessionTitle)
+        ));
+        assert_eq!(host.session_ids(), vec![session.clone()]);
+
+        drop(host);
+        let reopened = AgentHost::open(project.clone(), storage.clone()).expect("reopen");
+        assert_eq!(
+            reopened.session(&session).expect("persisted session").title,
+            "Named session"
+        );
+        drop(reopened);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn session_delete_rejects_active_run_and_removes_machine_local_state() {
+        let project = temp_path("session-delete-project");
+        let storage = temp_path("session-delete-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Delete me").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+
+        assert!(matches!(
+            host.delete_session(&session),
+            Err(AgentHostError::SessionHasActiveRun(id)) if id == session
+        ));
+        host.cancel_run(&run).expect("cancel run");
+        let shared_path = host
+            .export_shared_session(&session)
+            .expect("project-shared export");
+
+        let session_path = storage
+            .join("sessions")
+            .join(format!("{session}.json"));
+        let workspace_path = storage.join("workspaces").join(&session);
+        let baseline_path = storage
+            .join("workspace-baselines")
+            .join(format!("{session}.json"));
+        let artifact_path = storage.join("artifacts").join(&run);
+        let asset_staging_path = storage.join("asset-acquisition").join(&run);
+        fs::create_dir_all(&workspace_path).expect("workspace directory");
+        fs::create_dir_all(
+            baseline_path
+                .parent()
+                .expect("baseline path must have a parent"),
+        )
+        .expect("baseline directory");
+        fs::create_dir_all(&artifact_path).expect("artifact directory");
+        fs::create_dir_all(&asset_staging_path).expect("asset staging directory");
+        fs::write(workspace_path.join("scratch.txt"), "scratch").expect("workspace file");
+        fs::write(&baseline_path, "{}").expect("baseline file");
+        fs::write(artifact_path.join("frame.png"), "frame").expect("artifact file");
+        fs::write(asset_staging_path.join("asset.bin"), "asset")
+            .expect("asset staging file");
+        assert!(session_path.is_file());
+        assert!(shared_path.is_file());
+
+        host.delete_session(&session).expect("delete session");
+        assert!(host.session(&session).is_err());
+        assert!(!session_path.exists());
+        assert!(!workspace_path.exists());
+        assert!(!baseline_path.exists());
+        assert!(!artifact_path.exists());
+        assert!(!asset_staging_path.exists());
+        assert!(
+            shared_path.is_file(),
+            "local deletion must not erase explicitly project-shared history"
+        );
+
+        drop(host);
+        let reopened = AgentHost::open(project.clone(), storage.clone()).expect("reopen");
+        assert!(reopened.session(&session).is_err());
+        drop(reopened);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
     }
 
     #[test]
