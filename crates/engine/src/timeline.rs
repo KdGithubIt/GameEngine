@@ -6,18 +6,31 @@
 //! camera-selection override, and forwards sequence events to the ordinary
 //! host event path. The neutral core stays free of every domain touched here.
 
+mod audio_adapter;
+mod vfx;
+
 pub use engine_timeline::{
     ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,
-    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,
-    LoopRegion, TimelineCompileError, TimelineEvaluation, TimelinePlayState, TimelinePlayer,
-    TimelineSeek, TimelineTrackOutput, TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction,
-    compile_timeline,
+    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation,
+    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,
+    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, FiredEvent, LoopRegion,
+    ReplayCancellationToken, ReplayCheckpointCache, ReplayCheckpointConfigError,
+    ReplayReconstruction, ReplayRequest, ReplayRequestController, TimelineCompileError,
+    TimelineEvaluation, TimelinePlayState, TimelinePlayer, TimelineSeek, TimelineTrackOutput,
+    TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction, compile_timeline,
 };
 
+use crate::anim_graph::AnimGraphPlayer;
+use crate::animation::{Animator, AnimatorPlaybackSnapshot, AnimatorState};
+use crate::script_api::RuntimeEntityIdentity;
+use crate::time::FixedTime;
 use crate::transform::Transform;
-use engine_authoring::{EntityId, TimelineProperty, TimelineTick};
+use engine_authoring::{
+    AssetId, EntityId, MotionSlotId, TimelineProperty, TimelineTick, TimelineTrackId,
+};
 use engine_ecs::{Entity, World};
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::sync::Arc;
 
 /// Largest number of Timeline events retained for one fixed step.
@@ -40,6 +53,7 @@ pub struct TimelinePlayerComponent {
     pub autoplay: bool,
     /// Adapter tokens kept between evaluations.
     pub tokens: AdapterTokens,
+    animation_overrides: BTreeMap<TimelineTrackId, TimelineAnimationOverride>,
 }
 
 impl TimelinePlayerComponent {
@@ -50,8 +64,15 @@ impl TimelinePlayerComponent {
             player: TimelinePlayer::new(),
             autoplay: false,
             tokens: AdapterTokens::default(),
+            animation_overrides: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct TimelineAnimationOverride {
+    target: Entity,
+    snapshot: AnimatorPlaybackSnapshot,
 }
 
 /// Runtime binding from authoring entity identity to a live runtime entity.
@@ -64,6 +85,17 @@ pub struct TimelineBindings {
 }
 
 impl TimelineBindings {
+    fn from_world(world: &mut World) -> Self {
+        let mut bindings = Self::default();
+        let Ok(query) = world.query::<&RuntimeEntityIdentity>() else {
+            return bindings;
+        };
+        for (entity, identity) in query.iter() {
+            bindings.bind(&identity.authoring_id, entity);
+        }
+        bindings
+    }
+
     /// Records the runtime entity spawned for one authoring identity.
     pub fn bind(&mut self, authoring: &EntityId, entity: Entity) {
         self.entities
@@ -97,6 +129,22 @@ pub enum TimelineBindingDiagnostic {
         authoring: String,
         /// Component the track requires.
         component: &'static str,
+    },
+    /// The target Animation Controller is not using the Animation Set bound by the track.
+    AnimationSetMismatch {
+        /// Authoring identity that resolved.
+        authoring: String,
+        /// Animation Set required by the Timeline track.
+        expected: AssetId,
+        /// Animation Set currently resolved by the target controller, when known.
+        actual: Option<AssetId>,
+    },
+    /// The bound Animation Set does not expose the authored motion slot.
+    MissingMotionSlot {
+        /// Authoring identity that resolved.
+        authoring: String,
+        /// Stable motion slot requested by the Timeline clip.
+        motion_slot: MotionSlotId,
     },
 }
 
@@ -258,15 +306,55 @@ pub fn advance_timelines(
         return;
     };
     let players = query.iter().map(|(entity, _)| entity).collect::<Vec<_>>();
-    for entity in players {
-        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
-            continue;
+    for entity in players.iter().copied() {
+        let (timeline, evaluation, state, generation, previous_tick, pending_vfx_seek, mut tokens) = {
+            let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+                continue;
+            };
+            if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
+                component.player.play();
+            }
+            let pending_vfx_seek = vfx::pending_seek(component);
+            let timeline = Arc::clone(&component.timeline);
+            let evaluation = component.player.advance(&timeline, delta_seconds);
+            let state = component.player.state();
+            let generation = component.player.generation();
+            let previous_tick = component.player.previous_tick();
+            let tokens = std::mem::take(&mut component.tokens);
+            (
+                timeline,
+                evaluation,
+                state,
+                generation,
+                previous_tick,
+                pending_vfx_seek,
+                tokens,
+            )
         };
-        if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
-            component.player.play();
+
+        let audio_input = audio_adapter::AudioEvaluationInput::new(
+            entity,
+            &timeline,
+            &evaluation,
+            state,
+            generation,
+        );
+        audio_adapter::apply_audio_evaluation(audio_input, world, bindings, diagnostics);
+
+        if let Some(seek) = pending_vfx_seek {
+            vfx::apply_seek(&timeline, seek, world, bindings, &mut tokens, diagnostics);
+            vfx::mark_seek_applied(&mut tokens, seek);
         }
-        let timeline = Arc::clone(&component.timeline);
-        let evaluation = component.player.advance(&timeline, delta_seconds);
+        vfx::apply_evaluation(
+            &timeline,
+            &evaluation,
+            previous_tick,
+            world,
+            bindings,
+            &mut tokens,
+            diagnostics,
+        );
+
         apply_evaluation(
             entity,
             &evaluation,
@@ -276,7 +364,48 @@ pub fn advance_timelines(
             events,
             diagnostics,
         );
+        if let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) {
+            component.tokens = tokens;
+        }
     }
+    audio_adapter::cleanup_stale_sources(world, &players);
+}
+
+/// Shared fixed-step Timeline bridge used by Editor Play and packaged Player.
+///
+/// Timeline outputs can target arbitrary authoring identities and several
+/// runtime domains, so the final `engine` composition layer owns this
+/// exclusive bridge rather than forcing those dependencies into
+/// `engine-timeline`. Stable bindings are rebuilt from the runtime identities
+/// produced by scene conversion; runtime entity handles are never persisted.
+pub fn timeline_fixed_system(world: &mut World) -> Result<(), Infallible> {
+    let delta_seconds = world
+        .get_resource::<FixedTime>()
+        .map_or(0.0, |time| time.fixed_delta);
+    let bindings = TimelineBindings::from_world(world);
+    let mut camera_override = world
+        .remove_resource::<TimelineCameraOverride>()
+        .unwrap_or_default();
+    let mut events = world
+        .remove_resource::<TimelineEvents>()
+        .unwrap_or_default();
+    let mut diagnostics = world
+        .remove_resource::<TimelineDiagnostics>()
+        .unwrap_or_default();
+
+    advance_timelines(
+        delta_seconds,
+        world,
+        &bindings,
+        &mut camera_override,
+        &mut events,
+        &mut diagnostics,
+    );
+
+    world.insert_resource(camera_override);
+    world.insert_resource(events);
+    world.insert_resource(diagnostics);
+    Ok(())
 }
 
 /// Applies one already-computed evaluation to the world.
@@ -289,6 +418,20 @@ pub fn apply_evaluation(
     events: &mut TimelineEvents,
     diagnostics: &mut TimelineDiagnostics,
 ) {
+    let mut animation_overrides = world
+        .get_component_mut::<TimelinePlayerComponent>(source)
+        .map(|component| std::mem::take(&mut component.animation_overrides))
+        .unwrap_or_default();
+
+    // Restore in reverse track order so overlapping animation tracks unwind in
+    // the opposite order they were applied. A later track may have captured
+    // the earlier track's override as its suspended state.
+    for exited in evaluation.exited.iter().rev() {
+        if let Some(override_state) = animation_overrides.remove(&exited.track) {
+            restore_animation_override(world, override_state);
+        }
+    }
+
     for fired in &evaluation.events {
         events.push(TimelineEventRecord {
             event: fired.event.clone(),
@@ -332,14 +475,124 @@ pub fn apply_evaluation(
                     source,
                 });
             }
-            // Animation, Audio, and VFX adapters land with the runtime controls
-            // their ADRs define. Until then the evaluation still reports them,
-            // so nothing silently claims to have played a cue or an effect.
-            TimelineTrackOutput::Animation { .. }
-            | TimelineTrackOutput::Audio { .. }
+            TimelineTrackOutput::Animation {
+                entity,
+                animation_set,
+                motion_slot,
+                speed,
+                looping,
+            } => {
+                let Some(authoring) = entity else {
+                    continue;
+                };
+                let Some(target) = bindings.resolve(authoring) else {
+                    diagnostics.push(TimelineBindingDiagnostic::UnresolvedEntity {
+                        authoring: authoring.as_stable_id().as_str().to_owned(),
+                    });
+                    continue;
+                };
+                let Some(animation_set) = animation_set else {
+                    continue;
+                };
+                let Some(graph_player) = world.get_component::<AnimGraphPlayer>(target) else {
+                    diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
+                        authoring: authoring.as_stable_id().as_str().to_owned(),
+                        component: "AnimGraphPlayer",
+                    });
+                    continue;
+                };
+                let actual_set = graph_player
+                    .debug_source()
+                    .map(|source| source.animation_set_asset.clone());
+                if actual_set.as_ref() != Some(animation_set) {
+                    diagnostics.push(TimelineBindingDiagnostic::AnimationSetMismatch {
+                        authoring: authoring.as_stable_id().as_str().to_owned(),
+                        expected: animation_set.clone(),
+                        actual: actual_set,
+                    });
+                    continue;
+                }
+                let Some(clip) = graph_player.clip_handle(motion_slot.as_str()) else {
+                    diagnostics.push(TimelineBindingDiagnostic::MissingMotionSlot {
+                        authoring: authoring.as_stable_id().as_str().to_owned(),
+                        motion_slot: motion_slot.clone(),
+                    });
+                    continue;
+                };
+                let raw_time = (active.offset.max(0) as f32
+                    / CompiledTimeline::ticks_per_second() as f32)
+                    * *speed;
+                let sample_time = world
+                    .get_resource::<crate::asset::Assets<crate::animation::AnimationClip>>()
+                    .and_then(|clips| clips.get(&clip))
+                    .map_or(raw_time, |clip_asset| {
+                        let duration = clip_asset.duration.max(0.0);
+                        if *looping && duration > f32::EPSILON {
+                            raw_time.rem_euclid(duration)
+                        } else {
+                            raw_time.clamp(0.0, duration)
+                        }
+                    });
+                let new_override = !animation_overrides.contains_key(&active.track);
+                {
+                    let Some(animator) = world.get_component_mut::<Animator>(target) else {
+                        diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
+                            authoring: authoring.as_stable_id().as_str().to_owned(),
+                            component: "Animator",
+                        });
+                        continue;
+                    };
+
+                    if new_override {
+                        animation_overrides.insert(
+                            active.track.clone(),
+                            TimelineAnimationOverride {
+                                target,
+                                snapshot: animator.playback_snapshot(),
+                            },
+                        );
+                    }
+                    if animator.clip != clip || animator.is_fading() {
+                        animator.crossfade_to(clip, 0.0);
+                    }
+                    animator.state = AnimatorState::Playing;
+                    animator.time = sample_time;
+                    animator.looping = *looping;
+                    // Timeline owns this clock while the clip is active. The
+                    // animation system still samples the pose later in this same
+                    // fixed step, but a zero multiplier prevents a second advance.
+                    animator.playback_speed = 0.0;
+                }
+                if new_override
+                    && let Some(graph_player) = world.get_component_mut::<AnimGraphPlayer>(target)
+                {
+                    graph_player.begin_external_override();
+                }
+            }
+            // Audio and VFX are stateful domain adapters applied before this
+            // world-output pass. Their typed outputs remain visible to the
+            // neutral evaluator, while composition ownership stays here.
+            TimelineTrackOutput::Audio { .. }
             | TimelineTrackOutput::Vfx { .. }
             | TimelineTrackOutput::Event => {}
         }
+    }
+
+    if let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(source) {
+        component.animation_overrides = animation_overrides;
+    } else {
+        for override_state in animation_overrides.into_values().rev() {
+            restore_animation_override(world, override_state);
+        }
+    }
+}
+
+fn restore_animation_override(world: &mut World, override_state: TimelineAnimationOverride) {
+    if let Some(animator) = world.get_component_mut::<Animator>(override_state.target) {
+        animator.restore_playback_snapshot(override_state.snapshot);
+    }
+    if let Some(graph_player) = world.get_component_mut::<AnimGraphPlayer>(override_state.target) {
+        graph_player.end_external_override();
     }
 }
 
@@ -409,27 +662,47 @@ pub fn apply_timeline_control(
     entity: Entity,
     control: TimelineControl,
 ) -> Result<(), TimelineControlError> {
-    let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
-        return Err(TimelineControlError::MissingPlayer);
-    };
-    match control {
-        TimelineControl::Play => component.player.play(),
-        TimelineControl::Pause => component.player.pause(),
-        TimelineControl::Stop => {
-            component.player.stop();
-            component.tokens.clear();
-        }
-        TimelineControl::Seek { tick } => {
-            let timeline = Arc::clone(&component.timeline);
-            component
-                .player
-                .seek(&timeline, tick, TimelineSeek::Playback);
-        }
-        TimelineControl::SetRate { rate } => {
-            if !component.player.set_rate(rate) {
-                return Err(TimelineControlError::InvalidRate);
+    let mut animation_overrides = Vec::new();
+    {
+        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+            return Err(TimelineControlError::MissingPlayer);
+        };
+        match control {
+            TimelineControl::Play => component.player.play(),
+            TimelineControl::Pause => component.player.pause(),
+            TimelineControl::Stop => {
+                component.player.stop();
+                component.tokens.clear();
+                vfx::mark_seek(component);
+                animation_overrides = std::mem::take(&mut component.animation_overrides)
+                    .into_values()
+                    .rev()
+                    .collect();
+            }
+            TimelineControl::Seek { tick } => {
+                // A discontinuous Timeline seek abandons the previous adapter
+                // interval. Restore the graph-owned Animator first; the next
+                // evaluation captures a fresh snapshot if the seek lands
+                // inside another Animation clip.
+                animation_overrides = std::mem::take(&mut component.animation_overrides)
+                    .into_values()
+                    .rev()
+                    .collect();
+                let timeline = Arc::clone(&component.timeline);
+                component
+                    .player
+                    .seek(&timeline, tick, TimelineSeek::Playback);
+                vfx::mark_seek(component);
+            }
+            TimelineControl::SetRate { rate } => {
+                if !component.player.set_rate(rate) {
+                    return Err(TimelineControlError::InvalidRate);
+                }
             }
         }
+    }
+    for override_state in animation_overrides {
+        restore_animation_override(world, override_state);
     }
     Ok(())
 }
@@ -437,6 +710,8 @@ pub fn apply_timeline_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::animation::AnimationClip;
+    use crate::asset::Assets;
     use engine_authoring::{
         TimelineBinding, TimelineClip, TimelineClipId, TimelineClipPayload, TimelineDocument,
         TimelineInterpolation, TimelineKey, TimelineMarker, TimelineMarkerId, TimelineTrack,
@@ -504,6 +779,35 @@ mod tests {
         document
     }
 
+    fn animation_document(
+        entity: &EntityId,
+        animation_set: &AssetId,
+        motion_slot: &MotionSlotId,
+    ) -> TimelineDocument {
+        let mut document = TimelineDocument::new(TimelineTick(48_000));
+        document.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            kind: TimelineTrackKind::Animation,
+            name: "Motion".to_owned(),
+            enabled: true,
+            binding: TimelineBinding {
+                entity: Some(entity.clone()),
+                asset: Some(animation_set.clone()),
+            },
+            clips: vec![TimelineClip {
+                id: TimelineClipId::generate(),
+                start: TimelineTick::ZERO,
+                end: TimelineTick(48_000),
+                payload: TimelineClipPayload::Animation {
+                    motion_slot: motion_slot.as_str().to_owned(),
+                    speed: 2.0,
+                    looping: false,
+                },
+            }],
+        });
+        document
+    }
+
     #[test]
     fn a_property_track_writes_only_the_field_it_declares() {
         let mut world = World::new();
@@ -540,6 +844,160 @@ mod tests {
         assert_eq!(transform.translation.y, 0.0);
         assert_eq!(transform.scale, glam::Vec3::ONE);
         assert!(diagnostics.iter().next().is_none());
+    }
+
+    #[test]
+    fn animation_track_samples_motion_slot_time_and_restores_graph_playback() {
+        let mut world = World::new();
+        let target = world.spawn().expect("target");
+        let authoring = EntityId::generate();
+        let animation_set = AssetId::generate();
+        let motion_slot = MotionSlotId::generate();
+        let mut bindings = TimelineBindings::default();
+        bindings.bind(&authoring, target);
+
+        let mut clips = Assets::<AnimationClip>::default();
+        let idle = clips.add(AnimationClip {
+            duration: 4.0,
+            channels: Vec::new(),
+            morph_channels: Vec::new(),
+            events: Vec::new(),
+            skeleton: None,
+            skeleton_identity: None,
+            root_bone: None,
+            contacts: Vec::new(),
+        });
+        let walk = clips.add(AnimationClip {
+            duration: 2.0,
+            channels: Vec::new(),
+            morph_channels: Vec::new(),
+            events: Vec::new(),
+            skeleton: None,
+            skeleton_identity: None,
+            root_bone: None,
+            contacts: Vec::new(),
+        });
+        let mut animator = Animator::playing(idle);
+        animator.time = 0.75;
+        animator.set_looping(true);
+        assert!(animator.set_playback_speed(1.25));
+        world.add_component(target, animator).expect("animator");
+
+        let graph = engine_authoring::CompiledAnimGraph {
+            states: Vec::new(),
+            transitions: Vec::new(),
+            entry_state: 0,
+            compile_warnings: Vec::new(),
+        };
+        let mut motion_slots = BTreeMap::new();
+        motion_slots.insert(motion_slot.as_str().to_owned(), walk);
+        let mut graph_player = AnimGraphPlayer::new(graph, motion_slots);
+        graph_player.set_debug_source(crate::anim_graph::AnimationGraphDebugSource {
+            graph_asset: AssetId::generate(),
+            graph_id: engine_authoring::GraphId::generate(),
+            animation_set_asset: animation_set.clone(),
+            transition_edges: Vec::new(),
+            motion_bindings: BTreeMap::new(),
+        });
+        world
+            .add_component(target, graph_player)
+            .expect("graph player");
+
+        let timeline = Arc::new(
+            compile_timeline(&animation_document(
+                &authoring,
+                &animation_set,
+                &motion_slot,
+            ))
+            .expect("compile"),
+        );
+        let player = world.spawn().expect("player");
+        let mut component = TimelinePlayerComponent::new(timeline);
+        component.autoplay = true;
+        world
+            .add_component(player, component)
+            .expect("player component");
+
+        let mut camera_override = TimelineCameraOverride::default();
+        let mut events = TimelineEvents::default();
+        let mut diagnostics = TimelineDiagnostics::default();
+        advance_timelines(
+            0.25,
+            &mut world,
+            &bindings,
+            &mut camera_override,
+            &mut events,
+            &mut diagnostics,
+        );
+
+        let animator = world.get_component::<Animator>(target).expect("animator");
+        assert_eq!(animator.clip, walk);
+        assert!((animator.time - 0.5).abs() < 1.0e-6);
+        assert_eq!(animator.playback_speed, 0.0);
+        assert!(!animator.looping);
+        assert!(diagnostics.iter().next().is_none());
+        assert!(
+            world
+                .get_component::<AnimGraphPlayer>(target)
+                .expect("graph player")
+                .external_override_active()
+        );
+
+        apply_timeline_control(
+            &mut world,
+            player,
+            TimelineControl::Seek {
+                tick: TimelineTick(36_000),
+            },
+        )
+        .expect("seek");
+        advance_timelines(
+            0.0,
+            &mut world,
+            &bindings,
+            &mut camera_override,
+            &mut events,
+            &mut diagnostics,
+        );
+
+        let animator = world
+            .get_component::<Animator>(target)
+            .expect("seeked animator");
+        assert_eq!(animator.clip, walk);
+        assert!((animator.time - 1.5).abs() < 1.0e-6);
+        assert!(
+            world
+                .get_component::<AnimGraphPlayer>(target)
+                .expect("graph player")
+                .external_override_active()
+        );
+
+        advance_timelines(
+            0.25,
+            &mut world,
+            &bindings,
+            &mut camera_override,
+            &mut events,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            timeline_view(&world, player).expect("timeline view").tick,
+            TimelineTick(48_000)
+        );
+        let animator = world
+            .get_component::<Animator>(target)
+            .expect("restored animator");
+        assert_eq!(animator.clip, idle);
+        assert!((animator.time - 0.75).abs() < 1.0e-6);
+        assert!((animator.playback_speed - 1.25).abs() < 1.0e-6);
+        assert!(animator.looping);
+        assert_eq!(animator.state, AnimatorState::Playing);
+        assert!(
+            !world
+                .get_component::<AnimGraphPlayer>(target)
+                .expect("graph player")
+                .external_override_active()
+        );
     }
 
     #[test]
@@ -771,6 +1229,25 @@ mod tests {
             timeline_view(&world, second).expect("second view").tick,
             TimelineTick::ZERO
         );
+    }
+
+    #[test]
+    fn runtime_bindings_resolve_scene_identity_without_persisting_runtime_handles() {
+        let mut world = World::new();
+        let target = world.spawn().expect("target");
+        let authoring = EntityId::generate();
+        world
+            .add_component(
+                target,
+                RuntimeEntityIdentity {
+                    authoring_id: authoring.clone(),
+                    name: "Target".to_owned(),
+                },
+            )
+            .expect("identity");
+
+        let bindings = TimelineBindings::from_world(&mut world);
+        assert_eq!(bindings.resolve(&authoring), Some(target));
     }
 
     #[test]

@@ -138,10 +138,9 @@ const BUILTIN_TRACKS: [TrackDescriptor; 6] = [
         kind: TimelineTrackKind::Audio,
         type_id: "engine.timeline.audio",
         label: "Audio",
-        // A cue cannot be sampled at an arbitrary tick without a cursor
-        // operation the audio domain does not expose yet, and the Editor states
-        // that limitation rather than presenting silence as a result.
-        seek_policy: TrackSeekPolicy::NonSeekable,
+        // ADR 0122 exposes cursor-aware managed voice startup, so the
+        // composition adapter can restore a cue at its exact clip-local offset.
+        seek_policy: TrackSeekPolicy::Seekable,
         requires_entity_binding: false,
     },
     TrackDescriptor {
@@ -187,14 +186,12 @@ mod tests {
                 .seek_policy
                 .is_exact_on_scrub()
         );
-        assert_eq!(
-            registry
-                .for_kind(TimelineTrackKind::Audio)
-                .expect("audio")
-                .seek_policy
-                .label(),
-            "not seekable"
-        );
+        let audio = registry
+            .for_kind(TimelineTrackKind::Audio)
+            .expect("audio")
+            .seek_policy;
+        assert!(audio.is_exact_on_scrub());
+        assert_eq!(audio.label(), "seekable");
     }
 
     #[test]

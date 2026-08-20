@@ -814,6 +814,12 @@ pub struct SceneView {
     /// when [`PreviewKey`] changes; an idle frame reuses it wholesale, doing
     /// no scene conversion, mesh copy, or GPU re-upload.
     preview: Option<PreviewWorld>,
+    /// Latest Sequencer evaluation to apply to the persistent preview world.
+    ///
+    /// This is transient Editor state. Closing Sequencer sets it back to
+    /// `None`, which restores any runtime transforms the previous evaluation
+    /// overrode without rebuilding the preview world.
+    timeline_preview_evaluation: Option<engine::timeline::TimelineEvaluation>,
     /// Immutable Editor working-copy snapshot consumed by the next preview conversion.
     authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay,
 }
@@ -832,6 +838,8 @@ struct PreviewWorld {
     /// frame so a cancelled gesture restores the committed pose without a
     /// rebuild.
     transform_overrides: Vec<EntityId>,
+    /// Runtime state owned by the Sequencer preview inside this persistent world.
+    timeline: TimelinePreviewRuntime,
     /// Whether the animation and pose-composition preview pipeline has already
     /// been installed in this world's fixed schedule. Installing it more than
     /// once would advance animation and secondary physics multiple times.
@@ -850,6 +858,29 @@ struct PreviewWorld {
     /// The flag prevents the crossfade from being restarted on every rendered
     /// frame after the configured trigger time.
     animation_transition_started: bool,
+}
+
+/// Production Timeline adapter state retained with the Scene View world.
+#[derive(Debug, Default)]
+struct TimelinePreviewRuntime {
+    source: Option<engine::ecs::Entity>,
+    bindings: engine::timeline::TimelineBindings,
+    transform_overrides: Vec<EntityId>,
+    camera_override: engine::timeline::TimelineCameraOverride,
+    events: engine::timeline::TimelineEvents,
+    diagnostics: engine::timeline::TimelineDiagnostics,
+}
+
+impl TimelinePreviewRuntime {
+    fn from_bridge(bridge: Option<&engine::scene_bridge::AuthoringToRuntimeMap>) -> Self {
+        let mut runtime = Self::default();
+        if let Some(bridge) = bridge {
+            for (authoring, entity) in bridge.entities() {
+                runtime.bindings.bind(authoring, entity);
+            }
+        }
+        runtime
+    }
 }
 
 /// The inputs that determine whether the persistent preview world is still
@@ -956,6 +987,7 @@ impl SceneView {
             waiting_for_residency: false,
             manifest_hash_cache: None,
             preview: None,
+            timeline_preview_evaluation: None,
             authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),
         }
     }
@@ -1244,9 +1276,18 @@ impl SceneView {
         self.waiting_for_residency = false;
     }
 
+    /// Publishes the latest Sequencer evaluation to the persistent Scene View world.
+    pub(crate) fn set_timeline_preview_evaluation(
+        &mut self,
+        evaluation: Option<engine::timeline::TimelineEvaluation>,
+    ) {
+        self.timeline_preview_evaluation = evaluation;
+    }
+
     /// Releases preview-world state owned by the old project.
     pub fn clear_project_caches(&mut self) {
         self.preview = None;
+        self.timeline_preview_evaluation = None;
         self.manifest_hash_cache = None;
         self.waiting_for_residency = false;
     }
@@ -1713,11 +1754,13 @@ impl SceneView {
                     if self.renderer_failure_device != self.renderer_device {
                         self.preview_notice = spawn_notice;
                     }
+                    let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());
                     self.preview = Some(PreviewWorld {
                         app,
                         key: key.clone(),
                         bridge,
                         transform_overrides: Vec::new(),
+                        timeline,
                         animation_system_installed: false,
                         animation_graph_system_installed: false,
                         animation_sampled_elapsed: -1.0,
@@ -1745,11 +1788,13 @@ impl SceneView {
                             size,
                             self.show_sky,
                         );
+                        let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());
                         self.preview = Some(PreviewWorld {
                             app,
                             key: key.clone(),
                             bridge,
                             transform_overrides: Vec::new(),
+                            timeline,
                             animation_system_installed: false,
                             animation_graph_system_installed: false,
                             animation_sampled_elapsed: -1.0,
@@ -1779,11 +1824,13 @@ impl SceneView {
                             size,
                             self.show_sky,
                         );
+                        let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());
                         self.preview = Some(PreviewWorld {
                             app,
                             key: key.clone(),
                             bridge,
                             transform_overrides: Vec::new(),
+                            timeline,
                             animation_system_installed: false,
                             animation_graph_system_installed: false,
                             animation_sampled_elapsed: -1.0,
@@ -1800,6 +1847,7 @@ impl SceneView {
             && let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer)
         {
             let animation_preview_request = self.animation_preview_request.clone();
+            let timeline_preview_evaluation = self.timeline_preview_evaluation.clone();
             let preview = self
                 .preview
                 .as_mut()
@@ -1841,6 +1889,14 @@ impl SceneView {
             } else {
                 preview.transform_overrides.clear();
             }
+
+            apply_timeline_preview(
+                app,
+                preview.bridge.as_ref(),
+                render_scene,
+                &mut preview.timeline,
+                timeline_preview_evaluation.as_ref(),
+            );
 
             if self.particle_preview_enabled {
                 simulate_particle_preview(app.world_mut(), self.particle_preview_elapsed);
@@ -3124,6 +3180,182 @@ fn manifest_content_hash(manifest: &engine::AssetManifest) -> u64 {
         entry.import_settings.texture_remaps.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// Applies one Sequencer sample through the production Timeline composition layer.
+///
+/// The persistent Scene View world is deliberately not a second Timeline
+/// simulator. Before each sample, property targets from the previous frame are
+/// restored from authoring state. The normal engine adapter then applies the
+/// new evaluation, and the regular Scene View `App::update` propagates those
+/// transforms before rendering. The camera override is retained as production
+/// runtime state but never replaces the editor-owned Scene View camera.
+fn apply_timeline_preview(
+    app: &mut engine::App,
+    bridge: Option<&engine::scene_bridge::AuthoringToRuntimeMap>,
+    render_scene: &AuthoringScene,
+    runtime: &mut TimelinePreviewRuntime,
+    evaluation: Option<&engine::timeline::TimelineEvaluation>,
+) {
+    let current = evaluation
+        .map(timeline_transform_override_ids)
+        .unwrap_or_default();
+    apply_transform_overrides(
+        app,
+        bridge,
+        render_scene,
+        &mut runtime.transform_overrides,
+        current,
+    );
+
+    runtime.camera_override.clear();
+    runtime.events.clear();
+    runtime.diagnostics.clear();
+    let Some(evaluation) = evaluation else {
+        return;
+    };
+    if bridge.is_none() {
+        return;
+    }
+
+    let source = match runtime
+        .source
+        .filter(|source| app.world().contains_entity(*source))
+    {
+        Some(source) => source,
+        None => {
+            let Ok(source) = app.world_mut().spawn() else {
+                return;
+            };
+            runtime.source = Some(source);
+            source
+        }
+    };
+    engine::timeline::apply_evaluation(
+        source,
+        evaluation,
+        app.world_mut(),
+        &runtime.bindings,
+        &mut runtime.camera_override,
+        &mut runtime.events,
+        &mut runtime.diagnostics,
+    );
+}
+
+fn timeline_transform_override_ids(
+    evaluation: &engine::timeline::TimelineEvaluation,
+) -> Vec<EntityId> {
+    let mut ids = Vec::new();
+    for active in &evaluation.active {
+        if let engine::timeline::TimelineTrackOutput::Property {
+            entity: Some(entity),
+            ..
+        } = &active.output
+            && !ids.contains(entity)
+        {
+            ids.push(entity.clone());
+        }
+    }
+    ids
+}
+
+#[cfg(test)]
+mod timeline_preview_tests {
+    use super::*;
+    use engine_authoring::{
+        AuthoringCommand, ComponentTypeId, TimelineBinding, TimelineClip, TimelineClipId,
+        TimelineClipPayload, TimelineDocument, TimelineInterpolation, TimelineKey,
+        TimelineProperty, TimelineTick, TimelineTrack, TimelineTrackId, TimelineTrackKind,
+        Transaction, Value,
+    };
+
+    #[test]
+    fn production_timeline_preview_applies_and_restores_runtime_transform() {
+        let mut scene = AuthoringScene::new();
+        let target = EntityId::generate();
+        let mut transaction = Transaction::begin(&scene);
+        transaction.apply(AuthoringCommand::CreateEntity {
+            id: target.clone(),
+            name: "timeline_target".to_owned(),
+            parent: None,
+        });
+        transaction.apply(AuthoringCommand::AddComponent {
+            entity: target.clone(),
+            component_type: ComponentTypeId::new("engine.transform"),
+            value: Value::Object(std::collections::BTreeMap::from([
+                ("x".to_owned(), Value::F64(1.0)),
+                ("y".to_owned(), Value::F64(0.0)),
+                ("z".to_owned(), Value::F64(0.0)),
+            ])),
+        });
+        transaction
+            .commit(&mut scene)
+            .expect("timeline preview scene must commit");
+
+        let mut app = engine::App::new();
+        let bridge = engine::scene_bridge::spawn_from_authoring_scene(app.world_mut(), &scene)
+            .expect("timeline preview scene must bridge");
+        let mut runtime = TimelinePreviewRuntime::from_bridge(Some(&bridge));
+        let runtime_target = bridge.get(&target).expect("target must resolve");
+
+        let mut document = TimelineDocument::new(TimelineTick(48_000));
+        document.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            kind: TimelineTrackKind::Property,
+            name: "Position".to_owned(),
+            enabled: true,
+            binding: TimelineBinding {
+                entity: Some(target),
+                asset: None,
+            },
+            clips: vec![TimelineClip {
+                id: TimelineClipId::generate(),
+                start: TimelineTick::ZERO,
+                end: TimelineTick(48_000),
+                payload: TimelineClipPayload::Property {
+                    property: TimelineProperty::TranslationX,
+                    keys: vec![TimelineKey {
+                        tick: TimelineTick::ZERO,
+                        value: 7.0,
+                        interpolation: TimelineInterpolation::Linear,
+                    }],
+                },
+            }],
+        });
+        let compiled = engine_timeline::compile_timeline(&document).expect("timeline compiles");
+        let mut player = engine_timeline::TimelinePlayer::new();
+        let evaluation = player.seek(
+            &compiled,
+            TimelineTick(24_000),
+            engine_timeline::TimelineSeek::Scrub,
+        );
+
+        apply_timeline_preview(
+            &mut app,
+            Some(&bridge),
+            &scene,
+            &mut runtime,
+            Some(&evaluation),
+        );
+        assert_eq!(
+            app.world()
+                .get_component::<Transform>(runtime_target)
+                .expect("runtime target has Transform")
+                .translation
+                .x,
+            7.0
+        );
+
+        apply_timeline_preview(&mut app, Some(&bridge), &scene, &mut runtime, None);
+        assert_eq!(
+            app.world()
+                .get_component::<Transform>(runtime_target)
+                .expect("runtime target has Transform")
+                .translation
+                .x,
+            1.0
+        );
+    }
 }
 
 /// Returns the authoring entities whose transform is being previewed this

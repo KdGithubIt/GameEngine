@@ -265,30 +265,38 @@ stable IDs so those features do not require replacing basic track/clip identity.
 
 ## Implementation Status
 
-This record stays `Proposed` until every slice below is implemented. What has
-landed so far, on 2026-08-20:
+The first-release implementation is complete on 2026-08-20. This ADR remains
+`Proposed` while the integration PR is in Draft review; there are no known
+first-release implementation gaps in that integration branch.
 
-- **Landed:** `*.timeline.json` `TimelineDocument` with stable timeline, track,
-  clip, and marker identity; integer tick math and rational display frame rates;
-  document validation; the neutral `engine-timeline` crate carrying the compiled
-  schedule, per-player transient state, exact marker and clip crossing, seek
-  policies, and the track registry; the Event, Camera Cut, and Property tracks
-  applied at the `engine` composition layer, including the transient camera
-  override and the bounded sequence-event queue; the `engine.timeline_player`
-  component and its scene conversion; project-Rust deferred Timeline commands
-  and copied views; a Sequencer workspace with transport, track and clip
-  editing, markers, frame snapping, seek-policy presentation, and undo; and
-  Editor, CLI, and MCP parity through the shared typed-document capability
-  registry.
-- **Not yet landed:** the Animation track adapter that drives Animation Set
-  motion slots; the Audio and VFX adapters, which ADR 0126 §14 already defers
-  until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
-  the persistent Scene View world; the curve editor and `ReplayRequired`
-  checkpoint reconstruction; and the packaged-player proving project.
+- **Foundation:** `*.timeline.json`, stable IDs, integer tick math, rational
+  display frame rates, validation, the neutral `engine-timeline` compiled
+  schedule/player/evaluator, Event/Camera Cut/Property tracks, scene conversion,
+  project-Rust commands/views, and Editor/CLI/MCP typed-document parity.
+- **Animation Track:** resolves Animation Set assets and stable `MotionSlotId`
+  values, samples exact Timeline-owned time on play/seek, and restores suspended
+  Animator/Animation Graph state on clip exit, stop, and discontinuous seek.
+- **Audio Track:** uses ADR 0122 managed voices for start, stop, exact seek
+  cursor restoration, fades, and spatial gain composition without moving audio
+  ownership into the Timeline core.
+- **VFX Track:** uses ADR 0125 runtime controls for edge-triggered play, stop,
+  restart, and deterministic seek/reconstruction at the engine composition
+  boundary.
+- **ReplayRequired:** provides bounded checkpoints, fixed-step forward-only
+  reconstruction, scrub debounce, cooperative generation cancellation, and VFX
+  checkpoint/restore parity with forward playback.
+- **Sequencer authoring:** includes persistent Scene View production preview,
+  play/pause/stop/step/loop transport, Property curve editing, Undo/Redo, exact
+  save/reopen tick and stable-ID preservation, markers, snapping, and seek-policy
+  presentation.
+- **Editor/Player parity:** Timeline is registered through the shared fixed-step
+  runtime path. Regression coverage constructs Editor Play and packaged Player
+  hosts from the same registration path and requires identical schedule
+  fingerprints, including `engine.timeline` ordering before animation systems.
 
-Evaluation already reports Animation, Audio, and VFX outputs, so nothing in the
-implemented path silently claims to have played a motion slot, a cue, or an
-effect.
+Full recording/keyframe capture, nested Timelines, nonlinear audio mixing, and
+cinematic render/export remain future extensions rather than first-release
+requirements.
 
 ## Verification
 
