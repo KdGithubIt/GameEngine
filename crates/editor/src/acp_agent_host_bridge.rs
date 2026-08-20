@@ -9,8 +9,8 @@ use crate::acp_agent_runtime::{
     AcpRuntimeIdentity, AcpSessionBinding, AcpToolCallStatus,
 };
 use crate::agent_host::{
-    AgentCapability, AgentEventKind, AgentHost, AgentHostError, AgentRunState, ApprovalScope,
-    CompletionStatus, PermissionCheck,
+    AgentCapability, AgentEventKind, AgentHost, AgentHostError, AgentRunState, AgentWorkClaim,
+    ApprovalScope, CompletionStatus, PermissionCheck,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -657,10 +657,16 @@ impl AcpAgentHostBridge {
         let Some(run_id) = attached.run_id.as_deref() else {
             return Ok(false);
         };
-        if !attached.turn_finished {
+        if !attached.turn_finished || !attached.pending_permissions.is_empty() {
             return Ok(false);
         }
         let run = host.run(run_id)?;
+        if run
+            .work_claims
+            .contains(&AgentWorkClaim::shared_resource("canonical_authoring"))
+        {
+            return Ok(false);
+        }
         Ok(matches!(
             run.state,
             AgentRunState::Executing | AgentRunState::AwaitingUser | AgentRunState::Repairing
@@ -1014,6 +1020,63 @@ mod tests {
             host.complete_run(&run),
             Err(AgentHostError::CompletionPending)
         ));
+        let _ = fs::remove_dir_all(cleanup);
+    }
+
+    #[test]
+    fn validation_ready_waits_for_canonical_authoring_claim() {
+        let (mut host, game_session, run, cleanup) = host_run("validation-ready", &[]);
+        let state = Arc::new(Mutex::new(StubState::default()));
+        let mut registry = registry(Arc::clone(&state), "acp-validation");
+        let mut bridge = bridge();
+        let acp_id = bridge
+            .open_run_session(&mut host, &mut registry, "test.acp", &game_session, &run)
+            .expect("open run");
+        assert!(!bridge
+            .record_provider_completion_gate(
+                &mut host,
+                &acp_id,
+                AcpProviderCompletionGate::AcceptanceCriteria,
+                CompletionStatus::Passed,
+                "accepted",
+            )
+            .expect("acceptance gate"));
+        assert!(!bridge
+            .record_provider_completion_gate(
+                &mut host,
+                &acp_id,
+                AcpProviderCompletionGate::AuthoringValidation,
+                CompletionStatus::Passed,
+                "authoring valid",
+            )
+            .expect("authoring gate"));
+        state
+            .lock()
+            .expect("state")
+            .events
+            .push_back(AcpNormalizedEvent::TurnFinished {
+                stop_reason: "end_turn".to_owned(),
+            });
+        assert!(matches!(
+            bridge.poll_session(&mut host, &acp_id).expect("poll"),
+            AcpBridgePoll::ValidationReady { .. }
+        ));
+        host.acquire_work_claims(
+            &run,
+            [AgentWorkClaim::shared_resource("canonical_authoring")],
+        )
+        .expect("canonical authoring claim");
+        assert!(!bridge
+            .validation_ready(&host, &acp_id)
+            .expect("blocked readiness"));
+        host.release_work_claims(
+            &run,
+            [AgentWorkClaim::shared_resource("canonical_authoring")],
+        )
+        .expect("release canonical authoring");
+        assert!(bridge
+            .validation_ready(&host, &acp_id)
+            .expect("ready after release"));
         let _ = fs::remove_dir_all(cleanup);
     }
 
