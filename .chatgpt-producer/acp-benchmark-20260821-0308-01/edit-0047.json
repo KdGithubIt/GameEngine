@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0159-benchmark-model-exchange-observability-and-failure-diagnosis.md",
+  "old": "Readers of persisted `AgentRun` sessions must tolerate an unknown evidence\nvariant rather than failing the whole session, so that a session written by a\nnewer build stays loadable by an older one.\n",
+  "new": "Readers of persisted `AgentRun` sessions must tolerate an unknown evidence\nvariant rather than failing the whole session, so that a session written by a\nnewer build stays loadable by an older one.\n\nThe later ACP benchmark migration advances `BenchmarkRecord` to schema version 4\nto add optional lane/runtime identity. That version change does not alter the\nschema-v3 native exchange semantics above: schema v1-v3 records remain readable,\nand a missing v4 runtime identity preserves the existing legacy harness meaning.\n"
+}
