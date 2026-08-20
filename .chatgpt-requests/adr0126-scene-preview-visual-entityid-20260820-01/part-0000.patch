@@ -1,0 +1,16 @@
+diff --git a/crates/editor/src/sequencer.rs b/crates/editor/src/sequencer.rs
+index a6b6d517ac536c65334f73d1e23fcad7c260e902..1c34e5555a174197b65d122445cc0bbb3fd04d68 100644
+--- a/crates/editor/src/sequencer.rs
++++ b/crates/editor/src/sequencer.rs
+@@ -213,7 +213,10 @@ impl SequencerState {
+     /// document, and this fixture is compiled only for visual validation so no
+     /// normal Editor launch can reach it.
+     #[cfg(feature = "visual-validation")]
+-    pub(crate) fn prepare_visual_validation(&mut self, subject: Option<EntityId>) {
++    pub(crate) fn prepare_visual_validation(
++        &mut self,
++        subject: Option<engine_authoring::EntityId>,
++    ) {
+         use engine_authoring::{
+             EntityId, TimelineAudioAction, TimelineBinding, TimelineInterpolation, TimelineKey,
+         };
