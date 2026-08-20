@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "    #[cfg(feature = \"visual-validation\")]\n    pub(crate) fn prepare_visual_validation(&mut self) {\n        use engine_authoring::{\n            EntityId, TimelineAudioAction, TimelineBinding, TimelineInterpolation, TimelineKey,\n        };\n\n        let camera = EntityId::generate();\n        let subject = EntityId::generate();",
+  "new": "    #[cfg(feature = \"visual-validation\")]\n    pub(crate) fn prepare_visual_validation(\n        &mut self,\n        subject: Option<engine_authoring::EntityId>,\n    ) {\n        use engine_authoring::{\n            EntityId, TimelineAudioAction, TimelineBinding, TimelineInterpolation, TimelineKey,\n        };\n\n        let camera = EntityId::generate();\n        let subject = subject.unwrap_or_else(EntityId::generate);"
+}
