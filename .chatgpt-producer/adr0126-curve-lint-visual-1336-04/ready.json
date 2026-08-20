@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-curve-lint-visual-1336-04",
+  "target_branch": "chatgpt/gameengine-adr0126-curve-editor",
+  "expected_head_sha": "b30c1338f7e286cc8d382a208ec31dc6842a6df4",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json"
+  ],
+  "commit_message": "Fix Curve Editor lint and constrained layout",
+  "pr_title": "GameEngine: complete Sequencer curve editing",
+  "pr_body": "## Summary\n\n- add a Sequencer Curve Editor for all Transform-backed Property Track numeric channels\n- edit key time, value, interpolation, add/delete keys, and preserve clip-local ticks\n- integrate Redo with the existing validated Timeline edit/compile/save path\n- cover undo/redo and save/reopen preservation of stable IDs and exact key ticks\n- keep key editing visible before a responsive curve graph in constrained Sequencer height\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->\n"
+}
