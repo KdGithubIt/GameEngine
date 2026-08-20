@@ -1,0 +1,66 @@
+diff --git a/crates/editor/src/sequencer.rs b/crates/editor/src/sequencer.rs
+index 22fc732e90bea93ef12f4dce25b32d0c445c6b03..4798feb07cec2bad207de20684296e04c9945b4c 100644
+--- a/crates/editor/src/sequencer.rs
++++ b/crates/editor/src/sequencer.rs
+@@ -383,10 +383,16 @@ impl SequencerState {
+                 if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
+                     action = HeaderAction::Save;
+                 }
+-                if ui.add_enabled(can_undo, egui::Button::new("Undo")).clicked() {
++                if ui
++                    .add_enabled(can_undo, egui::Button::new("Undo"))
++                    .clicked()
++                {
+                     action = HeaderAction::Undo;
+                 }
+-                if ui.add_enabled(can_redo, egui::Button::new("Redo")).clicked() {
++                if ui
++                    .add_enabled(can_redo, egui::Button::new("Redo"))
++                    .clicked()
++                {
+                     action = HeaderAction::Redo;
+                 }
+                 if ui.button("Close").clicked() {
+diff --git a/crates/editor/src/sequencer/curve_editor/mod.rs b/crates/editor/src/sequencer/curve_editor/mod.rs
+index e06e38a54867c7e4e9bb97571e49b049d3eb526f..142683ef77a965b3f848eda9083fe9eccd5ad25b 100644
+--- a/crates/editor/src/sequencer/curve_editor/mod.rs
++++ b/crates/editor/src/sequencer/curve_editor/mod.rs
+@@ -227,14 +227,16 @@ fn key_at_playhead(
+     frame_rate: DisplayFrameRate,
+     snap_to_frames: bool,
+ ) -> Result<TimelineKey, String> {
+-    let mut tick = TimelineTick(
+-        (preview_tick.get() - clip.start.get()).clamp(0, clip.duration().get()),
+-    );
++    let mut tick =
++        TimelineTick((preview_tick.get() - clip.start.get()).clamp(0, clip.duration().get()));
+     if snap_to_frames {
+         tick = snap_local_tick(frame_rate, clip.start, clip.duration(), tick);
+     }
+     if keys.iter().any(|key| key.tick == tick) {
+-        return Err(format!("A curve key already exists at {:.3}s", tick.as_seconds()));
++        return Err(format!(
++            "A curve key already exists at {:.3}s",
++            tick.as_seconds()
++        ));
+     }
+     Ok(TimelineKey {
+         tick,
+diff --git a/crates/editor/src/sequencer/curve_editor/rows.rs b/crates/editor/src/sequencer/curve_editor/rows.rs
+index e1103b3599f7dc8c905e8c5feeac8af1e2352944..c16f02737431a19d9f8855bc13d2dc532f5f4b9c 100644
+--- a/crates/editor/src/sequencer/curve_editor/rows.rs
++++ b/crates/editor/src/sequencer/curve_editor/rows.rs
+@@ -57,12 +57,7 @@ pub(super) fn show(
+                 if time.changed() {
+                     let mut tick = TimelineTick::from_seconds(seconds);
+                     if snap_to_frames {
+-                        tick = snap_local_tick(
+-                            frame_rate,
+-                            clip.start,
+-                            clip.duration(),
+-                            tick,
+-                        );
++                        tick = snap_local_tick(frame_rate, clip.start, clip.duration(), tick);
+                     }
+                     let clamped = clamp_key_tick(&draft, index, tick, clip.duration());
+                     draft[index].tick = clamped;
