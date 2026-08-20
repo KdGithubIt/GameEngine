@@ -292,7 +292,11 @@ struct Boundary {
 }
 
 fn boundary_phase(tick: TimelineTick, previous_tick: TimelineTick, wrapped: bool) -> u8 {
-    if wrapped && tick < previous_tick { 1 } else { 0 }
+    if wrapped && tick < previous_tick {
+        1
+    } else {
+        0
+    }
 }
 
 fn find_transition(
