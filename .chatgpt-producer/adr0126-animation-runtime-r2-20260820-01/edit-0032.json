@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/evaluate.rs","old":"                if crosses(clip.end, *from, *to) {","new":"                if crosses_exit(clip.end, *from, *to) {"}
