@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/goose_local_acp.rs","old":"use serde_json::Value;\n","new":"use serde_json::{Value, json};\n"}
