@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/evaluate.rs","old":"fn track_output(\n    entity: Option<&EntityId>,\n    clip: &CompiledClip,\n    offset: i64,\n) -> TimelineTrackOutput {","new":"fn track_output(\n    entity: Option<&EntityId>,\n    asset: Option<&AssetId>,\n    clip: &CompiledClip,\n    offset: i64,\n) -> TimelineTrackOutput {"}
