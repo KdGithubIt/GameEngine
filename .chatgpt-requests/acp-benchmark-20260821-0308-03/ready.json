@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-benchmark-20260821-0308-03",
+  "target_branch": "chatgpt/gameengine-acp-benchmark-migration",
+  "expected_head_sha": "694de8724308c3acdd171fd9e2293876821f86ee",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "c5c7c16f47addcd3e035ecf4e6f88b646214b455001116a58cbae9498c12cea6",
+  "patch_bytes": 60202,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Migrate benchmark schema for ACP runtime lanes",
+  "pr_title": "GameEngine: migrate benchmark schema for ACP runtime lanes",
+  "pr_body": "## Summary\n\n- add benchmark schema v4 with Raw Model, Agent Harness, and Coding Agent runtime identities\n- preserve schema v1-v3 records as legacy-harness evidence without reinterpretation\n- add ACP-aware runtime, harness, adapter, tool-contract, permission, and telemetry boundaries\n- extend campaign schema v3 with frozen agent-inclusive runtime identity and model-only comparison guards\n- keep ACP-unobservable model turns and token counts explicitly unavailable\n\n## Validation\n\nThis is a parallel authoring subtask. Heavy cargo, Windows, and Visual Validation are intentionally deferred to final integration. Canonical request build/preflight remains required."
+}
