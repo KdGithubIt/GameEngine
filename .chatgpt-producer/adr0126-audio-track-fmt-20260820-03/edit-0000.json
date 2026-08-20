@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline/audio_adapter.rs","old":"    stop_undesired_voices(\n        source,\n        &desired_keys,\n        &mut runtime,\n        &mut audio,\n    );","new":"    stop_undesired_voices(source, &desired_keys, &mut runtime, &mut audio);"}
