@@ -951,6 +951,13 @@ fn build_provider_launch_plan(
                 OsString::from("exec"),
                 OsString::from("--json"),
                 OsString::from("--skip-git-repo-check"),
+                // Codex otherwise loads the user's global config, which may
+                // contain unrelated MCP servers such as a Unity integration.
+                // The GameEngine run must expose only the server injected
+                // below; authentication remains available because Codex's
+                // --ignore-user-config option does not disable CODEX_HOME
+                // credential lookup.
+                OsString::from("--ignore-user-config"),
                 OsString::from("--enable"),
                 OsString::from(CODEX_MCP_FEATURE),
                 OsString::from("--sandbox"),
@@ -1378,6 +1385,10 @@ pub(crate) fn build_question_launch_plan(
                     OsString::from("exec"),
                     OsString::from("--json"),
                     OsString::from("--skip-git-repo-check"),
+                    // Ask must use the same MCP isolation as Build. Without
+                    // this flag, a read-only question could still discover
+                    // and select an unrelated user-configured MCP server.
+                    OsString::from("--ignore-user-config"),
                     OsString::from("--enable"),
                     OsString::from(CODEX_MCP_FEATURE),
                     OsString::from("--sandbox"),
@@ -2671,6 +2682,7 @@ mod tests {
         assert!(args.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
         assert!(args.contains(GAMEENGINE_AGENT_RUN_ID_HEADER));
         assert!(args.contains("windows.sandbox=\"elevated\""));
+        assert!(args.contains("--ignore-user-config"));
     }
 
     #[test]
@@ -2836,6 +2848,11 @@ mod tests {
         );
         assert!(codex_args.iter().any(|argument| argument == "read-only"));
         assert!(codex_args.iter().any(|argument| argument.contains(".url=")));
+        assert!(
+            codex_args
+                .iter()
+                .any(|argument| argument == "--ignore-user-config")
+        );
     }
 
     #[test]

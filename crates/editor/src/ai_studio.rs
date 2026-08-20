@@ -3854,50 +3854,11 @@ impl AiStudioPanel {
             );
         }
 
-        let lower = message.to_ascii_lowercase();
-        let code_intent = [
-            "code",
-            "rust",
-            "script",
-            "compile",
-            "test",
-            "bug",
-            "fix",
-            "コード",
-            "実装",
-            "修正",
-        ]
-        .iter()
-        .any(|term| lower.contains(term));
-        let authoring_intent = [
-            "scene",
-            "entity",
-            "prefab",
-            "graph",
-            "material",
-            "animation",
-            "ui",
-            "シーン",
-            "エンティティ",
-            "プレハブ",
-            "アセット",
-        ]
-        .iter()
-        .any(|term| lower.contains(term));
-        let runtime_intent = [
-            "play",
-            "runtime",
-            "visual",
-            "game",
-            "プレイ",
-            "実行",
-            "見た目",
-        ]
-        .iter()
-        .any(|term| lower.contains(term));
-        let asset_intent = ["image", "audio", "texture", "model", "画像", "音声", "素材"]
-            .iter()
-            .any(|term| lower.contains(term));
+        let intent = classify_intent(message);
+        let code_intent = intent.code;
+        let authoring_intent = intent.authoring;
+        let runtime_intent = intent.runtime;
+        let asset_intent = intent.asset;
 
         if code_intent {
             if self.proposal_draft.planned_code_changes.is_empty() {
@@ -8349,6 +8310,132 @@ fn snapshot_lines(ui: &mut egui::Ui, label: &str, values: &[String]) {
     }
 }
 
+/// Represents the work categories inferred from a submitted natural-language
+/// instruction.
+///
+/// The proposal builder uses these flags to populate the immutable work scope
+/// that the Host later uses for capability checks. Keeping the classification
+/// separate from the panel state makes the language coverage testable without
+/// starting an Editor host or creating project data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct IntentCategories {
+    /// Whether the request requires source or script changes.
+    code: bool,
+    /// Whether the request requires live authoring changes through the Editor.
+    authoring: bool,
+    /// Whether the request requires managed runtime execution or playtesting.
+    runtime: bool,
+    /// Whether the request refers to an imported or generated asset.
+    asset: bool,
+}
+
+/// Classifies the submitted instruction into the proposal work categories.
+///
+/// Game requests commonly describe behavior with input names and Japanese
+/// words rather than using the English words "code" or "scene". Those terms
+/// still imply source, authoring, and runtime work, so they must produce a
+/// non-empty immutable plan before the provider turn begins. The matcher is
+/// intentionally deterministic and substring-based to preserve the existing
+/// proposal derivation behavior while covering the supported game-authoring
+/// vocabulary.
+fn classify_intent(message: &str) -> IntentCategories {
+    let lower = message.to_ascii_lowercase();
+    let contains_any = |terms: &[&str]| {
+        terms.iter().any(|term| {
+            // "space" and "move" are input vocabulary, not arbitrary
+            // substrings: matching "workspace" or "remove" would otherwise
+            // turn unrelated requests into write-capable gameplay plans.
+            if matches!(*term, "space" | "move") {
+                lower
+                    .split(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+                    .any(|word| word == *term)
+            } else {
+                lower.contains(term)
+            }
+        })
+    };
+
+    let gameplay_intent = contains_any(&[
+        "wasd",
+        "space",
+        "fps",
+        "movement",
+        "move",
+        "jump",
+        "camera",
+        "first-person",
+        "input",
+        "controller",
+        "移動",
+        "ジャンプ",
+        "操作",
+        "入力",
+        "カメラ",
+        "視点",
+    ]);
+
+    IntentCategories {
+        code: gameplay_intent
+            || contains_any(&[
+                "code",
+                "rust",
+                "script",
+                "compile",
+                "test",
+                "bug",
+                "fix",
+                "コード",
+                "実装",
+                "修正",
+            ]),
+        authoring: gameplay_intent
+            || contains_any(&[
+                "scene",
+                "entity",
+                "prefab",
+                "graph",
+                "material",
+                "animation",
+                "ui",
+                "model",
+                "character",
+                "player",
+                "シーン",
+                "エンティティ",
+                "プレハブ",
+                "アセット",
+                "モデル",
+                "キャラクター",
+                "プレイヤー",
+                "初音ミク",
+            ]),
+        runtime: gameplay_intent
+            || contains_any(&[
+                "play",
+                "playtest",
+                "runtime",
+                "visual",
+                "game",
+                "ゲーム",
+                "プレイ",
+                "実行",
+                "見た目",
+            ]),
+        asset: contains_any(&[
+            "image",
+            "audio",
+            "texture",
+            "model",
+            "miku",
+            "画像",
+            "音声",
+            "素材",
+            "モデル",
+            "初音ミク",
+        ]),
+    }
+}
+
 fn completion_row(ui: &mut egui::Ui, label: &str, status: CompletionStatus) {
     ui.horizontal(|ui| {
         ui.label(label);
@@ -8386,6 +8473,36 @@ mod tests {
             split_direct_args("--flag value ; echo nope"),
             ["--flag", "value", ";", "echo", "nope"]
         );
+    }
+
+    #[test]
+    fn japanese_fps_game_request_creates_all_required_intent_categories() {
+        let intent = classify_intent(
+            "初音ミクのモデルを使って\nwasdで移動\nspaceでジャンプする\nfps視点の動きを作ってください",
+        );
+
+        assert_eq!(
+            intent,
+            IntentCategories {
+                code: true,
+                authoring: true,
+                runtime: true,
+                asset: true,
+            }
+        );
+    }
+
+    #[test]
+    fn plain_question_does_not_gain_write_scope_from_gameplay_keywords() {
+        let intent = classify_intent("ゲームの作り方を教えてください");
+
+        assert!(!intent.code);
+        assert!(!intent.authoring);
+        assert!(intent.runtime);
+        assert!(!intent.asset);
+
+        let unrelated = classify_intent("workspaceの設定を確認してください");
+        assert_eq!(unrelated, IntentCategories::default());
     }
 
     #[test]
