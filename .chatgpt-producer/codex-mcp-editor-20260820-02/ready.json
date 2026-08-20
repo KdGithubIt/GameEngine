@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "codex-mcp-editor-20260820-02",
+  "target_branch": "chatgpt/gameengine-codex-mcp-protocol",
+  "expected_head_sha": "4f3663a83a9a6a4fce5e47830afb533ceadf8de1",
+  "baseline_main_sha": "4f3663a83a9a6a4fce5e47830afb533ceadf8de1",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json"
+  ],
+  "commit_message": "Fix Codex MCP protocol negotiation",
+  "pr_title": "GameEngine: fix Codex MCP protocol negotiation",
+  "pr_body": "## Summary\n\n- negotiate the Codex-compatible MCP `2025-06-18` protocol on the Editor-attached project MCP endpoint instead of forcing `2025-11-25` for every client\n- retain `2025-11-25` as the preferred GameEngine protocol while accepting the negotiated compatible version for subsequent sessionless Streamable HTTP requests\n- add regression coverage for Codex-style initialize/tools-list traffic and rejection of unsupported protocol headers\n- keep the change scoped to the Editor-attached endpoint actually injected into external Codex; headless/shared MCP host behavior is unchanged\n\n## Validation\n\nRun through permanent Windows Validation.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
