@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"available_width.max(0.0).min(960.0)","new":"available_width.clamp(0.0, 960.0)"}
