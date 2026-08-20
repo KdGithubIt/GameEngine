@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/mcp_transport.rs","old":"pub(crate) const MCP_PROTOCOL_VERSION: &str = \"2025-11-25\";\nconst MCP_PATH: &str = \"/mcp\";","new":"pub(crate) const MCP_PROTOCOL_VERSION: &str = \"2025-11-25\";\nconst MCP_COMPATIBLE_PROTOCOL_VERSION: &str = \"2025-06-18\";\nconst MCP_PATH: &str = \"/mcp\";}
