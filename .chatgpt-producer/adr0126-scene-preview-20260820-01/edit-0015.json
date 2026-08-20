@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "    animation_transition_started: bool,\n}\n\n/// The inputs that determine whether the persistent preview world is still",
+  "new": "    animation_transition_started: bool,\n}\n\n/// Production Timeline adapter state retained with the Scene View world.\n#[derive(Debug, Default)]\nstruct TimelinePreviewRuntime {\n    source: Option<engine::ecs::Entity>,\n    bindings: engine::timeline::TimelineBindings,\n    transform_overrides: Vec<EntityId>,\n    camera_override: engine::timeline::TimelineCameraOverride,\n    events: engine::timeline::TimelineEvents,\n    diagnostics: engine::timeline::TimelineDiagnostics,\n}\n\nimpl TimelinePreviewRuntime {\n    fn from_bridge(bridge: Option<&engine::scene_bridge::AuthoringToRuntimeMap>) -> Self {\n        let mut runtime = Self::default();\n        if let Some(bridge) = bridge {\n            for (authoring, entity) in bridge.entities() {\n                runtime.bindings.bind(authoring, entity);\n            }\n        }\n        runtime\n    }\n}\n\n/// The inputs that determine whether the persistent preview world is still"
+}
