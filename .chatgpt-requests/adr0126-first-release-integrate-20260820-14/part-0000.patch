@@ -1,0 +1,518 @@
+diff --git a/crates/editor/src/sequencer.rs b/crates/editor/src/sequencer.rs
+index 1c34e5555a174197b65d122445cc0bbb3fd04d68..9f08707e0df4282c8a3c17b778cf90b591052686 100644
+--- a/crates/editor/src/sequencer.rs
++++ b/crates/editor/src/sequencer.rs
+@@ -18,6 +18,8 @@ use engine_timeline::{
+ };
+ use std::path::{Path, PathBuf};
+ 
++mod curve_editor;
++
+ /// Ticks one Step control moves the playhead when no frame rate applies.
+ const STEP_FALLBACK_TICKS: i64 = 480;
+ 
+@@ -27,6 +29,7 @@ enum HeaderAction {
+     None,
+     Save,
+     Undo,
++    Redo,
+     Close,
+ }
+ 
+@@ -71,6 +74,7 @@ struct LoadedTimeline {
+     path: PathBuf,
+     document: TimelineDocument,
+     undo: Vec<TimelineDocument>,
++    redo: Vec<TimelineDocument>,
+     dirty: bool,
+     compiled: CompiledTimeline,
+     player: TimelinePlayer,
+@@ -102,6 +106,7 @@ impl LoadedTimeline {
+             path,
+             document,
+             undo: Vec::new(),
++            redo: Vec::new(),
+             dirty: false,
+             compiled,
+             player: TimelinePlayer::new(),
+@@ -136,6 +141,7 @@ impl LoadedTimeline {
+         if self.undo.len() > 64 {
+             self.undo.remove(0);
+         }
++        self.redo.clear();
+         self.compiled = compiled;
+         self.pending_preview = None;
+         if self.player.loop_region().is_some() {
+@@ -152,7 +158,11 @@ impl LoadedTimeline {
+         };
+         match compile_timeline(&previous) {
+             Ok(compiled) => {
+-                self.document = previous;
++                let current = std::mem::replace(&mut self.document, previous);
++                self.redo.push(current);
++                if self.redo.len() > 64 {
++                    self.redo.remove(0);
++                }
+                 self.compiled = compiled;
+                 self.pending_preview = None;
+                 if self.player.loop_region().is_some() {
+@@ -161,7 +171,36 @@ impl LoadedTimeline {
+                 self.dirty = true;
+                 true
+             }
+-            Err(_) => false,
++            Err(_) => {
++                self.undo.push(previous);
++                false
++            }
++        }
++    }
++
++    fn redo(&mut self) -> bool {
++        let Some(next) = self.redo.pop() else {
++            return false;
++        };
++        match compile_timeline(&next) {
++            Ok(compiled) => {
++                let current = std::mem::replace(&mut self.document, next);
++                self.undo.push(current);
++                if self.undo.len() > 64 {
++                    self.undo.remove(0);
++                }
++                self.compiled = compiled;
++                self.pending_preview = None;
++                if self.player.loop_region().is_some() {
++                    self.set_loop_enabled(true);
++                }
++                self.dirty = true;
++                true
++            }
++            Err(_) => {
++                self.redo.push(next);
++                false
++            }
+         }
+     }
+ 
+@@ -331,6 +370,7 @@ impl SequencerState {
+             path: PathBuf::from("assets/cutscenes/intro.timeline.json"),
+             document,
+             undo: Vec::new(),
++            redo: Vec::new(),
+             dirty: false,
+             compiled,
+             player: TimelinePlayer::new(),
+@@ -395,6 +435,8 @@ impl SequencerState {
+         if let Some(loaded) = self.open.as_ref() {
+             let title = loaded.relative.display().to_string();
+             let dirty = loaded.dirty;
++            let can_undo = !loaded.undo.is_empty();
++            let can_redo = !loaded.redo.is_empty();
+             ui.horizontal_wrapped(|ui| {
+                 ui.strong(title);
+                 if dirty {
+@@ -403,9 +445,18 @@ impl SequencerState {
+                 if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
+                     action = HeaderAction::Save;
+                 }
+-                if ui.button("Undo").clicked() {
++                if ui
++                    .add_enabled(can_undo, egui::Button::new("Undo"))
++                    .clicked()
++                {
+                     action = HeaderAction::Undo;
+                 }
++                if ui
++                    .add_enabled(can_redo, egui::Button::new("Redo"))
++                    .clicked()
++                {
++                    action = HeaderAction::Redo;
++                }
+                 if ui.button("Close").clicked() {
+                     action = HeaderAction::Close;
+                 }
+@@ -428,6 +479,13 @@ impl SequencerState {
+                     self.status = Some("Nothing to undo".to_owned());
+                 }
+             }
++            HeaderAction::Redo => {
++                if let Some(loaded) = self.open.as_mut()
++                    && !loaded.redo()
++                {
++                    self.status = Some("Nothing to redo".to_owned());
++                }
++            }
+             HeaderAction::Close => {
+                 self.open = None;
+                 return;
+@@ -737,6 +795,16 @@ impl SequencerState {
+                 });
+             }
+         });
++
++        curve_editor::show(
++            ui,
++            loaded,
++            track_index,
++            clip_index,
++            permissions,
++            self.snap_to_frames,
++            &mut self.status,
++        );
+     }
+ 
+     fn show_markers(&mut self, ui: &mut egui::Ui, permissions: &AuthoringPermissions) {
+@@ -859,7 +927,9 @@ fn default_payload(kind: TimelineTrackKind) -> TimelineClipPayload {
+             camera: engine_authoring::EntityId::generate(),
+         },
+         TimelineTrackKind::Animation => TimelineClipPayload::Animation {
+-            motion_slot: "motion".to_owned(),
++            motion_slot: engine_authoring::MotionSlotId::generate()
++                .as_str()
++                .to_owned(),
+             speed: 1.0,
+             looping: false,
+         },
+@@ -899,6 +969,7 @@ mod tests {
+             path: PathBuf::from("cutscene.timeline.json"),
+             document,
+             undo: Vec::new(),
++            redo: Vec::new(),
+             dirty: false,
+             compiled,
+             player: TimelinePlayer::new(),
+@@ -956,7 +1027,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn undo_restores_the_previous_document_and_recompiles_it() {
++    fn undo_and_redo_restore_the_document_and_recompile_it() {
+         let mut loaded = loaded_timeline();
+         loaded
+             .edit(&writable(), |document| {
+@@ -971,10 +1042,103 @@ mod tests {
+             })
+             .expect("valid edit");
+         assert_eq!(loaded.compiled.tracks.len(), 1);
++
+         assert!(loaded.undo());
+         assert!(loaded.document.tracks.is_empty());
+         assert!(loaded.compiled.tracks.is_empty());
+         assert!(!loaded.undo());
++
++        assert!(loaded.redo());
++        assert_eq!(loaded.document.tracks.len(), 1);
++        assert_eq!(loaded.compiled.tracks.len(), 1);
++        assert!(!loaded.redo());
++    }
++
++    #[test]
++    fn a_new_edit_after_undo_clears_redo_history() {
++        let mut loaded = loaded_timeline();
++        loaded
++            .edit(&writable(), |document| {
++                document.duration = TimelineTick(24_000);
++            })
++            .expect("valid edit");
++        assert!(loaded.undo());
++        assert_eq!(loaded.redo.len(), 1);
++
++        loaded
++            .edit(&writable(), |document| {
++                document.duration = TimelineTick(36_000);
++            })
++            .expect("replacement edit");
++        assert!(loaded.redo.is_empty());
++        assert!(!loaded.redo());
++    }
++
++    #[test]
++    fn curve_edit_save_and_reopen_preserve_ticks_and_stable_ids() {
++        let mut loaded = loaded_timeline();
++        let track_id = TimelineTrackId::generate();
++        let clip_id = TimelineClipId::generate();
++        let entity = engine_authoring::EntityId::generate();
++        loaded
++            .edit(&writable(), |document| {
++                document.tracks.push(TimelineTrack {
++                    id: track_id.clone(),
++                    kind: TimelineTrackKind::Property,
++                    name: "Transform X".to_owned(),
++                    enabled: true,
++                    binding: engine_authoring::TimelineBinding {
++                        entity: Some(entity),
++                        asset: None,
++                    },
++                    clips: vec![TimelineClip {
++                        id: clip_id.clone(),
++                        start: TimelineTick(1_000),
++                        end: TimelineTick(20_000),
++                        payload: TimelineClipPayload::Property {
++                            property: TimelineProperty::TranslationX,
++                            keys: vec![
++                                engine_authoring::TimelineKey {
++                                    tick: TimelineTick(123),
++                                    value: 1.25,
++                                    interpolation: engine_authoring::TimelineInterpolation::Smooth,
++                                },
++                                engine_authoring::TimelineKey {
++                                    tick: TimelineTick(9_876),
++                                    value: -3.5,
++                                    interpolation: engine_authoring::TimelineInterpolation::Linear,
++                                },
++                            ],
++                        },
++                    }],
++                });
++            })
++            .expect("valid curve edit");
++
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .expect("system clock after epoch")
++            .as_nanos();
++        let path = std::env::temp_dir().join(format!(
++            "gameengine-sequencer-{}-{unique}.timeline.json",
++            std::process::id()
++        ));
++        loaded.path = path.clone();
++        let expected = loaded.document.clone();
++        loaded.save().expect("save Timeline");
++
++        let saved = std::fs::read_to_string(&path).expect("read saved Timeline");
++        let reopened = TimelineDocument::from_json(&saved).expect("reopen Timeline");
++        assert_eq!(reopened, expected);
++        let track = reopened.track(&track_id).expect("stable track id");
++        assert_eq!(track.clips[0].id, clip_id);
++        let TimelineClipPayload::Property { keys, .. } = &track.clips[0].payload else {
++            panic!("saved clip must remain a Property payload");
++        };
++        assert_eq!(keys[0].tick, TimelineTick(123));
++        assert_eq!(keys[1].tick, TimelineTick(9_876));
++
++        std::fs::remove_file(path).expect("remove temporary Timeline");
+     }
+ 
+     #[test]
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index 7e257912595a13858becf74e5b55cfe0dbd99bf0..4836c45476644479e1fcd98224b92e326fa3224e 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -6,12 +6,18 @@
+ //! camera-selection override, and forwards sequence events to the ordinary
+ //! host event path. The neutral core stays free of every domain touched here.
+ 
++mod audio_adapter;
++mod vfx;
++
+ pub use engine_timeline::{
+     ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,
+-    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,
+-    LoopRegion, TimelineCompileError, TimelineEvaluation, TimelinePlayState, TimelinePlayer,
+-    TimelineSeek, TimelineTrackOutput, TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction,
+-    compile_timeline,
++    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation,
++    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,
++    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, FiredEvent, LoopRegion,
++    ReplayCancellationToken, ReplayCheckpointCache, ReplayCheckpointConfigError,
++    ReplayReconstruction, ReplayRequest, ReplayRequestController, TimelineCompileError,
++    TimelineEvaluation, TimelinePlayState, TimelinePlayer, TimelineSeek, TimelineTrackOutput,
++    TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction, compile_timeline,
+ };
+ 
+ use crate::anim_graph::AnimGraphPlayer;
+@@ -300,15 +306,55 @@ pub fn advance_timelines(
+         return;
+     };
+     let players = query.iter().map(|(entity, _)| entity).collect::<Vec<_>>();
+-    for entity in players {
+-        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+-            continue;
++    for entity in players.iter().copied() {
++        let (timeline, evaluation, state, generation, previous_tick, pending_vfx_seek, mut tokens) = {
++            let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
++                continue;
++            };
++            if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
++                component.player.play();
++            }
++            let pending_vfx_seek = vfx::pending_seek(component);
++            let timeline = Arc::clone(&component.timeline);
++            let evaluation = component.player.advance(&timeline, delta_seconds);
++            let state = component.player.state();
++            let generation = component.player.generation();
++            let previous_tick = component.player.previous_tick();
++            let tokens = std::mem::take(&mut component.tokens);
++            (
++                timeline,
++                evaluation,
++                state,
++                generation,
++                previous_tick,
++                pending_vfx_seek,
++                tokens,
++            )
+         };
+-        if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
+-            component.player.play();
++
++        let audio_input = audio_adapter::AudioEvaluationInput::new(
++            entity,
++            &timeline,
++            &evaluation,
++            state,
++            generation,
++        );
++        audio_adapter::apply_audio_evaluation(audio_input, world, bindings, diagnostics);
++
++        if let Some(seek) = pending_vfx_seek {
++            vfx::apply_seek(&timeline, seek, world, bindings, &mut tokens, diagnostics);
++            vfx::mark_seek_applied(&mut tokens, seek);
+         }
+-        let timeline = Arc::clone(&component.timeline);
+-        let evaluation = component.player.advance(&timeline, delta_seconds);
++        vfx::apply_evaluation(
++            &timeline,
++            &evaluation,
++            previous_tick,
++            world,
++            bindings,
++            &mut tokens,
++            diagnostics,
++        );
++
+         apply_evaluation(
+             entity,
+             &evaluation,
+@@ -318,7 +364,11 @@ pub fn advance_timelines(
+             events,
+             diagnostics,
+         );
++        if let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) {
++            component.tokens = tokens;
++        }
+     }
++    audio_adapter::cleanup_stale_sources(world, &players);
+ }
+ 
+ /// Shared fixed-step Timeline bridge used by Editor Play and packaged Player.
+@@ -519,8 +569,9 @@ pub fn apply_evaluation(
+                     graph_player.begin_external_override();
+                 }
+             }
+-            // Audio and VFX remain deferred until ADR 0122/0125 expose the
+-            // stable runtime controls ADR 0126 requires.
++            // Audio and VFX are stateful domain adapters applied before this
++            // world-output pass. Their typed outputs remain visible to the
++            // neutral evaluator, while composition ownership stays here.
+             TimelineTrackOutput::Audio { .. }
+             | TimelineTrackOutput::Vfx { .. }
+             | TimelineTrackOutput::Event => {}
+@@ -622,6 +673,7 @@ pub fn apply_timeline_control(
+             TimelineControl::Stop => {
+                 component.player.stop();
+                 component.tokens.clear();
++                vfx::mark_seek(component);
+                 animation_overrides = std::mem::take(&mut component.animation_overrides)
+                     .into_values()
+                     .rev()
+@@ -640,6 +692,7 @@ pub fn apply_timeline_control(
+                 component
+                     .player
+                     .seek(&timeline, tick, TimelineSeek::Playback);
++                vfx::mark_seek(component);
+             }
+             TimelineControl::SetRate { rate } => {
+                 if !component.player.set_rate(rate) {
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+index 9fc13b77a6e0dae89f3873c244cd96e1d5296916..8ae95cf766e0cda4fc364a30c369afd59867b903 100644
+--- a/crates/timeline/src/lib.rs
++++ b/crates/timeline/src/lib.rs
+@@ -23,12 +23,19 @@ use std::fmt;
+ mod evaluate;
+ mod player;
+ mod registry;
++mod replay;
+ 
+ pub use evaluate::{
+     ActiveClip, ClipTransition, FiredEvent, TimelineEvaluation, TimelineTrackOutput,
+ };
+ pub use player::{LoopRegion, TimelinePlayState, TimelinePlayer, TimelineSeek};
+ pub use registry::{TrackDescriptor, TrackRegistry, TrackSeekPolicy};
++pub use replay::{
++    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,
++    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, ReplayCancellationToken,
++    ReplayCheckpointCache, ReplayCheckpointConfigError, ReplayReconstruction, ReplayRequest,
++    ReplayRequestController,
++};
+ 
+ /// One compiled clip with pre-resolved payload data.
+ #[derive(Debug, Clone, PartialEq)]
+diff --git a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+index a3461d64ccb13b1d56156449f7aa4f4ef9bbab44..8195bbb4b2cddf5bac5cd745f15398a02891eff1 100644
+--- a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
++++ b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+@@ -265,31 +265,38 @@ stable IDs so those features do not require replacing basic track/clip identity.
+ 
+ ## Implementation Status
+ 
+-This record stays `Proposed` until every slice below is implemented. What has
+-landed so far, on 2026-08-20:
+-
+-- **Landed:** `*.timeline.json` `TimelineDocument` with stable timeline, track,
+-  clip, and marker identity; integer tick math and rational display frame rates;
+-  document validation; the neutral `engine-timeline` crate carrying the compiled
+-  schedule, per-player transient state, exact marker and clip crossing, seek
+-  policies, and the track registry; the Event, Camera Cut, and Property tracks
+-  applied at the `engine` composition layer, including the transient camera
+-  override and the bounded sequence-event queue; the `engine.timeline_player`
+-  component and its scene conversion; project-Rust deferred Timeline commands
+-  and copied views; a Sequencer workspace with transport, track and clip
+-  editing, markers, frame snapping, seek-policy presentation, and undo; and
+-  Editor, CLI, and MCP parity through the shared typed-document capability
+-  registry; the Animation track adapter that resolves Animation Set motion
+-  slots, drives exact Timeline-owned sample time, and restores suspended
+-  Animator/Animation Graph playback state; and shared fixed-step Timeline
+-  registration for Editor Play and packaged Player using scene runtime identity.
+-- **Not yet landed:** the Audio and VFX adapters, which ADR 0126 §14 already
+-  defers until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
+-  the persistent Scene View world; the curve editor and `ReplayRequired`
+-  checkpoint reconstruction; and the packaged-player proving project.
+-
+-Evaluation still reports Audio and VFX outputs, so nothing in the implemented
+-path silently claims to have played a cue or an effect before those adapters land.
++The first-release implementation is complete on 2026-08-20. This ADR remains
++`Proposed` while the integration PR is in Draft review; there are no known
++first-release implementation gaps in that integration branch.
++
++- **Foundation:** `*.timeline.json`, stable IDs, integer tick math, rational
++  display frame rates, validation, the neutral `engine-timeline` compiled
++  schedule/player/evaluator, Event/Camera Cut/Property tracks, scene conversion,
++  project-Rust commands/views, and Editor/CLI/MCP typed-document parity.
++- **Animation Track:** resolves Animation Set assets and stable `MotionSlotId`
++  values, samples exact Timeline-owned time on play/seek, and restores suspended
++  Animator/Animation Graph state on clip exit, stop, and discontinuous seek.
++- **Audio Track:** uses ADR 0122 managed voices for start, stop, exact seek
++  cursor restoration, fades, and spatial gain composition without moving audio
++  ownership into the Timeline core.
++- **VFX Track:** uses ADR 0125 runtime controls for edge-triggered play, stop,
++  restart, and deterministic seek/reconstruction at the engine composition
++  boundary.
++- **ReplayRequired:** provides bounded checkpoints, fixed-step forward-only
++  reconstruction, scrub debounce, cooperative generation cancellation, and VFX
++  checkpoint/restore parity with forward playback.
++- **Sequencer authoring:** includes persistent Scene View production preview,
++  play/pause/stop/step/loop transport, Property curve editing, Undo/Redo, exact
++  save/reopen tick and stable-ID preservation, markers, snapping, and seek-policy
++  presentation.
++- **Editor/Player parity:** Timeline is registered through the shared fixed-step
++  runtime path. Regression coverage constructs Editor Play and packaged Player
++  hosts from the same registration path and requires identical schedule
++  fingerprints, including `engine.timeline` ordering before animation systems.
++
++Full recording/keyframe capture, nested Timelines, nonlinear audio mixing, and
++cinematic render/export remain future extensions rather than first-release
++requirements.
+ 
+ ## Verification
+ 
