@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/runtime_systems.rs","old":"        for required in [\n            \"engine.rig_pose_clear_transient\",\n            \"engine.animation_graph\",","new":"        for required in [\n            \"engine.rig_pose_clear_transient\",\n            \"engine.timeline\",\n            \"engine.animation_graph\","}
