@@ -195,12 +195,12 @@ impl AiStudioPanel {
                 self.show_campaign_tasks(ui);
                 ui.separator();
                 self.show_campaign_controls(ui);
-                self.show_campaign_download_review(ui);
-                self.show_campaign_progress_matrix(ui);
-                self.show_campaign_report(ui);
                 if let Some(message) = self.benchmark_campaign.message.clone() {
                     ui.small(message);
                 }
+                self.show_campaign_download_review(ui);
+                self.show_campaign_progress_matrix(ui);
+                self.show_campaign_report(ui);
             });
     }
 
@@ -470,12 +470,7 @@ impl AiStudioPanel {
                         self.start_campaign();
                     }
                     if ui.button("Discard plan").clicked() {
-                        self.benchmark_campaign.prior_plan = self.benchmark_campaign.plan.take();
-                        self.benchmark_campaign.run = None;
-                        self.benchmark_campaign.acquisition = None;
-                        self.benchmark_campaign.acquisition_approved = false;
-                        self.benchmark_campaign.message = None;
-                        self.clear_campaign_checkpoint();
+                        self.discard_campaign_plan();
                     }
                 }
                 CampaignState::Running => {
@@ -486,6 +481,9 @@ impl AiStudioPanel {
                 CampaignState::Paused => {
                     if ui.button("Resume").clicked() {
                         self.resume_campaign();
+                    }
+                    if ui.button("Start new campaign").clicked() {
+                        self.discard_campaign_plan();
                     }
                 }
                 CampaignState::Completed => {
@@ -531,6 +529,16 @@ impl AiStudioPanel {
                 }
             }
         }
+    }
+
+    fn discard_campaign_plan(&mut self) {
+        self.benchmark_campaign.prior_plan = self.benchmark_campaign.plan.take();
+        self.benchmark_campaign.run = None;
+        self.benchmark_campaign.running = None;
+        self.benchmark_campaign.acquisition = None;
+        self.benchmark_campaign.acquisition_approved = false;
+        self.benchmark_campaign.message = None;
+        self.clear_campaign_checkpoint();
     }
 
     fn show_campaign_download_review(&mut self, ui: &mut egui::Ui) {
@@ -982,6 +990,21 @@ impl AiStudioPanel {
     }
 
     fn resume_campaign(&mut self) {
+        let Some(frozen_engine_commit) = self
+            .benchmark_campaign
+            .plan
+            .as_ref()
+            .map(|plan| plan.engine_commit_head.clone())
+        else {
+            return;
+        };
+        if engine_commit_changed(&frozen_engine_commit, ENGINE_COMMIT_HEAD) {
+            self.benchmark_campaign.message = Some(format!(
+                "Cannot resume this frozen campaign: it was created with GameEngine {frozen_engine_commit}, but this Editor was built from {ENGINE_COMMIT_HEAD}. Completed evidence is retained; choose Start new campaign to continue with this Editor."
+            ));
+            return;
+        }
+
         let backend_runtime_version = match self.campaign_backend_runtime_version() {
             Ok(version) => version,
             Err(error) => {
@@ -1194,6 +1217,10 @@ impl AiStudioPanel {
     }
 }
 
+fn engine_commit_changed(frozen_engine_commit: &str, current_engine_commit: &str) -> bool {
+    !current_engine_commit.is_empty() && frozen_engine_commit != current_engine_commit
+}
+
 fn managed_model_is_campaign_candidate(model: &ManagedModelRegistration) -> bool {
     model.has_exact_representation_identity()
 }
@@ -1236,6 +1263,16 @@ mod tests {
             source: None,
             license: None,
         }
+    }
+
+    #[test]
+    fn rebuilt_editor_commit_is_detected_before_campaign_resume() {
+        let frozen = "a".repeat(40);
+        let current = "b".repeat(40);
+
+        assert!(engine_commit_changed(&frozen, &current));
+        assert!(!engine_commit_changed(&frozen, &frozen));
+        assert!(!engine_commit_changed(&frozen, ""));
     }
 
     #[test]
