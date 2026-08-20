@@ -122,8 +122,8 @@ impl AuthoringWindows {
             #[cfg(feature = "visual-validation")]
             let window = window
                 .default_width(610.0)
-                .default_height(620.0)
-                .default_pos(egui::pos2(650.0, 42.0));
+                .default_height(700.0)
+                .default_pos(egui::pos2(650.0, 10.0));
             window.show(context, |ui| {
                 egui::ScrollArea::both().show(ui, |ui| {
                     sequencer.show(ui, &permissions);
