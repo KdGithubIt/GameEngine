@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "            candidates: self.candidates,\n            task_plans,\n            repetitions: self.repetitions,",
+  "new": "            candidates: self.candidates,\n            task_plans,\n            benchmark_runtime: None,\n            repetitions: self.repetitions,"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    pub(crate) fn with_benchmark_runtime(\n        mut self,",
+  "new": "    #[allow(dead_code)]\n    pub(crate) fn with_benchmark_runtime(\n        mut self,"
+}

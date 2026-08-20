@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    pub(crate) fn plan_digest(&self) -> &str {\n        &self.plan_digest\n    }\n\n    fn compute_digest(&self) -> String {",
+  "new": "    pub(crate) fn plan_digest(&self) -> &str {\n        &self.plan_digest\n    }\n\n    /// Derives a new frozen plan with one explicit benchmark lane/runtime identity.\n    ///\n    /// This must be called before [`CampaignRun::prepare`]. The runtime identity\n    /// becomes part of the plan digest and every derived execution identity.\n    pub(crate) fn with_benchmark_runtime(mut self, runtime: BenchmarkRuntimeIdentity) -> Self {\n        self.benchmark_runtime = Some(runtime);\n        self.plan_digest = self.compute_digest();\n        self\n    }\n\n    /// Returns the benchmark lane/runtime identity frozen into this campaign.\n    pub(crate) fn benchmark_runtime(&self) -> Option<&BenchmarkRuntimeIdentity> {\n        self.benchmark_runtime.as_ref()\n    }\n\n    fn compute_digest(&self) -> String {"
+}

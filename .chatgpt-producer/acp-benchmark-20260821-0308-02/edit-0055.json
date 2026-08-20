@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) struct BenchmarkModelTelemetry {",
+  "new": "#[allow(dead_code)]\n#[derive(Debug, Clone, PartialEq, Eq)]\npub(crate) struct BenchmarkModelTelemetry {"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "impl BenchmarkRuntimeIdentity {\n    pub(crate) fn raw_model",
+  "new": "#[allow(dead_code)]\nimpl BenchmarkRuntimeIdentity {\n    pub(crate) fn raw_model"
+}

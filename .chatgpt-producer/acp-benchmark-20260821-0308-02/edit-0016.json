@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    /// Per-task plans in frozen order.\n    pub(crate) task_plans: Vec<CampaignTaskPlan>,\n    /// Repetitions per candidate and task.",
+  "new": "    /// Per-task plans in frozen order.\n    pub(crate) task_plans: Vec<CampaignTaskPlan>,\n    /// Optional schema-v4 benchmark lane/runtime identity frozen for this campaign.\n    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,\n    /// Repetitions per candidate and task."
+}

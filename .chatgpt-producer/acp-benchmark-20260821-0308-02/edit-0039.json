@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "            || matches!(\n                runtime.harness.acp_protocol_version,\n                TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Measured(0)\n            )\n",
+  "new": "            || matches!(\n                &runtime.harness.acp_protocol_version,\n                TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Measured(0)\n            )\n"
+}

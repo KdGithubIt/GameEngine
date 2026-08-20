@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "            schema_version: 3,\n            recorded_unix_ms: 1,",
+  "new": "            schema_version: BENCHMARK_SCHEMA_VERSION,\n            recorded_unix_ms: 1,"
+}

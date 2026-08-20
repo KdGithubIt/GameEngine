@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    use crate::agent_benchmark::{\n        BENCHMARK_TASKS, BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics,\n        BenchmarkModelIdentity, BenchmarkToolBudget,\n    };",
+  "new": "    use crate::agent_benchmark::{\n        BENCHMARK_SCHEMA_VERSION, BENCHMARK_TASKS, BenchmarkAgentRuntimeIdentity,\n        BenchmarkHardwareIdentity, BenchmarkHarnessIdentity, BenchmarkIdentity, BenchmarkLane,\n        BenchmarkMetrics, BenchmarkModelIdentity, BenchmarkRuntimeIdentity, BenchmarkToolBudget,\n    };"
+}

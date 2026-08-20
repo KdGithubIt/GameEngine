@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "pub(crate) const CAMPAIGN_SEED_POLICY: &str = \"fixed-model-seed-zero-v1\";\n",
+  "new": "pub(crate) const CAMPAIGN_SEED_POLICY: &str = \"fixed-model-seed-zero-v1\";\nconst MIN_SUPPORTED_CAMPAIGN_SCHEMA_VERSION: u32 = 2;\n"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "        let plan = frozen(&[\"model-a\"], &[\"read_question_v1\"])\n            .with_benchmark_runtime(coding_runtime(\"goose\"));\n        let mut run = started(plan.clone(), &[\"model-a\"]);\n        pass(&mut run, &plan);",
+  "new": "        let plan = frozen(&[\"model-a\"], &[\"read_question_v1\"])\n            .with_benchmark_runtime(coding_runtime(\"goose\"))\n            .expect(\"coding runtime registration\");\n        let mut run = started(plan.clone(), &[\"model-a\"]);\n        pass(&mut run, &plan);"
+}
