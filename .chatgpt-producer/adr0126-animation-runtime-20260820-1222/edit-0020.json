@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/animation/src/anim_graph.rs","old":"    transition_sequence: u64,\n    debug_source: Option<AnimationGraphDebugSource>,\n}","new":"    transition_sequence: u64,\n    debug_source: Option<AnimationGraphDebugSource>,\n    external_override_depth: u32,\n}"}
