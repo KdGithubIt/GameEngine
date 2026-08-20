@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "request_id": "ai-studio-session-management-20260821-0057-r2",
+  "target_branch": "chatgpt/gameengine-ai-studio-session-management-r2",
+  "expected_head_sha": "222a7add75e9b328e25ae1455283c769ab962cdc",
+  "baseline_main_sha": "222a7add75e9b328e25ae1455283c769ab962cdc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json"
+  ],
+  "commit_message": "Add AI Studio session rename and deletion",
+  "pr_title": "AI Studio: add session rename and deletion",
+  "pr_body": "## Summary\n\n- add persistent AI Studio session rename without changing session identity\n- add explicit local session deletion with active-run protection\n- remove local session workspaces, baselines, run artifacts, and asset staging on delete\n- preserve deliberately exported project-shared session history\n- add persistence and cleanup tests\n\n## Validation\n\n- Windows affected validation\n- Editor visual validation through the ADR First Release suite\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR First Release -->"
+}
