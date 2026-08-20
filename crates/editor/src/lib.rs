@@ -16,6 +16,8 @@ mod acp_agent_runtime;
 mod claude_acp_adapter;
 #[allow(dead_code)]
 mod codex_acp_adapter;
+#[allow(dead_code)]
+mod goose_local_acp;
 
 // ADR 0146 defines the provider-neutral managed asset boundary before concrete
 // provider integrations are enabled by AI Studio.

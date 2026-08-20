@@ -32,6 +32,7 @@ use std::sync::{
 
 const GAMEENGINE_ACP_CLIENT_NAME: &str = "gameengine-ai-studio";
 const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine";
+const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
 
 #[derive(Debug)]
 enum RuntimeCommand {
@@ -816,13 +817,17 @@ fn validate_runtime_identity(
 }
 
 fn mcp_server(binding: &AcpSessionBinding) -> McpServer {
+    let mut headers = vec![HttpHeader::new(
+        "Authorization",
+        format!("Bearer {}", binding.mcp.authorization_token()),
+    )];
+    if binding.mcp.access == crate::acp_agent_runtime::AcpMcpAccessLevel::AgentRunBoundReadWrite {
+        if let Some(run_id) = binding.gameengine_run_id.as_deref() {
+            headers.push(HttpHeader::new(GAMEENGINE_AGENT_RUN_ID_HEADER, run_id));
+        }
+    }
     McpServer::Http(
-        McpServerHttp::new(GAMEENGINE_MCP_SERVER_NAME, binding.mcp.endpoint()).headers(vec![
-            HttpHeader::new(
-                "Authorization",
-                format!("Bearer {}", binding.mcp.authorization_token()),
-            ),
-        ]),
+        McpServerHttp::new(GAMEENGINE_MCP_SERVER_NAME, binding.mcp.endpoint()).headers(headers),
     )
 }
 
