@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-animation-track-20260820-r2",
+  "target_branch": "chatgpt/gameengine-adr0126-animation-runtime",
+  "expected_head_sha": "74c69ede2286d792b6d6ae3ca98c7d35704b91a3",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "patch_sha256": "4ace6e82ceb926263d95846982a0abcff4f03bde0c52b029ab2a8dfc087d07e0",
+  "patch_bytes": 17724,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Finish ADR 0126 Animation Track adapter",
+  "pr_title": "Implement ADR 0126 Animation Timeline adapter",
+  "pr_body": "Completes the ADR 0126 Animation Track slice on top of the existing runtime adapter. Animation clips now require an Animation Set asset binding, validate and carry stable MotionSlotId values through compilation, verify the bound set against the controller's resolved Animation Set before selecting the runtime clip, and release the Animator/Animation Graph override exactly at clip end. Adds focused authoring, neutral-evaluation, seek, set-binding, and natural clip-exit regression coverage. Audio/VFX, ReplayRequired reconstruction, Curve Editor, and persistent Scene View preview remain separate ADR 0126 workstreams."
+}
