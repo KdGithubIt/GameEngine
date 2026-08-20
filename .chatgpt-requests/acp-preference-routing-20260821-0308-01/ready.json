@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-preference-routing-20260821-0308-01",
+  "target_branch": "chatgpt/gameengine-acp-preference-routing",
+  "expected_head_sha": "694de8724308c3acdd171fd9e2293876821f86ee",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "757f34df527fb77712cfef2e41b6d68ab2ae956aa7c10359c326404c37e8beb6",
+  "patch_bytes": 21337,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ACP preference execution routing",
+  "pr_title": "GameEngine: route AI Studio selections to ACP drivers",
+  "pr_body": "## Summary\n\nAdds the AI Studio preference-routing layer on top of the ACP Foundation baseline. Stable user-facing AI IDs remain unchanged while process-local execution routing can explicitly choose Legacy or an ACP registry agent ID. ACP-bound targets fail closed when their adapter is unavailable; there is no silent Legacy fallback. Managed Local keeps `model:managed_local:<id>` while sharing one driver route for Goose integration.\n\nThis is a parallel authoring subtask. Heavy cargo, Windows, and Visual Validation are intentionally deferred to final ACP integration; any validation automatically started by the trusted protocol is not bypassed.\n\n## Integration\n\nFinal ACP integration should register adapter runtimes, synchronize the registry snapshot, bind Codex / Claude Code / Managed Local to their ACP descriptor IDs, and replace the routing-only ACP dispatch guard with the integrated ACP session/run handoff. Legacy bindings remain the explicit rollback boundary.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
