@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "            if record.identity.runtime != self.plan.benchmark_runtime {\n                return Err(CampaignRejection::IdentityMismatch);\n            }\n            if record.identity.model.model_id != evidence.scheduled.model_id",
+  "new": "            if record.identity.runtime != self.plan.benchmark_runtime {\n                return Err(CampaignRejection::IdentityMismatch);\n            }\n            let expected_task_plan = self\n                .plan\n                .task_plan(&evidence.scheduled.task_id)\n                .map_err(|_| CampaignRejection::IdentityMismatch)?;\n            if record.identity.runtime_harness_version\n                != expected_task_plan.runtime_harness_version\n            {\n                return Err(CampaignRejection::IdentityMismatch);\n            }\n            if record.identity.model.model_id != evidence.scheduled.model_id"
+}
