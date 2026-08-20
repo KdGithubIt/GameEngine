@@ -1,0 +1,12 @@
+diff --git a/crates/engine/src/timeline/audio_adapter.rs b/crates/engine/src/timeline/audio_adapter.rs
+index 70cb7eb690a6c4ff581045f7be2c6baad3c5294d..cd47f30196e4699bcbda8d1901fdf7ed5127ac87 100644
+--- a/crates/engine/src/timeline/audio_adapter.rs
++++ b/crates/engine/src/timeline/audio_adapter.rs
+@@ -197,6 +197,7 @@ pub(super) fn apply_audio_evaluation(
+     world.insert_resource(audio);
+     world.insert_resource(runtime);
+ }
++
+ /// Stops Timeline-owned voices whose source player no longer exists.
+ pub(super) fn cleanup_stale_sources(world: &mut World, live_sources: &[Entity]) {
+     let Some(mut runtime) = world.remove_resource::<TimelineAudioRuntime>() else {
