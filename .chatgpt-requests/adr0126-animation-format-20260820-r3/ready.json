@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-animation-format-20260820-r3",
+  "target_branch": "chatgpt/gameengine-adr0126-animation-runtime",
+  "expected_head_sha": "221d86841a8b949ef4d231020b93dc6f9688fc0b",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "patch_sha256": "60a7a5846cdacf66fa914d06d961542c517f0b8e1faadecd2901799d5f386dbe",
+  "patch_bytes": 1608,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Format Animation Timeline adapter",
+  "pr_title": "Implement ADR 0126 Animation Timeline adapter",
+  "pr_body": "Completes the ADR 0126 Animation Track adapter using Animation Set bindings and stable MotionSlotId values, exact Timeline seek/sampling, and deterministic clip enter/exit override restoration. This correction applies rustfmt-equivalent formatting identified by affected Windows Validation; runtime behavior is unchanged."
+}
