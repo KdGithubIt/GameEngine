@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn selected_ai_unavailable(&mut self) -> Option<String> {\n        if let Err(error) = self.selected_execution_resolution() {\n            return Some(error);\n        }\n        match self.selected_ai() {\n            SelectedAi::Agent(kind) => {\n                agent_unavailable_for_mode(kind, self.conversation_mode, self.agent_readiness(kind))\n            }\n            SelectedAi::Model(_) => self.described_native_model_config().err(),\n        }\n    }\n",
+  "new": "    fn selected_ai_unavailable(&mut self) -> Option<String> {\n        let target_unavailable = match self.selected_ai() {\n            SelectedAi::Agent(kind) => {\n                agent_unavailable_for_mode(kind, self.conversation_mode, self.agent_readiness(kind))\n            }\n            SelectedAi::Model(_) => self.described_native_model_config().err(),\n        };\n        if target_unavailable.is_some() {\n            return target_unavailable;\n        }\n        self.selected_execution_resolution().err()\n    }\n"
+}
