@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/vfx/replay.rs",
+  "old": "pub(super) fn mark_seek(component: &mut TimelinePlayerComponent) {",
+  "new": "pub(in crate::timeline) fn mark_seek(component: &mut TimelinePlayerComponent) {"
+}
