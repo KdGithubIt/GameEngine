@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/claude_acp_adapter.rs","old":"                ready_runner(OsStr::new(CLAUDE_ACP_EXECUTABLE), arguments)\n","new":"                ready_runner(\n                    OsStr::new(CLAUDE_ACP_EXECUTABLE),\n                    arguments,\n                    environment,\n                )\n"}
