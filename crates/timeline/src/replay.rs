@@ -353,7 +353,7 @@ impl<S: Clone> ReplayCheckpointCache<S> {
             .range(..=target)
             .next_back()
             .map(|(tick, state)| (*tick, state.clone()))
-            .unwrap_or((TimelineTick::ZERO, start_state.clone()));
+            .unwrap_or_else(|| (TimelineTick::ZERO, start_state.clone()));
 
         let mut current = source_tick;
         let mut staged = Vec::new();
@@ -386,9 +386,7 @@ impl<S: Clone> ReplayCheckpointCache<S> {
             };
         }
 
-        if !self.checkpoints.contains_key(&TimelineTick::ZERO) {
-            self.checkpoints.insert(TimelineTick::ZERO, start_state.clone());
-        }
+        self.checkpoints.entry(TimelineTick::ZERO).or_insert_with(|| start_state.clone());
         for (tick, state) in staged {
             self.checkpoints.insert(tick, state);
         }
