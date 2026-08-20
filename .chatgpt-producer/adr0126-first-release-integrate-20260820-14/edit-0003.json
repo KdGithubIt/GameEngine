@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline.rs",
+  "old": "            TimelineControl::Stop => {\n                component.player.stop();\n                component.tokens.clear();\n                animation_overrides = std::mem::take(&mut component.animation_overrides)\n                    .into_values()\n                    .rev()\n                    .collect();\n            }",
+  "new": "            TimelineControl::Stop => {\n                component.player.stop();\n                component.tokens.clear();\n                vfx::mark_seek(component);\n                animation_overrides = std::mem::take(&mut component.animation_overrides)\n                    .into_values()\n                    .rev()\n                    .collect();\n            }"
+}
