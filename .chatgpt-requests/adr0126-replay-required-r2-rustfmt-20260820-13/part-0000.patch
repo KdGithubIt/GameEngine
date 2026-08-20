@@ -1,0 +1,28 @@
+diff --git a/crates/timeline/src/replay.rs b/crates/timeline/src/replay.rs
+index cfe14d11ff49a3f38e8fcea647f3b716c824da39..969db1b35caec83bac2610f28855001770cc21a9 100644
+--- a/crates/timeline/src/replay.rs
++++ b/crates/timeline/src/replay.rs
+@@ -9,7 +9,10 @@
+ use engine_authoring::TimelineTick;
+ use std::collections::BTreeMap;
+ use std::fmt;
+-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
++use std::sync::{
++    Arc,
++    atomic::{AtomicU64, Ordering},
++};
+ use std::time::Duration;
+ 
+ /// Default reconstruction quantum: one 60 Hz step at 48,000 Timeline ticks/s.
+@@ -40,7 +43,10 @@ impl fmt::Display for ReplayCheckpointConfigError {
+         match self {
+             Self::NonPositiveStep => write!(formatter, "replay step ticks must be positive"),
+             Self::NonPositiveCheckpointInterval => {
+-                write!(formatter, "replay checkpoint interval ticks must be positive")
++                write!(
++                    formatter,
++                    "replay checkpoint interval ticks must be positive"
++                )
+             }
+             Self::ZeroCheckpointLimit => {
+                 write!(formatter, "replay checkpoint limit must be at least one")
