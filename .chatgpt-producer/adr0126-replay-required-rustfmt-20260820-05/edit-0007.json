@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/vfx.rs","old":"        assert_eq!(reconstructed.elapsed_seconds(), checkpoint.elapsed_seconds());","new":"        assert_eq!(\n            reconstructed.elapsed_seconds(),\n            checkpoint.elapsed_seconds()\n        );"}
