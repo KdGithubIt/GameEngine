@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline.rs",
+  "old": "            // Animation, Audio, and VFX adapters land with the runtime controls\n            // their ADRs define. Until then the evaluation still reports them,\n            // so nothing silently claims to have played a cue or an effect.\n            TimelineTrackOutput::Animation { .. }\n            | TimelineTrackOutput::Audio { .. }\n            | TimelineTrackOutput::Vfx { .. }\n            | TimelineTrackOutput::Event => {}",
+  "new": "            // Animation and Audio remain neutral outputs until their domain\n            // adapters land. VFX edge actions are applied by the composition\n            // adapter before this per-frame output pass.\n            TimelineTrackOutput::Animation { .. }\n            | TimelineTrackOutput::Audio { .. }\n            | TimelineTrackOutput::Vfx { .. }\n            | TimelineTrackOutput::Event => {}"
+}
