@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-replay-required-fmt-20260820-03",
+  "target_branch": "chatgpt/gameengine-adr0126-replay-required",
+  "expected_head_sha": "e51b4963d853e9a8e5d5e2c0a98f5f814b6087d6",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json"
+  ],
+  "commit_message": "Finish ReplayRequired rustfmt normalization",
+  "pr_title": "Complete ADR 0126 ReplayRequired reconstruction",
+  "pr_body": "## Summary\n- add bounded transient ReplayRequired checkpoints with deterministic forward-only reconstruction\n- add scrub debounce plus generation-based cooperative cancellation\n- add exact VFX transient checkpoint/restore and fixed-step forward replay\n- finish workspace rustfmt normalization identified by affected Windows Validation\n\n## Validation\nRe-run GameEngine Windows Validation for the affected scope. No Editor/Launcher visual surface changes are included, so Visual Validation is not required."
+}
