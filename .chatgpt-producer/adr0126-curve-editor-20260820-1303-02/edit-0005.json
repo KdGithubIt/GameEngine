@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/sequencer.rs","old":"    document: TimelineDocument,\n    undo: Vec<TimelineDocument>,\n    dirty: bool,\n","new":"    document: TimelineDocument,\n    undo: Vec<TimelineDocument>,\n    redo: Vec<TimelineDocument>,\n    dirty: bool,\n"}
