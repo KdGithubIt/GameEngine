@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/Cargo.toml","old":"engine-project-lifecycle = { path = \"../project-lifecycle\" }\ngetrandom = \"0.3\"\npollster = \"0.3\"\n","new":"engine-project-lifecycle = { path = \"../project-lifecycle\" }\nfutures = \"0.3\"\ngetrandom = \"0.3\"\npollster = \"0.3\"\n"}
