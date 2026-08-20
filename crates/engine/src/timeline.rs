@@ -277,16 +277,14 @@ pub fn advance_timelines(
                 component.player.generation(),
             )
         };
-        audio_adapter::apply_audio_evaluation(
+        let audio_input = audio_adapter::AudioEvaluationInput::new(
             entity,
             &timeline,
             &evaluation,
             state,
             generation,
-            world,
-            bindings,
-            diagnostics,
         );
+        audio_adapter::apply_audio_evaluation(audio_input, world, bindings, diagnostics);
         apply_evaluation(
             entity,
             &evaluation,

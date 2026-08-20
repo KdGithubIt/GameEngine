@@ -61,21 +61,51 @@ struct DesiredAudioVoice {
     stop_fade: f32,
 }
 
+/// Copied Timeline-side inputs for one Audio adapter evaluation.
+pub(super) struct AudioEvaluationInput<'a> {
+    source: Entity,
+    timeline: &'a CompiledTimeline,
+    evaluation: &'a TimelineEvaluation,
+    state: TimelinePlayState,
+    generation: u64,
+}
+
+impl<'a> AudioEvaluationInput<'a> {
+    pub(super) fn new(
+        source: Entity,
+        timeline: &'a CompiledTimeline,
+        evaluation: &'a TimelineEvaluation,
+        state: TimelinePlayState,
+        generation: u64,
+    ) -> Self {
+        Self {
+            source,
+            timeline,
+            evaluation,
+            state,
+            generation,
+        }
+    }
+}
+
 /// Applies Audio Track state for one Timeline player.
 ///
 /// The adapter deliberately owns only Timeline-to-audio composition. Decoding,
 /// backend voice lifetime, bus gain, and spatial mixing stay in ADR 0122's
 /// `AudioSystem` / `SpatialAudioRuntime`.
 pub(super) fn apply_audio_evaluation(
-    source: Entity,
-    timeline: &CompiledTimeline,
-    evaluation: &TimelineEvaluation,
-    state: TimelinePlayState,
-    generation: u64,
+    input: AudioEvaluationInput<'_>,
     world: &mut World,
     bindings: &TimelineBindings,
     diagnostics: &mut TimelineDiagnostics,
 ) {
+    let AudioEvaluationInput {
+        source,
+        timeline,
+        evaluation,
+        state,
+        generation,
+    } = input;
     let mut runtime = world
         .remove_resource::<TimelineAudioRuntime>()
         .unwrap_or_default();
