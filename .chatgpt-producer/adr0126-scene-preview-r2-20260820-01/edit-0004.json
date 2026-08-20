@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "    /// Initializes project-scoped services for the concrete workspace root.",
+  "new": "    /// Publishes one Sequencer evaluation into the persistent Scene View.\n    pub(crate) fn set_sequencer_timeline_preview(\n        &mut self,\n        evaluation: Option<engine::timeline::TimelineEvaluation>,\n    ) {\n        self.scene_view.set_timeline_preview_evaluation(evaluation);\n    }\n\n    /// Creates a visible Scene View target for the Sequencer visual-validation fixture.\n    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_sequencer_visual_validation(&mut self) -> Option<EntityId> {\n        self.session.scene()?;\n        let mesh = AssetId::from_stable_id(StableId::new(\n            engine::scene_bridge::BUILTIN_TRIANGLE_ASSET_ID,\n        ))\n        .ok()?;\n        let entity = self\n            .session\n            .create_entity_from_mesh_asset(mesh, None)\n            .ok()?;\n        self.select_single_entity(Some(entity.clone()));\n        if let Some(scene) = self.session.scene() {\n            let _ = self.scene_view.focus_entity(scene, &entity);\n        }\n        Some(entity)\n    }\n\n    /// Initializes project-scoped services for the concrete workspace root."
+}
