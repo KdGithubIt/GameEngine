@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "use engine_timeline::{\n    CompiledTimeline, TimelinePlayer, TimelineSeek, TrackRegistry, compile_timeline,\n};",
+  "new": "use engine_timeline::{\n    CompiledTimeline, LoopRegion, TimelineEvaluation, TimelinePlayState, TimelinePlayer,\n    TimelineSeek, TrackRegistry, compile_timeline,\n};"
+}
