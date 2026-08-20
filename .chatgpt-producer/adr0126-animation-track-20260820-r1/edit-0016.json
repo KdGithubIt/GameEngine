@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"pub const MAX_TIMELINE_EVENTS: usize = 256;\n\n/// Runtime Timeline playback component.","new":"pub const MAX_TIMELINE_EVENTS: usize = 256;\n\nconst ANIMATION_GENERATION_TOKEN: &str = \"engine.timeline.animation.generation\";\n\n/// Runtime Timeline playback component."}
