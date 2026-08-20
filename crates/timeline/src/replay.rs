@@ -10,8 +10,8 @@ use engine_authoring::TimelineTick;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 use std::time::Duration;
 
@@ -286,8 +286,7 @@ impl<S> ReplayCheckpointCache<S> {
 
     /// Returns whether `tick` lies on an automatic checkpoint boundary.
     pub fn is_checkpoint_tick(&self, tick: TimelineTick) -> bool {
-        tick >= TimelineTick::ZERO
-            && tick.get() % self.checkpoint_interval_ticks == 0
+        tick >= TimelineTick::ZERO && tick.get() % self.checkpoint_interval_ticks == 0
     }
 
     /// Records a checkpoint captured by ordinary forward playback.
@@ -375,10 +374,7 @@ impl<S: Clone> ReplayCheckpointCache<S> {
             }
 
             let step_end = current.saturating_add(TimelineTick(self.step_ticks));
-            let checkpoint_end = next_checkpoint_after(
-                current,
-                self.checkpoint_interval_ticks,
-            );
+            let checkpoint_end = next_checkpoint_after(current, self.checkpoint_interval_ticks);
             let mut next = step_end.min(checkpoint_end).min(target);
             if next <= current {
                 next = target;
@@ -418,9 +414,7 @@ impl<S: Clone> ReplayCheckpointCache<S> {
 
 fn next_checkpoint_after(current: TimelineTick, interval: i64) -> TimelineTick {
     let quotient = current.get().div_euclid(interval);
-    let next = quotient
-        .saturating_add(1)
-        .saturating_mul(interval);
+    let next = quotient.saturating_add(1).saturating_mul(interval);
     TimelineTick(next)
 }
 
