@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            selected_ai_family,\n            external_question: None,\n",
+  "new": "            selected_ai_family,\n            execution_routing: execution_routing::AiExecutionRouter::default(),\n            external_question: None,\n"
+}
