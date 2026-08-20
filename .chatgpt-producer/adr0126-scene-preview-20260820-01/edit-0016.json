@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "            preview: None,\n            authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),",
+  "new": "            preview: None,\n            timeline_preview_evaluation: None,\n            authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),"
+}
