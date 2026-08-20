@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "HarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\\n",
+  "new": "HarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation only after every planned implementation mutation has completed successfully; inspection or progress alone is not implementation evidence. If the immutable proposal has no implementation, validation, or playtest work, use await_user instead of ready_for_validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\\n"
+}
