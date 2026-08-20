@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "    preview: Option<PreviewWorld>,\n    /// Immutable Editor working-copy snapshot consumed by the next preview conversion.",
+  "new": "    preview: Option<PreviewWorld>,\n    /// Latest Sequencer evaluation to apply to the persistent preview world.\n    ///\n    /// This is transient Editor state. Closing Sequencer sets it back to\n    /// `None`, which restores any runtime transforms the previous evaluation\n    /// overrode without rebuilding the preview world.\n    timeline_preview_evaluation: Option<engine::timeline::TimelineEvaluation>,\n    /// Immutable Editor working-copy snapshot consumed by the next preview conversion."
+}
