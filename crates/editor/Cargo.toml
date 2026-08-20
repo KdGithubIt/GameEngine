@@ -13,6 +13,7 @@ name = "engine-editor"
 path = "src/main.rs"
 
 [dependencies]
+agent-client-protocol = "=2.0.0"
 dirs = "5"
 eframe = "0.34.3"
 engine = { path = "../engine" }
@@ -21,6 +22,7 @@ engine-authoring = { path = "../authoring" }
 engine-timeline = { path = "../timeline" }
 engine-mcp = { path = "../mcp" }
 engine-project-lifecycle = { path = "../project-lifecycle" }
+futures = "0.3"
 getrandom = "0.3"
 pollster = "0.3"
 png = "0.18"

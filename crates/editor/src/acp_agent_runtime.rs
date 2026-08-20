@@ -4,22 +4,45 @@
 //! own GameEngine permissions, work claims, project mutation, validation,
 //! persistence, or completion.
 
+mod transport;
+
+pub(crate) use transport::AcpProcessRuntime;
+
 use crate::agent_host::{AgentCapability, AgentEventKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
+use std::path::PathBuf;
 
 /// Stable ACP wire version used by the first GameEngine adapters.
 pub(crate) const ACP_STABLE_PROTOCOL_VERSION: u16 = 1;
 
 /// Data-driven description of one ACP-capable agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Provider adapters supply launch data and minimum expected ACP behavior; the
+/// common transport performs live protocol and capability negotiation.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct AcpAgentDescriptor {
     pub(crate) id: String,
     pub(crate) executable: OsString,
     pub(crate) arguments: Vec<OsString>,
+    pub(crate) environment: BTreeMap<OsString, OsString>,
     pub(crate) capabilities: AcpCapabilities,
     pub(crate) runtime_identity: AcpRuntimeIdentity,
+}
+
+impl fmt::Debug for AcpAgentDescriptor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcpAgentDescriptor")
+            .field("id", &self.id)
+            .field("executable", &self.executable)
+            .field("argument_count", &self.arguments.len())
+            .field("environment_variable_count", &self.environment.len())
+            .field("capabilities", &self.capabilities)
+            .field("runtime_identity", &self.runtime_identity)
+            .finish()
+    }
 }
 
 /// Negotiated ACP capabilities that affect GameEngine orchestration.
@@ -28,6 +51,7 @@ pub(crate) struct AcpCapabilities {
     pub(crate) session_load: bool,
     pub(crate) session_resume: bool,
     pub(crate) session_list: bool,
+    pub(crate) session_close: bool,
     pub(crate) session_config_options: bool,
     pub(crate) mcp_http: bool,
     pub(crate) mcp_sse: bool,
@@ -185,6 +209,94 @@ impl AcpSessionBinding {
     }
 }
 
+/// Explicit ACP session lifecycle operation selected by Agent Host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AcpSessionOpenMode {
+    New,
+    Load { acp_session_id: String },
+    Resume { acp_session_id: String },
+}
+
+/// Provider-neutral input for opening one ACP session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AcpSessionOpenRequest {
+    pub(crate) binding: AcpSessionBinding,
+    pub(crate) working_directory: PathBuf,
+    pub(crate) mode: AcpSessionOpenMode,
+}
+
+impl AcpSessionOpenRequest {
+    pub(crate) fn new(
+        binding: AcpSessionBinding,
+        working_directory: impl Into<PathBuf>,
+    ) -> Result<Self, AcpRuntimeError> {
+        Self::build(binding, working_directory.into(), AcpSessionOpenMode::New)
+    }
+
+    pub(crate) fn load(
+        binding: AcpSessionBinding,
+        working_directory: impl Into<PathBuf>,
+        acp_session_id: impl Into<String>,
+    ) -> Result<Self, AcpRuntimeError> {
+        Self::build(
+            binding,
+            working_directory.into(),
+            AcpSessionOpenMode::Load {
+                acp_session_id: acp_session_id.into(),
+            },
+        )
+    }
+
+    pub(crate) fn resume(
+        binding: AcpSessionBinding,
+        working_directory: impl Into<PathBuf>,
+        acp_session_id: impl Into<String>,
+    ) -> Result<Self, AcpRuntimeError> {
+        Self::build(
+            binding,
+            working_directory.into(),
+            AcpSessionOpenMode::Resume {
+                acp_session_id: acp_session_id.into(),
+            },
+        )
+    }
+
+    fn build(
+        binding: AcpSessionBinding,
+        working_directory: PathBuf,
+        mode: AcpSessionOpenMode,
+    ) -> Result<Self, AcpRuntimeError> {
+        let request = Self {
+            binding,
+            working_directory,
+            mode,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    fn validate(&self) -> Result<(), AcpRuntimeError> {
+        if !self.working_directory.is_absolute() {
+            return Err(AcpRuntimeError::InvalidSessionBinding(
+                "ACP session working directory must be absolute".to_owned(),
+            ));
+        }
+        let existing_session_id = match &self.mode {
+            AcpSessionOpenMode::New => None,
+            AcpSessionOpenMode::Load { acp_session_id }
+            | AcpSessionOpenMode::Resume { acp_session_id } => Some(acp_session_id),
+        };
+        if existing_session_id
+            .is_some_and(|session_id| session_id.trim().is_empty())
+        {
+            return Err(AcpRuntimeError::InvalidSessionBinding(
+                "ACP load/resume session ID must not be empty".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Agent-provided ACP permission option kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AcpPermissionOptionKind {
@@ -276,6 +388,8 @@ impl AcpNormalizedEvent {
 pub(crate) trait AcpAgentSession: Send {
     fn acp_session_id(&self) -> &str;
     fn binding(&self) -> &AcpSessionBinding;
+    fn capabilities(&self) -> &AcpCapabilities;
+    fn runtime_identity(&self) -> &AcpRuntimeIdentity;
     fn send_prompt(&mut self, prompt: &str) -> Result<(), AcpRuntimeError>;
     /// Polls one event without blocking the Editor thread.
     fn try_next_event(&mut self) -> Result<Option<AcpNormalizedEvent>, AcpRuntimeError>;
@@ -292,7 +406,7 @@ pub(crate) trait AcpAgentRuntime: Send {
     fn descriptor(&self) -> &AcpAgentDescriptor;
     fn open_session(
         &mut self,
-        binding: AcpSessionBinding,
+        request: AcpSessionOpenRequest,
     ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError>;
 }
 
@@ -400,7 +514,7 @@ mod tests {
 
         fn open_session(
             &mut self,
-            _binding: AcpSessionBinding,
+            _request: AcpSessionOpenRequest,
         ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
             Err(AcpRuntimeError::Unsupported("stub".to_owned()))
         }
@@ -411,6 +525,7 @@ mod tests {
             id: id.to_owned(),
             executable: OsString::from("future-acp-agent"),
             arguments: Vec::new(),
+            environment: BTreeMap::new(),
             capabilities: AcpCapabilities::default(),
             runtime_identity: AcpRuntimeIdentity::stable("future-acp-agent", None),
         }
