@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/claude_acp_adapter.rs","old":"            |_program, arguments| {\n","new":"            |_program, arguments, environment| {\n"}
