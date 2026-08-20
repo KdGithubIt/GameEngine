@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/vfx.rs",
+  "old": "            .any(|clip| matches!(clip.payload, CompiledClipPayload::Vfx { .. }))",
+  "new": "            .any(|clip| matches!(&clip.payload, CompiledClipPayload::Vfx { .. }))"
+}
