@@ -20,6 +20,7 @@ pub(super) fn show(
     );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(27));
+    let plot_rect = rect.shrink(6.0);
 
     let (minimum, maximum) = value_range(keys);
     for step in 1..4 {
@@ -43,8 +44,8 @@ pub(super) fn show(
         let ratio = sample as f32 / SAMPLES as f32;
         let tick = TimelineTick((duration as f32 * ratio).round() as i64);
         points.push(egui::pos2(
-            rect.left() + rect.width() * ratio,
-            value_y(rect, minimum, maximum, sample_keys(keys, tick)),
+            plot_rect.left() + plot_rect.width() * ratio,
+            value_y(plot_rect, minimum, maximum, sample_keys(keys, tick)),
         ));
     }
     painter.add(egui::Shape::line(
@@ -56,8 +57,8 @@ pub(super) fn show(
         let ratio = key.tick.get() as f32 / duration as f32;
         painter.circle_filled(
             egui::pos2(
-                rect.left() + rect.width() * ratio.clamp(0.0, 1.0),
-                value_y(rect, minimum, maximum, key.value),
+                plot_rect.left() + plot_rect.width() * ratio.clamp(0.0, 1.0),
+                value_y(plot_rect, minimum, maximum, key.value),
             ),
             4.5,
             egui::Color32::from_rgb(125, 175, 230),
@@ -66,9 +67,12 @@ pub(super) fn show(
 
     if preview_tick >= clip.start && preview_tick <= clip.end {
         let local = (preview_tick.get() - clip.start.get()).clamp(0, duration);
-        let x = rect.left() + rect.width() * local as f32 / duration as f32;
+        let x = plot_rect.left() + plot_rect.width() * local as f32 / duration as f32;
         painter.line_segment(
-            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            [
+                egui::pos2(x, plot_rect.top()),
+                egui::pos2(x, plot_rect.bottom()),
+            ],
             egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(230, 190, 90)),
         );
     }
