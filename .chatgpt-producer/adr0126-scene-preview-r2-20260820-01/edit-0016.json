@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "    /// Draws the Sequencer workspace.\n    pub(crate) fn show(&mut self, ui: &mut egui::Ui, permissions: &AuthoringPermissions) {",
+  "new": "    /// Advances the Editor-owned preview clock and returns one runtime evaluation.\n    pub(crate) fn advance_preview(&mut self, delta_seconds: f32) -> Option<TimelineEvaluation> {\n        self.open\n            .as_mut()\n            .map(|loaded| loaded.advance_preview(delta_seconds.max(0.0)))\n    }\n\n    /// Returns whether the preview clock needs continuous Editor repaints.\n    pub(crate) fn preview_is_playing(&self) -> bool {\n        self.open\n            .as_ref()\n            .is_some_and(|loaded| loaded.player.state() == TimelinePlayState::Playing)\n    }\n\n    /// Draws the Sequencer workspace.\n    pub(crate) fn show(&mut self, ui: &mut egui::Ui, permissions: &AuthoringPermissions) {"
+}
