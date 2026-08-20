@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "    /// Releases preview-world state owned by the old project.\n    pub fn clear_project_caches(&mut self) {\n        self.preview = None;\n        self.manifest_hash_cache = None;\n        self.waiting_for_residency = false;\n    }",
+  "new": "    /// Publishes the latest Sequencer evaluation to the persistent Scene View world.\n    pub(crate) fn set_timeline_preview_evaluation(\n        &mut self,\n        evaluation: Option<engine::timeline::TimelineEvaluation>,\n    ) {\n        self.timeline_preview_evaluation = evaluation;\n    }\n\n    /// Releases preview-world state owned by the old project.\n    pub fn clear_project_caches(&mut self) {\n        self.preview = None;\n        self.timeline_preview_evaluation = None;\n        self.manifest_hash_cache = None;\n        self.waiting_for_residency = false;\n    }"
+}
