@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "        let mut loaded = LoadedTimeline {\n            relative: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            path: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            document,\n            undo: Vec::new(),\n            dirty: false,\n            compiled,\n            player: TimelinePlayer::new(),\n            preview_tick: TimelineTick::ZERO,\n            diagnostics: Vec::new(),\n        };\n        loaded.seek(TimelineTick::from_seconds(2.0), false);",
+  "new": "        let mut loaded = LoadedTimeline {\n            relative: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            path: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            document,\n            undo: Vec::new(),\n            dirty: false,\n            compiled,\n            player: TimelinePlayer::new(),\n            preview_tick: TimelineTick::ZERO,\n            pending_preview: None,\n            diagnostics: Vec::new(),\n        };\n        loaded.set_loop_enabled(true);\n        loaded.player.pause();\n        loaded.seek(TimelineTick::from_seconds(2.0), false);"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "                    if self.renderer_failure_device != self.renderer_device {\n                        self.preview_notice = spawn_notice;\n                    }\n                    self.preview = Some(PreviewWorld {\n                        app,\n                        key: key.clone(),\n                        bridge,\n                        transform_overrides: Vec::new(),",
+  "new": "                    if self.renderer_failure_device != self.renderer_device {\n                        self.preview_notice = spawn_notice;\n                    }\n                    let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());\n                    self.preview = Some(PreviewWorld {\n                        app,\n                        key: key.clone(),\n                        bridge,\n                        transform_overrides: Vec::new(),\n                        timeline,"
+}

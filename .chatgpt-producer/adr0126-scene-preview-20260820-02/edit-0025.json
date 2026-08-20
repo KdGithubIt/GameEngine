@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "                if requested == \"Sequencer\" {\n                    authoring_windows.prepare_sequencer_visual_validation();\n                }",
+  "new": "                if requested == \"Sequencer\" {\n                    let subject = app.prepare_sequencer_visual_validation();\n                    authoring_windows.prepare_sequencer_visual_validation(subject);\n                }"
+}

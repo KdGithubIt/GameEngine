@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "                        self.preview = Some(PreviewWorld {\n                            app,\n                            key: key.clone(),\n                            bridge,\n                            transform_overrides: Vec::new(),\n                            animation_system_installed: false,",
+  "new": "                        let timeline = TimelinePreviewRuntime::from_bridge(bridge.as_ref());\n                        self.preview = Some(PreviewWorld {\n                            app,\n                            key: key.clone(),\n                            bridge,\n                            transform_overrides: Vec::new(),\n                            timeline,\n                            animation_system_installed: false,"
+}

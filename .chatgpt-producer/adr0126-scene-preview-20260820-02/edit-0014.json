@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "    transform_overrides: Vec<EntityId>,\n    /// Whether the animation and pose-composition preview pipeline has already",
+  "new": "    transform_overrides: Vec<EntityId>,\n    /// Runtime state owned by the Sequencer preview inside this persistent world.\n    timeline: TimelinePreviewRuntime,\n    /// Whether the animation and pose-composition preview pipeline has already"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "    /// Ticks the last preview evaluation reported as its playhead.\n    preview_tick: TimelineTick,\n    /// Diagnostics from the most recent compile or validation.\n    diagnostics: Vec<String>,",
+  "new": "    /// Ticks the last preview evaluation reported as its playhead.\n    preview_tick: TimelineTick,\n    /// One seek evaluation waiting for the Scene View preview bridge.\n    ///\n    /// Keeping this one-shot result preserves explicit Preview Events semantics;\n    /// recomputing a paused sample on the next frame would correctly sample the\n    /// pose but would discard the event the user deliberately opted into.\n    pending_preview: Option<TimelineEvaluation>,\n    /// Diagnostics from the most recent compile or validation.\n    diagnostics: Vec<String>,"
+}
