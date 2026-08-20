@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-agenthost-bridge-20260821-0307-01",
+  "target_branch": "chatgpt/gameengine-acp-agenthost-bridge",
+  "expected_head_sha": "694de8724308c3acdd171fd9e2293876821f86ee",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "5a930093786d7b78fa3021b9225dfb8c95f15ea127107a6e7eea9da70342d52f",
+  "patch_bytes": 42251,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ACP AgentHost bridge",
+  "pr_title": "GameEngine: add ACP AgentHost bridge",
+  "pr_body": "## Summary\n- bind provider-neutral ACP sessions to existing AgentSession/AgentRun authority\n- normalize ACP events, permissions, cancellation, failures, completion evidence, and validation handoff through AgentHost\n- expose only read-only Ask and AgentRun-bound Build/Repair MCP authority while preserving the existing canonical_authoring writer path\n- add focused unit test code without running heavy validation in this parallel authoring subtask\n\n## Integration\nThis branch is based on the ACP Foundation HEAD. Chat 1 transport should implement the existing AcpAgentRuntime/AcpAgentSession contracts and preserve AcpSessionBinding run identity on MCP calls. Provider descriptors from Chats 3-5 remain data-driven.\n\n## Validation\nHeavy cargo validation, Windows Validation, and Visual Validation are intentionally deferred to the final ACP integration chat. Canonical producer/build/preflight remains required."
+}
