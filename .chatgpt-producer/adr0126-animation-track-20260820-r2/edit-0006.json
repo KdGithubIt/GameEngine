@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/evaluate.rs","old":"    AssetId, EntityId, TimelineClipId, TimelineMarkerId, TimelineProperty, TimelineTick,\n    TimelineTrackId,\n};","new":"    AssetId, EntityId, MotionSlotId, TimelineClipId, TimelineMarkerId, TimelineProperty,\n    TimelineTick, TimelineTrackId,\n};"}
