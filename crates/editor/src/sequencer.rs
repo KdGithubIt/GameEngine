@@ -13,7 +13,8 @@ use engine_authoring::{
     replace_file_contents,
 };
 use engine_timeline::{
-    CompiledTimeline, TimelinePlayer, TimelineSeek, TrackRegistry, compile_timeline,
+    CompiledTimeline, LoopRegion, TimelineEvaluation, TimelinePlayState, TimelinePlayer,
+    TimelineSeek, TrackRegistry, compile_timeline,
 };
 use std::path::{Path, PathBuf};
 
@@ -75,6 +76,12 @@ struct LoadedTimeline {
     player: TimelinePlayer,
     /// Ticks the last preview evaluation reported as its playhead.
     preview_tick: TimelineTick,
+    /// One seek evaluation waiting for the Scene View preview bridge.
+    ///
+    /// Keeping this one-shot result preserves explicit Preview Events semantics;
+    /// recomputing a paused sample on the next frame would correctly sample the
+    /// pose but would discard the event the user deliberately opted into.
+    pending_preview: Option<TimelineEvaluation>,
     /// Diagnostics from the most recent compile or validation.
     diagnostics: Vec<String>,
 }
@@ -99,6 +106,7 @@ impl LoadedTimeline {
             compiled,
             player: TimelinePlayer::new(),
             preview_tick: TimelineTick::ZERO,
+            pending_preview: None,
             diagnostics: Vec::new(),
         })
     }
@@ -129,6 +137,10 @@ impl LoadedTimeline {
             self.undo.remove(0);
         }
         self.compiled = compiled;
+        self.pending_preview = None;
+        if self.player.loop_region().is_some() {
+            self.set_loop_enabled(true);
+        }
         self.diagnostics.clear();
         self.dirty = true;
         Ok(())
@@ -142,6 +154,10 @@ impl LoadedTimeline {
             Ok(compiled) => {
                 self.document = previous;
                 self.compiled = compiled;
+                self.pending_preview = None;
+                if self.player.loop_region().is_some() {
+                    self.set_loop_enabled(true);
+                }
                 self.dirty = true;
                 true
             }
@@ -167,6 +183,25 @@ impl LoadedTimeline {
         };
         let evaluation = self.player.seek(&self.compiled, tick, mode);
         self.preview_tick = evaluation.tick;
+        self.pending_preview = Some(evaluation);
+    }
+
+    fn set_loop_enabled(&mut self, enabled: bool) {
+        let region = enabled.then_some(LoopRegion {
+            start: TimelineTick::ZERO,
+            end: self.document.duration,
+            count: None,
+        });
+        let _ = self.player.set_loop_region(region);
+    }
+
+    fn advance_preview(&mut self, delta_seconds: f32) -> TimelineEvaluation {
+        let evaluation = self
+            .pending_preview
+            .take()
+            .unwrap_or_else(|| self.player.advance(&self.compiled, delta_seconds));
+        self.preview_tick = evaluation.tick;
+        evaluation
     }
 }
 
@@ -178,13 +213,16 @@ impl SequencerState {
     /// document, and this fixture is compiled only for visual validation so no
     /// normal Editor launch can reach it.
     #[cfg(feature = "visual-validation")]
-    pub(crate) fn prepare_visual_validation(&mut self) {
+    pub(crate) fn prepare_visual_validation(
+        &mut self,
+        subject: Option<engine_authoring::EntityId>,
+    ) {
         use engine_authoring::{
             EntityId, TimelineAudioAction, TimelineBinding, TimelineInterpolation, TimelineKey,
         };
 
         let camera = EntityId::generate();
-        let subject = EntityId::generate();
+        let subject = subject.unwrap_or_else(EntityId::generate);
         let mut document = TimelineDocument::new(TimelineTick::from_seconds(6.0));
         document.tracks.push(TimelineTrack {
             id: TimelineTrackId::generate(),
@@ -232,7 +270,7 @@ impl SequencerState {
                         },
                         TimelineKey {
                             tick: TimelineTick::from_seconds(3.5),
-                            value: 8.0,
+                            value: 3.0,
                             interpolation: TimelineInterpolation::Linear,
                         },
                     ],
@@ -297,15 +335,21 @@ impl SequencerState {
             compiled,
             player: TimelinePlayer::new(),
             preview_tick: TimelineTick::ZERO,
+            pending_preview: None,
             diagnostics: Vec::new(),
         };
+        loaded.set_loop_enabled(true);
+        loaded.player.pause();
         loaded.seek(TimelineTick::from_seconds(2.0), false);
         self.selected_track = 1;
         self.selected_clip = loaded.document.tracks[1]
             .clips
             .first()
             .map(|clip| clip.id.clone());
-        self.status = Some("Scrubbed to 2.000s; gameplay events stay suppressed.".to_owned());
+        self.status = Some(
+            "Scene View preview · Paused · Loop · 2.000s; gameplay events stay suppressed."
+                .to_owned(),
+        );
         self.open = Some(loaded);
     }
 
@@ -323,6 +367,20 @@ impl SequencerState {
                 self.open = None;
             }
         }
+    }
+
+    /// Advances the Editor-owned preview clock and returns one runtime evaluation.
+    pub(crate) fn advance_preview(&mut self, delta_seconds: f32) -> Option<TimelineEvaluation> {
+        self.open
+            .as_mut()
+            .map(|loaded| loaded.advance_preview(delta_seconds.max(0.0)))
+    }
+
+    /// Returns whether the preview clock needs continuous Editor repaints.
+    pub(crate) fn preview_is_playing(&self) -> bool {
+        self.open
+            .as_ref()
+            .is_some_and(|loaded| loaded.player.state() == TimelinePlayState::Playing)
     }
 
     /// Draws the Sequencer workspace.
@@ -744,6 +802,7 @@ fn transport_controls(
         }
         if ui.button("Stop").clicked() {
             loaded.player.stop();
+            loaded.pending_preview = None;
             loaded.preview_tick = TimelineTick::ZERO;
         }
         if ui.button("Step −").clicked() {
@@ -754,6 +813,16 @@ fn transport_controls(
             let tick = step_tick(loaded, 1, snap_to_frames);
             loaded.seek(tick, preview_events);
         }
+        let mut loop_enabled = loaded.player.loop_region().is_some();
+        if ui.checkbox(&mut loop_enabled, "Loop").changed() {
+            loaded.set_loop_enabled(loop_enabled);
+        }
+        let state = match loaded.player.state() {
+            TimelinePlayState::Playing => "Playing",
+            TimelinePlayState::Paused => "Paused",
+            TimelinePlayState::Stopped => "Stopped",
+        };
+        ui.label(state);
         ui.label(format!(
             "{:.3}s / {:.3}s",
             loaded.preview_tick.as_seconds(),
@@ -790,9 +859,7 @@ fn default_payload(kind: TimelineTrackKind) -> TimelineClipPayload {
             camera: engine_authoring::EntityId::generate(),
         },
         TimelineTrackKind::Animation => TimelineClipPayload::Animation {
-            motion_slot: engine_authoring::MotionSlotId::generate()
-                .as_str()
-                .to_owned(),
+            motion_slot: "motion".to_owned(),
             speed: 1.0,
             looping: false,
         },
@@ -836,6 +903,7 @@ mod tests {
             compiled,
             player: TimelinePlayer::new(),
             preview_tick: TimelineTick::ZERO,
+            pending_preview: None,
             diagnostics: Vec::new(),
         }
     }
@@ -935,6 +1003,44 @@ mod tests {
             TimelineSeek::PreviewEvents,
         );
         assert_eq!(preview.events.len(), 1);
+    }
+
+    #[test]
+    fn preview_clock_plays_pauses_and_loops_without_losing_the_playhead() {
+        let mut loaded = loaded_timeline();
+        loaded.set_loop_enabled(true);
+        loaded.player.play();
+
+        let evaluation = loaded.advance_preview(1.25);
+        assert_eq!(evaluation.tick, TimelineTick(12_000));
+        assert_eq!(loaded.player.loops_completed(), 1);
+        assert_eq!(loaded.player.state(), TimelinePlayState::Playing);
+
+        loaded.player.pause();
+        let paused = loaded.advance_preview(0.5);
+        assert_eq!(paused.tick, TimelineTick(12_000));
+        assert_eq!(loaded.preview_tick, TimelineTick(12_000));
+    }
+
+    #[test]
+    fn explicit_event_preview_reaches_the_next_scene_view_sample_once() {
+        let mut loaded = loaded_timeline();
+        loaded
+            .edit(&writable(), |document| {
+                document.markers.push(TimelineMarker {
+                    id: TimelineMarkerId::generate(),
+                    tick: TimelineTick(1_000),
+                    name: "hit".to_owned(),
+                    event: "hit".to_owned(),
+                });
+            })
+            .expect("valid edit");
+
+        loaded.seek(TimelineTick(1_000), true);
+        let preview = loaded.advance_preview(0.0);
+        assert_eq!(preview.events.len(), 1);
+        let held = loaded.advance_preview(0.0);
+        assert!(held.events.is_empty());
     }
 
     #[test]
