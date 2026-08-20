@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-goose-local-20260821-0308-01",
+  "target_branch": "chatgpt/gameengine-acp-goose-local",
+  "expected_head_sha": "694de8724308c3acdd171fd9e2293876821f86ee",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "1ef34345c491dba850d3b74a34fe6218c803f3f6a0395da5520e43e4ebe612df",
+  "patch_bytes": 55528,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Goose Managed Local ACP adapter",
+  "pr_title": "Add Goose Managed Local ACP adapter",
+  "pr_body": "## Summary\n- add a Goose-specific ACP adapter on top of the ACP Foundation branch without changing Agent Host/ACP Core provider-neutral contracts\n- discover/probe the machine-local Goose executable and expose Goose + Managed Local/GGUF runtime identity\n- lease the existing ManagedLocalRuntime OpenAI-compatible llama-server endpoint without redesigning its GGUF registration or Windows/WSL lifecycle\n- launch `goose acp` with process-local OpenAI provider/model configuration and isolated machine-local config/state/cache directories\n- attach the existing GameEngine MCP HTTP endpoint to ACP `session/new`, preserving read-only vs AgentRun-bound authorization headers\n- normalize Goose ACP session updates and permission requests into the Foundation interfaces, with bounded startup and cleanup of temporary config + endpoint lease\n- add focused unit-test code for identity, MCP authority/header construction, update normalization, provider environment, and permission classification\n\n## Scope\nThis is the Goose Local ACP parallel authoring subtask. It intentionally does not remove the existing native local agent loop, change Hosted API/Codex/Claude providers, wire final AI Studio provider selection, or modify project/scene/asset serialization.\n\n## Baseline\nBuilt on ACP Foundation HEAD `694de8724308c3acdd171fd9e2293876821f86ee` (Draft PR #1037).\n\n## Validation\nPer the parallel-authoring protocol, heavy cargo validation, Windows Validation, and Visual Validation are intentionally deferred to the final ACP integration chat. Unit test code is added but is not executed here. Canonical request build/preflight, expected-HEAD checking, patch applicability, path policy, and whitespace preflight remain required before dispatch."
+}
