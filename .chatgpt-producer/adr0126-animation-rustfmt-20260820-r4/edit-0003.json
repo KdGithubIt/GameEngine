@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    let mut events = world.remove_resource::<TimelineEvents>().unwrap_or_default();","new":"    let mut events = world\n        .remove_resource::<TimelineEvents>()\n        .unwrap_or_default();"}
