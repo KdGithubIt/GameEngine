@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                        if ui\n                            .selectable_value(&mut self.selected_session, id.clone(), title)\n                            .changed()\n                            && let Ok(session) = self.host.session(&id)\n                        {\n                            self.proposal_draft = session.proposal.clone();\n                        }\n",
+  "new": "                        if ui\n                            .selectable_value(&mut self.selected_session, id.clone(), title)\n                            .changed()\n                            && let Ok(session) = self.host.session(&id)\n                        {\n                            self.proposal_draft = session.proposal.clone();\n                            self.session_title_draft = None;\n                            self.session_delete_confirmation = None;\n                        }\n"
+}
