@@ -1,0 +1,140 @@
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+index 91375f2af8b7304d4c8d8e764edc33b00baddf7e..68d03961d4ac047e491a53edf0d06cd2427d8a4a 100644
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -1099,10 +1099,7 @@ mod tests {
+ 
+         assert_eq!(sought.elapsed_seconds(), forward.elapsed_seconds());
+         assert_eq!(sought.stats(), forward.stats());
+-        assert_eq!(
+-            sought.emitters()[0].particles(),
+-            forward.emitters()[0].particles()
+-        );
++        assert_eq!(sought.emitters()[0].particles(), forward.emitters()[0].particles());
+     }
+ 
+     #[test]
+@@ -1114,20 +1111,14 @@ mod tests {
+ 
+         let mut reconstructed = VfxInstance::new(effect(128), Some(999));
+         reconstructed.restore_checkpoint(&checkpoint);
+-        assert_eq!(
+-            reconstructed.elapsed_seconds(),
+-            checkpoint.elapsed_seconds()
+-        );
++        assert_eq!(reconstructed.elapsed_seconds(), checkpoint.elapsed_seconds());
+ 
+         assert!(forward.replay_forward_to(1.75, origin));
+         assert!(reconstructed.replay_forward_to(1.75, origin));
+ 
+         assert_eq!(reconstructed.elapsed_seconds(), forward.elapsed_seconds());
+         assert_eq!(reconstructed.stats(), forward.stats());
+-        assert_eq!(
+-            reconstructed.emitters()[0].particles(),
+-            forward.emitters()[0].particles()
+-        );
++        assert_eq!(reconstructed.emitters()[0].particles(), forward.emitters()[0].particles());
+     }
+ 
+     #[test]
+diff --git a/crates/timeline/src/replay.rs b/crates/timeline/src/replay.rs
+index 0060cfcb50e77e537446a55df5336e9c4c780c89..586604189c659f0021d7c47ff890f3e85f814719 100644
+--- a/crates/timeline/src/replay.rs
++++ b/crates/timeline/src/replay.rs
+@@ -10,8 +10,8 @@ use engine_authoring::TimelineTick;
+ use std::collections::BTreeMap;
+ use std::fmt;
+ use std::sync::{
+-    atomic::{AtomicU64, Ordering},
+     Arc,
++    atomic::{AtomicU64, Ordering},
+ };
+ use std::time::Duration;
+ 
+@@ -150,9 +150,7 @@ impl ReplayRequestController {
+ 
+     /// Cancels both a pending request and any in-flight request from this controller.
+     pub fn cancel(&mut self) {
+-        self.cancellation
+-            .generation
+-            .fetch_add(1, Ordering::AcqRel);
++        self.cancellation.generation.fetch_add(1, Ordering::AcqRel);
+         self.pending = None;
+     }
+ 
+@@ -168,9 +166,7 @@ impl ReplayRequestController {
+             return None;
+         }
+         self.pending = None;
+-        self.cancellation
+-            .is_current(pending.request)
+-            .then_some(pending.request)
++        self.cancellation.is_current(pending.request).then_some(pending.request)
+     }
+ 
+     /// Whether a request is currently waiting for its debounce period.
+@@ -308,16 +304,12 @@ impl<S> ReplayCheckpointCache<S> {
+     /// because checkpoints from the abandoned future no longer belong to the
+     /// active state history.
+     pub fn invalidate_after(&mut self, tick: TimelineTick) {
+-        self.checkpoints
+-            .retain(|checkpoint, _| *checkpoint <= tick);
++        self.checkpoints.retain(|checkpoint, _| *checkpoint <= tick);
+     }
+ 
+     /// Nearest retained checkpoint at or before `target`.
+     pub fn checkpoint_tick_at_or_before(&self, target: TimelineTick) -> Option<TimelineTick> {
+-        self.checkpoints
+-            .range(..=target)
+-            .next_back()
+-            .map(|(tick, _)| *tick)
++        self.checkpoints.range(..=target).next_back().map(|(tick, _)| *tick)
+     }
+ 
+     fn prune(&mut self) {
+@@ -395,8 +387,7 @@ impl<S: Clone> ReplayCheckpointCache<S> {
+         }
+ 
+         if !self.checkpoints.contains_key(&TimelineTick::ZERO) {
+-            self.checkpoints
+-                .insert(TimelineTick::ZERO, start_state.clone());
++            self.checkpoints.insert(TimelineTick::ZERO, start_state.clone());
+         }
+         for (tick, state) in staged {
+             self.checkpoints.insert(tick, state);
+@@ -499,20 +490,13 @@ mod tests {
+         let old = controller.request(TimelineTick(1_000), Duration::from_millis(0));
+         let token = controller.cancellation_token();
+ 
+-        assert!(controller
+-            .take_ready(Duration::from_millis(40))
+-            .is_none());
++        assert!(controller.take_ready(Duration::from_millis(40)).is_none());
+ 
+         let newest = controller.request(TimelineTick(2_000), Duration::from_millis(40));
+         assert!(!token.is_current(old));
+         assert!(token.is_current(newest));
+-        assert!(controller
+-            .take_ready(Duration::from_millis(89))
+-            .is_none());
+-        assert_eq!(
+-            controller.take_ready(Duration::from_millis(90)),
+-            Some(newest)
+-        );
++        assert!(controller.take_ready(Duration::from_millis(89)).is_none());
++        assert_eq!(controller.take_ready(Duration::from_millis(90)), Some(newest));
+         assert!(!controller.has_pending());
+     }
+ 
+@@ -521,10 +505,7 @@ mod tests {
+         let mut controller = ReplayRequestController::new(Duration::from_millis(0));
+         let request = controller.request(TimelineTick(1_000), Duration::from_millis(0));
+         let token = controller.cancellation_token();
+-        assert_eq!(
+-            controller.take_ready(Duration::from_millis(0)),
+-            Some(request)
+-        );
++        assert_eq!(controller.take_ready(Duration::from_millis(0)), Some(request));
+         assert!(token.is_current(request));
+ 
+         controller.cancel();
