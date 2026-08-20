@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/external_agent_provider.rs",
+  "old": "                    OsString::from(\"--skip-git-repo-check\"),\n                    OsString::from(\"--sandbox\"),\n                    OsString::from(\"read-only\"),\n",
+  "new": "                    OsString::from(\"--skip-git-repo-check\"),\n                    OsString::from(\"--enable\"),\n                    OsString::from(CODEX_MCP_FEATURE),\n                    OsString::from(\"--sandbox\"),\n                    OsString::from(\"read-only\"),\n"
+}
