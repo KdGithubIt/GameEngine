@@ -258,7 +258,17 @@ fn project_event(run_id: &str, event: &AgentEvent) -> TranscriptEntry {
             action,
             success,
         }) => {
-            detail = format!("{tool} · {action}");
+            // The host message already reads as "<tool>: <action>". Repeating
+            // it as a detail line would double every tool entry in the
+            // transcript, so the composed form is kept only when the message
+            // does not already carry both halves.
+            detail = if event.message.contains(tool.as_str())
+                && event.message.contains(action.as_str())
+            {
+                String::new()
+            } else {
+                format!("{tool} · {action}")
+            };
             outcome = Some(match success {
                 Some(true) => TranscriptOutcome::Succeeded,
                 Some(false) => TranscriptOutcome::Failed,

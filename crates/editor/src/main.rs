@@ -458,6 +458,7 @@ fn adr_scenario_targets_ai_studio(scenario: &str) -> bool {
     scenario.starts_with("adr0144-")
         || scenario.starts_with("adr0149-")
         || scenario.starts_with("adr0153-")
+        || scenario.starts_with("adr0158-")
 }
 
 /// Returns the requested ADR visual scenario, if one was named.

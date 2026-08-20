@@ -784,8 +784,6 @@ pub struct AiStudioPanel {
     #[cfg(feature = "visual-validation")]
     detached_visual_frames: u8,
     #[cfg(feature = "visual-validation")]
-    visual_scroll_offset: f32,
-    #[cfg(feature = "visual-validation")]
     visual_external_provider_evidence: bool,
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
@@ -936,7 +934,6 @@ impl AiStudioPanel {
             #[cfg(feature = "visual-validation")]
             detached_visual_frames: 0,
             #[cfg(feature = "visual-validation")]
-            visual_scroll_offset: 480.0,
             #[cfg(feature = "visual-validation")]
             visual_external_provider_evidence: false,
             active_run_id,
@@ -1008,8 +1005,94 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
         self.external_provider_status =
             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
-        self.visual_scroll_offset = 480.0;
         self.visual_external_provider_evidence = false;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Seeds one session and run so the transcript can be reviewed (ADR 0158).
+    ///
+    /// An empty studio shows a composer and an empty-state line, which proves
+    /// the layout and nothing about the entries. This drives the real Agent
+    /// Host so the captured transcript is a projection of recorded host state
+    /// rather than a drawn mock.
+    pub fn prepare_transcript_visual_validation(&mut self) {
+        self.prepare_hosted_backend_visual_validation();
+        let Ok(session) = self.host.create_session("Intro cutscene pacing") else {
+            self.status = Some("Transcript fixture could not create a session.".to_owned());
+            return;
+        };
+        self.selected_session = session.clone();
+        let mut proposal = AgentProposal {
+            goal: "Slow the intro cutscene and cut to the balcony camera on the door beat."
+                .to_owned(),
+            ..AgentProposal::default()
+        };
+        proposal.planned_project_changes = vec!["assets/cutscenes/intro.timeline.json".to_owned()];
+        proposal.acceptance_criteria =
+            vec!["The balcony camera is active when the door marker fires.".to_owned()];
+        let _ = self.host.update_proposal(&session, proposal.clone());
+        self.proposal_draft = proposal;
+        let _ = self.host.append_message(
+            &session,
+            ConversationRole::User,
+            "The intro cutscene cuts to the balcony too early. Hold the wide shot until the door marker.",
+        );
+        let _ = self.host.append_message(
+            &session,
+            ConversationRole::Assistant,
+            "The Camera Cut track changes at 2.0 s and the door marker is at 2.4 s. I can move the cut onto the marker and keep the wide shot until then.",
+        );
+        let version = self
+            .host
+            .session(&session)
+            .map(|session| session.proposal.version)
+            .unwrap_or_default();
+        let Ok(run) = self
+            .host
+            .start_run_authorized(&session, version, "native:managed:local")
+        else {
+            self.status = Some("Transcript fixture could not start a run.".to_owned());
+            return;
+        };
+        let _ =
+            self.host
+                .transition_run(&run, AgentRunState::Executing, "Go authorized proposal v1.");
+        let _ = self.host.record_semantic_progress(
+            &run,
+            "inspect_timeline",
+            "Read the Camera Cut track and the marker lane of intro.timeline.json.",
+        );
+        let _ = self.host.record_model_exchange(
+            &run,
+            ModelExchangeRecord {
+                turn: 1,
+                prompt: "visual fixture prompt",
+                response: "visual fixture response",
+                prompt_tokens: Some(6_412),
+                response_tokens: Some(188),
+                finish_reason: "stop",
+                response_digest: "fixture-digest",
+                response_excerpt:
+                    "{\"summary\":\"Move the camera cut onto the door marker\",\"action\":{\"type\":\"mcp_call\"}}",
+            },
+        );
+        let _ = self.host.record_tool_action(
+            &run,
+            "timeline.apply",
+            "rejected: clip overlaps an earlier clip on the same track",
+            Some(false),
+        );
+        let _ = self.host.record_semantic_progress(
+            &run,
+            "repair",
+            "Trim the preceding clip before moving the cut so the track stays non-overlapping.",
+        );
+        let _ = self
+            .host
+            .record_tool_action(&run, "timeline.apply", "applied", Some(true));
+        self.active_run_id = Some(run);
+        self.status =
+            Some("Native run executing · proposal v1 · authoring mutation applied.".to_owned());
     }
 
     #[cfg(feature = "visual-validation")]
@@ -1024,7 +1107,6 @@ impl AiStudioPanel {
             gpu_residency_bytes: TelemetryValue::Measured(3_200_000_000),
             context_length_tokens: TelemetryValue::Measured(8_192),
         };
-        self.visual_scroll_offset = 480.0;
         self.visual_external_provider_evidence = false;
     }
 
@@ -1035,7 +1117,6 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
         self.external_provider_status =
             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
-        self.visual_scroll_offset = 1_600.0;
         self.visual_external_provider_evidence = true;
     }
 
@@ -1242,7 +1323,6 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::Generic;
         self.external_provider_status =
             ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
-        self.visual_scroll_offset = 2_400.0;
         self.visual_external_provider_evidence = false;
         Ok(())
     }
@@ -1276,6 +1356,9 @@ impl AiStudioPanel {
                         .to_owned(),
                 );
             }
+            "adr0158-transcript" => {
+                self.prepare_transcript_visual_validation();
+            }
             "adr0149-live-observation" => {
                 self.model_backend = ModelBackendPreference::Local;
                 self.status = Some(
@@ -1300,9 +1383,15 @@ impl AiStudioPanel {
     }
 
     #[cfg(feature = "visual-validation")]
-    /// Returns whether the detached native viewport has completed two rendered frames.
+    /// Returns whether the detached native viewport is ready to be captured.
+    ///
+    /// The transcript scrolls to its newest entry, and egui resolves a scroll
+    /// area's content height from the previous frame. Capturing after two
+    /// frames photographed the transcript before that scroll settled, so the
+    /// newest entries — including the ones ADR 0158 refuses to collapse — were
+    /// outside the captured image.
     pub fn detached_visual_validation_capture_ready(&self) -> bool {
-        self.detached_visual_frames >= 2
+        self.detached_visual_frames >= 4
     }
 
     /// Takes one authorized managed runtime action for the Editor shell to execute.
@@ -2193,8 +2282,6 @@ impl AiStudioPanel {
             .id_salt("ai_studio_transcript")
             .auto_shrink([false, false])
             .stick_to_bottom(true);
-        #[cfg(feature = "visual-validation")]
-        let transcript_scroll = transcript_scroll.vertical_scroll_offset(self.visual_scroll_offset);
         transcript_scroll
             .show(ui, |ui| {
                 if transcript.entries.is_empty() {
@@ -4906,10 +4993,7 @@ impl AiStudioPanel {
                     )
                 })
             });
-            if ui
-                .add_enabled(can_stop, egui::Button::new("Stop"))
-                .clicked()
-            {
+            if can_stop && ui.button("Stop").clicked() {
                 stop_requested = true;
             }
             let can_interrupt = !self.editing_interrupted
@@ -4928,18 +5012,12 @@ impl AiStudioPanel {
                             )
                         })
                     }));
-            if ui
-                .add_enabled(can_interrupt, egui::Button::new("Interrupt for Editing"))
-                .clicked()
-            {
+            if can_interrupt && ui.button("Interrupt for Editing").clicked() {
                 interrupt_requested = true;
             }
-            if ui
-                .add_enabled(
-                    self.editing_interrupted && self.pending_runtime_action.is_none(),
-                    egui::Button::new("Resume"),
-                )
-                .clicked()
+            if self.editing_interrupted
+                && self.pending_runtime_action.is_none()
+                && ui.button("Resume").clicked()
             {
                 resume_requested = true;
             }
