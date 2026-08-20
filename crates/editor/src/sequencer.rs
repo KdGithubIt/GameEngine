@@ -213,7 +213,10 @@ impl SequencerState {
     /// document, and this fixture is compiled only for visual validation so no
     /// normal Editor launch can reach it.
     #[cfg(feature = "visual-validation")]
-    pub(crate) fn prepare_visual_validation(&mut self, subject: Option<EntityId>) {
+    pub(crate) fn prepare_visual_validation(
+        &mut self,
+        subject: Option<engine_authoring::EntityId>,
+    ) {
         use engine_authoring::{
             EntityId, TimelineAudioAction, TimelineBinding, TimelineInterpolation, TimelineKey,
         };
