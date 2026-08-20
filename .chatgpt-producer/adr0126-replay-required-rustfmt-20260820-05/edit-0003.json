@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/replay.rs","old":"        self.checkpoints.entry(TimelineTick::ZERO).or_insert_with(|| start_state.clone());","new":"        self.checkpoints\n            .entry(TimelineTick::ZERO)\n            .or_insert_with(|| start_state.clone());"}
