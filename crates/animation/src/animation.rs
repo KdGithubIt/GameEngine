@@ -310,6 +310,25 @@ enum AnimatorDiscontinuity {
     Seek,
 }
 
+/// Runtime-only playback state captured while another composition layer
+/// temporarily drives an [`Animator`].
+///
+/// The snapshot contains no stable authoring data and is never serialized. It
+/// exists so Timeline and other top-level adapters can suspend playback
+/// without losing an in-progress crossfade or changing the Animation Graph's
+/// state after the temporary override ends.
+#[derive(Debug, Clone)]
+pub struct AnimatorPlaybackSnapshot {
+    clip: Handle<AnimationClip>,
+    state: AnimatorState,
+    time: f32,
+    looping: bool,
+    playback_speed: f32,
+    root_motion_delta: Vec3,
+    fade: Option<CrossfadeState>,
+    discontinuity: Option<AnimatorDiscontinuity>,
+}
+
 /// An ECS component that plays an [`AnimationClip`] on an entity's
 /// [`Transform`].
 pub struct Animator {
@@ -346,6 +365,7 @@ pub struct Animator {
 /// Sampled and advanced by [`animation_system`] alongside the target clip
 /// (`Animator::clip`/`Animator::time`) so a fade source in motion (e.g. a
 /// walk cycle) does not freeze its feet mid-fade.
+#[derive(Debug, Clone)]
 struct CrossfadeState {
     /// The clip being faded out of.
     clip: Handle<AnimationClip>,
@@ -378,6 +398,36 @@ impl Animator {
             fade: None,
             discontinuity: None,
         }
+    }
+
+    /// Captures the runtime playback state for a temporary composition-layer
+    /// override.
+    ///
+    /// The returned value is session-local and must never be serialized.
+    pub fn playback_snapshot(&self) -> AnimatorPlaybackSnapshot {
+        AnimatorPlaybackSnapshot {
+            clip: self.clip,
+            state: self.state,
+            time: self.time,
+            looping: self.looping,
+            playback_speed: self.playback_speed,
+            root_motion_delta: self.root_motion_delta,
+            fade: self.fade.clone(),
+            discontinuity: self.discontinuity,
+        }
+    }
+
+    /// Restores a runtime playback snapshot captured by
+    /// [`Animator::playback_snapshot`].
+    pub fn restore_playback_snapshot(&mut self, snapshot: AnimatorPlaybackSnapshot) {
+        self.clip = snapshot.clip;
+        self.state = snapshot.state;
+        self.time = snapshot.time;
+        self.looping = snapshot.looping;
+        self.playback_speed = snapshot.playback_speed;
+        self.root_motion_delta = snapshot.root_motion_delta;
+        self.fade = snapshot.fade;
+        self.discontinuity = snapshot.discontinuity;
     }
 
     /// Jumps playback to `seconds`, declaring a seek discontinuity rather

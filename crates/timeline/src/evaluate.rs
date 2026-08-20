@@ -7,8 +7,8 @@
 
 use crate::{CompiledClip, CompiledClipPayload, CompiledTimeline, VfxAction};
 use engine_authoring::{
-    AssetId, EntityId, TimelineClipId, TimelineMarkerId, TimelineProperty, TimelineTick,
-    TimelineTrackId,
+    AssetId, EntityId, MotionSlotId, TimelineClipId, TimelineMarkerId, TimelineProperty,
+    TimelineTick, TimelineTrackId,
 };
 
 /// One clip that contains the evaluated tick.
@@ -66,8 +66,10 @@ pub enum TimelineTrackOutput {
     Animation {
         /// Bound authoring entity.
         entity: Option<EntityId>,
-        /// Motion slot name.
-        motion_slot: String,
+        /// Bound Animation Set asset.
+        animation_set: Option<AssetId>,
+        /// Stable motion slot.
+        motion_slot: MotionSlotId,
         /// Playback rate multiplier.
         speed: f32,
         /// Whether the motion loops inside the clip interval.
@@ -153,7 +155,7 @@ pub(crate) fn evaluate_intervals(
                         });
                     }
                 }
-                if crosses(clip.end, *from, *to) {
+                if crosses_exit(clip.end, *from, *to) {
                     evaluation.exited.push(ClipTransition {
                         track: track.id.clone(),
                         clip: clip.id.clone(),
@@ -167,7 +169,7 @@ pub(crate) fn evaluate_intervals(
                     clip: clip.id.clone(),
                     offset,
                     progress: (offset as f32 / clip.duration() as f32).clamp(0.0, 1.0),
-                    output: track_output(track.entity.as_ref(), clip, offset),
+                    output: track_output(track.entity.as_ref(), track.asset.as_ref(), clip, offset),
                 });
             }
         }
@@ -191,8 +193,17 @@ fn crosses(boundary: TimelineTick, from: TimelineTick, to: TimelineTick) -> bool
     boundary >= from && boundary < to
 }
 
+/// Whether a forward traversal reaches an exclusive clip end.
+///
+/// Clip containment ends at `to`, so exits belong to the step that lands on
+/// the boundary instead of a later step that may never run.
+fn crosses_exit(boundary: TimelineTick, from: TimelineTick, to: TimelineTick) -> bool {
+    boundary > from && boundary <= to
+}
+
 fn track_output(
     entity: Option<&EntityId>,
+    asset: Option<&AssetId>,
     clip: &CompiledClip,
     offset: i64,
 ) -> TimelineTrackOutput {
@@ -208,6 +219,7 @@ fn track_output(
             looping,
         } => TimelineTrackOutput::Animation {
             entity: entity.cloned(),
+            animation_set: asset.cloned(),
             motion_slot: motion_slot.clone(),
             speed: *speed,
             looping: *looping,

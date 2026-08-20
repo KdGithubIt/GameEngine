@@ -6,7 +6,7 @@
 //! Runtime entity handles, animation handles, audio voices, GPU handles, and
 //! Editor selection state are never part of this document.
 
-use crate::{AssetId, EntityId};
+use crate::{AssetId, EntityId, MotionSlotId, StableId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -672,6 +672,15 @@ fn validate_binding(track: &TimelineTrack) -> Vec<String> {
             track.kind.label()
         ));
     }
+    if track.kind == TimelineTrackKind::Animation
+        && track.binding.asset.is_none()
+        && !track.clips.is_empty()
+    {
+        errors.push(format!(
+            "track `{}` must bind an Animation Set asset before it carries Animation clips",
+            track.id.as_str()
+        ));
+    }
     errors
 }
 
@@ -689,9 +698,9 @@ fn validate_payload(clip: &TimelineClip) -> Vec<String> {
         TimelineClipPayload::Animation {
             motion_slot, speed, ..
         } => {
-            if motion_slot.trim().is_empty() {
+            if MotionSlotId::from_stable_id(StableId::new(motion_slot.trim())).is_err() {
                 errors.push(format!(
-                    "clip `{}` must name a motion slot",
+                    "clip `{}` motion slot must be a stable motion_<ULID> identifier",
                     clip.id.as_str()
                 ));
             }
@@ -904,6 +913,52 @@ mod tests {
         assert_eq!(
             TimelineTrackKind::from_type_id("engine.timeline.unknown"),
             None
+        );
+    }
+
+    #[test]
+    fn animation_tracks_require_a_set_binding_and_stable_motion_slot() {
+        let mut document = TimelineDocument::new(TimelineTick(48_000));
+        let motion_slot = MotionSlotId::generate();
+        document.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            kind: TimelineTrackKind::Animation,
+            name: "Motion".to_owned(),
+            enabled: true,
+            binding: TimelineBinding {
+                entity: Some(EntityId::generate()),
+                asset: None,
+            },
+            clips: vec![TimelineClip {
+                id: TimelineClipId::generate(),
+                start: TimelineTick::ZERO,
+                end: TimelineTick(48_000),
+                payload: TimelineClipPayload::Animation {
+                    motion_slot: motion_slot.as_str().to_owned(),
+                    speed: 1.0,
+                    looping: false,
+                },
+            }],
+        });
+        assert!(
+            document
+                .validate()
+                .iter()
+                .any(|error| error.contains("must bind an Animation Set asset"))
+        );
+
+        document.tracks[0].binding.asset = Some(AssetId::generate());
+        let TimelineClipPayload::Animation { motion_slot, .. } =
+            &mut document.tracks[0].clips[0].payload
+        else {
+            panic!("fixture must remain an Animation clip");
+        };
+        *motion_slot = "walk".to_owned();
+        assert!(
+            document
+                .validate()
+                .iter()
+                .any(|error| error.contains("stable motion_<ULID> identifier"))
         );
     }
 
