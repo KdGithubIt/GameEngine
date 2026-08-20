@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-scene-preview-visual-entityid-20260820-01",
+  "target_branch": "chatgpt/gameengine-adr0126-scene-view-preview",
+  "expected_head_sha": "a15eb677c1f3198eff9adb03f410905d04578ab7",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "patch_sha256": "e2af7ea005f5dbb021fe414672cea06112dba658a3baa2b0eec3425490418e7b",
+  "patch_bytes": 814,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Sequencer visual validation EntityId scope",
+  "pr_title": "GameEngine: complete persistent Scene View Timeline preview",
+  "pr_body": "## Summary\n\n- connect Sequencer scrub/play/pause/loop to the persistent Scene View preview world\n- apply Timeline samples through the production engine composition adapter with stable authoring-to-runtime bindings\n- restore authored transforms when a Property clip exits, playback stops, or Sequencer closes\n- retain the Editor Scene View camera while production Camera Cut override state is evaluated\n- add deterministic transport/runtime-adapter tests and a bound visual-validation fixture\n- update ADR 0126 implementation status for the Scene View preview slice\n\n## Validation\n\nRun Windows Validation using the repository impact-based planner and Editor Visual Validation with the Sequencer scenario.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->\n<!-- gameengine-visual-validation-retrigger: 20260820-01 -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
