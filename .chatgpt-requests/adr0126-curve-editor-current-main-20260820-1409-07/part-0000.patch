@@ -1,0 +1,833 @@
+diff --git a/crates/editor/src/sequencer.rs b/crates/editor/src/sequencer.rs
+index 9792372001d2d510ef9a1fe4b89e6d12ba622065..4798feb07cec2bad207de20684296e04c9945b4c 100644
+--- a/crates/editor/src/sequencer.rs
++++ b/crates/editor/src/sequencer.rs
+@@ -17,6 +17,8 @@ use engine_timeline::{
+ };
+ use std::path::{Path, PathBuf};
+ 
++mod curve_editor;
++
+ /// Ticks one Step control moves the playhead when no frame rate applies.
+ const STEP_FALLBACK_TICKS: i64 = 480;
+ 
+@@ -26,6 +28,7 @@ enum HeaderAction {
+     None,
+     Save,
+     Undo,
++    Redo,
+     Close,
+ }
+ 
+@@ -70,6 +73,7 @@ struct LoadedTimeline {
+     path: PathBuf,
+     document: TimelineDocument,
+     undo: Vec<TimelineDocument>,
++    redo: Vec<TimelineDocument>,
+     dirty: bool,
+     compiled: CompiledTimeline,
+     player: TimelinePlayer,
+@@ -95,6 +99,7 @@ impl LoadedTimeline {
+             path,
+             document,
+             undo: Vec::new(),
++            redo: Vec::new(),
+             dirty: false,
+             compiled,
+             player: TimelinePlayer::new(),
+@@ -128,6 +133,7 @@ impl LoadedTimeline {
+         if self.undo.len() > 64 {
+             self.undo.remove(0);
+         }
++        self.redo.clear();
+         self.compiled = compiled;
+         self.diagnostics.clear();
+         self.dirty = true;
+@@ -140,12 +146,41 @@ impl LoadedTimeline {
+         };
+         match compile_timeline(&previous) {
+             Ok(compiled) => {
+-                self.document = previous;
++                let current = std::mem::replace(&mut self.document, previous);
++                self.redo.push(current);
++                if self.redo.len() > 64 {
++                    self.redo.remove(0);
++                }
+                 self.compiled = compiled;
+                 self.dirty = true;
+                 true
+             }
+-            Err(_) => false,
++            Err(_) => {
++                self.undo.push(previous);
++                false
++            }
++        }
++    }
++
++    fn redo(&mut self) -> bool {
++        let Some(next) = self.redo.pop() else {
++            return false;
++        };
++        match compile_timeline(&next) {
++            Ok(compiled) => {
++                let current = std::mem::replace(&mut self.document, next);
++                self.undo.push(current);
++                if self.undo.len() > 64 {
++                    self.undo.remove(0);
++                }
++                self.compiled = compiled;
++                self.dirty = true;
++                true
++            }
++            Err(_) => {
++                self.redo.push(next);
++                false
++            }
+         }
+     }
+ 
+@@ -293,6 +328,7 @@ impl SequencerState {
+             path: PathBuf::from("assets/cutscenes/intro.timeline.json"),
+             document,
+             undo: Vec::new(),
++            redo: Vec::new(),
+             dirty: false,
+             compiled,
+             player: TimelinePlayer::new(),
+@@ -337,6 +373,8 @@ impl SequencerState {
+         if let Some(loaded) = self.open.as_ref() {
+             let title = loaded.relative.display().to_string();
+             let dirty = loaded.dirty;
++            let can_undo = !loaded.undo.is_empty();
++            let can_redo = !loaded.redo.is_empty();
+             ui.horizontal_wrapped(|ui| {
+                 ui.strong(title);
+                 if dirty {
+@@ -345,9 +383,18 @@ impl SequencerState {
+                 if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
+                     action = HeaderAction::Save;
+                 }
+-                if ui.button("Undo").clicked() {
++                if ui
++                    .add_enabled(can_undo, egui::Button::new("Undo"))
++                    .clicked()
++                {
+                     action = HeaderAction::Undo;
+                 }
++                if ui
++                    .add_enabled(can_redo, egui::Button::new("Redo"))
++                    .clicked()
++                {
++                    action = HeaderAction::Redo;
++                }
+                 if ui.button("Close").clicked() {
+                     action = HeaderAction::Close;
+                 }
+@@ -370,6 +417,13 @@ impl SequencerState {
+                     self.status = Some("Nothing to undo".to_owned());
+                 }
+             }
++            HeaderAction::Redo => {
++                if let Some(loaded) = self.open.as_mut()
++                    && !loaded.redo()
++                {
++                    self.status = Some("Nothing to redo".to_owned());
++                }
++            }
+             HeaderAction::Close => {
+                 self.open = None;
+                 return;
+@@ -679,6 +733,16 @@ impl SequencerState {
+                 });
+             }
+         });
++
++        curve_editor::show(
++            ui,
++            loaded,
++            track_index,
++            clip_index,
++            permissions,
++            self.snap_to_frames,
++            &mut self.status,
++        );
+     }
+ 
+     fn show_markers(&mut self, ui: &mut egui::Ui, permissions: &AuthoringPermissions) {
+@@ -830,6 +894,7 @@ mod tests {
+             path: PathBuf::from("cutscene.timeline.json"),
+             document,
+             undo: Vec::new(),
++            redo: Vec::new(),
+             dirty: false,
+             compiled,
+             player: TimelinePlayer::new(),
+@@ -886,7 +951,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn undo_restores_the_previous_document_and_recompiles_it() {
++    fn undo_and_redo_restore_the_document_and_recompile_it() {
+         let mut loaded = loaded_timeline();
+         loaded
+             .edit(&writable(), |document| {
+@@ -901,10 +966,103 @@ mod tests {
+             })
+             .expect("valid edit");
+         assert_eq!(loaded.compiled.tracks.len(), 1);
++
+         assert!(loaded.undo());
+         assert!(loaded.document.tracks.is_empty());
+         assert!(loaded.compiled.tracks.is_empty());
+         assert!(!loaded.undo());
++
++        assert!(loaded.redo());
++        assert_eq!(loaded.document.tracks.len(), 1);
++        assert_eq!(loaded.compiled.tracks.len(), 1);
++        assert!(!loaded.redo());
++    }
++
++    #[test]
++    fn a_new_edit_after_undo_clears_redo_history() {
++        let mut loaded = loaded_timeline();
++        loaded
++            .edit(&writable(), |document| {
++                document.duration = TimelineTick(24_000);
++            })
++            .expect("valid edit");
++        assert!(loaded.undo());
++        assert!(loaded.redo.len() == 1);
++
++        loaded
++            .edit(&writable(), |document| {
++                document.duration = TimelineTick(36_000);
++            })
++            .expect("replacement edit");
++        assert!(loaded.redo.is_empty());
++        assert!(!loaded.redo());
++    }
++
++    #[test]
++    fn curve_edit_save_and_reopen_preserve_ticks_and_stable_ids() {
++        let mut loaded = loaded_timeline();
++        let track_id = TimelineTrackId::generate();
++        let clip_id = TimelineClipId::generate();
++        let entity = engine_authoring::EntityId::generate();
++        loaded
++            .edit(&writable(), |document| {
++                document.tracks.push(TimelineTrack {
++                    id: track_id.clone(),
++                    kind: TimelineTrackKind::Property,
++                    name: "Transform X".to_owned(),
++                    enabled: true,
++                    binding: engine_authoring::TimelineBinding {
++                        entity: Some(entity),
++                        asset: None,
++                    },
++                    clips: vec![TimelineClip {
++                        id: clip_id.clone(),
++                        start: TimelineTick(1_000),
++                        end: TimelineTick(20_000),
++                        payload: TimelineClipPayload::Property {
++                            property: TimelineProperty::TranslationX,
++                            keys: vec![
++                                engine_authoring::TimelineKey {
++                                    tick: TimelineTick(123),
++                                    value: 1.25,
++                                    interpolation: engine_authoring::TimelineInterpolation::Smooth,
++                                },
++                                engine_authoring::TimelineKey {
++                                    tick: TimelineTick(9_876),
++                                    value: -3.5,
++                                    interpolation: engine_authoring::TimelineInterpolation::Linear,
++                                },
++                            ],
++                        },
++                    }],
++                });
++            })
++            .expect("valid curve edit");
++
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .expect("system clock after epoch")
++            .as_nanos();
++        let path = std::env::temp_dir().join(format!(
++            "gameengine-sequencer-{}-{unique}.timeline.json",
++            std::process::id()
++        ));
++        loaded.path = path.clone();
++        let expected = loaded.document.clone();
++        loaded.save().expect("save Timeline");
++
++        let saved = std::fs::read_to_string(&path).expect("read saved Timeline");
++        let reopened = TimelineDocument::from_json(&saved).expect("reopen Timeline");
++        assert_eq!(reopened, expected);
++        let track = reopened.track(&track_id).expect("stable track id");
++        assert_eq!(track.clips[0].id, clip_id);
++        let TimelineClipPayload::Property { keys, .. } = &track.clips[0].payload else {
++            panic!("saved clip must remain a Property payload");
++        };
++        assert_eq!(keys[0].tick, TimelineTick(123));
++        assert_eq!(keys[1].tick, TimelineTick(9_876));
++
++        std::fs::remove_file(path).expect("remove temporary Timeline");
+     }
+ 
+     #[test]
+diff --git a/crates/editor/src/sequencer/curve_editor/graph.rs b/crates/editor/src/sequencer/curve_editor/graph.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d76362d5e97e1a73d49c11a864738e3e5dc5339b
+--- /dev/null
++++ b/crates/editor/src/sequencer/curve_editor/graph.rs
+@@ -0,0 +1,100 @@
++use super::sample_keys;
++use eframe::egui;
++use engine_authoring::{TimelineClip, TimelineKey, TimelineTick};
++
++const HEIGHT: f32 = 140.0;
++const SAMPLES: usize = 96;
++
++pub(super) fn show(
++    ui: &mut egui::Ui,
++    clip: &TimelineClip,
++    keys: &[TimelineKey],
++    preview_tick: TimelineTick,
++) {
++    let (rect, _) = ui.allocate_exact_size(
++        egui::vec2(
++            ui.available_width().max(240.0),
++            ui.available_height().clamp(24.0, HEIGHT),
++        ),
++        egui::Sense::hover(),
++    );
++    let painter = ui.painter_at(rect);
++    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(27));
++
++    let (minimum, maximum) = value_range(keys);
++    for step in 1..4 {
++        let ratio = step as f32 / 4.0;
++        let x = rect.left() + rect.width() * ratio;
++        let y = rect.top() + rect.height() * ratio;
++        let grid = egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45));
++        painter.line_segment(
++            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
++            grid,
++        );
++        painter.line_segment(
++            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
++            grid,
++        );
++    }
++
++    let duration = clip.duration().get().max(1);
++    let mut points = Vec::with_capacity(SAMPLES + 1);
++    for sample in 0..=SAMPLES {
++        let ratio = sample as f32 / SAMPLES as f32;
++        let tick = TimelineTick((duration as f32 * ratio).round() as i64);
++        points.push(egui::pos2(
++            rect.left() + rect.width() * ratio,
++            value_y(rect, minimum, maximum, sample_keys(keys, tick)),
++        ));
++    }
++    painter.add(egui::Shape::line(
++        points,
++        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 165, 220)),
++    ));
++
++    for key in keys {
++        let ratio = key.tick.get() as f32 / duration as f32;
++        painter.circle_filled(
++            egui::pos2(
++                rect.left() + rect.width() * ratio.clamp(0.0, 1.0),
++                value_y(rect, minimum, maximum, key.value),
++            ),
++            4.5,
++            egui::Color32::from_rgb(125, 175, 230),
++        );
++    }
++
++    if preview_tick >= clip.start && preview_tick <= clip.end {
++        let local = (preview_tick.get() - clip.start.get()).clamp(0, duration);
++        let x = rect.left() + rect.width() * local as f32 / duration as f32;
++        painter.line_segment(
++            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
++            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(230, 190, 90)),
++        );
++    }
++
++}
++
++fn value_range(keys: &[TimelineKey]) -> (f32, f32) {
++    let Some(first) = keys.first() else {
++        return (-1.0, 1.0);
++    };
++    let mut minimum = first.value;
++    let mut maximum = first.value;
++    for key in keys.iter().skip(1) {
++        minimum = minimum.min(key.value);
++        maximum = maximum.max(key.value);
++    }
++    let span = maximum - minimum;
++    let padding = if span.abs() < f32::EPSILON {
++        (maximum.abs() * 0.1).max(1.0)
++    } else {
++        span.abs() * 0.1
++    };
++    (minimum - padding, maximum + padding)
++}
++
++fn value_y(rect: egui::Rect, minimum: f32, maximum: f32, value: f32) -> f32 {
++    let ratio = ((value - minimum) / (maximum - minimum).max(f32::EPSILON)).clamp(0.0, 1.0);
++    rect.bottom() - rect.height() * ratio
++}
+diff --git a/crates/editor/src/sequencer/curve_editor/mod.rs b/crates/editor/src/sequencer/curve_editor/mod.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e477e8d257726fca1faa80aebf53f75c1208ab5
+--- /dev/null
++++ b/crates/editor/src/sequencer/curve_editor/mod.rs
+@@ -0,0 +1,318 @@
++//! Numeric curve editing for the Sequencer Property track.
++//!
++//! This module edits the existing persisted Property payload. It does not
++//! introduce an Editor-only curve format or persistence path.
++
++use super::LoadedTimeline;
++use eframe::egui;
++use engine_authoring::{
++    AuthoringPermissions, DisplayFrameRate, TimelineClip, TimelineClipPayload,
++    TimelineInterpolation, TimelineKey, TimelineProperty, TimelineTick,
++};
++
++mod graph;
++mod rows;
++
++const PROPERTY_CHOICES: [(TimelineProperty, &str); 9] = [
++    (TimelineProperty::TranslationX, "Translation X"),
++    (TimelineProperty::TranslationY, "Translation Y"),
++    (TimelineProperty::TranslationZ, "Translation Z"),
++    (TimelineProperty::RotationX, "Rotation X"),
++    (TimelineProperty::RotationY, "Rotation Y"),
++    (TimelineProperty::RotationZ, "Rotation Z"),
++    (TimelineProperty::ScaleX, "Scale X"),
++    (TimelineProperty::ScaleY, "Scale Y"),
++    (TimelineProperty::ScaleZ, "Scale Z"),
++];
++
++#[derive(Debug, Clone)]
++pub(super) enum CurveAction {
++    SetProperty(TimelineProperty),
++    AddKey(TimelineKey),
++    ReplaceKeys(Vec<TimelineKey>),
++    DeleteKey(usize),
++}
++
++impl CurveAction {
++    const fn success_message(&self) -> &'static str {
++        match self {
++            Self::SetProperty(_) => "Changed the animated property",
++            Self::AddKey(_) => "Added a curve key",
++            Self::ReplaceKeys(_) => "Edited the curve",
++            Self::DeleteKey(_) => "Deleted a curve key",
++        }
++    }
++}
++
++pub(super) fn show(
++    ui: &mut egui::Ui,
++    loaded: &mut LoadedTimeline,
++    track_index: usize,
++    clip_index: usize,
++    permissions: &AuthoringPermissions,
++    snap_to_frames: bool,
++    status: &mut Option<String>,
++) {
++    let Some(clip) = loaded
++        .document
++        .tracks
++        .get(track_index)
++        .and_then(|track| track.clips.get(clip_index))
++        .cloned()
++    else {
++        return;
++    };
++    let TimelineClipPayload::Property { property, keys } = &clip.payload else {
++        return;
++    };
++
++    ui.separator();
++    ui.strong("Curve Editor");
++    ui.small("Transform channels use the persisted Property-track numeric curve.");
++
++    let mut action = None;
++    let mut selected_property = *property;
++    ui.horizontal_wrapped(|ui| {
++        ui.label("Property");
++        egui::ComboBox::from_id_salt(("sequencer_curve_property", clip.id.as_str()))
++            .selected_text(property_label(selected_property))
++            .show_ui(ui, |ui| {
++                for (choice, label) in PROPERTY_CHOICES {
++                    ui.selectable_value(&mut selected_property, choice, label);
++                }
++            });
++        if selected_property != *property {
++            action = Some(CurveAction::SetProperty(selected_property));
++        }
++
++        if ui.button("+ Key at playhead").clicked() {
++            match key_at_playhead(
++                &clip,
++                keys,
++                loaded.preview_tick,
++                loaded.document.display_frame_rate,
++                snap_to_frames,
++            ) {
++                Ok(key) if action.is_none() => action = Some(CurveAction::AddKey(key)),
++                Ok(_) => {}
++                Err(error) => *status = Some(error),
++            }
++        }
++    });
++
++    if action.is_none() {
++        action = rows::show(
++            ui,
++            &clip,
++            keys,
++            loaded.document.display_frame_rate,
++            snap_to_frames,
++        );
++    }
++
++    let draft = rows::draft_keys(ui, &clip, keys);
++    graph::show(ui, &clip, &draft, loaded.preview_tick);
++
++    if let Some(action) = action {
++        let message = action.success_message();
++        let result = loaded.edit(permissions, |document| {
++            let Some(clip) = document
++                .tracks
++                .get_mut(track_index)
++                .and_then(|track| track.clips.get_mut(clip_index))
++            else {
++                return;
++            };
++            let TimelineClipPayload::Property { property, keys } = &mut clip.payload else {
++                return;
++            };
++            match action {
++                CurveAction::SetProperty(next) => *property = next,
++                CurveAction::AddKey(key) => {
++                    keys.push(key);
++                    keys.sort_by_key(|key| key.tick);
++                }
++                CurveAction::ReplaceKeys(replacement) => *keys = replacement,
++                CurveAction::DeleteKey(index) => {
++                    if keys.len() > 1 && index < keys.len() {
++                        keys.remove(index);
++                    }
++                }
++            }
++        });
++        rows::clear_draft(ui, &clip);
++        *status = Some(match result {
++            Ok(()) => message.to_owned(),
++            Err(error) => format!("Curve edit rejected: {error}"),
++        });
++    }
++}
++
++pub(super) fn property_label(property: TimelineProperty) -> &'static str {
++    PROPERTY_CHOICES
++        .iter()
++        .find_map(|(candidate, label)| (*candidate == property).then_some(*label))
++        .unwrap_or("Property")
++}
++
++pub(super) const fn interpolation_label(interpolation: TimelineInterpolation) -> &'static str {
++    match interpolation {
++        TimelineInterpolation::Step => "Step",
++        TimelineInterpolation::Linear => "Linear",
++        TimelineInterpolation::Smooth => "Smooth",
++    }
++}
++
++pub(super) fn snap_local_tick(
++    frame_rate: DisplayFrameRate,
++    clip_start: TimelineTick,
++    duration: TimelineTick,
++    local_tick: TimelineTick,
++) -> TimelineTick {
++    let absolute = TimelineTick(clip_start.get().saturating_add(local_tick.get()));
++    let snapped = frame_rate.snap(absolute).unwrap_or(absolute);
++    TimelineTick((snapped.get() - clip_start.get()).clamp(0, duration.get()))
++}
++
++pub(super) fn clamp_key_tick(
++    keys: &[TimelineKey],
++    index: usize,
++    candidate: TimelineTick,
++    duration: TimelineTick,
++) -> TimelineTick {
++    let minimum = index
++        .checked_sub(1)
++        .and_then(|previous| keys.get(previous))
++        .map_or(0, |key| key.tick.get().saturating_add(1));
++    let maximum = keys
++        .get(index + 1)
++        .map_or(duration.get(), |key| key.tick.get().saturating_sub(1));
++    TimelineTick(candidate.get().clamp(minimum, maximum.max(minimum)))
++}
++
++pub(super) fn sample_keys(keys: &[TimelineKey], tick: TimelineTick) -> f32 {
++    let Some(first) = keys.first().copied() else {
++        return 0.0;
++    };
++    if tick <= first.tick {
++        return first.value;
++    }
++    let last = keys.last().copied().unwrap_or(first);
++    if tick >= last.tick {
++        return last.value;
++    }
++    for segment in keys.windows(2) {
++        let (left, right) = (segment[0], segment[1]);
++        if tick < left.tick || tick >= right.tick {
++            continue;
++        }
++        let span = (right.tick.get() - left.tick.get()).max(1);
++        let progress = (tick.get() - left.tick.get()) as f32 / span as f32;
++        return match left.interpolation {
++            TimelineInterpolation::Step => left.value,
++            TimelineInterpolation::Linear => left.value + (right.value - left.value) * progress,
++            TimelineInterpolation::Smooth => {
++                let eased = progress * progress * (3.0 - 2.0 * progress);
++                left.value + (right.value - left.value) * eased
++            }
++        };
++    }
++    last.value
++}
++
++fn key_at_playhead(
++    clip: &TimelineClip,
++    keys: &[TimelineKey],
++    preview_tick: TimelineTick,
++    frame_rate: DisplayFrameRate,
++    snap_to_frames: bool,
++) -> Result<TimelineKey, String> {
++    let mut tick =
++        TimelineTick((preview_tick.get() - clip.start.get()).clamp(0, clip.duration().get()));
++    if snap_to_frames {
++        tick = snap_local_tick(frame_rate, clip.start, clip.duration(), tick);
++    }
++    if keys.iter().any(|key| key.tick == tick) {
++        return Err(format!(
++            "A curve key already exists at {:.3}s",
++            tick.as_seconds()
++        ));
++    }
++    Ok(TimelineKey {
++        tick,
++        value: sample_keys(keys, tick),
++        interpolation: keys
++            .iter()
++            .rev()
++            .find(|key| key.tick < tick)
++            .map_or(TimelineInterpolation::Linear, |key| key.interpolation),
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn key(tick: i64, value: f32, interpolation: TimelineInterpolation) -> TimelineKey {
++        TimelineKey {
++            tick: TimelineTick(tick),
++            value,
++            interpolation,
++        }
++    }
++
++    #[test]
++    fn displayed_sampling_matches_runtime_interpolation_contract() {
++        let linear = [
++            key(0, 0.0, TimelineInterpolation::Linear),
++            key(100, 10.0, TimelineInterpolation::Linear),
++        ];
++        assert_eq!(sample_keys(&linear, TimelineTick(50)), 5.0);
++
++        let step = [
++            key(0, 2.0, TimelineInterpolation::Step),
++            key(100, 8.0, TimelineInterpolation::Linear),
++        ];
++        assert_eq!(sample_keys(&step, TimelineTick(99)), 2.0);
++
++        let smooth = [
++            key(0, 0.0, TimelineInterpolation::Smooth),
++            key(100, 10.0, TimelineInterpolation::Linear),
++        ];
++        assert_eq!(sample_keys(&smooth, TimelineTick(50)), 5.0);
++    }
++
++    #[test]
++    fn key_time_cannot_cross_neighbor_keys() {
++        let keys = [
++            key(10, 0.0, TimelineInterpolation::Linear),
++            key(20, 1.0, TimelineInterpolation::Linear),
++            key(30, 2.0, TimelineInterpolation::Linear),
++        ];
++        assert_eq!(
++            clamp_key_tick(&keys, 1, TimelineTick(0), TimelineTick(40)),
++            TimelineTick(11)
++        );
++        assert_eq!(
++            clamp_key_tick(&keys, 1, TimelineTick(40), TimelineTick(40)),
++            TimelineTick(29)
++        );
++    }
++
++    #[test]
++    fn frame_snapping_uses_absolute_timeline_time() {
++        let rate = DisplayFrameRate {
++            numerator: 60,
++            denominator: 1,
++        };
++        assert_eq!(
++            snap_local_tick(
++                rate,
++                TimelineTick(400),
++                TimelineTick(2_000),
++                TimelineTick(350)
++            ),
++            TimelineTick(400)
++        );
++    }
++}
+diff --git a/crates/editor/src/sequencer/curve_editor/rows.rs b/crates/editor/src/sequencer/curve_editor/rows.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c16f02737431a19d9f8855bc13d2dc532f5f4b9c
+--- /dev/null
++++ b/crates/editor/src/sequencer/curve_editor/rows.rs
+@@ -0,0 +1,119 @@
++use super::{CurveAction, clamp_key_tick, interpolation_label, snap_local_tick};
++use eframe::egui;
++use engine_authoring::{
++    DisplayFrameRate, TimelineClip, TimelineInterpolation, TimelineKey, TimelineTick,
++};
++
++fn draft_id(clip: &TimelineClip) -> egui::Id {
++    egui::Id::new(("sequencer_curve_draft", clip.id.as_str()))
++}
++
++pub(super) fn draft_keys(
++    ui: &mut egui::Ui,
++    clip: &TimelineClip,
++    committed: &[TimelineKey],
++) -> Vec<TimelineKey> {
++    ui.data_mut(|data| data.get_temp::<Vec<TimelineKey>>(draft_id(clip)))
++        .unwrap_or_else(|| committed.to_vec())
++}
++
++pub(super) fn clear_draft(ui: &mut egui::Ui, clip: &TimelineClip) {
++    ui.data_mut(|data| data.remove::<Vec<TimelineKey>>(draft_id(clip)));
++}
++
++pub(super) fn show(
++    ui: &mut egui::Ui,
++    clip: &TimelineClip,
++    committed: &[TimelineKey],
++    frame_rate: DisplayFrameRate,
++    snap_to_frames: bool,
++) -> Option<CurveAction> {
++    let mut draft = draft_keys(ui, clip, committed);
++    let mut changed = false;
++    let mut commit = false;
++    let mut delete = None;
++
++    egui::Grid::new(("sequencer_curve_keys", clip.id.as_str()))
++        .num_columns(5)
++        .spacing(egui::vec2(8.0, 4.0))
++        .show(ui, |ui| {
++            ui.small("Key");
++            ui.small("Time");
++            ui.small("Value");
++            ui.small("Interpolation");
++            ui.small("");
++            ui.end_row();
++
++            for index in 0..draft.len() {
++                ui.label(index.to_string());
++
++                let mut seconds = draft[index].tick.as_seconds();
++                let time = ui.add(
++                    egui::DragValue::new(&mut seconds)
++                        .speed(0.01)
++                        .range(0.0..=clip.duration().as_seconds())
++                        .suffix(" s"),
++                );
++                if time.changed() {
++                    let mut tick = TimelineTick::from_seconds(seconds);
++                    if snap_to_frames {
++                        tick = snap_local_tick(frame_rate, clip.start, clip.duration(), tick);
++                    }
++                    let clamped = clamp_key_tick(&draft, index, tick, clip.duration());
++                    draft[index].tick = clamped;
++                    changed = true;
++                }
++                commit |= time.drag_stopped() || time.lost_focus();
++
++                let value = ui.add(egui::DragValue::new(&mut draft[index].value).speed(0.05));
++                changed |= value.changed();
++                commit |= value.drag_stopped() || value.lost_focus();
++
++                let previous = draft[index].interpolation;
++                egui::ComboBox::from_id_salt((
++                    "sequencer_curve_interpolation",
++                    clip.id.as_str(),
++                    index,
++                ))
++                .selected_text(interpolation_label(previous))
++                .show_ui(ui, |ui| {
++                    for mode in [
++                        TimelineInterpolation::Step,
++                        TimelineInterpolation::Linear,
++                        TimelineInterpolation::Smooth,
++                    ] {
++                        ui.selectable_value(
++                            &mut draft[index].interpolation,
++                            mode,
++                            interpolation_label(mode),
++                        );
++                    }
++                });
++                if draft[index].interpolation != previous {
++                    changed = true;
++                    commit = true;
++                }
++
++                if ui
++                    .add_enabled(draft.len() > 1, egui::Button::new("Delete"))
++                    .clicked()
++                {
++                    delete = Some(index);
++                }
++                ui.end_row();
++            }
++        });
++
++    if let Some(index) = delete {
++        clear_draft(ui, clip);
++        return Some(CurveAction::DeleteKey(index));
++    }
++    if changed {
++        ui.data_mut(|data| data.insert_temp(draft_id(clip), draft.clone()));
++    }
++    if commit && draft != committed {
++        clear_draft(ui, clip);
++        return Some(CurveAction::ReplaceKeys(draft));
++    }
++    None
++}
