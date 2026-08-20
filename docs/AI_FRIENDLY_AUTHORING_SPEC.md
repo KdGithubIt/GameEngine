@@ -1097,6 +1097,20 @@ subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
 serialized into session records or canonical project data. External runtimes
 receive only the ephemeral MCP connection needed for the active run.
 
+Per ADR 0166, ACP is the provider-neutral common runtime contract for external
+coding agents beneath the Agent Host. ACP-capable agents MUST be registered by
+descriptor identity rather than added as provider variants to central Agent Host
+architecture. ACP session updates, permission requests, and stop reasons MUST be
+normalized before entering the host timeline. ACP permission requests remain
+subject to the existing GameEngine permission broker, and an ACP stop reason
+MUST NOT satisfy Agent Host completion gates. Read-oriented ACP sessions receive
+only the Editor read-only MCP credential; write-capable ACP sessions receive only
+the AgentRun-bound credential from ADR 0165 and MUST carry the matching run
+identity on mutating MCP requests. The unrestricted Editor read-write credential
+MUST NOT be exposed to an ACP runtime. ACP SDK types and artifact versions are
+adapter implementation details and MUST NOT become Agent Host or persisted
+session contracts.
+
 Per ADR 0144, hosted and enterprise `ModelBackend` adapters remain inference-only
 inside the native AgentRuntime. Hosted processing requires `NetworkAccess`,
 exposes a sanitized remote-processing posture without credentials or secret paths,

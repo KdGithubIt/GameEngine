@@ -7,6 +7,10 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
+// ADR 0166 defines the provider-neutral ACP runtime contract beneath Agent Host.
+#[allow(dead_code)]
+mod acp_agent_runtime;
+
 // ADR 0146 defines the provider-neutral managed asset boundary before concrete
 // provider integrations are enabled by AI Studio.
 #[allow(dead_code)]
