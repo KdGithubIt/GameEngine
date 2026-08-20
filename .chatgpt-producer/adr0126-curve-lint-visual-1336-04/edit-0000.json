@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/sequencer/curve_editor/graph.rs","old":"const HEIGHT: f32 = 210.0;","new":"const HEIGHT: f32 = 140.0;"}
