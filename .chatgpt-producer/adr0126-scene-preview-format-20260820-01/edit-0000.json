@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "        let entity = self.session.create_entity_from_mesh_asset(mesh, None).ok()?;",
+  "new": "        let entity = self\n            .session\n            .create_entity_from_mesh_asset(mesh, None)\n            .ok()?;"
+}
