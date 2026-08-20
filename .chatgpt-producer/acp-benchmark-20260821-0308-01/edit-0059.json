@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md",
+  "old": "New integrations may register exactly three migration lanes: `raw_model` for direct model/GGUF/runtime measurement, `agent_harness` for a fixed underlying model/runtime exercised through an agent harness, and `coding_agent` for end-to-end coding-agent measurement. A missing v4 runtime identity continues to mean the existing GameEngine benchmark harness; it is not silently promoted into one of the new lanes.\n",
+  "new": "New integrations may register exactly three migration lanes: `raw_model` for direct model/GGUF/runtime measurement, `agent_harness` for a fixed underlying model/runtime exercised through an agent harness, and `coding_agent` for end-to-end coding-agent measurement. Raw Model evidence uses the dedicated `raw_model_generation_v1` task identity and `model_response_completed` criterion rather than reusing one of the seven Agent Benchmark task descriptors. A missing v4 runtime identity continues to mean the existing GameEngine benchmark harness; it is not silently promoted into one of the new lanes.\n"
+}
