@@ -11,6 +11,8 @@
 #[allow(dead_code)]
 mod acp_agent_host_bridge;
 #[allow(dead_code)]
+mod acp_integration;
+#[allow(dead_code)]
 mod acp_agent_runtime;
 #[allow(dead_code)]
 mod claude_acp_adapter;

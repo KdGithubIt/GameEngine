@@ -7,6 +7,8 @@
 mod benchmark_campaign_ui;
 mod benchmark_child;
 mod benchmark_experiment_ui;
+#[allow(dead_code)]
+mod execution_routing;
 mod settings_ui;
 
 use crate::agent_benchmark::{
