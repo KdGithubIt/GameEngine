@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/external_agent_provider.rs","old":"fn placed_launch_command(\n    placement: &ExternalAgentExecutionPlacement,","new":"pub(crate) fn placed_launch_command(\n    placement: &ExternalAgentExecutionPlacement,"}
