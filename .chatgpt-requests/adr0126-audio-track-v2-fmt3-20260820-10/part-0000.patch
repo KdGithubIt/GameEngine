@@ -1,0 +1,59 @@
+diff --git a/crates/engine/src/timeline/audio_adapter.rs b/crates/engine/src/timeline/audio_adapter.rs
+index cd47f30196e4699bcbda8d1901fdf7ed5127ac87..baf97b195290a690cd6f01a08f6d9c318043a1fe 100644
+--- a/crates/engine/src/timeline/audio_adapter.rs
++++ b/crates/engine/src/timeline/audio_adapter.rs
+@@ -141,9 +141,7 @@ pub(super) fn apply_audio_evaluation(
+     let entered = evaluation
+         .entered
+         .iter()
+-        .map(|transition| {
+-            TimelineAudioVoiceKey::new(source, &transition.track, &transition.clip)
+-        })
++        .map(|transition| TimelineAudioVoiceKey::new(source, &transition.track, &transition.clip))
+         .collect::<HashSet<_>>();
+ 
+     for desired in desired {
+@@ -242,11 +240,7 @@ fn stop_undesired_voices(
+     }
+ }
+ 
+-fn stop_source_voices(
+-    source: Entity,
+-    runtime: &mut TimelineAudioRuntime,
+-    audio: &mut AudioSystem,
+-) {
++fn stop_source_voices(source: Entity, runtime: &mut TimelineAudioRuntime, audio: &mut AudioSystem) {
+     let keys = runtime
+         .voices
+         .keys()
+@@ -582,7 +576,10 @@ mod tests {
+ 
+     #[test]
+     fn tick_offsets_convert_to_audio_time_without_frame_rate_rounding() {
+-        assert_eq!(ticks_to_duration(TIMELINE_TICKS_PER_SECOND), Duration::from_secs(1));
++        assert_eq!(
++            ticks_to_duration(TIMELINE_TICKS_PER_SECOND),
++            Duration::from_secs(1)
++        );
+         assert_eq!(
+             ticks_to_duration(TIMELINE_TICKS_PER_SECOND / 2),
+             Duration::from_millis(500)
+diff --git a/crates/platform/src/audio.rs b/crates/platform/src/audio.rs
+index 0625d2ffbbd7247741610592d732a5c84ff67286..753a0c30f7cb1a00fedaba563e25407ea42c8e18 100644
+--- a/crates/platform/src/audio.rs
++++ b/crates/platform/src/audio.rs
+@@ -1095,9 +1095,11 @@ fn play_voice_on_thread(
+ ) -> Result<ActiveVoice, AudioError> {
+     let mut decoder = decoder_for_encoded(encoded)?;
+     if !offset.is_zero() {
+-        decoder.try_seek(offset).map_err(|source| AudioError::Playback {
+-            message: format!("failed to seek managed audio voice: {source}"),
+-        })?;
++        decoder
++            .try_seek(offset)
++            .map_err(|source| AudioError::Playback {
++                message: format!("failed to seek managed audio voice: {source}"),
++            })?;
+     }
+     let initial = gains.lock().map(|gains| *gains).unwrap_or([0.0, 0.0]);
+     let shared = Arc::clone(&gains);
