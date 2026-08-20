@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime.rs","old":"    pub(crate) session_resume: bool,\n    pub(crate) session_list: bool,\n    pub(crate) session_config_options: bool,\n","new":"    pub(crate) session_resume: bool,\n    pub(crate) session_list: bool,\n    pub(crate) session_close: bool,\n    pub(crate) session_config_options: bool,\n"}
