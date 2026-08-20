@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/lib.rs","old":"        document.tracks.push(property_track(vec![property_clip(\n            0, 48_000, 0.0, 1.0,\n        )]));","new":"        document\n            .tracks\n            .push(property_track(vec![property_clip(0, 48_000, 0.0, 1.0)]));"}
