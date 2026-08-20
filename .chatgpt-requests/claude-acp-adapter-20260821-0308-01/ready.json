@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "claude-acp-adapter-20260821-0308-01",
+  "target_branch": "chatgpt/gameengine-claude-acp-adapter",
+  "expected_head_sha": "694de8724308c3acdd171fd9e2293876821f86ee",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "8c9b2d447079a6bc711a732f64730f45a4bcc09756d5c63277ea25fb1c80c3c6",
+  "patch_bytes": 22368,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Claude ACP provider adapter",
+  "pr_title": "GameEngine: add Claude ACP adapter",
+  "pr_body": "## Summary\n\nAdds the Claude-specific ACP discovery, setup, runtime identity, launch metadata, capability metadata, and diagnostics adapter on top of the ACP Foundation branch. Reuses existing Windows/WSL external-agent placement helpers without changing legacy Claude stream-json or Codex behavior.\n\n## Validation\n\nAuthoring subtask only. Heavy Cargo, Windows, and Visual Validation are intentionally deferred to final ACP integration."
+}
