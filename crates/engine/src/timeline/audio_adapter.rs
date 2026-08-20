@@ -197,6 +197,7 @@ pub(super) fn apply_audio_evaluation(
     world.insert_resource(audio);
     world.insert_resource(runtime);
 }
+
 /// Stops Timeline-owned voices whose source player no longer exists.
 pub(super) fn cleanup_stale_sources(world: &mut World, live_sources: &[Entity]) {
     let Some(mut runtime) = world.remove_resource::<TimelineAudioRuntime>() else {
