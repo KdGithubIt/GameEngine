@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/codex_acp_adapter.rs","old":") -> Result<Vec<String, String)>, AcpRuntimeError> {\n","new":") -> Result<Vec<(String, String)>, AcpRuntimeError> {\n"}
