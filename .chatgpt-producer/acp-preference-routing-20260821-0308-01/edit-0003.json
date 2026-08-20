@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    selected_ai_family: SelectedAiFamily,\n    /// The provider process answering the current Ask turn, if one is running.\n",
+  "new": "    selected_ai_family: SelectedAiFamily,\n    /// Process-local mapping from the stable selection to Legacy or ACP execution.\n    ///\n    /// This is deliberately absent from `AiStudioPreferences`: migration driver\n    /// choice is an internal rollout boundary, not a replacement user identity.\n    execution_routing: execution_routing::AiExecutionRouter,\n    /// The provider process answering the current Ask turn, if one is running.\n"
+}
