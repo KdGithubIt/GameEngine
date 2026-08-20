@@ -1,6 +1,8 @@
 use super::*;
+use crate::agent_benchmark::benchmark_project_inspection_ready;
 use crate::agent_benchmark_campaign::CampaignExecutionProfile;
 use crate::agent_benchmark_campaign::campaign_task_agent_policy;
+use crate::agent_host::AgentRun;
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
 };
@@ -84,6 +86,27 @@ impl AiStudioPanel {
         self.benchmark_child
             .as_ref()
             .is_some_and(|child| child.spec.task_id == "validation_repair_v1")
+    }
+
+    /// Checks whether a benchmark child may hand control to managed validation.
+    ///
+    /// The provider-facing action protocol permits a generic
+    /// `ready_for_validation` action, but benchmark tasks also have
+    /// task-specific host evidence requirements. Keeping this check at the
+    /// child boundary prevents a model from ending an inspection after a
+    /// planning-only response while leaving non-benchmark interactive runs on
+    /// their existing path.
+    pub(super) fn validate_benchmark_ready_for_validation(
+        &self,
+        run: &AgentRun,
+    ) -> Result<(), String> {
+        let Some(child) = self.benchmark_child.as_ref() else {
+            return Ok(());
+        };
+        if child.spec.task_id == "project_inspection_v1" {
+            benchmark_project_inspection_ready(run)?;
+        }
+        Ok(())
     }
 
     pub(super) fn benchmark_child_allows(&self, capability: AgentCapability) -> bool {

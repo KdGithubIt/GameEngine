@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -25,6 +26,7 @@ const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_CODE_VERSION: &str = "2.1.237";
 const CODEX_VERSION: &str = "0.148.0";
 const CODEX_MCP_FEATURE: &str = "mcp_2026_07_28";
+const MCP_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where an external agent provider process runs.
 ///
@@ -844,6 +846,83 @@ printf '%s' "$response" | grep -q '"protocolVersion"'"#,
     Err(format!(
         "the WSL2 distribution could not complete an authenticated MCP handshake with the Editor at {host}:{port}. Enable mirrored networking for WSL (networkingMode=mirrored in .wslconfig), verify the Editor MCP endpoint, or run the provider in the Windows-native environment."
     ))
+}
+
+/// Performs an authenticated legacy MCP initialize request from the Editor
+/// process before a write-capable external Build is launched.
+///
+/// Provider discovery and authentication do not prove that the provider can
+/// reach the project-scoped Editor MCP endpoint. This probe closes that gap
+/// for the Windows-native path, where the previous WSL-only probe was a no-op.
+/// The request deliberately uses `initialize` rather than a mutating tool, so
+/// the probe cannot dirty the project or acquire authoring ownership.
+pub(crate) fn probe_editor_mcp_endpoint(
+    mcp_endpoint: &str,
+    authorization_token: &str,
+) -> Result<(), String> {
+    if !mcp_endpoint.ends_with("/mcp") {
+        return Err("Editor MCP endpoint must use the /mcp path".to_owned());
+    }
+    let (host, port) = loopback_authority(mcp_endpoint)?;
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]") {
+        return Err("Editor MCP endpoint must remain loopback-only".to_owned());
+    }
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| "Editor MCP endpoint has an invalid port".to_owned())?;
+    let address = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|error| format!("could not resolve Editor MCP endpoint: {error}"))?
+        .next()
+        .ok_or_else(|| "Editor MCP endpoint did not resolve to an address".to_owned())?;
+    let mut stream = TcpStream::connect_timeout(&address, MCP_PREFLIGHT_TIMEOUT)
+        .map_err(|error| format!("could not reach Editor MCP endpoint: {error}"))?;
+    stream
+        .set_read_timeout(Some(MCP_PREFLIGHT_TIMEOUT))
+        .map_err(|error| format!("could not configure Editor MCP probe: {error}"))?;
+    stream
+        .set_write_timeout(Some(MCP_PREFLIGHT_TIMEOUT))
+        .map_err(|error| format!("could not configure Editor MCP probe: {error}"))?;
+
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"gameengine-preflight","version":"1"}}}"#;
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {authorization_token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .and_then(|_| stream.flush())
+        .map_err(|error| format!("could not send Editor MCP preflight: {error}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|error| format!("could not read Editor MCP preflight: {error}"))?;
+    let response = String::from_utf8_lossy(&response);
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "Editor MCP preflight returned an invalid HTTP response".to_owned())?;
+    let status_line = headers
+        .lines()
+        .next()
+        .ok_or_else(|| "Editor MCP preflight returned no HTTP status".to_owned())?;
+    if !status_line.starts_with("HTTP/1.1 200 ") {
+        return Err(format!(
+            "Editor MCP preflight returned HTTP status {}",
+            status_line.split_whitespace().nth(1).unwrap_or("unknown")
+        ));
+    }
+    let payload: Value = serde_json::from_str(body)
+        .map_err(|_| "Editor MCP preflight returned invalid JSON".to_owned())?;
+    if payload
+        .get("result")
+        .and_then(|result| result.get("protocolVersion"))
+        .and_then(Value::as_str)
+        .is_none()
+    {
+        return Err("Editor MCP preflight did not return an MCP initialize result".to_owned());
+    }
+    Ok(())
 }
 
 /// Splits a loopback HTTP endpoint into its host and port.
@@ -2581,6 +2660,22 @@ mod tests {
             probe_wsl_loopback_reachability(&placement, "https://example.test/mcp", "token")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn editor_mcp_preflight_rejects_non_loopback_endpoints() {
+        let error = probe_editor_mcp_endpoint("http://192.0.2.1:4321/mcp", "token")
+            .expect_err("non-loopback MCP endpoints must be rejected");
+
+        assert!(error.contains("loopback-only"), "{error}");
+    }
+
+    #[test]
+    fn editor_mcp_preflight_reports_unreachable_loopback_endpoints() {
+        let error = probe_editor_mcp_endpoint("http://127.0.0.1:1/mcp", "token")
+            .expect_err("the reserved discard port must not accept MCP");
+
+        assert!(error.contains("Editor MCP endpoint"), "{error}");
     }
 
     #[test]

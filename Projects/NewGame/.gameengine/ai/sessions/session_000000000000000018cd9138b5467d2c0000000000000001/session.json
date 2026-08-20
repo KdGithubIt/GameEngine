@@ -1,0 +1,1573 @@
+{
+  "schema_version": 1,
+  "id": "session_000000000000000018cd9138b5467d2c0000000000000001",
+  "title": "New AI Studio session",
+  "messages": [
+    {
+      "role": "user",
+      "text": "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください",
+      "created_unix_ms": 1787244305793
+    }
+  ],
+  "proposal": {
+    "version": 2,
+    "goal": "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください",
+    "requirements": [
+      "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください"
+    ],
+    "assumptions": [],
+    "acceptance_criteria": [
+      "The submitted request is completed without changes outside its stated scope."
+    ],
+    "planned_project_changes": [
+      "Inspect and apply the project-authoring changes required by the submitted Build request."
+    ],
+    "planned_code_changes": [
+      "Inspect and apply the source changes required by the submitted Build request."
+    ],
+    "planned_assets": [
+      "Use or acquire only the assets required by the submitted Build request."
+    ],
+    "work_claims": [],
+    "validation_plan": [
+      "Validate every changed project document and source package using the applicable managed checks."
+    ],
+    "playtest_plan": [
+      "Run the managed runtime when the submitted request requires runtime verification."
+    ],
+    "requested_capabilities": [
+      "external_asset_acquisition",
+      "runtime_launch",
+      "frame_capture",
+      "code_workspace_apply"
+    ]
+  },
+  "proposal_history": [
+    {
+      "version": 1,
+      "goal": "",
+      "requirements": [],
+      "assumptions": [],
+      "acceptance_criteria": [],
+      "planned_project_changes": [],
+      "planned_code_changes": [],
+      "planned_assets": [],
+      "work_claims": [],
+      "validation_plan": [],
+      "playtest_plan": [],
+      "requested_capabilities": []
+    },
+    {
+      "version": 2,
+      "goal": "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください",
+      "requirements": [
+        "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください"
+      ],
+      "assumptions": [],
+      "acceptance_criteria": [
+        "The submitted request is completed without changes outside its stated scope."
+      ],
+      "planned_project_changes": [
+        "Inspect and apply the project-authoring changes required by the submitted Build request."
+      ],
+      "planned_code_changes": [
+        "Inspect and apply the source changes required by the submitted Build request."
+      ],
+      "planned_assets": [
+        "Use or acquire only the assets required by the submitted Build request."
+      ],
+      "work_claims": [],
+      "validation_plan": [
+        "Validate every changed project document and source package using the applicable managed checks."
+      ],
+      "playtest_plan": [
+        "Run the managed runtime when the submitted request requires runtime verification."
+      ],
+      "requested_capabilities": [
+        "external_asset_acquisition",
+        "runtime_launch",
+        "frame_capture",
+        "code_workspace_apply"
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "id": "run_000000000000000018cd913a15d644140000000000000005",
+      "proposal_snapshot": {
+        "version": 2,
+        "goal": "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください",
+        "requirements": [
+          "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください"
+        ],
+        "assumptions": [],
+        "acceptance_criteria": [
+          "The submitted request is completed without changes outside its stated scope."
+        ],
+        "planned_project_changes": [
+          "Inspect and apply the project-authoring changes required by the submitted Build request."
+        ],
+        "planned_code_changes": [
+          "Inspect and apply the source changes required by the submitted Build request."
+        ],
+        "planned_assets": [
+          "Use or acquire only the assets required by the submitted Build request."
+        ],
+        "work_claims": [],
+        "validation_plan": [
+          "Validate every changed project document and source package using the applicable managed checks."
+        ],
+        "playtest_plan": [
+          "Run the managed runtime when the submitted request requires runtime verification."
+        ],
+        "requested_capabilities": [
+          "external_asset_acquisition",
+          "runtime_launch",
+          "frame_capture",
+          "code_workspace_apply"
+        ]
+      },
+      "provider_label": "codex",
+      "state": "executing",
+      "work_claims": [],
+      "events": [
+        {
+          "sequence": 1,
+          "created_unix_ms": 1787244305796,
+          "kind": "run_started",
+          "message": "Run started from immutable proposal version 2."
+        },
+        {
+          "sequence": 2,
+          "created_unix_ms": 1787244305798,
+          "kind": "permission_requested",
+          "message": "Permission requested: Launch external agent runtime."
+        },
+        {
+          "sequence": 3,
+          "created_unix_ms": 1787244307245,
+          "kind": "permission_resolved",
+          "message": "Permission Launch external agent runtime resolved as Once."
+        },
+        {
+          "sequence": 4,
+          "created_unix_ms": 1787244307253,
+          "kind": "code_workspace_prepared",
+          "message": "Prepared isolated managed code workspace."
+        },
+        {
+          "sequence": 5,
+          "created_unix_ms": 1787244307262,
+          "kind": "resource_policy",
+          "message": "External agent confinement: Application policy only (generic_process_runtime+windows_taskkill_tree); filesystem: unavailable, network: unavailable, process tree: enforced, credential secrecy: unavailable, requested network: loopback only."
+        },
+        {
+          "sequence": 6,
+          "created_unix_ms": 1787244307263,
+          "kind": "state_changed",
+          "message": "External agent runtime started in the isolated code workspace."
+        },
+        {
+          "sequence": 7,
+          "created_unix_ms": 1787244307479,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 8,
+          "created_unix_ms": 1787244308039,
+          "kind": "semantic_progress",
+          "message": "provider_connected: Codex initialized its external agent thread.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_connected",
+            "detail": "Codex initialized its external agent thread."
+          }
+        },
+        {
+          "sequence": 9,
+          "created_unix_ms": 1787244308098,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 10,
+          "created_unix_ms": 1787244308153,
+          "kind": "semantic_progress",
+          "message": "provider_turn_started: Codex started a provider turn.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_started",
+            "detail": "Codex started a provider turn."
+          }
+        },
+        {
+          "sequence": 11,
+          "created_unix_ms": 1787244314848,
+          "kind": "semantic_progress",
+          "message": "inspection: 既存のプロジェクト構造、利用可能な初音ミクモデル、入力・カメラ・プレイヤー実装を読み取り専用で確認します。",
+          "evidence": {
+            "evidence": "progress",
+            "step": "inspection",
+            "detail": "既存のプロジェクト構造、利用可能な初音ミクモデル、入力・カメラ・プレイヤー実装を読み取り専用で確認します。"
+          }
+        },
+        {
+          "sequence": 12,
+          "created_unix_ms": 1787244325031,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 13,
+          "created_unix_ms": 1787244328664,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 14,
+          "created_unix_ms": 1787244334173,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 15,
+          "created_unix_ms": 1787244334562,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 16,
+          "created_unix_ms": 1787244340417,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 17,
+          "created_unix_ms": 1787244340618,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 18,
+          "created_unix_ms": 1787244344234,
+          "kind": "tool_action",
+          "message": "workspace: プロジェクト構造とコードホストの確認",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "workspace",
+            "action": "プロジェクト構造とコードホストの確認",
+            "success": true
+          }
+        },
+        {
+          "sequence": 19,
+          "created_unix_ms": 1787244344954,
+          "kind": "tool_action",
+          "message": "list_mcp_resource_templates: provider MCP tool activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "list_mcp_resource_templates",
+            "action": "provider MCP tool activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 20,
+          "created_unix_ms": 1787244344956,
+          "kind": "tool_action",
+          "message": "list_mcp_resources: provider MCP tool activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "list_mcp_resources",
+            "action": "provider MCP tool activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 21,
+          "created_unix_ms": 1787244345100,
+          "kind": "tool_action",
+          "message": "list_mcp_resources: provider MCP tool activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "list_mcp_resources",
+            "action": "provider MCP tool activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 22,
+          "created_unix_ms": 1787244345216,
+          "kind": "tool_action",
+          "message": "list_mcp_resource_templates: provider MCP tool activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "list_mcp_resource_templates",
+            "action": "provider MCP tool activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 23,
+          "created_unix_ms": 1787244353720,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 24,
+          "created_unix_ms": 1787244354105,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 25,
+          "created_unix_ms": 1787244362529,
+          "kind": "tool_action",
+          "message": "gameengine_editor: プロジェクト authoring 変更",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "gameengine_editor",
+            "action": "プロジェクト authoring 変更",
+            "success": false
+          }
+        },
+        {
+          "sequence": 26,
+          "created_unix_ms": 1787244362531,
+          "kind": "semantic_progress",
+          "message": "blocked: 必須の gameengine_editor MCP server が現在の実行環境に注入されていないため、シーン、初音ミクモデル、プレイヤー、カメラを永続化できません。ワークスペースには空の Rust コードホストのみ存在します。",
+          "evidence": {
+            "evidence": "progress",
+            "step": "blocked",
+            "detail": "必須の gameengine_editor MCP server が現在の実行環境に注入されていないため、シーン、初音ミクモデル、プレイヤー、カメラを永続化できません。ワークスペースには空の Rust コードホストのみ存在します。"
+          }
+        },
+        {
+          "sequence": 27,
+          "created_unix_ms": 1787244362533,
+          "kind": "playtest",
+          "message": "runtime_launch と入力・フレーム取得機能が利用できないため、WASD移動、Spaceジャンプ、FPS視点を検証できませんでした。",
+          "evidence": {
+            "evidence": "playtest",
+            "launched": false,
+            "interactions_passed": null
+          }
+        },
+        {
+          "sequence": 28,
+          "created_unix_ms": 1787244362534,
+          "kind": "semantic_progress",
+          "message": "必須 authoring ツールが利用できず、要求内容を実装できませんでした。",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "acceptance_criteria",
+            "status": "failed"
+          }
+        },
+        {
+          "sequence": 29,
+          "created_unix_ms": 1787244362537,
+          "kind": "semantic_progress",
+          "message": "永続化された authoring 変更がないため検証できませんでした。",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "authoring_validation",
+            "status": "failed"
+          }
+        },
+        {
+          "sequence": 30,
+          "created_unix_ms": 1787244362585,
+          "kind": "semantic_progress",
+          "message": "provider_turn_finished: Codex returned control to the GameEngine host.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_finished",
+            "detail": "Codex returned control to the GameEngine host."
+          }
+        },
+        {
+          "sequence": 31,
+          "created_unix_ms": 1787244363278,
+          "kind": "code_changes_detected",
+          "message": "Recorded code checkpoint code-checkpoint_000000000000000018cd9147780c5a800000000000000025 with 0 changed file(s)."
+        },
+        {
+          "sequence": 32,
+          "created_unix_ms": 1787244363280,
+          "kind": "state_changed",
+          "message": "Engine-managed source validation started."
+        },
+        {
+          "sequence": 33,
+          "created_unix_ms": 1787244363282,
+          "kind": "validation",
+          "message": "Managed validation attempt started with 0 allow-listed gate(s); 0 plan item(s) require another capability.",
+          "validation": {
+            "event": "started",
+            "attempt_id": "validation_000000000000000018cd9147784cc9080000000000000028",
+            "gates": [],
+            "unmanaged_plan_items": 0
+          }
+        },
+        {
+          "sequence": 34,
+          "created_unix_ms": 1787244363285,
+          "kind": "validation",
+          "message": "Managed validation attempt finished as NotApplicable.",
+          "validation": {
+            "event": "finished",
+            "attempt_id": "validation_000000000000000018cd9147784cc9080000000000000028",
+            "status": "not_applicable"
+          }
+        },
+        {
+          "sequence": 35,
+          "created_unix_ms": 1787244363287,
+          "kind": "state_changed",
+          "message": "Managed source validation was not applicable; playtest evidence is still required."
+        },
+        {
+          "sequence": 36,
+          "created_unix_ms": 1787244363290,
+          "kind": "permission_requested",
+          "message": "Permission requested: Launch Play/runtime."
+        },
+        {
+          "sequence": 37,
+          "created_unix_ms": 1787244392841,
+          "kind": "permission_resolved",
+          "message": "Permission Launch Play/runtime resolved as Once."
+        },
+        {
+          "sequence": 38,
+          "created_unix_ms": 1787244532375,
+          "kind": "playtest",
+          "message": "Managed Editor Play launched successfully.",
+          "evidence": {
+            "evidence": "playtest",
+            "launched": true,
+            "interactions_passed": null
+          }
+        },
+        {
+          "sequence": 39,
+          "created_unix_ms": 1787244532377,
+          "kind": "permission_requested",
+          "message": "Permission requested: Frame capture."
+        },
+        {
+          "sequence": 40,
+          "created_unix_ms": 1787244545491,
+          "kind": "permission_resolved",
+          "message": "Permission Frame capture resolved as Once."
+        },
+        {
+          "sequence": 41,
+          "created_unix_ms": 1787244545519,
+          "kind": "captured_frame",
+          "message": "Captured managed Play frame frame_000000000000000018cd9171e613773c0000000000000031 (1004x538).",
+          "evidence": {
+            "evidence": "captured_frame",
+            "artifact_id": "frame_000000000000000018cd9171e613773c0000000000000031",
+            "width": 1004,
+            "height": 538
+          }
+        },
+        {
+          "sequence": 42,
+          "created_unix_ms": 1787244545521,
+          "kind": "state_changed",
+          "message": "Managed Play frame captured; visual evaluation remains required."
+        },
+        {
+          "sequence": 43,
+          "created_unix_ms": 1787244545523,
+          "kind": "permission_requested",
+          "message": "Permission requested: Launch external agent runtime."
+        },
+        {
+          "sequence": 44,
+          "created_unix_ms": 1787244547011,
+          "kind": "permission_resolved",
+          "message": "Permission Launch external agent runtime resolved as Once."
+        },
+        {
+          "sequence": 45,
+          "created_unix_ms": 1787244547013,
+          "kind": "code_workspace_prepared",
+          "message": "Prepared isolated managed code workspace."
+        },
+        {
+          "sequence": 46,
+          "created_unix_ms": 1787244547021,
+          "kind": "resource_policy",
+          "message": "External agent confinement: Application policy only (generic_process_runtime+windows_taskkill_tree); filesystem: unavailable, network: unavailable, process tree: enforced, credential secrecy: unavailable, requested network: loopback only."
+        },
+        {
+          "sequence": 47,
+          "created_unix_ms": 1787244547023,
+          "kind": "semantic_progress",
+          "message": "runtime_evaluation: External agent runtime started against the host-captured managed Play frame.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "runtime_evaluation",
+            "detail": "External agent runtime started against the host-captured managed Play frame."
+          }
+        },
+        {
+          "sequence": 48,
+          "created_unix_ms": 1787244547164,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 49,
+          "created_unix_ms": 1787244547269,
+          "kind": "semantic_progress",
+          "message": "provider_connected: Codex initialized its external agent thread.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_connected",
+            "detail": "Codex initialized its external agent thread."
+          }
+        },
+        {
+          "sequence": 50,
+          "created_unix_ms": 1787244547303,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 51,
+          "created_unix_ms": 1787244547338,
+          "kind": "semantic_progress",
+          "message": "provider_turn_started: Codex started a provider turn.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_started",
+            "detail": "Codex started a provider turn."
+          }
+        },
+        {
+          "sequence": 52,
+          "created_unix_ms": 1787244553262,
+          "kind": "semantic_progress",
+          "message": "visual_evaluation: ホスト管理のPlayフレームを読み取り専用で取得し、FPS視点・初音ミクモデル・操作結果の視覚的証拠を確認します。",
+          "evidence": {
+            "evidence": "progress",
+            "step": "visual_evaluation",
+            "detail": "ホスト管理のPlayフレームを読み取り専用で取得し、FPS視点・初音ミクモデル・操作結果の視覚的証拠を確認します。"
+          }
+        },
+        {
+          "sequence": 53,
+          "created_unix_ms": 1787244556207,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 54,
+          "created_unix_ms": 1787244556214,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 55,
+          "created_unix_ms": 1787244558569,
+          "kind": "tool_action",
+          "message": "gameengine_host_capture: GAMEENGINE_AGENT_CAPTURE_PATHから指定フレームのパスを取得",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "gameengine_host_capture",
+            "action": "GAMEENGINE_AGENT_CAPTURE_PATHから指定フレームのパスを取得",
+            "success": true
+          }
+        },
+        {
+          "sequence": 56,
+          "created_unix_ms": 1787244571113,
+          "kind": "tool_action",
+          "message": "gameengine_host_capture: 指定されたホスト管理Playフレームを原寸で検査",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "gameengine_host_capture",
+            "action": "指定されたホスト管理Playフレームを原寸で検査",
+            "success": true
+          }
+        },
+        {
+          "sequence": 57,
+          "created_unix_ms": 1787244571114,
+          "kind": "semantic_progress",
+          "message": "指定フレームには空と単色の背景しか表示されておらず、初音ミクのモデル、地面、FPS操作UI、移動またはジャンプの結果を確認できません。",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "visual_evaluation",
+            "status": "failed"
+          }
+        },
+        {
+          "sequence": 58,
+          "created_unix_ms": 1787244571116,
+          "kind": "state_changed",
+          "message": "Completion gate `visual_evaluation` failed; repair is required."
+        },
+        {
+          "sequence": 59,
+          "created_unix_ms": 1787244571117,
+          "kind": "semantic_progress",
+          "message": "ホスト所有フレームから、初音ミクモデルを使用したWASD移動・Spaceジャンプ・FPS視点の完成を確認できません。",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "acceptance_criteria",
+            "status": "failed"
+          }
+        },
+        {
+          "sequence": 60,
+          "created_unix_ms": 1787244571118,
+          "kind": "semantic_progress",
+          "message": "今回提供された証拠は単一のPlayフレームのみであり、プロジェクト構成およびソースの管理対象検証結果は確認できません。",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "authoring_validation",
+            "status": "pending"
+          }
+        },
+        {
+          "sequence": 61,
+          "created_unix_ms": 1787244571120,
+          "kind": "playtest",
+          "message": "Playフレームは取得されていますが、画面が空と単色背景のみのため、WASD移動、Spaceジャンプ、マウスによるFPS視点操作の成功を裏付ける視覚的証拠がありません。",
+          "evidence": {
+            "evidence": "playtest",
+            "launched": true,
+            "interactions_passed": false
+          }
+        },
+        {
+          "sequence": 62,
+          "created_unix_ms": 1787244571147,
+          "kind": "semantic_progress",
+          "message": "provider_turn_finished: Codex returned control to the GameEngine host.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_finished",
+            "detail": "Codex returned control to the GameEngine host."
+          }
+        },
+        {
+          "sequence": 63,
+          "created_unix_ms": 1787244571922,
+          "kind": "semantic_progress",
+          "message": "managed_runtime_repair: Starting autonomous runtime repair 1/2 after managed Play or visual evaluation failure.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "managed_runtime_repair",
+            "detail": "Starting autonomous runtime repair 1/2 after managed Play or visual evaluation failure."
+          }
+        },
+        {
+          "sequence": 64,
+          "created_unix_ms": 1787244571924,
+          "kind": "permission_requested",
+          "message": "Permission requested: Launch external agent runtime."
+        },
+        {
+          "sequence": 65,
+          "created_unix_ms": 1787244574596,
+          "kind": "permission_resolved",
+          "message": "Permission Launch external agent runtime resolved as Once."
+        },
+        {
+          "sequence": 66,
+          "created_unix_ms": 1787244574598,
+          "kind": "code_workspace_prepared",
+          "message": "Prepared isolated managed code workspace."
+        },
+        {
+          "sequence": 67,
+          "created_unix_ms": 1787244574605,
+          "kind": "resource_policy",
+          "message": "External agent confinement: Application policy only (generic_process_runtime+windows_taskkill_tree); filesystem: unavailable, network: unavailable, process tree: enforced, credential secrecy: unavailable, requested network: loopback only."
+        },
+        {
+          "sequence": 68,
+          "created_unix_ms": 1787244574607,
+          "kind": "state_changed",
+          "message": "External agent runtime started in the isolated code workspace."
+        },
+        {
+          "sequence": 69,
+          "created_unix_ms": 1787244574725,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 70,
+          "created_unix_ms": 1787244574820,
+          "kind": "semantic_progress",
+          "message": "provider_connected: Codex initialized its external agent thread.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_connected",
+            "detail": "Codex initialized its external agent thread."
+          }
+        },
+        {
+          "sequence": 71,
+          "created_unix_ms": 1787244574851,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 72,
+          "created_unix_ms": 1787244574881,
+          "kind": "semantic_progress",
+          "message": "provider_turn_started: Codex started a provider turn.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_started",
+            "detail": "Codex started a provider turn."
+          }
+        },
+        {
+          "sequence": 73,
+          "created_unix_ms": 1787244580969,
+          "kind": "semantic_progress",
+          "message": "repair_inspection: 既存ワークスペース、直前のフレーム、利用可能な GameEngine ツールを読み取り専用で確認します。",
+          "evidence": {
+            "evidence": "progress",
+            "step": "repair_inspection",
+            "detail": "既存ワークスペース、直前のフレーム、利用可能な GameEngine ツールを読み取り専用で確認します。"
+          }
+        },
+        {
+          "sequence": 74,
+          "created_unix_ms": 1787244594735,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 75,
+          "created_unix_ms": 1787244596146,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 76,
+          "created_unix_ms": 1787244603639,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 77,
+          "created_unix_ms": 1787244603948,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 78,
+          "created_unix_ms": 1787244610266,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 79,
+          "created_unix_ms": 1787244610555,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 80,
+          "created_unix_ms": 1787244615907,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 81,
+          "created_unix_ms": 1787244616078,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 82,
+          "created_unix_ms": 1787244619066,
+          "kind": "tool_action",
+          "message": "list_mcp_resources: provider MCP tool activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "list_mcp_resources",
+            "action": "provider MCP tool activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 83,
+          "created_unix_ms": 1787244619213,
+          "kind": "tool_action",
+          "message": "list_mcp_resources: provider MCP tool activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "list_mcp_resources",
+            "action": "provider MCP tool activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 84,
+          "created_unix_ms": 1787244629958,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 85,
+          "created_unix_ms": 1787244630449,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 86,
+          "created_unix_ms": 1787244633763,
+          "kind": "tool_action",
+          "message": "gameengine_editor: discover_injected_server",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "gameengine_editor",
+            "action": "discover_injected_server",
+            "success": false
+          }
+        },
+        {
+          "sequence": 87,
+          "created_unix_ms": 1787244636314,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 88,
+          "created_unix_ms": 1787244647621,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 89,
+          "created_unix_ms": 1787244652511,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 90,
+          "created_unix_ms": 1787244652890,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 91,
+          "created_unix_ms": 1787244660173,
+          "kind": "tool_action",
+          "message": "workspace_inspection: inspect_existing_code_and_failed_frame",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "workspace_inspection",
+            "action": "inspect_existing_code_and_failed_frame",
+            "success": true
+          }
+        },
+        {
+          "sequence": 92,
+          "created_unix_ms": 1787244660175,
+          "kind": "tool_action",
+          "message": "gameengine_editor: repair_project_authoring",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "gameengine_editor",
+            "action": "repair_project_authoring",
+            "success": false
+          }
+        },
+        {
+          "sequence": 93,
+          "created_unix_ms": 1787244660178,
+          "kind": "tool_action",
+          "message": "cargo: check_all_targets",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "cargo",
+            "action": "check_all_targets",
+            "success": false
+          }
+        },
+        {
+          "sequence": 94,
+          "created_unix_ms": 1787244660179,
+          "kind": "playtest",
+          "message": "Injected gameengine_editor MCP server was unavailable, so the scene could not be repaired or relaunched. Cargo validation was also blocked because the engine dependency required unavailable network access.",
+          "evidence": {
+            "evidence": "playtest",
+            "launched": false,
+            "interactions_passed": null
+          }
+        },
+        {
+          "sequence": 95,
+          "created_unix_ms": 1787244660181,
+          "kind": "semantic_progress",
+          "message": "The requested repair could not be applied because the authoritative gameengine_editor MCP server was not available.",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "acceptance_criteria",
+            "status": "failed"
+          }
+        },
+        {
+          "sequence": 96,
+          "created_unix_ms": 1787244660182,
+          "kind": "semantic_progress",
+          "message": "No authoring repair or managed validation could be performed without gameengine_editor.",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "authoring_validation",
+            "status": "failed"
+          }
+        },
+        {
+          "sequence": 97,
+          "created_unix_ms": 1787244660213,
+          "kind": "semantic_progress",
+          "message": "provider_turn_finished: Codex returned control to the GameEngine host.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_finished",
+            "detail": "Codex returned control to the GameEngine host."
+          }
+        },
+        {
+          "sequence": 98,
+          "created_unix_ms": 1787244660654,
+          "kind": "code_changes_detected",
+          "message": "Recorded code checkpoint code-checkpoint_000000000000000018cd918cb5038c34000000000000006d with 0 changed file(s)."
+        },
+        {
+          "sequence": 99,
+          "created_unix_ms": 1787244660666,
+          "kind": "state_changed",
+          "message": "Engine-managed source validation started."
+        },
+        {
+          "sequence": 100,
+          "created_unix_ms": 1787244660667,
+          "kind": "validation",
+          "message": "Managed validation attempt started with 0 allow-listed gate(s); 0 plan item(s) require another capability.",
+          "validation": {
+            "event": "started",
+            "attempt_id": "validation_000000000000000018cd918cb5d391540000000000000070",
+            "gates": [],
+            "unmanaged_plan_items": 0
+          }
+        },
+        {
+          "sequence": 101,
+          "created_unix_ms": 1787244660669,
+          "kind": "validation",
+          "message": "Managed validation attempt finished as NotApplicable.",
+          "validation": {
+            "event": "finished",
+            "attempt_id": "validation_000000000000000018cd918cb5d391540000000000000070",
+            "status": "not_applicable"
+          }
+        },
+        {
+          "sequence": 102,
+          "created_unix_ms": 1787244660670,
+          "kind": "state_changed",
+          "message": "Managed source validation was not applicable; playtest evidence is still required."
+        },
+        {
+          "sequence": 103,
+          "created_unix_ms": 1787244660672,
+          "kind": "permission_requested",
+          "message": "Permission requested: Launch Play/runtime."
+        },
+        {
+          "sequence": 104,
+          "created_unix_ms": 1787244661952,
+          "kind": "permission_resolved",
+          "message": "Permission Launch Play/runtime resolved as Once."
+        },
+        {
+          "sequence": 105,
+          "created_unix_ms": 1787244661978,
+          "kind": "playtest",
+          "message": "Managed Editor Play launched successfully.",
+          "evidence": {
+            "evidence": "playtest",
+            "launched": true,
+            "interactions_passed": null
+          }
+        },
+        {
+          "sequence": 106,
+          "created_unix_ms": 1787244661979,
+          "kind": "permission_requested",
+          "message": "Permission requested: Frame capture."
+        },
+        {
+          "sequence": 107,
+          "created_unix_ms": 1787244662302,
+          "kind": "permission_resolved",
+          "message": "Permission Frame capture resolved as Once."
+        },
+        {
+          "sequence": 108,
+          "created_unix_ms": 1787244662322,
+          "kind": "captured_frame",
+          "message": "Captured managed Play frame frame_000000000000000018cd918d185f3c240000000000000079 (1004x562).",
+          "evidence": {
+            "evidence": "captured_frame",
+            "artifact_id": "frame_000000000000000018cd918d185f3c240000000000000079",
+            "width": 1004,
+            "height": 562
+          }
+        },
+        {
+          "sequence": 109,
+          "created_unix_ms": 1787244662323,
+          "kind": "state_changed",
+          "message": "Managed Play frame captured; visual evaluation remains required."
+        },
+        {
+          "sequence": 110,
+          "created_unix_ms": 1787244662325,
+          "kind": "permission_requested",
+          "message": "Permission requested: Launch external agent runtime."
+        },
+        {
+          "sequence": 111,
+          "created_unix_ms": 1787244662510,
+          "kind": "permission_resolved",
+          "message": "Permission Launch external agent runtime resolved as Once."
+        },
+        {
+          "sequence": 112,
+          "created_unix_ms": 1787244662512,
+          "kind": "code_workspace_prepared",
+          "message": "Prepared isolated managed code workspace."
+        },
+        {
+          "sequence": 113,
+          "created_unix_ms": 1787244662520,
+          "kind": "resource_policy",
+          "message": "External agent confinement: Application policy only (generic_process_runtime+windows_taskkill_tree); filesystem: unavailable, network: unavailable, process tree: enforced, credential secrecy: unavailable, requested network: loopback only."
+        },
+        {
+          "sequence": 114,
+          "created_unix_ms": 1787244662522,
+          "kind": "semantic_progress",
+          "message": "runtime_evaluation: External agent runtime started against the host-captured managed Play frame.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "runtime_evaluation",
+            "detail": "External agent runtime started against the host-captured managed Play frame."
+          }
+        },
+        {
+          "sequence": 115,
+          "created_unix_ms": 1787244662628,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 116,
+          "created_unix_ms": 1787244662726,
+          "kind": "semantic_progress",
+          "message": "provider_connected: Codex initialized its external agent thread.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_connected",
+            "detail": "Codex initialized its external agent thread."
+          }
+        },
+        {
+          "sequence": 117,
+          "created_unix_ms": 1787244662732,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 118,
+          "created_unix_ms": 1787244662760,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 119,
+          "created_unix_ms": 1787244662788,
+          "kind": "semantic_progress",
+          "message": "provider_turn_started: Codex started a provider turn.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_started",
+            "detail": "Codex started a provider turn."
+          }
+        },
+        {
+          "sequence": 120,
+          "created_unix_ms": 1787244668074,
+          "kind": "semantic_progress",
+          "message": "visual_evaluation: ホスト取得済みの managed Play フレームを読み取り専用で確認します。",
+          "evidence": {
+            "evidence": "progress",
+            "step": "visual_evaluation",
+            "detail": "ホスト取得済みの managed Play フレームを読み取り専用で確認します。"
+          }
+        },
+        {
+          "sequence": 121,
+          "created_unix_ms": 1787244673046,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 122,
+          "created_unix_ms": 1787244673311,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 123,
+          "created_unix_ms": 1787244676645,
+          "kind": "tool_action",
+          "message": "GAMEENGINE_AGENT_CAPTURE_PATH: ホスト所有フレームの存在と対象IDを確認",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "GAMEENGINE_AGENT_CAPTURE_PATH",
+            "action": "ホスト所有フレームの存在と対象IDを確認",
+            "success": true
+          }
+        },
+        {
+          "sequence": 124,
+          "created_unix_ms": 1787244686792,
+          "kind": "tool_action",
+          "message": "view_image: frame_000000000000000018cd918d185f3c240000000000000079 を原寸で検査",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "view_image",
+            "action": "frame_000000000000000018cd918d185f3c240000000000000079 を原寸で検査",
+            "success": true
+          }
+        },
+        {
+          "sequence": 125,
+          "created_unix_ms": 1787244686794,
+          "kind": "semantic_progress",
+          "message": "ホスト所有フレームは単色に近い空／背景のみで、初音ミクのモデル、地面、FPS視点の移動結果、ジャンプ結果を視認できません。",
+          "evidence": {
+            "evidence": "completion_gate",
+            "gate": "visual_evaluation",
+            "status": "failed"
+          }
+        },
+        {
+          "sequence": 126,
+          "created_unix_ms": 1787244686799,
+          "kind": "state_changed",
+          "message": "Completion gate `visual_evaluation` failed; repair is required."
+        },
+        {
+          "sequence": 127,
+          "created_unix_ms": 1787244686801,
+          "kind": "playtest",
+          "message": "managed Play フレームは取得されていますが、この1枚からは WASD移動およびSpaceジャンプの成功を裏付けられません。",
+          "evidence": {
+            "evidence": "playtest",
+            "launched": true,
+            "interactions_passed": false
+          }
+        },
+        {
+          "sequence": 128,
+          "created_unix_ms": 1787244686890,
+          "kind": "semantic_progress",
+          "message": "provider_turn_finished: Codex returned control to the GameEngine host.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_finished",
+            "detail": "Codex returned control to the GameEngine host."
+          }
+        },
+        {
+          "sequence": 129,
+          "created_unix_ms": 1787244687512,
+          "kind": "semantic_progress",
+          "message": "managed_runtime_repair: Starting autonomous runtime repair 2/2 after managed Play or visual evaluation failure.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "managed_runtime_repair",
+            "detail": "Starting autonomous runtime repair 2/2 after managed Play or visual evaluation failure."
+          }
+        },
+        {
+          "sequence": 130,
+          "created_unix_ms": 1787244687514,
+          "kind": "permission_requested",
+          "message": "Permission requested: Launch external agent runtime."
+        },
+        {
+          "sequence": 131,
+          "created_unix_ms": 1787244688881,
+          "kind": "permission_resolved",
+          "message": "Permission Launch external agent runtime resolved as Once."
+        },
+        {
+          "sequence": 132,
+          "created_unix_ms": 1787244688883,
+          "kind": "code_workspace_prepared",
+          "message": "Prepared isolated managed code workspace."
+        },
+        {
+          "sequence": 133,
+          "created_unix_ms": 1787244688891,
+          "kind": "resource_policy",
+          "message": "External agent confinement: Application policy only (generic_process_runtime+windows_taskkill_tree); filesystem: unavailable, network: unavailable, process tree: enforced, credential secrecy: unavailable, requested network: loopback only."
+        },
+        {
+          "sequence": 134,
+          "created_unix_ms": 1787244688892,
+          "kind": "state_changed",
+          "message": "External agent runtime started in the isolated code workspace."
+        },
+        {
+          "sequence": 135,
+          "created_unix_ms": 1787244689011,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 136,
+          "created_unix_ms": 1787244689095,
+          "kind": "semantic_progress",
+          "message": "provider_connected: Codex initialized its external agent thread.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_connected",
+            "detail": "Codex initialized its external agent thread."
+          }
+        },
+        {
+          "sequence": 137,
+          "created_unix_ms": 1787244689131,
+          "kind": "provider_output",
+          "message": "[provider output omitted from project-shared history]"
+        },
+        {
+          "sequence": 138,
+          "created_unix_ms": 1787244689155,
+          "kind": "semantic_progress",
+          "message": "provider_turn_started: Codex started a provider turn.",
+          "evidence": {
+            "evidence": "progress",
+            "step": "provider_turn_started",
+            "detail": "Codex started a provider turn."
+          }
+        },
+        {
+          "sequence": 139,
+          "created_unix_ms": 1787244695096,
+          "kind": "semantic_progress",
+          "message": "repair_inspection: 既存の実装、直近の失敗フレーム、利用可能な GameEngine Editor 操作を読み取り専用で確認します。",
+          "evidence": {
+            "evidence": "progress",
+            "step": "repair_inspection",
+            "detail": "既存の実装、直近の失敗フレーム、利用可能な GameEngine Editor 操作を読み取り専用で確認します。"
+          }
+        },
+        {
+          "sequence": 140,
+          "created_unix_ms": 1787244703725,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 141,
+          "created_unix_ms": 1787244705398,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        },
+        {
+          "sequence": 142,
+          "created_unix_ms": 1787244710800,
+          "kind": "tool_action",
+          "message": "provider.command: provider command activity",
+          "evidence": {
+            "evidence": "tool_action",
+            "tool": "provider.command",
+            "action": "provider command activity",
+            "success": null
+          }
+        }
+      ],
+      "completion": {
+        "acceptance_criteria": "failed",
+        "authoring_validation": "failed",
+        "source_validation": "not_applicable",
+        "play_launch": "passed",
+        "frame_capture": "passed",
+        "visual_evaluation": "failed",
+        "interaction_scenarios": "failed"
+      },
+      "confinement_profile": {
+        "layer": "application_policy_only",
+        "mechanism": "generic_process_runtime+windows_taskkill_tree",
+        "filesystem_guarantee": "unavailable",
+        "network_guarantee": "unavailable",
+        "process_tree_guarantee": "enforced",
+        "credential_secrecy_guarantee": "unavailable",
+        "requested_network_policy": "loopback_only"
+      },
+      "working_state": {
+        "implementation_objective": "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください",
+        "architecture_constraints": [
+          "初音ミクのモデルを使って\nwasdで移動\n\nspaceでジャンプする\nfps視点の動きを作ってください"
+        ],
+        "ownership_crate_decisions": [],
+        "target_files_documents": [
+          "Inspect and apply the project-authoring changes required by the submitted Build request.",
+          "Inspect and apply the source changes required by the submitted Build request.",
+          "Use or acquire only the assets required by the submitted Build request."
+        ],
+        "concrete_edits": [
+          "Inspect and apply the source changes required by the submitted Build request."
+        ],
+        "typed_mcp_operations": [
+          "Inspect and apply the project-authoring changes required by the submitted Build request."
+        ],
+        "tests": [
+          "Validate every changed project document and source package using the applicable managed checks."
+        ],
+        "assumptions": [],
+        "replan_conditions": [
+          "The submitted request is completed without changes outside its stated scope."
+        ],
+        "relevant_source_provenance": [],
+        "current_code_workspace_diff": [],
+        "validation_results": [],
+        "observed_runtime_state": [],
+        "open_problems": []
+      },
+      "validation_attempts": [
+        {
+          "id": "validation_000000000000000018cd9147784cc9080000000000000028",
+          "gate_results": [],
+          "unmanaged_plan_items": 0,
+          "status": "not_applicable",
+          "started_unix_ms": 1787244363282,
+          "finished_unix_ms": 1787244363285
+        },
+        {
+          "id": "validation_000000000000000018cd918cb5d391540000000000000070",
+          "gate_results": [],
+          "unmanaged_plan_items": 0,
+          "status": "not_applicable",
+          "started_unix_ms": 1787244660667,
+          "finished_unix_ms": 1787244660669
+        }
+      ],
+      "code_checkpoints": [
+        {
+          "id": "code-checkpoint_000000000000000018cd9147780c5a800000000000000025",
+          "changes": [],
+          "created_unix_ms": 1787244363278
+        },
+        {
+          "id": "code-checkpoint_000000000000000018cd918cb5038c34000000000000006d",
+          "changes": [],
+          "created_unix_ms": 1787244660654
+        }
+      ],
+      "audit": {
+        "authoring_operations": 0,
+        "code_changes": 0,
+        "asset_acquisitions": [],
+        "managed_runtime_inputs": 0,
+        "raw_workspace_operations": 0,
+        "custom_commands": 0,
+        "permission_escalations": 9
+      },
+      "started_unix_ms": 1787244305796,
+      "finished_unix_ms": null
+    }
+  ],
+  "shared_with_project": true
+}

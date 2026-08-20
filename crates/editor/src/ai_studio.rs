@@ -30,8 +30,8 @@ use crate::external_agent_provider::{
     ExternalAgentProviderStatus, ExternalAgentQuestionRole, ExternalAgentQuestionTask,
     ExternalAgentQuestionTurn, ExternalAgentSemanticEvent, ExternalAgentSetupAction,
     ExternalAgentSetupTask, build_launch_plan, build_question_launch_plan, build_question_prompt,
-    probe_provider, probe_wsl_loopback_reachability, setup_command_text, sign_in_url,
-    translate_provider_line, wsl_environment_forwarding,
+    probe_editor_mcp_endpoint, probe_provider, probe_wsl_loopback_reachability, setup_command_text,
+    sign_in_url, translate_provider_line, wsl_environment_forwarding,
 };
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
@@ -1144,6 +1144,9 @@ pub struct AiStudioPanel {
     process: Option<ExternalAgentProcess>,
     process_purpose: Option<ExternalAgentPurpose>,
     external_provider_diagnostics: ExternalAgentDiagnostics,
+    /// A provider-reported MCP failure prevents a successful process exit from
+    /// being treated as a completed Build.
+    external_provider_mcp_failure: Option<String>,
     /// Whether the provider stream claimed workspace file-change activity in
     /// the current process. Used to detect Windows sandbox false-success.
     external_provider_reported_workspace_write: bool,
@@ -1347,6 +1350,7 @@ impl AiStudioPanel {
             process: None,
             process_purpose: None,
             external_provider_diagnostics: ExternalAgentDiagnostics::default(),
+            external_provider_mcp_failure: None,
             external_provider_reported_workspace_write: false,
             pending_external_work_owner: None,
             code_workspace: None,
@@ -3834,9 +3838,9 @@ impl AiStudioPanel {
     ///
     /// The submitted instruction becomes both the goal and a deterministic
     /// minimum structured plan. Explicitly edited draft fields are preserved;
-    /// empty fields are populated from conservative intent categories so Host
-    /// workload, evidence, and permission decisions do not see a goal-only
-    /// proposal that disagrees with the user's request.
+    /// an entirely empty draft receives a language-independent Build scope so
+    /// the provider can inspect the project and determine the concrete files,
+    /// authoring operations, assets, and runtime checks from the user's goal.
     fn derive_intent_proposal(&mut self, message: &str) {
         self.proposal_draft.goal = message.to_owned();
         if !self
@@ -3854,63 +3858,7 @@ impl AiStudioPanel {
             );
         }
 
-        let intent = classify_intent(message);
-        let code_intent = intent.code;
-        let authoring_intent = intent.authoring;
-        let runtime_intent = intent.runtime;
-        let asset_intent = intent.asset;
-
-        if code_intent {
-            if self.proposal_draft.planned_code_changes.is_empty() {
-                self.proposal_draft
-                    .planned_code_changes
-                    .push("Project code changes required by the submitted request.".to_owned());
-            }
-            if self.proposal_draft.validation_plan.is_empty() {
-                self.proposal_draft.validation_plan.push(
-                    "Run targeted checks for changed packages, then the repository core gate."
-                        .to_owned(),
-                );
-            }
-            self.proposal_draft
-                .requested_capabilities
-                .insert(AgentCapability::CodeWorkspaceApply);
-        }
-        if authoring_intent && self.proposal_draft.planned_project_changes.is_empty() {
-            self.proposal_draft.planned_project_changes.push(
-                "Apply the requested typed authoring changes through the live Editor MCP host."
-                    .to_owned(),
-            );
-            if self.proposal_draft.validation_plan.is_empty() {
-                self.proposal_draft.validation_plan.push(
-                    "Validate the changed authoritative authoring documents in the Editor."
-                        .to_owned(),
-                );
-            }
-        }
-        if runtime_intent {
-            if self.proposal_draft.playtest_plan.is_empty() {
-                self.proposal_draft.playtest_plan.push(
-                    "Launch managed Play and verify the requested runtime behavior.".to_owned(),
-                );
-            }
-            self.proposal_draft
-                .requested_capabilities
-                .insert(AgentCapability::RuntimeLaunch);
-            self.proposal_draft
-                .requested_capabilities
-                .insert(AgentCapability::FrameCapture);
-        }
-        if asset_intent {
-            if self.proposal_draft.planned_assets.is_empty() {
-                self.proposal_draft
-                    .planned_assets
-                    .push("Assets required by the submitted request.".to_owned());
-            }
-            self.proposal_draft
-                .requested_capabilities
-                .insert(AgentCapability::ExternalAssetAcquisition);
-        }
+        ensure_build_scope(&mut self.proposal_draft);
     }
 
     fn model_routing_status(&mut self) -> String {
@@ -5571,6 +5519,40 @@ impl AiStudioPanel {
                 self.status = Some(question);
             }
             NativeAgentAction::ReadyForValidation => {
+                // A benchmark child has no human operator who can notice that
+                // the model skipped the required inspection and still asked
+                // the host to validate. Keep this task-specific evidence
+                // check at the handoff boundary; rejected actions use the
+                // normal native retry path below and therefore give the model
+                // a chance to perform the missing operations.
+                if self.benchmark_child_active() {
+                    let readiness = self
+                        .host
+                        .run(run_id)
+                        .map_err(|error| error.to_string())
+                        .and_then(|run| self.validate_benchmark_ready_for_validation(run));
+                    if let Err(error) = readiness {
+                        // This is a rejected control-flow request, not a
+                        // failed project tool call. Recording it as a failed
+                        // ToolAction would permanently make a later recovered
+                        // inspection fail the benchmark's zero-invalid-tool
+                        // criterion. Keep the diagnostic in semantic progress
+                        // while the runtime's internal failure budget still
+                        // limits repeated policy violations.
+                        let _ = self.host.record_semantic_progress(
+                            run_id,
+                            "native.policy",
+                            format!("ready_for_validation rejected: {error}"),
+                        );
+                        self.record_native_result_and_continue(
+                            run_id,
+                            "ready_for_validation",
+                            false,
+                            error,
+                        );
+                        return;
+                    }
+                }
                 if let Some(runtime) = self.native_agent_runtime.as_mut() {
                     let _ = runtime.record_tool_result(
                         "ready_for_validation",
@@ -6035,6 +6017,7 @@ impl AiStudioPanel {
         self.active_external_program = None;
         self.active_external_args = None;
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        self.external_provider_mcp_failure = None;
         self.external_provider_reported_workspace_write = false;
         self.pending_external_work_owner = None;
     }
@@ -6253,6 +6236,7 @@ impl AiStudioPanel {
         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        self.external_provider_mcp_failure = None;
         let benchmark_single_model = self.benchmark_child_active();
         let routing_candidates = native_config
             .as_ref()
@@ -6459,6 +6443,7 @@ impl AiStudioPanel {
         let generic_program = self.active_external_program.clone().unwrap_or_default();
         let generic_args_text = self.active_external_args.clone().unwrap_or_default();
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        self.external_provider_mcp_failure = None;
         let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
             Ok(paths) => paths,
             Err(error) => {
@@ -6620,6 +6605,19 @@ impl AiStudioPanel {
             }
             return;
         }
+        if purpose == ExternalAgentPurpose::BuildOrRepair
+            && placement.environment == ExternalAgentExecutionEnvironment::WindowsNative
+            && let Err(error) = probe_editor_mcp_endpoint(
+                &self.connection.endpoint,
+                &self.connection.authorization_token,
+            )
+        {
+            self.fail_run(
+                run_id,
+                format!("Cannot start Build because the Editor MCP preflight failed: {error}"),
+            );
+            return;
+        }
         if placement.environment == ExternalAgentExecutionEnvironment::Wsl2Linux {
             // Windows variables reach a Linux process only when WSLENV names
             // them, and the captured-frame path must be translated so the
@@ -6761,9 +6759,11 @@ impl AiStudioPanel {
                     for event in translated {
                         match event {
                             ExternalAgentSemanticEvent::Progress { step, detail } => {
-                                if let Err(error) =
-                                    self.host.record_semantic_progress(&run_id, step, detail)
-                                {
+                                if let Err(error) = self.record_external_provider_progress(
+                                    &run_id,
+                                    step.to_owned(),
+                                    detail.to_owned(),
+                                ) {
                                     self.status = Some(error.to_string());
                                 }
                             }
@@ -6775,6 +6775,7 @@ impl AiStudioPanel {
                                 if tool == "workspace.file_change" {
                                     self.external_provider_reported_workspace_write = true;
                                 }
+                                self.note_external_provider_mcp_failure(&tool, action, success);
                                 if let Err(error) =
                                     self.host.record_tool_action(&run_id, tool, action, success)
                                 {
@@ -7306,6 +7307,38 @@ impl AiStudioPanel {
         }
     }
 
+    fn record_external_provider_progress(
+        &mut self,
+        run_id: &str,
+        step: String,
+        detail: String,
+    ) -> Result<(), String> {
+        self.note_external_provider_mcp_failure(&step, &detail, None);
+        self.host
+            .record_semantic_progress(run_id, step, detail)
+            .map_err(|error| error.to_string())
+    }
+
+    fn note_external_provider_mcp_failure(
+        &mut self,
+        step_or_tool: &str,
+        detail: &str,
+        success: Option<bool>,
+    ) {
+        let combined = format!("{step_or_tool} {detail}").to_ascii_lowercase();
+        let identifies_editor_mcp = combined.contains("gameengine_editor")
+            && (combined.contains("mcp") || combined.contains("tool"));
+        let reports_failure = success == Some(false)
+            || combined.contains("unavailable")
+            || combined.contains("not available")
+            || combined.contains("not found")
+            || step_or_tool.eq_ignore_ascii_case("blocked");
+        if identifies_editor_mcp && reports_failure && self.external_provider_mcp_failure.is_none()
+        {
+            self.external_provider_mcp_failure = Some(detail.to_owned());
+        }
+    }
+
     fn finish_provider_execution(&mut self, run_id: &str, exit_code: Option<i32>) {
         let changes = match self.code_workspace.as_ref() {
             Some(workspace) => match workspace.collect_changes() {
@@ -7319,6 +7352,13 @@ impl AiStudioPanel {
         };
         if let Err(error) = self.host.record_code_checkpoint(run_id, &changes) {
             self.status = Some(error.to_string());
+        }
+        if let Some(detail) = self.external_provider_mcp_failure.take() {
+            self.fail_run(
+                run_id,
+                format!("External provider could not use the injected Editor MCP server: {detail}"),
+            );
+            return;
         }
         let has_code_changes = !changes.is_empty();
         if self.active_external_provider == Some(ExternalAgentProviderKind::Codex)
@@ -7392,18 +7432,19 @@ impl AiStudioPanel {
         event: ProviderAgentEvent,
     ) -> Result<(), String> {
         match event {
-            ProviderAgentEvent::Progress { step, detail } => self
-                .host
-                .record_semantic_progress(run_id, step, detail)
-                .map_err(|error| error.to_string()),
+            ProviderAgentEvent::Progress { step, detail } => {
+                self.record_external_provider_progress(run_id, step, detail)
+            }
             ProviderAgentEvent::ToolAction {
                 tool,
                 action,
                 success,
-            } => self
-                .host
-                .record_tool_action(run_id, tool, action, success)
-                .map_err(|error| error.to_string()),
+            } => {
+                self.note_external_provider_mcp_failure(&tool, &action, success);
+                self.host
+                    .record_tool_action(run_id, tool, action, success)
+                    .map_err(|error| error.to_string())
+            }
             ProviderAgentEvent::CompletionGate {
                 gate,
                 status,
@@ -8310,130 +8351,47 @@ fn snapshot_lines(ui: &mut egui::Ui, label: &str, values: &[String]) {
     }
 }
 
-/// Represents the work categories inferred from a submitted natural-language
-/// instruction.
+/// Ensures that a Build submission has an immutable execution scope without
+/// trying to guess its meaning from a keyword list or language-specific text.
 ///
-/// The proposal builder uses these flags to populate the immutable work scope
-/// that the Host later uses for capability checks. Keeping the classification
-/// separate from the panel state makes the language coverage testable without
-/// starting an Editor host or creating project data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct IntentCategories {
-    /// Whether the request requires source or script changes.
-    code: bool,
-    /// Whether the request requires live authoring changes through the Editor.
-    authoring: bool,
-    /// Whether the request requires managed runtime execution or playtesting.
-    runtime: bool,
-    /// Whether the request refers to an imported or generated asset.
-    asset: bool,
-}
-
-/// Classifies the submitted instruction into the proposal work categories.
-///
-/// Game requests commonly describe behavior with input names and Japanese
-/// words rather than using the English words "code" or "scene". Those terms
-/// still imply source, authoring, and runtime work, so they must produce a
-/// non-empty immutable plan before the provider turn begins. The matcher is
-/// intentionally deterministic and substring-based to preserve the existing
-/// proposal derivation behavior while covering the supported game-authoring
-/// vocabulary.
-fn classify_intent(message: &str) -> IntentCategories {
-    let lower = message.to_ascii_lowercase();
-    let contains_any = |terms: &[&str]| {
-        terms.iter().any(|term| {
-            // "space" and "move" are input vocabulary, not arbitrary
-            // substrings: matching "workspace" or "remove" would otherwise
-            // turn unrelated requests into write-capable gameplay plans.
-            if matches!(*term, "space" | "move") {
-                lower
-                    .split(|character: char| !character.is_ascii_alphanumeric() && character != '-')
-                    .any(|word| word == *term)
-            } else {
-                lower.contains(term)
-            }
-        })
-    };
-
-    let gameplay_intent = contains_any(&[
-        "wasd",
-        "space",
-        "fps",
-        "movement",
-        "move",
-        "jump",
-        "camera",
-        "first-person",
-        "input",
-        "controller",
-        "移動",
-        "ジャンプ",
-        "操作",
-        "入力",
-        "カメラ",
-        "視点",
-    ]);
-
-    IntentCategories {
-        code: gameplay_intent
-            || contains_any(&[
-                "code",
-                "rust",
-                "script",
-                "compile",
-                "test",
-                "bug",
-                "fix",
-                "コード",
-                "実装",
-                "修正",
-            ]),
-        authoring: gameplay_intent
-            || contains_any(&[
-                "scene",
-                "entity",
-                "prefab",
-                "graph",
-                "material",
-                "animation",
-                "ui",
-                "model",
-                "character",
-                "player",
-                "シーン",
-                "エンティティ",
-                "プレハブ",
-                "アセット",
-                "モデル",
-                "キャラクター",
-                "プレイヤー",
-                "初音ミク",
-            ]),
-        runtime: gameplay_intent
-            || contains_any(&[
-                "play",
-                "playtest",
-                "runtime",
-                "visual",
-                "game",
-                "ゲーム",
-                "プレイ",
-                "実行",
-                "見た目",
-            ]),
-        asset: contains_any(&[
-            "image",
-            "audio",
-            "texture",
-            "model",
-            "miku",
-            "画像",
-            "音声",
-            "素材",
-            "モデル",
-            "初音ミク",
-        ]),
+/// The provider still has to inspect the project and choose concrete paths and
+/// operations that satisfy the user's goal. This fallback only declares the
+/// kinds of governed work that a Build request may need; each operation keeps
+/// its existing permission, revision, stale-file, and completion checks.
+fn ensure_build_scope(proposal: &mut AgentProposal) {
+    let has_explicit_scope = !proposal.planned_project_changes.is_empty()
+        || !proposal.planned_code_changes.is_empty()
+        || !proposal.planned_assets.is_empty()
+        || !proposal.validation_plan.is_empty()
+        || !proposal.playtest_plan.is_empty();
+    if has_explicit_scope {
+        return;
     }
+
+    proposal.planned_project_changes.push(
+        "Inspect and apply the project-authoring changes required by the submitted Build request."
+            .to_owned(),
+    );
+    proposal.planned_code_changes.push(
+        "Inspect and apply the source changes required by the submitted Build request.".to_owned(),
+    );
+    proposal
+        .planned_assets
+        .push("Use or acquire only the assets required by the submitted Build request.".to_owned());
+    proposal.validation_plan.push(
+        "Validate every changed project document and source package using the applicable managed checks."
+            .to_owned(),
+    );
+    proposal.playtest_plan.push(
+        "Run the managed runtime when the submitted request requires runtime verification."
+            .to_owned(),
+    );
+    proposal.requested_capabilities.extend([
+        AgentCapability::CodeWorkspaceApply,
+        AgentCapability::ExternalAssetAcquisition,
+        AgentCapability::FrameCapture,
+        AgentCapability::RuntimeLaunch,
+    ]);
 }
 
 fn completion_row(ui: &mut egui::Ui, label: &str, status: CompletionStatus) {
@@ -8476,33 +8434,52 @@ mod tests {
     }
 
     #[test]
-    fn japanese_fps_game_request_creates_all_required_intent_categories() {
-        let intent = classify_intent(
-            "初音ミクのモデルを使って\nwasdで移動\nspaceでジャンプする\nfps視点の動きを作ってください",
-        );
+    fn language_independent_build_scope_covers_governed_work_without_keywords() {
+        let mut proposal = AgentProposal::default();
 
-        assert_eq!(
-            intent,
-            IntentCategories {
-                code: true,
-                authoring: true,
-                runtime: true,
-                asset: true,
-            }
+        ensure_build_scope(&mut proposal);
+
+        assert!(!proposal.planned_project_changes.is_empty());
+        assert!(!proposal.planned_code_changes.is_empty());
+        assert!(!proposal.planned_assets.is_empty());
+        assert!(!proposal.validation_plan.is_empty());
+        assert!(!proposal.playtest_plan.is_empty());
+        assert!(
+            proposal
+                .requested_capabilities
+                .contains(&AgentCapability::CodeWorkspaceApply)
+        );
+        assert!(
+            proposal
+                .requested_capabilities
+                .contains(&AgentCapability::ExternalAssetAcquisition)
+        );
+        assert!(
+            proposal
+                .requested_capabilities
+                .contains(&AgentCapability::RuntimeLaunch)
+        );
+        assert!(
+            proposal
+                .requested_capabilities
+                .contains(&AgentCapability::FrameCapture)
         );
     }
 
     #[test]
-    fn plain_question_does_not_gain_write_scope_from_gameplay_keywords() {
-        let intent = classify_intent("ゲームの作り方を教えてください");
+    fn explicit_build_scope_is_preserved_without_expanding_it() {
+        let mut proposal = AgentProposal::default();
+        proposal
+            .planned_code_changes
+            .push("Only this source change is in scope.".to_owned());
 
-        assert!(!intent.code);
-        assert!(!intent.authoring);
-        assert!(intent.runtime);
-        assert!(!intent.asset);
+        ensure_build_scope(&mut proposal);
 
-        let unrelated = classify_intent("workspaceの設定を確認してください");
-        assert_eq!(unrelated, IntentCategories::default());
+        assert_eq!(proposal.planned_code_changes.len(), 1);
+        assert!(proposal.planned_project_changes.is_empty());
+        assert!(proposal.planned_assets.is_empty());
+        assert!(proposal.validation_plan.is_empty());
+        assert!(proposal.playtest_plan.is_empty());
     }
 
     #[test]

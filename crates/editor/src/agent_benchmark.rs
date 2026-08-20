@@ -1357,6 +1357,39 @@ fn task_required_tool_evidence_satisfied(task: &BenchmarkTaskDescriptor, run: &A
     scene_inspected && source_read
 }
 
+/// Verifies that the project-inspection benchmark has enough host-owned
+/// evidence to allow the provider to hand control back to managed validation.
+///
+/// The provider may emit a syntactically valid `ready_for_validation` action
+/// before it has actually inspected anything. Allowing that action to advance
+/// the state first hides the actionable cause and makes a model that skipped
+/// its tools look like an ordinary completion-gate failure. The native
+/// benchmark child uses this predicate at the handoff boundary so missing work
+/// is returned to the model as a recoverable policy result instead.
+pub(crate) fn benchmark_project_inspection_ready(run: &AgentRun) -> Result<(), String> {
+    if run.completion.acceptance_criteria != CompletionStatus::Passed {
+        return Err(
+            "project_inspection_v1 cannot enter validation before acceptance_criteria is passed"
+                .to_owned(),
+        );
+    }
+    if run.completion.authoring_validation != CompletionStatus::Passed {
+        return Err(
+            "project_inspection_v1 cannot enter validation before authoring_validation is passed"
+                .to_owned(),
+        );
+    }
+    let task = benchmark_task("project_inspection_v1")
+        .expect("project_inspection_v1 is part of the fixed benchmark corpus");
+    if !task_required_tool_evidence_satisfied(task, run) {
+        return Err(
+            "project_inspection_v1 requires successful scene inspection and workspace.code_read evidence before validation"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 fn optional_measured(value: Option<u64>) -> TelemetryValue<u64> {
     value.map(TelemetryValue::Measured).unwrap_or_default()
 }
@@ -1495,6 +1528,7 @@ mod tests {
         let task = benchmark_task("project_inspection_v1").expect("inspection task");
 
         assert!(!task_completion_success(task, &run));
+        assert!(benchmark_project_inspection_ready(&run).is_err());
         run.events.push(AgentEvent {
             sequence: run.events.last().map_or(1, |event| event.sequence + 1),
             created_unix_ms: 0,
@@ -1508,6 +1542,7 @@ mod tests {
             }),
         });
         assert!(!task_completion_success(task, &run));
+        assert!(benchmark_project_inspection_ready(&run).is_err());
         run.events.push(AgentEvent {
             sequence: run.events.last().map_or(1, |event| event.sequence + 1),
             created_unix_ms: 0,
@@ -1521,6 +1556,7 @@ mod tests {
             }),
         });
         assert!(task_completion_success(task, &run));
+        assert!(benchmark_project_inspection_ready(&run).is_ok());
 
         for directory in directories {
             let _ = std::fs::remove_dir_all(directory);

@@ -925,6 +925,13 @@ const STANDARD_VALIDATION_GATES: [ManagedValidationGate; 5] = [
     ManagedValidationGate::Documentation,
 ];
 
+/// AI StudioがBuild依頼に対して自動生成する汎用Validation項目です。
+///
+/// この項目は特定のシェルコマンドを要求するものではなく、
+/// GameEngineが管理する標準Validationを適用するという宣言です。
+/// そのため、任意コマンド実行権限を与えず、既存の標準gateへ変換します。
+const GENERIC_MANAGED_VALIDATION_PLAN_ITEM: &str = "validate every changed project document and source package using the applicable managed checks.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ManagedValidationGateStatus {
@@ -2596,14 +2603,19 @@ impl AgentHost {
             AgentRunState::Evaluating
         };
         let source_validation = self.run(run_id)?.completion.source_validation;
+        let completion = self.run(run_id)?.completion.clone();
+        if let Some(gates) = failed_provider_gates(&completion) {
+            let message =
+                format!("Completion gate(s) {gates} failed before managed Play could start.");
+            self.record_event(run_id, AgentEventKind::Failure, message.clone())?;
+            return self.transition_run(run_id, AgentRunState::Failed, message);
+        }
         // Evaluation never returns a run to execution on its own, and these two
         // gates are reportable only while a run executes or repairs. A run that
         // arrives here without them can therefore never satisfy its completion
         // contract, so it ends as a failure instead of waiting in evaluation for
         // a report that has no phase left to arrive in.
-        if next == AgentRunState::Evaluating
-            && let Some(gates) = unreported_provider_gates(&self.run(run_id)?.completion)
-        {
+        if let Some(gates) = unreported_provider_gates(&completion) {
             let message = format!(
                 "Completion gate(s) {gates} were never reported while the run was executing, and are not reportable during evaluation."
             );
@@ -2926,6 +2938,20 @@ fn unreported_provider_gates(completion: &CompletionReport) -> Option<String> {
     (!pending.is_empty()).then(|| pending.join(", "))
 }
 
+/// Returns provider-owned completion gates that explicitly failed before the
+/// host can advance into managed Play or evaluation.
+fn failed_provider_gates(completion: &CompletionReport) -> Option<String> {
+    let failed = [
+        ("acceptance_criteria", completion.acceptance_criteria),
+        ("authoring_validation", completion.authoring_validation),
+    ]
+    .into_iter()
+    .filter(|(_, status)| *status == CompletionStatus::Failed)
+    .map(|(gate, _)| gate)
+    .collect::<Vec<_>>();
+    (!failed.is_empty()).then(|| failed.join(", "))
+}
+
 fn managed_validation_advance_message(
     source_validation: CompletionStatus,
     playtest_required: bool,
@@ -2969,6 +2995,20 @@ fn managed_validation_plan(
         if normalized == "authoring validation" {
             continue;
         }
+
+        // AI Studioが生成した汎用Validation項目は、任意の外部コマンドではなく、
+        // GameEngine自身が管理する標準Validationを指します。
+        //
+        // ソース変更が存在する場合だけ標準gateを追加します。
+        // ソース変更がない場合は、未解決項目にせず、後続処理で
+        // source_validation = NotApplicable として扱えるようにします。
+        if normalized == GENERIC_MANAGED_VALIDATION_PLAN_ITEM {
+            if code_changes_present {
+                gates.extend(STANDARD_VALIDATION_GATES);
+            }
+            continue;
+        }
+
         let all = matches!(
             normalized.as_str(),
             "all" | "full" | "full validation" | "source validation"
@@ -4826,6 +4866,48 @@ mod tests {
     }
 
     #[test]
+    fn generated_generic_managed_validation_scope_is_allowlisted_with_source_changes() {
+        // AI Studioが生成する汎用Validation項目を再現します。
+        let proposal = AgentProposal {
+            validation_plan: vec![
+                "Validate every changed project document and source package using the applicable managed checks."
+                    .to_owned(),
+            ],
+            ..AgentProposal::default()
+        };
+
+        // ソース変更がある場合は標準managed gateへ変換されることを確認します。
+        let (gates, unmanaged) = managed_validation_plan(&proposal, true);
+
+        // formatting/check/clippy/tests/documentationの全gateが選択されます。
+        assert_eq!(gates, STANDARD_VALIDATION_GATES);
+
+        // 汎用項目は未管理項目として残りません。
+        assert_eq!(unmanaged, 0);
+    }
+
+    #[test]
+    fn generated_generic_managed_validation_scope_is_not_applicable_without_source_changes() {
+        // 同じ汎用Validation項目を、ソース変更なしの状態で再現します。
+        let proposal = AgentProposal {
+            validation_plan: vec![
+                "Validate every changed project document and source package using the applicable managed checks."
+                    .to_owned(),
+            ],
+            ..AgentProposal::default()
+        };
+
+        // ソース変更がない場合は、標準gateを実行する対象がありません。
+        let (gates, unmanaged) = managed_validation_plan(&proposal, false);
+
+        // 不要なcargo処理は起動しません。
+        assert!(gates.is_empty());
+
+        // ただし、Validation項目自体は未解決として扱いません。
+        assert_eq!(unmanaged, 0);
+    }
+
+    #[test]
     fn code_changes_default_to_standard_managed_validation_gates() {
         let (gates, unmanaged) = managed_validation_plan(&AgentProposal::default(), true);
         assert_eq!(gates, STANDARD_VALIDATION_GATES);
@@ -4897,6 +4979,50 @@ mod tests {
             event.kind == AgentEventKind::PermissionRequested
                 && event.message.contains("Arbitrary command execution")
         }));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn failed_provider_gate_blocks_playtest_after_validation() {
+        let project = temp_path("failed-provider-gate-project");
+        let storage = temp_path("failed-provider-gate-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Validation").expect("session");
+        let mut proposal = host.session(&session).expect("session").proposal.clone();
+        proposal.playtest_plan = vec!["launch managed Play".to_owned()];
+        host.update_proposal(&session, proposal).expect("proposal");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+        host.record_completion_gate(
+            &run,
+            "acceptance_criteria",
+            CompletionStatus::Passed,
+            "accepted",
+        )
+        .expect("acceptance gate");
+        host.record_completion_gate(
+            &run,
+            "authoring_validation",
+            CompletionStatus::Failed,
+            "Editor MCP was unavailable",
+        )
+        .expect("authoring gate");
+
+        host.begin_managed_validation(&run, false)
+            .expect("managed validation");
+
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(run_state.state, AgentRunState::Failed);
+        assert_eq!(run_state.completion.play_launch, CompletionStatus::Pending);
+        assert!(
+            run_state
+                .events
+                .iter()
+                .any(|event| event.message.contains("authoring_validation"))
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
