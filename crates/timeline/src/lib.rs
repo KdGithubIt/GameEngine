@@ -23,12 +23,19 @@ use std::fmt;
 mod evaluate;
 mod player;
 mod registry;
+mod replay;
 
 pub use evaluate::{
     ActiveClip, ClipTransition, FiredEvent, TimelineEvaluation, TimelineTrackOutput,
 };
 pub use player::{LoopRegion, TimelinePlayState, TimelinePlayer, TimelineSeek};
 pub use registry::{TrackDescriptor, TrackRegistry, TrackSeekPolicy};
+pub use replay::{
+    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,
+    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, ReplayCancellationToken,
+    ReplayCheckpointCache, ReplayCheckpointConfigError, ReplayReconstruction, ReplayRequest,
+    ReplayRequestController,
+};
 
 /// One compiled clip with pre-resolved payload data.
 #[derive(Debug, Clone, PartialEq)]

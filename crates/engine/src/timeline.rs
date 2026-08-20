@@ -6,12 +6,18 @@
 //! camera-selection override, and forwards sequence events to the ordinary
 //! host event path. The neutral core stays free of every domain touched here.
 
+mod audio_adapter;
+mod vfx;
+
 pub use engine_timeline::{
     ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,
-    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,
-    LoopRegion, TimelineCompileError, TimelineEvaluation, TimelinePlayState, TimelinePlayer,
-    TimelineSeek, TimelineTrackOutput, TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction,
-    compile_timeline,
+    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation,
+    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,
+    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, FiredEvent, LoopRegion,
+    ReplayCancellationToken, ReplayCheckpointCache, ReplayCheckpointConfigError,
+    ReplayReconstruction, ReplayRequest, ReplayRequestController, TimelineCompileError,
+    TimelineEvaluation, TimelinePlayState, TimelinePlayer, TimelineSeek, TimelineTrackOutput,
+    TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction, compile_timeline,
 };
 
 use crate::anim_graph::AnimGraphPlayer;
@@ -300,15 +306,55 @@ pub fn advance_timelines(
         return;
     };
     let players = query.iter().map(|(entity, _)| entity).collect::<Vec<_>>();
-    for entity in players {
-        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
-            continue;
+    for entity in players.iter().copied() {
+        let (timeline, evaluation, state, generation, previous_tick, pending_vfx_seek, mut tokens) = {
+            let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+                continue;
+            };
+            if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
+                component.player.play();
+            }
+            let pending_vfx_seek = vfx::pending_seek(component);
+            let timeline = Arc::clone(&component.timeline);
+            let evaluation = component.player.advance(&timeline, delta_seconds);
+            let state = component.player.state();
+            let generation = component.player.generation();
+            let previous_tick = component.player.previous_tick();
+            let tokens = std::mem::take(&mut component.tokens);
+            (
+                timeline,
+                evaluation,
+                state,
+                generation,
+                previous_tick,
+                pending_vfx_seek,
+                tokens,
+            )
         };
-        if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
-            component.player.play();
+
+        let audio_input = audio_adapter::AudioEvaluationInput::new(
+            entity,
+            &timeline,
+            &evaluation,
+            state,
+            generation,
+        );
+        audio_adapter::apply_audio_evaluation(audio_input, world, bindings, diagnostics);
+
+        if let Some(seek) = pending_vfx_seek {
+            vfx::apply_seek(&timeline, seek, world, bindings, &mut tokens, diagnostics);
+            vfx::mark_seek_applied(&mut tokens, seek);
         }
-        let timeline = Arc::clone(&component.timeline);
-        let evaluation = component.player.advance(&timeline, delta_seconds);
+        vfx::apply_evaluation(
+            &timeline,
+            &evaluation,
+            previous_tick,
+            world,
+            bindings,
+            &mut tokens,
+            diagnostics,
+        );
+
         apply_evaluation(
             entity,
             &evaluation,
@@ -318,7 +364,11 @@ pub fn advance_timelines(
             events,
             diagnostics,
         );
+        if let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) {
+            component.tokens = tokens;
+        }
     }
+    audio_adapter::cleanup_stale_sources(world, &players);
 }
 
 /// Shared fixed-step Timeline bridge used by Editor Play and packaged Player.
@@ -519,8 +569,9 @@ pub fn apply_evaluation(
                     graph_player.begin_external_override();
                 }
             }
-            // Audio and VFX remain deferred until ADR 0122/0125 expose the
-            // stable runtime controls ADR 0126 requires.
+            // Audio and VFX are stateful domain adapters applied before this
+            // world-output pass. Their typed outputs remain visible to the
+            // neutral evaluator, while composition ownership stays here.
             TimelineTrackOutput::Audio { .. }
             | TimelineTrackOutput::Vfx { .. }
             | TimelineTrackOutput::Event => {}
@@ -622,6 +673,7 @@ pub fn apply_timeline_control(
             TimelineControl::Stop => {
                 component.player.stop();
                 component.tokens.clear();
+                vfx::mark_seek(component);
                 animation_overrides = std::mem::take(&mut component.animation_overrides)
                     .into_values()
                     .rev()
@@ -640,6 +692,7 @@ pub fn apply_timeline_control(
                 component
                     .player
                     .seek(&timeline, tick, TimelineSeek::Playback);
+                vfx::mark_seek(component);
             }
             TimelineControl::SetRate { rate } => {
                 if !component.player.set_rate(rate) {
