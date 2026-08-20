@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/transport.rs","old":"        \"initialize\" => initialize_result(server_info),","new":"        \"initialize\" => initialize_result(server_info, negotiated_protocol_version(object)),"}
