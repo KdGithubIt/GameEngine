@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/timeline/src/replay.rs",
+  "old": "            Self::NonPositiveCheckpointInterval => {\n                write!(formatter, \"replay checkpoint interval ticks must be positive\")\n            }",
+  "new": "            Self::NonPositiveCheckpointInterval => {\n                write!(\n                    formatter,\n                    \"replay checkpoint interval ticks must be positive\"\n                )\n            }"
+}
