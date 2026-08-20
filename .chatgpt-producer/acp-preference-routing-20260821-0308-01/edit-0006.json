@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn start_question(&mut self) {\n        if self.provider_answers_questions() {\n            self.start_external_question();\n            return;\n        }\n        self.start_native_question();\n    }\n",
+  "new": "    fn start_question(&mut self) {\n        let resolution = match self.selected_execution_resolution() {\n            Ok(resolution) => resolution,\n            Err(error) => {\n                self.status = Some(error);\n                return;\n            }\n        };\n        if let AiExecutionDriver::Acp { agent_id } = resolution.driver {\n            self.status = Some(format!(\n                \"ACP driver `{agent_id}` is selected for `{}`. ACP session dispatch is supplied by the integration layer and is not attached in this routing-only branch; Legacy execution was not used.\",\n                resolution.logical_ai_id\n            ));\n            return;\n        }\n        if self.provider_answers_questions() {\n            self.start_external_question();\n            return;\n        }\n        self.start_native_question();\n    }\n"
+}
