@@ -124,7 +124,9 @@ the beginning:
   [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md),
   [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md),
   [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md),
-  and [0158](0158-conversation-first-ai-studio-presentation-and-transcript-projection.md).
+  [0158](0158-conversation-first-ai-studio-presentation-and-transcript-projection.md),
+  [0159](0159-benchmark-model-exchange-observability-and-failure-diagnosis.md),
+  and [0161](0161-managed-local-multimodal-input-and-projector-registration.md).
 
 ## Proposed Decisions
 
@@ -308,3 +310,5 @@ implementation contract.
 | [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md) | Automated Multi-Model Benchmark Campaigns and Reproducible Runtime Characterization |
 | [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md) | AI Runtime Debugging, Deterministic Playtest Control, and Host-Owned Observation |
 | [0158](0158-conversation-first-ai-studio-presentation-and-transcript-projection.md) | **Proposed** — Conversation-First AI Studio Presentation and Transcript Projection |
+| [0159](0159-benchmark-model-exchange-observability-and-failure-diagnosis.md) | Benchmark Model Exchange Observability and Failure Diagnosis |
+| [0161](0161-managed-local-multimodal-input-and-projector-registration.md) | Managed Local Multimodal Input and Projector Registration |

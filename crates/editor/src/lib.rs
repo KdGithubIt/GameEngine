@@ -34,6 +34,7 @@ pub mod canvas;
 pub mod component_source_index;
 pub mod component_source_viewer;
 pub mod console;
+mod digest;
 pub mod document;
 pub mod drag_drop;
 mod editor_fonts;

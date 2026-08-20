@@ -30,10 +30,99 @@ const MAX_GGUF_STRING_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_GGUF_ARRAY_ELEMENTS: u64 = 16_000_000;
 const REPRESENTATION_PREFIX: &str = "gguf-repr-v1;";
 
+/// Architecture-independent metadata keys the runtime derives launch policy from.
+///
+/// Every key is namespaced by the value of `general.architecture`, so the parser
+/// resolves them after the metadata block is read instead of assuming any model
+/// family. A model that omits a key simply leaves the derived value unmeasured.
+const ARCHITECTURE_SCALAR_SUFFIXES: [&str; 8] = [
+    ".context_length",
+    ".block_count",
+    ".embedding_length",
+    ".attention.head_count",
+    ".attention.head_count_kv",
+    ".attention.key_length",
+    ".attention.value_length",
+    ".attention.sliding_window",
+];
+const ARCHITECTURE_KEY: &str = "general.architecture";
+const CHAT_TEMPLATE_KEY: &str = "tokenizer.chat_template";
+/// Bytes one cached key or value element occupies at the default f16 KV cache type.
+const KV_CACHE_ELEMENT_BYTES: u64 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GgufRepresentation {
     pub(super) descriptor: String,
     pub(super) canonical_quantization: Option<String>,
+    pub(super) capability: GgufModelCapability,
+}
+
+/// Launch-relevant model shape measured from GGUF metadata.
+///
+/// The values are reported exactly as the file declares them. Deriving a
+/// context window or a KV budget from them belongs to the runtime policy, not
+/// to this parser, and nothing here is specific to one model family.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GgufModelCapability {
+    /// Value of `general.architecture`, used only to namespace the other keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) architecture: Option<String>,
+    /// Context window the model was trained for, when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) train_context_tokens: Option<u32>,
+    /// KV cache bytes one token occupies across every block, when derivable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) kv_cache_bytes_per_token: Option<u64>,
+    /// Declared attention sliding window, when the architecture uses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sliding_window_tokens: Option<u32>,
+    /// Whether the file carries its own chat template.
+    #[serde(default)]
+    pub(crate) chat_template: bool,
+}
+
+impl GgufModelCapability {
+    fn derive(
+        architecture: Option<String>,
+        scalars: &BTreeMap<String, u64>,
+        chat_template: bool,
+    ) -> Self {
+        let namespace = architecture.clone();
+        let lookup = |suffix: &str| -> Option<u64> {
+            let namespace = namespace.as_deref()?;
+            scalars.get(&format!("{namespace}{suffix}")).copied()
+        };
+        let block_count = lookup(".block_count");
+        let embedding_length = lookup(".embedding_length");
+        let head_count = lookup(".attention.head_count");
+        let head_count_kv = lookup(".attention.head_count_kv").or(head_count);
+        let key_length =
+            lookup(".attention.key_length").or_else(|| match (embedding_length, head_count) {
+                (Some(embedding), Some(heads)) if heads > 0 => Some(embedding / heads),
+                _ => None,
+            });
+        let value_length = lookup(".attention.value_length").or(key_length);
+        let kv_cache_bytes_per_token = match (block_count, head_count_kv, key_length, value_length)
+        {
+            (Some(blocks), Some(heads), Some(key), Some(value)) => key
+                .checked_add(value)
+                .and_then(|element| element.checked_mul(heads))
+                .and_then(|per_block| per_block.checked_mul(blocks))
+                .and_then(|total| total.checked_mul(KV_CACHE_ELEMENT_BYTES))
+                .filter(|total| *total > 0),
+            _ => None,
+        };
+        Self {
+            architecture,
+            train_context_tokens: lookup(".context_length")
+                .and_then(|value| u32::try_from(value).ok()),
+            kv_cache_bytes_per_token,
+            sliding_window_tokens: lookup(".attention.sliding_window")
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0),
+            chat_template,
+        }
+    }
 }
 
 pub(super) fn inspect_representation(path: &Path) -> io::Result<GgufRepresentation> {
@@ -78,9 +167,30 @@ fn inspect_reader<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<G
 
     let mut file_type = None;
     let mut quantization_version = None;
+    let mut architecture = None;
+    let mut chat_template = false;
+    let mut scalars = BTreeMap::<String, u64>::new();
     for _ in 0..metadata_count {
         let key = read_string(reader)?;
         let value_type = read_u32(reader)?;
+        if key == ARCHITECTURE_KEY && value_type == GGUF_TYPE_STRING {
+            architecture = Some(read_string(reader)?);
+            continue;
+        }
+        if key == CHAT_TEMPLATE_KEY {
+            chat_template = true;
+            skip_value(reader, file_len, value_type)?;
+            continue;
+        }
+        if ARCHITECTURE_SCALAR_SUFFIXES
+            .iter()
+            .any(|suffix| key.ends_with(suffix))
+        {
+            if let Some(value) = read_scalar_u64(reader, file_len, value_type)? {
+                scalars.insert(key, value);
+            }
+            continue;
+        }
         match key.as_str() {
             "general.file_type" => {
                 if value_type != GGUF_TYPE_UINT32 {
@@ -158,7 +268,40 @@ fn inspect_reader<R: Read + Seek>(reader: &mut R, file_len: u64) -> io::Result<G
         canonical_quantization: file_type
             .and_then(canonical_quantization_for_file_type)
             .map(str::to_owned),
+        capability: GgufModelCapability::derive(architecture, &scalars, chat_template),
     })
+}
+
+/// Reads one numeric metadata value, or skips a value the runtime cannot use.
+///
+/// Returning `Ok(None)` keeps the caller advancing through the metadata block
+/// when a key it recognizes by name carries a type it cannot interpret.
+fn read_scalar_u64<R: Read + Seek>(
+    reader: &mut R,
+    file_len: u64,
+    value_type: u32,
+) -> io::Result<Option<u64>> {
+    match value_type {
+        GGUF_TYPE_UINT32 => Ok(Some(u64::from(read_u32(reader)?))),
+        GGUF_TYPE_INT32 => {
+            let value = read_u32(reader)? as i32;
+            Ok(u64::try_from(value).ok())
+        }
+        GGUF_TYPE_UINT64 => Ok(Some(read_u64(reader)?)),
+        GGUF_TYPE_INT64 => {
+            let value = read_u64(reader)? as i64;
+            Ok(u64::try_from(value).ok())
+        }
+        GGUF_TYPE_UINT16 => {
+            let mut bytes = [0_u8; 2];
+            reader.read_exact(&mut bytes)?;
+            Ok(Some(u64::from(u16::from_le_bytes(bytes))))
+        }
+        _ => {
+            skip_value(reader, file_len, value_type)?;
+            Ok(None)
+        }
+    }
 }
 
 fn read_u32<R: Read>(reader: &mut R) -> io::Result<u32> {
@@ -354,7 +497,10 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 
 #[cfg(feature = "visual-validation")]
 pub(super) fn write_visual_validation_gguf(path: &Path) -> io::Result<()> {
-    std::fs::write(path, build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]))
+    std::fs::write(
+        path,
+        build_test_gguf(3, Some(15), Some(2), &[12, 12, 14], None, &[]),
+    )
 }
 
 #[cfg(test)]
@@ -363,7 +509,29 @@ pub(super) fn write_test_gguf(
     file_type: Option<u32>,
     tensor_types: &[u32],
 ) -> io::Result<()> {
-    std::fs::write(path, build_test_gguf(3, file_type, Some(2), tensor_types))
+    std::fs::write(
+        path,
+        build_test_gguf(3, file_type, Some(2), tensor_types, None, &[]),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn write_test_gguf_with_architecture(
+    path: &Path,
+    architecture: &str,
+    scalars: &[(&str, u64)],
+) -> io::Result<()> {
+    std::fs::write(
+        path,
+        build_test_gguf(
+            3,
+            Some(15),
+            Some(2),
+            &[12, 12, 14],
+            Some(architecture),
+            scalars,
+        ),
+    )
 }
 
 #[cfg(any(test, feature = "visual-validation"))]
@@ -372,14 +540,28 @@ fn build_test_gguf(
     file_type: Option<u32>,
     quantization_version: Option<u32>,
     tensor_types: &[u32],
+    architecture: Option<&str>,
+    scalars: &[(&str, u64)],
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(GGUF_MAGIC);
     bytes.extend_from_slice(&version.to_le_bytes());
     bytes.extend_from_slice(&(tensor_types.len() as u64).to_le_bytes());
-    let metadata_count = file_type.is_some() as u64 + quantization_version.is_some() as u64;
+    let metadata_count = file_type.is_some() as u64
+        + quantization_version.is_some() as u64
+        + architecture.map_or(0, |_| 1 + scalars.len() as u64);
     bytes.extend_from_slice(&metadata_count.to_le_bytes());
 
+    if let Some(architecture) = architecture {
+        push_string(&mut bytes, ARCHITECTURE_KEY);
+        bytes.extend_from_slice(&GGUF_TYPE_STRING.to_le_bytes());
+        push_string(&mut bytes, architecture);
+        for (suffix, value) in scalars {
+            push_string(&mut bytes, &format!("{architecture}{suffix}"));
+            bytes.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
+            bytes.extend_from_slice(&(*value as u32).to_le_bytes());
+        }
+    }
     if let Some(file_type) = file_type {
         push_string(&mut bytes, "general.file_type");
         bytes.extend_from_slice(&GGUF_TYPE_UINT32.to_le_bytes());
@@ -414,7 +596,7 @@ mod tests {
 
     #[test]
     fn mixed_tensor_types_produce_a_stable_distribution_without_single_quantization() {
-        let bytes = build_test_gguf(3, None, Some(2), &[12, 14, 12, 0]);
+        let bytes = build_test_gguf(3, None, Some(2), &[12, 14, 12, 0], None, &[]);
         let mut reader = Cursor::new(bytes.as_slice());
         let representation =
             inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
@@ -428,7 +610,7 @@ mod tests {
 
     #[test]
     fn general_file_type_supplies_only_a_canonical_label_while_descriptor_stays_exact() {
-        let bytes = build_test_gguf(3, Some(15), Some(2), &[12, 12, 14]);
+        let bytes = build_test_gguf(3, Some(15), Some(2), &[12, 12, 14], None, &[]);
         let mut reader = Cursor::new(bytes.as_slice());
         let representation =
             inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
@@ -444,7 +626,7 @@ mod tests {
 
     #[test]
     fn malformed_or_truncated_gguf_is_rejected() {
-        let mut bytes = build_test_gguf(3, Some(15), Some(2), &[12]);
+        let mut bytes = build_test_gguf(3, Some(15), Some(2), &[12], None, &[]);
         bytes.truncate(bytes.len() - 3);
         let mut reader = Cursor::new(bytes.as_slice());
         assert!(inspect_reader(&mut reader, bytes.len() as u64).is_err());
@@ -455,7 +637,7 @@ mod tests {
 
     #[test]
     fn unsupported_gguf_version_is_rejected() {
-        let bytes = build_test_gguf(4, Some(15), Some(2), &[12]);
+        let bytes = build_test_gguf(4, Some(15), Some(2), &[12], None, &[]);
         let mut reader = Cursor::new(bytes.as_slice());
         let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("version");
         assert!(error.to_string().contains("unsupported GGUF version 4"));
@@ -463,9 +645,71 @@ mod tests {
 
     #[test]
     fn unsupported_tensor_type_is_rejected() {
-        let bytes = build_test_gguf(3, None, Some(2), &[999]);
+        let bytes = build_test_gguf(3, None, Some(2), &[999], None, &[]);
         let mut reader = Cursor::new(bytes.as_slice());
         let error = inspect_reader(&mut reader, bytes.len() as u64).expect_err("type");
         assert!(error.to_string().contains("unsupported ggml type 999"));
+    }
+
+    #[test]
+    fn architecture_namespaced_metadata_derives_a_generic_kv_cost() {
+        let bytes = build_test_gguf(
+            3,
+            Some(15),
+            Some(2),
+            &[12, 12, 14],
+            Some("any-architecture"),
+            &[
+                (".context_length", 131_072),
+                (".block_count", 4),
+                (".embedding_length", 512),
+                (".attention.head_count", 8),
+                (".attention.head_count_kv", 2),
+            ],
+        );
+        let mut reader = Cursor::new(bytes.as_slice());
+        let representation =
+            inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
+        let capability = representation.capability;
+        assert_eq!(capability.architecture.as_deref(), Some("any-architecture"));
+        assert_eq!(capability.train_context_tokens, Some(131_072));
+        // head_dim 64, two KV heads, key plus value, four blocks, two bytes each.
+        assert_eq!(capability.kv_cache_bytes_per_token, Some(2_048));
+        assert_eq!(capability.sliding_window_tokens, None);
+    }
+
+    #[test]
+    fn a_model_without_architecture_metadata_reports_nothing_measured() {
+        let bytes = build_test_gguf(3, Some(15), Some(2), &[12, 12, 14], None, &[]);
+        let mut reader = Cursor::new(bytes.as_slice());
+        let representation =
+            inspect_reader(&mut reader, bytes.len() as u64).expect("representation");
+        assert_eq!(representation.capability, GgufModelCapability::default());
+    }
+
+    #[test]
+    fn sliding_window_metadata_is_reported_without_special_casing_any_family() {
+        let bytes = build_test_gguf(
+            3,
+            Some(15),
+            Some(2),
+            &[12, 12, 14],
+            Some("windowed"),
+            &[
+                (".context_length", 8_192),
+                (".block_count", 2),
+                (".attention.key_length", 128),
+                (".attention.value_length", 128),
+                (".attention.head_count_kv", 1),
+                (".attention.sliding_window", 1_024),
+            ],
+        );
+        let mut reader = Cursor::new(bytes.as_slice());
+        let capability = inspect_reader(&mut reader, bytes.len() as u64)
+            .expect("representation")
+            .capability;
+        assert_eq!(capability.sliding_window_tokens, Some(1_024));
+        assert_eq!(capability.kv_cache_bytes_per_token, Some(1_024));
+        assert_eq!(capability.train_context_tokens, Some(8_192));
     }
 }

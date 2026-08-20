@@ -18,8 +18,8 @@ use crate::agent_host::{
     AgentConfinementRequirement, AgentEventKind, AgentHost, AgentHostError, AgentProposal,
     AgentRunState, AgentWorkClaim, ApprovalScope, AuthoritativeStateSnapshot, CodeChange,
     CodeWorkspace, CompletionStatus, ConversationRole, ExternalAgentProcess,
-    ManagedValidationAttemptStatus, PermissionCheck, ProcessStream, ResumeDisposition,
-    project_storage_key,
+    ManagedValidationAttemptStatus, ModelExchangeRecord, PermissionCheck, ProcessStream,
+    ResumeDisposition, project_storage_key,
 };
 use crate::ai_studio_theme as theme;
 use crate::external_agent_provider::{
@@ -30,7 +30,7 @@ use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::managed_local_runtime::{
-    MANAGED_BACKEND_ID, ManagedEnvironmentProbe, ManagedEnvironmentProbeTask,
+    GgufModelCapability, MANAGED_BACKEND_ID, ManagedEnvironmentProbe, ManagedEnvironmentProbeTask,
     ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
     ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
     PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
@@ -2527,6 +2527,52 @@ impl AiStudioPanel {
                                 format_model_bytes(model.size_bytes),
                                 optional_text(model.quantization.as_deref()),
                             ));
+                            ui.horizontal_wrapped(|ui| {
+                                match model.projector.as_ref() {
+                                    Some(projector) => {
+                                        ui.small(format!(
+                                            "Vision projector: {} · sha256={}",
+                                            format_model_bytes(projector.size_bytes),
+                                            projector.content_sha256,
+                                        ));
+                                        if ui
+                                            .add_enabled(
+                                                !setup_busy,
+                                                egui::Button::new("Remove projector"),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.start_managed_setup(
+                                                ManagedSetupOperation::RemoveProjector {
+                                                    model_id: model.model_id.clone(),
+                                                },
+                                                "Removing the vision projector registration; the model returns to text-only input.",
+                                            );
+                                        }
+                                    }
+                                    None => {
+                                        ui.small("Vision projector: none (text input only).");
+                                        if ui
+                                            .add_enabled(
+                                                !setup_busy,
+                                                egui::Button::new("Register projector..."),
+                                            )
+                                            .clicked()
+                                            && let Some(path) = rfd::FileDialog::new()
+                                                .add_filter("GGUF projector", &["gguf"])
+                                                .pick_file()
+                                        {
+                                            self.start_managed_setup(
+                                                ManagedSetupOperation::RegisterProjector {
+                                                    model_id: model.model_id.clone(),
+                                                    path,
+                                                },
+                                                "Hashing and registering the multimodal projector that gives this model image input...",
+                                            );
+                                        }
+                                    }
+                                }
+                            });
                             if self.managed_execution_environment
                                 == ManagedExecutionEnvironment::Wsl2Linux
                             {
@@ -2745,10 +2791,10 @@ impl AiStudioPanel {
                     .capability_profile(),
                     ModelBackendPreference::ManagedLocal => self
                         .described_managed_model_config()
-                        .map(NativeModelConfig::Managed)
+                        .map(|config| NativeModelConfig::Managed(Box::new(config)))
                         .map(|config| config.capability_profile())
                         .unwrap_or_else(|_| {
-                            NativeModelConfig::Managed(ManagedLocalModelConfig {
+                            NativeModelConfig::Managed(Box::new(ManagedLocalModelConfig {
                                 state_root: self.managed_local_runtime.root().to_path_buf(),
                                 environment: self.managed_execution_environment,
                                 model_id: self.managed_model_id.clone(),
@@ -2757,11 +2803,13 @@ impl AiStudioPanel {
                                 model_size_bytes: 0,
                                 quantization: None,
                                 model_representation: None,
+                                capability: GgufModelCapability::default(),
+                                projector_path: None,
                                 runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
                                 runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
                                 runtime_artifact_sha256: String::new(),
                                 runtime_compatibility_version: "llama-server-openai-v1".to_owned(),
-                            })
+                            }))
                             .capability_profile()
                         }),
                     ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
@@ -3167,7 +3215,7 @@ impl AiStudioPanel {
         match self.model_backend {
             ModelBackendPreference::ManagedLocal => self
                 .described_managed_model_config()
-                .map(NativeModelConfig::Managed),
+                .map(|config| NativeModelConfig::Managed(Box::new(config))),
             _ => self.selected_native_model_config(),
         }
     }
@@ -3352,7 +3400,7 @@ impl AiStudioPanel {
             }
             ModelBackendPreference::ManagedLocal => self
                 .described_managed_model_config()
-                .map(NativeModelConfig::Managed),
+                .map(|config| NativeModelConfig::Managed(Box::new(config))),
             ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
                 if !self.hosted_model_endpoint.trim().starts_with("https://") {
                     return Err("Hosted and enterprise model endpoints must use HTTPS.".to_owned());
@@ -4043,9 +4091,9 @@ impl AiStudioPanel {
     }
 
     fn poll_native_agent_runtime(&mut self, context: &egui::Context) {
-        let result = match self.native_agent_runtime.as_mut() {
+        let outcome = match self.native_agent_runtime.as_mut() {
             Some(runtime) => match runtime.poll() {
-                Some(result) => result,
+                Some(outcome) => outcome,
                 None if runtime.is_busy() => {
                     context.request_repaint_after(std::time::Duration::from_millis(100));
                     return;
@@ -4057,7 +4105,25 @@ impl AiStudioPanel {
         let Some(run_id) = self.active_run_id.clone() else {
             return;
         };
-        let turn = match result {
+        // ADR 0159: the exchange is recorded before the turn is interpreted, so
+        // a run that fails on this turn still carries what the model returned.
+        if let Some(exchange) = outcome.exchange.as_ref() {
+            let excerpt = exchange.response_excerpt();
+            let _ = self.host.record_model_exchange(
+                &run_id,
+                ModelExchangeRecord {
+                    turn: exchange.turn,
+                    prompt: &exchange.prompt,
+                    response: &exchange.response,
+                    prompt_tokens: exchange.prompt_tokens,
+                    response_tokens: exchange.response_tokens,
+                    finish_reason: &exchange.finish_reason,
+                    response_digest: &exchange.response_digest,
+                    response_excerpt: &excerpt,
+                },
+            );
+        }
+        let turn = match outcome.result {
             Ok(turn) => turn,
             Err(error) => {
                 self.fail_run(&run_id, error.to_string());

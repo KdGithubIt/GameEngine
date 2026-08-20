@@ -284,7 +284,26 @@ impl AiStudioPanel {
         };
         let failure_kind = (outcome != BenchmarkRunOutcome::Passed)
             .then_some(BenchmarkRunFailureKind::CompletionGate);
-        self.write_benchmark_child_result(outcome, failure_kind, routed, None, Some(record));
+        // ADR 0159 keeps one completion-gate failure kind and separates, inside
+        // it, a run that produced no model output from one whose output the
+        // runtime rejected. The distinction is derived from recorded exchanges
+        // and states the shape of the failure, never the model's text.
+        let harness_message = failure_kind.map(|_| match record.metrics.model_turns {
+            TelemetryValue::Measured(0) => {
+                "completion gate not satisfied and no model output was recorded".to_owned()
+            }
+            TelemetryValue::Measured(turns) => format!(
+                "completion gate not satisfied after {turns} recorded model turn(s) the runtime accepted or rejected"
+            ),
+            _ => "completion gate not satisfied and model turns were not recorded".to_owned(),
+        });
+        self.write_benchmark_child_result(
+            outcome,
+            failure_kind,
+            routed,
+            harness_message,
+            Some(record),
+        );
     }
 
     fn write_benchmark_child_failure(&mut self, kind: BenchmarkRunFailureKind, message: String) {

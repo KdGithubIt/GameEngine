@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 2;
+pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 3;
 const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
 pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
 pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
@@ -174,6 +174,29 @@ fn windows_hardware_memory(
         .map(TelemetryValue::Measured)
         .unwrap_or_default();
     (gpu_memory, system_memory)
+}
+
+/// Largest dedicated device memory this machine reports, when it reports any.
+///
+/// Managed runtime launch policy needs a device-memory budget without knowing
+/// which adapter the Editor renders on, so this deliberately answers the
+/// hardware question rather than the presentation one. It reports nothing on
+/// platforms where GameEngine has no measurement, and a caller must treat that
+/// as unmeasured instead of substituting a default size.
+pub(crate) fn largest_device_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "windows")]
+    {
+        dxgi_adapter_candidates()?
+            .iter()
+            .filter(|candidate| !candidate.software)
+            .map(|candidate| candidate.dedicated_video_memory_bytes)
+            .filter(|bytes| *bytes > 0)
+            .max()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1165,6 +1188,7 @@ pub(crate) fn agent_run_record(
     let elapsed_ms = run
         .finished_unix_ms
         .map(|finished| finished.saturating_sub(run.started_unix_ms));
+    let exchanges = model_exchange_metrics(run);
     let completion_success = task_completion_success(task, run);
     Ok(BenchmarkRecord {
         schema_version: BENCHMARK_SCHEMA_VERSION,
@@ -1203,7 +1227,7 @@ pub(crate) fn agent_run_record(
                 run.completion.acceptance_criteria == CompletionStatus::Passed,
             ),
             completion_success: TelemetryValue::Measured(completion_success),
-            model_turns: TelemetryValue::Unavailable,
+            model_turns: exchanges.turns,
             tool_calls: TelemetryValue::Measured(tool_calls),
             invalid_or_failed_tool_calls: TelemetryValue::Measured(failed_tool_calls),
             code_edits: TelemetryValue::Measured(run.audit.code_changes),
@@ -1214,8 +1238,8 @@ pub(crate) fn agent_run_record(
             visual_evaluation_attempts: TelemetryValue::Measured(visual_attempts),
             human_interventions: TelemetryValue::Measured(human_interventions),
             elapsed_ms: elapsed_ms.map(TelemetryValue::Measured).unwrap_or_default(),
-            prompt_tokens: TelemetryValue::Unavailable,
-            response_tokens: TelemetryValue::Unavailable,
+            prompt_tokens: exchanges.prompt_tokens,
+            response_tokens: exchanges.response_tokens,
             load_latency_ms: TelemetryValue::Unavailable,
             ttft_ms: TelemetryValue::Unavailable,
             generation_tokens_per_second_milli: TelemetryValue::Unavailable,
@@ -1226,6 +1250,54 @@ pub(crate) fn agent_run_record(
             oom_failures: TelemetryValue::Unavailable,
         },
     })
+}
+
+/// Metrics an AgentRun can report from its recorded model exchanges (ADR 0159).
+///
+/// A run with no recorded exchange reports zero turns, which is itself a
+/// diagnosis and is distinct from a run that never recorded whether it had any.
+/// Token counts stay unavailable unless every recorded exchange reported them,
+/// so a partial sum is never presented as a measurement.
+struct ModelExchangeMetrics {
+    turns: TelemetryValue<u64>,
+    prompt_tokens: TelemetryValue<u64>,
+    response_tokens: TelemetryValue<u64>,
+}
+
+fn model_exchange_metrics(run: &AgentRun) -> ModelExchangeMetrics {
+    let mut turns = 0_u64;
+    let mut prompt_total = Some(0_u64);
+    let mut response_total = Some(0_u64);
+    for event in &run.events {
+        let Some(AgentEventEvidence::ModelExchange {
+            prompt_tokens,
+            response_tokens,
+            ..
+        }) = event.evidence.as_ref()
+        else {
+            continue;
+        };
+        turns = turns.saturating_add(1);
+        prompt_total = prompt_total
+            .zip(*prompt_tokens)
+            .map(|(total, tokens)| total.saturating_add(tokens));
+        response_total = response_total
+            .zip(*response_tokens)
+            .map(|(total, tokens)| total.saturating_add(tokens));
+    }
+    let measured_or_unavailable = |total: Option<u64>| {
+        if turns == 0 {
+            return TelemetryValue::Unavailable;
+        }
+        total
+            .map(TelemetryValue::Measured)
+            .unwrap_or(TelemetryValue::Unavailable)
+    };
+    ModelExchangeMetrics {
+        turns: TelemetryValue::Measured(turns),
+        prompt_tokens: measured_or_unavailable(prompt_total),
+        response_tokens: measured_or_unavailable(response_total),
+    }
 }
 
 fn completion_gate_status(report: &CompletionReport, criterion: &str) -> Option<CompletionStatus> {
@@ -1294,6 +1366,118 @@ fn safe_file_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_host::{AgentHost, ModelExchangeRecord};
+
+    fn benchmark_temp_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "gameengine-benchmark-{label}-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ))
+    }
+
+    fn failing_run_with_exchanges(
+        label: &str,
+        exchanges: u32,
+    ) -> (AgentRun, Vec<std::path::PathBuf>) {
+        let project = benchmark_temp_path(&format!("{label}-project"));
+        let storage = benchmark_temp_path(&format!("{label}-storage"));
+        std::fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session(label).expect("session");
+        let proposal_version = host.session(&session).expect("session").proposal.version;
+        let run_id = host
+            .start_run_authorized(&session, proposal_version, "test")
+            .expect("run");
+        host.transition_run(&run_id, AgentRunState::Executing, "execute")
+            .expect("executing");
+        for turn in 1..=exchanges {
+            host.record_model_exchange(
+                &run_id,
+                ModelExchangeRecord {
+                    turn,
+                    prompt: "prompt",
+                    response: "response",
+                    prompt_tokens: Some(100),
+                    response_tokens: Some(10),
+                    finish_reason: "stop",
+                    response_digest: "digest",
+                    response_excerpt: "response",
+                },
+            )
+            .expect("recorded exchange");
+        }
+        host.transition_run(&run_id, AgentRunState::Failed, "failed")
+            .expect("failed");
+        let run = host.run(&run_id).expect("run").clone();
+        (run, vec![project, storage])
+    }
+
+    fn record_for(run: &AgentRun) -> BenchmarkRecord {
+        agent_run_record(
+            "project_inspection_v1",
+            run,
+            AgentRunBenchmarkIdentity {
+                backend_id: "test-backend",
+                model_id: "test-model",
+                inventory: None,
+                quality: QualityPreference::Balanced,
+                workload: InferenceWorkload::InteractiveReasoning,
+                hardware: &BenchmarkHardwareIdentity::default(),
+            },
+        )
+        .expect("record")
+    }
+
+    #[test]
+    fn a_failing_run_reports_the_model_turns_and_tokens_it_recorded() {
+        let (run, directories) = failing_run_with_exchanges("failing-with-output", 3);
+        let record = record_for(&run);
+        assert_eq!(record.schema_version, 3);
+        assert_eq!(record.metrics.model_turns, TelemetryValue::Measured(3));
+        assert_eq!(record.metrics.prompt_tokens, TelemetryValue::Measured(300));
+        assert_eq!(record.metrics.response_tokens, TelemetryValue::Measured(30));
+        assert!(matches!(
+            record.metrics.model_turns,
+            TelemetryValue::Measured(turns) if turns > 0
+        ));
+        for directory in directories {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
+    fn a_run_that_never_answered_is_measured_as_zero_turns_not_as_unmeasured() {
+        let (run, directories) = failing_run_with_exchanges("failing-without-output", 0);
+        let record = record_for(&run);
+        assert_eq!(record.metrics.model_turns, TelemetryValue::Measured(0));
+        assert_eq!(record.metrics.prompt_tokens, TelemetryValue::Unavailable);
+        assert_eq!(record.metrics.response_tokens, TelemetryValue::Unavailable);
+        assert_eq!(record.metrics.model_turns, TelemetryValue::Measured(0));
+        for directory in directories {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
+    fn a_version_two_record_stays_readable_and_comparable_against_version_three() {
+        let mut legacy = BenchmarkRecord {
+            schema_version: 2,
+            recorded_unix_ms: 1,
+            identity: measured_identity("model"),
+            metrics: measured_metrics(1_000),
+        };
+        legacy.metrics.model_turns = TelemetryValue::Unavailable;
+        let mut current = legacy.clone();
+        current.schema_version = BENCHMARK_SCHEMA_VERSION;
+        current.metrics.model_turns = TelemetryValue::Measured(4);
+        assert!(validate_record(&legacy).is_ok());
+        assert!(validate_record(&current).is_ok());
+        assert_eq!(
+            comparison_equivalence(&legacy, &current),
+            ComparisonEquivalence::EquivalentModelComparison
+        );
+    }
 
     fn measured_identity(model: &str) -> BenchmarkIdentity {
         BenchmarkIdentity {
