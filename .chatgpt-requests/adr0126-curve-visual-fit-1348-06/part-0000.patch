@@ -1,0 +1,24 @@
+diff --git a/crates/editor/src/sequencer/curve_editor/graph.rs b/crates/editor/src/sequencer/curve_editor/graph.rs
+index a7eea3235c9375d591f723c989be4bbf9e095e39..d76362d5e97e1a73d49c11a864738e3e5dc5339b 100644
+--- a/crates/editor/src/sequencer/curve_editor/graph.rs
++++ b/crates/editor/src/sequencer/curve_editor/graph.rs
+@@ -14,7 +14,7 @@ pub(super) fn show(
+     let (rect, _) = ui.allocate_exact_size(
+         egui::vec2(
+             ui.available_width().max(240.0),
+-            ui.available_height().clamp(64.0, HEIGHT),
++            ui.available_height().clamp(24.0, HEIGHT),
+         ),
+         egui::Sense::hover(),
+     );
+@@ -73,10 +73,6 @@ pub(super) fn show(
+         );
+     }
+ 
+-    ui.small(format!(
+-        "Value range {:.3} … {:.3} · keys are clip-local",
+-        minimum, maximum
+-    ));
+ }
+ 
+ fn value_range(keys: &[TimelineKey]) -> (f32, f32) {
