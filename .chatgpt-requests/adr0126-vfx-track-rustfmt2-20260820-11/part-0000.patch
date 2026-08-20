@@ -1,0 +1,15 @@
+diff --git a/crates/engine/src/timeline/vfx/replay.rs b/crates/engine/src/timeline/vfx/replay.rs
+index d1ffac6035f65d97aa1c8b0a7d0dc8fc80eb92d3..663b2c05889c03aea587ee47b13826086957f595 100644
+--- a/crates/engine/src/timeline/vfx/replay.rs
++++ b/crates/engine/src/timeline/vfx/replay.rs
+@@ -16,7 +16,9 @@ pub(in crate::timeline) fn mark_seek(component: &mut TimelinePlayerComponent) {
+         .set(PENDING_SEEK_GENERATION, component.player.generation());
+ }
+ 
+-pub(in crate::timeline) fn pending_seek(component: &TimelinePlayerComponent) -> Option<PendingSeek> {
++pub(in crate::timeline) fn pending_seek(
++    component: &TimelinePlayerComponent,
++) -> Option<PendingSeek> {
+     let generation = component.player.generation();
+     let pending = component.tokens.get(PENDING_SEEK_GENERATION);
+     let applied = component.tokens.get(APPLIED_SEEK_GENERATION);
