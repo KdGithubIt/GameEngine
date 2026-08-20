@@ -72,7 +72,6 @@ pub(super) fn show(
             egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(230, 190, 90)),
         );
     }
-
 }
 
 fn value_range(keys: &[TimelineKey]) -> (f32, f32) {
