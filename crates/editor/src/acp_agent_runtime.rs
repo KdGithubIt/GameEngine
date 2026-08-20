@@ -390,6 +390,20 @@ pub(crate) trait AcpAgentSession: Send {
     fn binding(&self) -> &AcpSessionBinding;
     fn capabilities(&self) -> &AcpCapabilities;
     fn runtime_identity(&self) -> &AcpRuntimeIdentity;
+    /// Writes one session configuration value through the formal ACP method.
+    ///
+    /// Runtimes without session configuration support fail closed instead of
+    /// silently translating the value into provider-specific CLI flags.
+    fn set_session_config_option(
+        &mut self,
+        _option_id: &str,
+        _value: &str,
+    ) -> Result<(), AcpRuntimeError> {
+        Err(AcpRuntimeError::Unsupported(format!(
+            "ACP session `{}` does not support session configuration writes",
+            self.acp_session_id()
+        )))
+    }
     fn send_prompt(&mut self, prompt: &str) -> Result<(), AcpRuntimeError>;
     /// Polls one event without blocking the Editor thread.
     fn try_next_event(&mut self) -> Result<Option<AcpNormalizedEvent>, AcpRuntimeError>;

@@ -13,8 +13,8 @@ use agent_client_protocol::schema::{
         HttpHeader, Implementation, InitializeRequest, LoadSessionRequest, McpServer, McpServerHttp,
         NewSessionRequest, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
         RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-        SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, StopReason,
-        ToolCallStatus, ToolKind,
+        SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
+        SetSessionConfigOptionRequest, StopReason, ToolCallStatus, ToolKind,
     },
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client};
@@ -22,7 +22,7 @@ use futures::{
     StreamExt,
     channel::{mpsc as async_mpsc, oneshot},
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -36,6 +36,11 @@ const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine";
 #[derive(Debug)]
 enum RuntimeCommand {
     Prompt(String),
+    SetConfigOption {
+        option_id: String,
+        value: String,
+        response: mpsc::SyncSender<Result<(), AcpRuntimeError>>,
+    },
     Cancel,
     Close,
 }
@@ -45,6 +50,7 @@ struct OpenedSession {
     acp_session_id: String,
     capabilities: AcpCapabilities,
     runtime_identity: AcpRuntimeIdentity,
+    config_option_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +166,7 @@ impl AcpAgentRuntime for AcpProcessRuntime {
             binding,
             capabilities: opened.capabilities,
             runtime_identity: opened.runtime_identity,
+            config_option_ids: opened.config_option_ids,
             command_tx,
             event_rx,
             pending_permissions,
@@ -175,6 +182,7 @@ struct AcpProcessSession {
     binding: AcpSessionBinding,
     capabilities: AcpCapabilities,
     runtime_identity: AcpRuntimeIdentity,
+    config_option_ids: BTreeSet<String>,
     command_tx: async_mpsc::UnboundedSender<RuntimeCommand>,
     event_rx: mpsc::Receiver<AcpNormalizedEvent>,
     pending_permissions: PendingPermissions,
@@ -244,6 +252,40 @@ impl AcpAgentSession for AcpProcessSession {
 
     fn runtime_identity(&self) -> &AcpRuntimeIdentity {
         &self.runtime_identity
+    }
+
+    fn set_session_config_option(
+        &mut self,
+        option_id: &str,
+        value: &str,
+    ) -> Result<(), AcpRuntimeError> {
+        self.ensure_connected()?;
+        if option_id.trim().is_empty() || option_id.trim() != option_id {
+            return Err(AcpRuntimeError::Protocol(
+                "ACP session config option ID must be non-empty and unpadded".to_owned(),
+            ));
+        }
+        if value.trim().is_empty() || value.trim() != value {
+            return Err(AcpRuntimeError::Protocol(
+                "ACP session config value must be non-empty and unpadded".to_owned(),
+            ));
+        }
+        if !self.capabilities.session_config_options
+            || !self.config_option_ids.contains(option_id)
+        {
+            return Err(AcpRuntimeError::Unsupported(format!(
+                "agent did not advertise ACP session config option `{option_id}`"
+            )));
+        }
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.send_command(RuntimeCommand::SetConfigOption {
+            option_id: option_id.to_owned(),
+            value: value.to_owned(),
+            response: response_tx,
+        })?;
+        response_rx.recv().map_err(|_| {
+            self.connection_error("ACP session config response channel is closed")
+        })?
     }
 
     fn send_prompt(&mut self, prompt: &str) -> Result<(), AcpRuntimeError> {
@@ -435,7 +477,7 @@ async fn run_connection(
                         "ACP session state lock is poisoned",
                     ))? = Some(acp_session_id.clone());
             }
-            let (session_id, config_options_present) = open_acp_session(
+            let (session_id, config_option_ids) = open_acp_session(
                 &connection,
                 &request,
                 mcp_servers,
@@ -443,7 +485,7 @@ async fn run_connection(
             )
             .await
             .map_err(sdk_internal_error)?;
-            negotiated.session_config_options |= config_options_present;
+            negotiated.session_config_options |= !config_option_ids.is_empty();
             validate_required_capabilities(&descriptor.capabilities, &negotiated)
                 .map_err(sdk_internal_error)?;
 
@@ -457,6 +499,7 @@ async fn run_connection(
                     acp_session_id: session_id.clone(),
                     capabilities: negotiated.clone(),
                     runtime_identity,
+                    config_option_ids,
                 }))
                 .map_err(|_| agent_client_protocol::Error::internal_error().data("ACP session opener was dropped"))?;
 
@@ -523,6 +566,23 @@ async fn run_command_loop(
                         Ok(())
                     })?;
             }
+            RuntimeCommand::SetConfigOption {
+                option_id,
+                value,
+                response,
+            } => {
+                let result = connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        SessionId::new(session_id.clone()),
+                        option_id,
+                        value.as_str(),
+                    ))
+                    .block_task()
+                    .await
+                    .map(|_| ())
+                    .map_err(sdk_transport_error);
+                let _ = response.send(result);
+            }
             RuntimeCommand::Cancel => {
                 connection.send_notification(CancelNotification::new(SessionId::new(
                     session_id.clone(),
@@ -547,7 +607,7 @@ async fn open_acp_session(
     request: &AcpSessionOpenRequest,
     mcp_servers: Vec<McpServer>,
     capabilities: &AcpCapabilities,
-) -> Result<(String, bool), AcpRuntimeError> {
+) -> Result<(String, BTreeSet<String>), AcpRuntimeError> {
     match &request.mode {
         AcpSessionOpenMode::New => {
             let response = connection
@@ -558,7 +618,10 @@ async fn open_acp_session(
                 .block_task()
                 .await
                 .map_err(sdk_transport_error)?;
-            Ok((response.session_id.to_string(), response.config_options.is_some()))
+            Ok((
+                response.session_id.to_string(),
+                config_option_ids(response.config_options.as_deref()),
+            ))
         }
         AcpSessionOpenMode::Load { acp_session_id } => {
             if !capabilities.session_load {
@@ -577,7 +640,10 @@ async fn open_acp_session(
                 .block_task()
                 .await
                 .map_err(sdk_transport_error)?;
-            Ok((acp_session_id.clone(), response.config_options.is_some()))
+            Ok((
+                acp_session_id.clone(),
+                config_option_ids(response.config_options.as_deref()),
+            ))
         }
         AcpSessionOpenMode::Resume { acp_session_id } => {
             if !capabilities.session_resume {
@@ -596,9 +662,22 @@ async fn open_acp_session(
                 .block_task()
                 .await
                 .map_err(sdk_transport_error)?;
-            Ok((acp_session_id.clone(), response.config_options.is_some()))
+            Ok((
+                acp_session_id.clone(),
+                config_option_ids(response.config_options.as_deref()),
+            ))
         }
     }
+}
+
+fn config_option_ids(
+    options: Option<&[agent_client_protocol::schema::v1::SessionConfigOption]>,
+) -> BTreeSet<String> {
+    options
+        .unwrap_or_default()
+        .iter()
+        .map(|option| option.id.to_string())
+        .collect()
 }
 
 fn build_agent_config(descriptor: &AcpAgentDescriptor) -> Result<AcpAgentConfig, AcpRuntimeError> {
