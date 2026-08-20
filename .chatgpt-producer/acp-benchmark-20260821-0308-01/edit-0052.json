@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    #[test]\n    fn agent_inclusive_campaign_evidence_never_qualifies_as_model_only_routing_evidence() {",
+  "new": "    #[test]\n    fn raw_model_lane_cannot_relabel_the_agent_task_campaign() {\n        let raw = BenchmarkRuntimeIdentity::raw_model(BenchmarkHarnessIdentity::new(\n            \"llama-direct\",\n            \"raw-model-harness-v1\",\n        ));\n        let error = frozen(&[\"model-a\"], &[\"read_question_v1\"])\n            .with_benchmark_runtime(raw)\n            .expect_err(\"agent task campaigns are not raw model benchmarks\");\n        assert!(error.contains(\"cannot be registered as raw_model\"));\n    }\n\n    #[test]\n    fn agent_inclusive_campaign_evidence_never_qualifies_as_model_only_routing_evidence() {"
+}
