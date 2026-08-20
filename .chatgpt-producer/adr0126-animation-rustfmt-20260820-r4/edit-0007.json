@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"        let animator = world.get_component::<Animator>(target).expect(\"restored animator\");","new":"        let animator = world\n            .get_component::<Animator>(target)\n            .expect(\"restored animator\");"}
