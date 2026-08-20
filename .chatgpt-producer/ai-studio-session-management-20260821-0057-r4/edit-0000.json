@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    fn is_terminal(self) -> bool {\n        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)\n    }",
+  "new": "    pub(crate) fn is_terminal(self) -> bool {\n        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)\n    }"
+}
