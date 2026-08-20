@@ -1,0 +1,945 @@
+diff --git a/crates/editor/src/codex_acp_adapter.rs b/crates/editor/src/codex_acp_adapter.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e42feb1f0f5b7c4f5124dada667f249e4094d118
+--- /dev/null
++++ b/crates/editor/src/codex_acp_adapter.rs
+@@ -0,0 +1,894 @@
++//! Codex-specific adapter metadata for the common ACP runtime.
++//!
++//! This module owns discovery, package setup, exact runtime identity, process
++//! placement, and Codex ACP session-option mapping. ACP wire I/O stays in the
++//! shared transport used by integration, while the legacy `codex exec --json`
++//! path remains untouched as a rollback path.
++
++use crate::acp_agent_runtime::{
++    ACP_STABLE_PROTOCOL_VERSION, AcpAgentDescriptor, AcpCapabilities, AcpMcpAccessLevel,
++    AcpRuntimeError, AcpRuntimeIdentity, AcpSessionBinding,
++};
++use crate::external_agent_provider::{
++    ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement, command_output,
++    installer_is_available, placed_launch_command, probe_wsl_loopback_reachability,
++    wsl_environment_forwarding,
++};
++use std::collections::{BTreeMap, BTreeSet};
++use std::ffi::{OsStr, OsString};
++use std::io;
++
++/// Logical AI target used by integration when selecting the Codex ACP adapter.
++pub(crate) const CODEX_ACP_LOGICAL_TARGET: &str = "codex";
++/// Descriptor ID registered with the provider-neutral ACP runtime registry.
++pub(crate) const CODEX_ACP_DESCRIPTOR_ID: &str = "codex.acp";
++/// Executable published by the Codex ACP package.
++pub(crate) const CODEX_ACP_EXECUTABLE: &str = "codex-acp";
++/// ACP adapter package whose behavior this GameEngine adapter was validated against.
++pub(crate) const CODEX_ACP_PACKAGE_NAME: &str = "@agentclientprotocol/codex-acp";
++/// Exact ACP adapter version whose identity and option vocabulary are accepted.
++pub(crate) const CODEX_ACP_PACKAGE_VERSION: &str = "1.6.2";
++/// Exact npm package used by the setup action.
++pub(crate) const CODEX_ACP_INSTALL_PACKAGE: &str =
++    "@agentclientprotocol/codex-acp@1.6.2";
++
++const INITIAL_AGENT_MODE_ENV: &str = "INITIAL_AGENT_MODE";
++const MODEL_CONFIG_ID: &str = "model";
++const REASONING_EFFORT_CONFIG_ID: &str = "reasoning_effort";
++const MODE_CONFIG_ID: &str = "mode";
++const FAST_MODE_CONFIG_ID: &str = "fast-mode";
++const READ_ONLY_MODE_ID: &str = "read-only";
++const AGENT_MODE_ID: &str = "agent";
++const FAST_MODE_ON: &str = "on";
++const FAST_MODE_OFF: &str = "off";
++
++/// Machine-level readiness of the pinned Codex ACP package.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum CodexAcpAvailability {
++    /// The executable exists and reports the exact validated package version.
++    Available,
++    /// No launchable `codex-acp` executable could be found in the selected placement.
++    Missing,
++    /// An executable exists but reports a version this adapter has not validated.
++    VersionMismatch {
++        /// Version required by this GameEngine adapter.
++        expected: String,
++        /// Version reported by the executable, when one could be extracted.
++        observed: Option<String>,
++    },
++    /// The executable was found but its version probe could not complete successfully.
++    ProbeFailed(String),
++}
++
++impl CodexAcpAvailability {
++    /// Returns whether a run may proceed to ACP initialization.
++    pub(crate) const fn is_available(&self) -> bool {
++        matches!(self, Self::Available)
++    }
++
++    /// Produces an actionable local diagnostic without exposing credentials.
++    pub(crate) fn diagnostic(&self) -> Option<String> {
++        match self {
++            Self::Available => None,
++            Self::Missing => Some(format!(
++                "Codex ACP is not installed in the selected execution environment. Install {} or select an environment where `{}` is available.",
++                CODEX_ACP_INSTALL_PACKAGE, CODEX_ACP_EXECUTABLE
++            )),
++            Self::VersionMismatch { expected, observed } => Some(match observed {
++                Some(observed) => format!(
++                    "Codex ACP {observed} is installed, but GameEngine requires exactly {expected}. Run the pinned Codex ACP setup action before using this adapter."
++                ),
++                None => format!(
++                    "Codex ACP is installed but did not report a parseable version. GameEngine requires exactly {expected}."
++                ),
++            }),
++            Self::ProbeFailed(message) => Some(format!(
++                "Codex ACP could not be probed in the selected execution environment: {message}"
++            )),
++        }
++    }
++}
++
++/// Result of the machine-level Codex ACP setup probe.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CodexAcpProbe {
++    /// Availability of the exact validated package.
++    pub(crate) availability: CodexAcpAvailability,
++    /// Whether npm is launchable in the selected execution environment.
++    pub(crate) installer_available: bool,
++    /// Exact ACP identity required after initialization.
++    pub(crate) expected_identity: AcpRuntimeIdentity,
++}
++
++impl CodexAcpProbe {
++    /// Returns whether the machine-level package probe is ready.
++    pub(crate) fn is_available(&self) -> bool {
++        self.availability.is_available()
++    }
++
++    /// Produces an actionable setup diagnostic, including installer readiness.
++    pub(crate) fn setup_diagnostic(&self) -> Option<String> {
++        if matches!(self.availability, CodexAcpAvailability::Missing) && !self.installer_available {
++            return Some(format!(
++                "Codex ACP is not installed, and npm is not available in the selected execution environment. Install npm there first, then install {CODEX_ACP_INSTALL_PACKAGE}."
++            ));
++        }
++        self.availability.diagnostic()
++    }
++}
++
++/// One process command owned by the Codex ACP adapter.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CodexAcpCommand {
++    /// Executable after Windows launcher resolution and WSL placement.
++    pub(crate) program: OsString,
++    /// Arguments belonging to the resolved executable.
++    pub(crate) arguments: Vec<OsString>,
++    /// Environment entries injected only for this process.
++    pub(crate) environment: Vec<(OsString, OsString)>,
++}
++
++/// Descriptor mapping returned to the integration layer for one logical Codex target.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CodexAcpRegistration {
++    /// Logical AI selection value owned by the unified selection layer.
++    pub(crate) logical_target: &'static str,
++    /// Exact ACP descriptor to attach to the shared process runtime.
++    pub(crate) descriptor: AcpAgentDescriptor,
++}
++
++/// Supported ACP session-config option representation.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CodexAcpConfigOptionKind {
++    /// ACP select option whose value is a string identifier.
++    Select,
++    /// ACP boolean option.
++    Boolean,
++}
++
++/// Provider-neutral snapshot of the Codex ACP initialize advertisement.
++///
++/// Shared ACP transport code populates this from the wire. Keeping the wire SDK
++/// types out of this structure preserves ADR 0166's ACP boundary.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CodexAcpAdvertisement {
++    /// Negotiated stable ACP protocol version.
++    pub(crate) protocol_version: u16,
++    /// Agent name advertised by ACP initialization.
++    pub(crate) agent_name: String,
++    /// Agent version advertised by ACP initialization.
++    pub(crate) agent_version: Option<String>,
++    /// Whether `session/load` is advertised.
++    pub(crate) session_load: bool,
++    /// Whether session resume is advertised.
++    pub(crate) session_resume: bool,
++    /// Whether session listing is advertised.
++    pub(crate) session_list: bool,
++    /// MCP HTTP support advertised by the agent.
++    pub(crate) mcp_http: bool,
++    /// MCP SSE support advertised by the agent.
++    pub(crate) mcp_sse: bool,
++    /// MCP-over-ACP support advertised by the agent.
++    pub(crate) mcp_over_acp: bool,
++    /// Session configuration options advertised by the opened session.
++    pub(crate) config_options: BTreeMap<String, CodexAcpConfigOptionKind>,
++    /// Authentication method IDs advertised during initialization.
++    pub(crate) auth_methods: BTreeSet<String>,
++    /// Optional ACP extension identifiers retained for diagnostics/integration.
++    pub(crate) extensions: BTreeSet<String>,
++}
++
++impl CodexAcpAdvertisement {
++    /// Validates that the ACP peer is the exact Codex adapter package this code
++    /// was written against.
++    ///
++    /// # Errors
++    ///
++    /// Returns a protocol error when the wire version or runtime identity is not
++    /// the exact validated identity.
++    pub(crate) fn validate_exact_identity(&self) -> Result<(), AcpRuntimeError> {
++        if self.protocol_version != ACP_STABLE_PROTOCOL_VERSION {
++            return Err(AcpRuntimeError::Protocol(format!(
++                "Codex ACP negotiated protocol version {}, but GameEngine requires stable ACP v{}",
++                self.protocol_version, ACP_STABLE_PROTOCOL_VERSION
++            )));
++        }
++        if self.agent_name != CODEX_ACP_PACKAGE_NAME {
++            return Err(AcpRuntimeError::Protocol(format!(
++                "Codex ACP initialized as `{}`, expected `{CODEX_ACP_PACKAGE_NAME}`",
++                self.agent_name
++            )));
++        }
++        if self.agent_version.as_deref() != Some(CODEX_ACP_PACKAGE_VERSION) {
++            return Err(AcpRuntimeError::Protocol(format!(
++                "Codex ACP initialized with version {}, expected exactly {CODEX_ACP_PACKAGE_VERSION}",
++                self.agent_version.as_deref().unwrap_or("<missing>")
++            )));
++        }
++        Ok(())
++    }
++
++    /// Maps the advertisement to the provider-neutral capabilities consumed by
++    /// GameEngine orchestration.
++    pub(crate) fn normalized_capabilities(&self) -> AcpCapabilities {
++        AcpCapabilities {
++            session_load: self.session_load,
++            session_resume: self.session_resume,
++            session_list: self.session_list,
++            session_config_options: !self.config_options.is_empty(),
++            mcp_http: self.mcp_http,
++            mcp_sse: self.mcp_sse,
++            mcp_over_acp: self.mcp_over_acp,
++            extensions: self.extensions.clone(),
++        }
++    }
++
++    /// Builds the diagnostic shown when ACP reports authentication is required.
++    ///
++    /// Authentication remains provider-owned; this message only names the
++    /// methods the agent advertised and never asks GameEngine to read a token.
++    pub(crate) fn authentication_required_diagnostic(&self) -> String {
++        if self.auth_methods.is_empty() {
++            return "Codex ACP requires authentication but advertised no usable ACP authentication method. Re-run Codex ACP setup or inspect the adapter installation.".to_owned();
++        }
++        format!(
++            "Codex ACP requires authentication. Complete one of its advertised ACP methods: {}. GameEngine does not read or persist the provider credential.",
++            self.auth_methods.iter().cloned().collect::<Vec<_>>().join(", ")
++        )
++    }
++}
++
++/// User-selectable Codex settings that have a stable ACP config-option mapping.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub(crate) struct CodexAcpSessionPreferences {
++    /// Model ID selected from the agent-advertised model option.
++    pub(crate) model: Option<String>,
++    /// Reasoning-effort ID selected from the model's advertised effort option.
++    pub(crate) reasoning_effort: Option<String>,
++    /// Optional fast-mode preference when the agent advertises that option.
++    pub(crate) fast_mode: Option<bool>,
++}
++
++/// ACP config-option value selected by the Codex adapter.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum CodexAcpConfigValue {
++    /// Select-option value.
++    Select(String),
++    /// Boolean-option value.
++    Boolean(bool),
++}
++
++/// One ACP session configuration write prepared by the Codex adapter.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct CodexAcpConfigSelection {
++    /// Agent-advertised config option ID.
++    pub(crate) option_id: String,
++    /// Value using the type the agent advertised for this option.
++    pub(crate) value: CodexAcpConfigValue,
++}
++
++/// Codex approval behavior represented by the agent's ACP `mode` option.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CodexAcpApprovalPolicy {
++    /// Provider asks before an operation that needs elevation.
++    OnRequest,
++}
++
++/// Codex filesystem/process sandbox represented by the agent's ACP `mode` option.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CodexAcpSandboxMode {
++    /// Read-only provider sandbox.
++    ReadOnly,
++    /// Workspace-write provider sandbox.
++    WorkspaceWrite,
++}
++
++/// Provider policy selected from authoritative GameEngine ACP access.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct CodexAcpPolicy {
++    /// Approval behavior represented by the selected ACP mode.
++    pub(crate) approval: CodexAcpApprovalPolicy,
++    /// Provider sandbox represented by the selected ACP mode.
++    pub(crate) sandbox: CodexAcpSandboxMode,
++    /// ACP session-mode/config-option ID.
++    pub(crate) mode_id: &'static str,
++}
++
++/// Maps the authoritative GameEngine session binding to the narrowest Codex ACP
++/// provider mode that can serve it.
++///
++/// GameEngine never selects Codex ACP's `agent-full-access` mode. Provider
++/// sandboxing is defense in depth and does not replace the Host permission
++/// broker or the run-bound Editor MCP credential.
++pub(crate) fn codex_acp_policy(binding: &AcpSessionBinding) -> CodexAcpPolicy {
++    match binding.mcp.access {
++        AcpMcpAccessLevel::ReadOnly => CodexAcpPolicy {
++            approval: CodexAcpApprovalPolicy::OnRequest,
++            sandbox: CodexAcpSandboxMode::ReadOnly,
++            mode_id: READ_ONLY_MODE_ID,
++        },
++        AcpMcpAccessLevel::AgentRunBoundReadWrite => CodexAcpPolicy {
++            approval: CodexAcpApprovalPolicy::OnRequest,
++            sandbox: CodexAcpSandboxMode::WorkspaceWrite,
++            mode_id: AGENT_MODE_ID,
++        },
++    }
++}
++
++/// Probes the selected execution environment for the exact pinned Codex ACP
++/// executable/package.
++///
++/// The probe uses the same Windows launcher resolution and WSL placement as the
++/// existing external-agent path, so it predicts the process that integration
++/// will actually start.
++pub(crate) fn probe_codex_acp(
++    placement: &ExternalAgentExecutionPlacement,
++) -> CodexAcpProbe {
++    let availability = match command_output(
++        placement,
++        OsStr::new(CODEX_ACP_EXECUTABLE),
++        ["--version"],
++    ) {
++        Ok((true, output)) if output_reports_exact_version(&output) => {
++            CodexAcpAvailability::Available
++        }
++        Ok((true, output)) => CodexAcpAvailability::VersionMismatch {
++            expected: CODEX_ACP_PACKAGE_VERSION.to_owned(),
++            observed: extract_version(&output),
++        },
++        Ok((false, output)) => {
++            let detail = output.trim();
++            CodexAcpAvailability::ProbeFailed(if detail.is_empty() {
++                "`codex-acp --version` exited unsuccessfully".to_owned()
++            } else {
++                detail.to_owned()
++            })
++        }
++        Err(error) if error.kind() == io::ErrorKind::NotFound => CodexAcpAvailability::Missing,
++        Err(error) => CodexAcpAvailability::ProbeFailed(error.to_string()),
++    };
++    CodexAcpProbe {
++        availability,
++        installer_available: installer_is_available(placement),
++        expected_identity: AcpRuntimeIdentity::stable(
++            CODEX_ACP_PACKAGE_NAME,
++            Some(CODEX_ACP_PACKAGE_VERSION.to_owned()),
++        ),
++    }
++}
++
++/// Builds the pinned npm installation command for the selected execution
++/// environment.
++///
++/// This setup changes only the Codex ACP package. The legacy `@openai/codex`
++/// installation used by `codex exec --json` is intentionally left untouched.
++pub(crate) fn codex_acp_install_command(
++    placement: &ExternalAgentExecutionPlacement,
++) -> CodexAcpCommand {
++    let npm = match placement.environment {
++        ExternalAgentExecutionEnvironment::WindowsNative => "npm.cmd",
++        ExternalAgentExecutionEnvironment::Wsl2Linux => "npm",
++    };
++    let (program, arguments) = placed_launch_command(
++        placement,
++        OsString::from(npm),
++        vec![
++            OsString::from("install"),
++            OsString::from("-g"),
++            OsString::from(CODEX_ACP_INSTALL_PACKAGE),
++        ],
++    );
++    CodexAcpCommand {
++        program,
++        arguments,
++        environment: Vec::new(),
++    }
++}
++
++/// Builds the long-lived stdio ACP server command.
++///
++/// No provider credential or GameEngine MCP bearer token is placed in this
++/// command. Authentication is negotiated through ACP, and the shared ACP
++/// transport supplies the ephemeral Editor MCP connection when it opens a
++/// session.
++pub(crate) fn codex_acp_server_command(
++    placement: &ExternalAgentExecutionPlacement,
++    binding: &AcpSessionBinding,
++) -> CodexAcpCommand {
++    let (program, arguments) = placed_launch_command(
++        placement,
++        OsString::from(CODEX_ACP_EXECUTABLE),
++        Vec::new(),
++    );
++    let policy = codex_acp_policy(binding);
++    let mut environment = vec![(
++        OsString::from(INITIAL_AGENT_MODE_ENV),
++        OsString::from(policy.mode_id),
++    )];
++    if placement.environment == ExternalAgentExecutionEnvironment::Wsl2Linux {
++        let forwarding = wsl_environment_forwarding(&environment, &[]);
++        environment.push(forwarding);
++    }
++    CodexAcpCommand {
++        program,
++        arguments,
++        environment,
++    }
++}
++
++/// Verifies placement-specific prerequisites before the shared ACP transport
++/// opens a session.
++///
++/// The existing external-agent WSL probe is reused so the loopback Editor MCP
++/// endpoint is proven from the same distribution that will host `codex-acp`.
++/// Windows-native placement is a no-op.
++///
++/// # Errors
++///
++/// Returns the existing actionable WSL/MCP diagnostic when the selected
++/// distribution cannot reach the bound Editor MCP endpoint.
++pub(crate) fn preflight_codex_acp_session_environment(
++    placement: &ExternalAgentExecutionPlacement,
++    binding: &AcpSessionBinding,
++) -> Result<(), String> {
++    probe_wsl_loopback_reachability(
++        placement,
++        binding.mcp.endpoint(),
++        binding.mcp.authorization_token(),
++    )
++}
++
++/// Creates the immutable ACP descriptor after the shared transport has observed
++/// the agent's initialize advertisement.
++///
++/// # Errors
++///
++/// Returns an error if machine setup is not ready or if the initialized peer
++/// does not match the exact validated Codex ACP identity.
++pub(crate) fn codex_acp_descriptor(
++    probe: &CodexAcpProbe,
++    placement: &ExternalAgentExecutionPlacement,
++    advertisement: &CodexAcpAdvertisement,
++) -> Result<AcpAgentDescriptor, AcpRuntimeError> {
++    if !probe.is_available() {
++        return Err(AcpRuntimeError::Transport(
++            probe
++                .setup_diagnostic()
++                .unwrap_or_else(|| "Codex ACP setup is unavailable".to_owned()),
++        ));
++    }
++    advertisement.validate_exact_identity()?;
++
++    let (executable, arguments) = placed_launch_command(
++        placement,
++        OsString::from(CODEX_ACP_EXECUTABLE),
++        Vec::new(),
++    );
++    Ok(AcpAgentDescriptor {
++        id: CODEX_ACP_DESCRIPTOR_ID.to_owned(),
++        executable,
++        arguments,
++        capabilities: advertisement.normalized_capabilities(),
++        runtime_identity: AcpRuntimeIdentity {
++            protocol_version: advertisement.protocol_version,
++            agent_name: advertisement.agent_name.clone(),
++            agent_version: advertisement.agent_version.clone(),
++        },
++    })
++}
++
++/// Returns the complete logical-target mapping consumed by ACP integration.
++///
++/// # Errors
++///
++/// Returns the same setup or exact-identity error as [`codex_acp_descriptor`].
++pub(crate) fn codex_acp_registration(
++    probe: &CodexAcpProbe,
++    placement: &ExternalAgentExecutionPlacement,
++    advertisement: &CodexAcpAdvertisement,
++) -> Result<CodexAcpRegistration, AcpRuntimeError> {
++    Ok(CodexAcpRegistration {
++        logical_target: CODEX_ACP_LOGICAL_TARGET,
++        descriptor: codex_acp_descriptor(probe, placement, advertisement)?,
++    })
++}
++
++/// Maps GameEngine's authoritative ACP access and user model preferences to the
++/// session config options the Codex ACP peer actually advertised.
++///
++/// # Errors
++///
++/// Returns an unsupported-operation error when a requested mapping is not
++/// formally present in the advertisement. The adapter does not fall back to
++/// Codex CLI-only flags or invent a provider-specific permission scope.
++pub(crate) fn codex_acp_session_config(
++    binding: &AcpSessionBinding,
++    preferences: &CodexAcpSessionPreferences,
++    advertisement: &CodexAcpAdvertisement,
++) -> Result<Vec<CodexAcpConfigSelection>, AcpRuntimeError> {
++    let mut selections = Vec::new();
++    let policy = codex_acp_policy(binding);
++
++    require_select_option(advertisement, MODE_CONFIG_ID)?;
++    selections.push(CodexAcpConfigSelection {
++        option_id: MODE_CONFIG_ID.to_owned(),
++        value: CodexAcpConfigValue::Select(policy.mode_id.to_owned()),
++    });
++
++    if let Some(model) = non_empty_preference("model", preferences.model.as_deref())? {
++        require_select_option(advertisement, MODEL_CONFIG_ID)?;
++        selections.push(CodexAcpConfigSelection {
++            option_id: MODEL_CONFIG_ID.to_owned(),
++            value: CodexAcpConfigValue::Select(model.to_owned()),
++        });
++    }
++
++    if let Some(effort) =
++        non_empty_preference("reasoning effort", preferences.reasoning_effort.as_deref())?
++    {
++        require_select_option(advertisement, REASONING_EFFORT_CONFIG_ID)?;
++        selections.push(CodexAcpConfigSelection {
++            option_id: REASONING_EFFORT_CONFIG_ID.to_owned(),
++            value: CodexAcpConfigValue::Select(effort.to_owned()),
++        });
++    }
++
++    if let Some(enabled) = preferences.fast_mode {
++        let kind = advertisement
++            .config_options
++            .get(FAST_MODE_CONFIG_ID)
++            .copied()
++            .ok_or_else(|| unsupported_config(FAST_MODE_CONFIG_ID))?;
++        let value = match kind {
++            CodexAcpConfigOptionKind::Boolean => CodexAcpConfigValue::Boolean(enabled),
++            CodexAcpConfigOptionKind::Select => CodexAcpConfigValue::Select(
++                if enabled { FAST_MODE_ON } else { FAST_MODE_OFF }.to_owned(),
++            ),
++        };
++        selections.push(CodexAcpConfigSelection {
++            option_id: FAST_MODE_CONFIG_ID.to_owned(),
++            value,
++        });
++    }
++
++    Ok(selections)
++}
++
++fn require_select_option(
++    advertisement: &CodexAcpAdvertisement,
++    option_id: &str,
++) -> Result<(), AcpRuntimeError> {
++    match advertisement.config_options.get(option_id) {
++        Some(CodexAcpConfigOptionKind::Select) => Ok(()),
++        Some(CodexAcpConfigOptionKind::Boolean) => Err(AcpRuntimeError::Protocol(format!(
++            "Codex ACP advertised `{option_id}` with boolean type, but this mapping requires a select option"
++        ))),
++        None => Err(unsupported_config(option_id)),
++    }
++}
++
++fn unsupported_config(option_id: &str) -> AcpRuntimeError {
++    AcpRuntimeError::Unsupported(format!(
++        "Codex ACP did not advertise the `{option_id}` session config option"
++    ))
++}
++
++fn non_empty_preference<'a>(
++    name: &str,
++    value: Option<&'a str>,
++) -> Result<Option<&'a str>, AcpRuntimeError> {
++    let Some(value) = value else {
++        return Ok(None);
++    };
++    let trimmed = value.trim();
++    if trimmed.is_empty() {
++        return Err(AcpRuntimeError::Unsupported(format!(
++            "Codex ACP {name} preference must not be empty"
++        )));
++    }
++    Ok(Some(trimmed))
++}
++
++fn output_reports_exact_version(output: &str) -> bool {
++    extract_version(output).as_deref() == Some(CODEX_ACP_PACKAGE_VERSION)
++}
++
++fn extract_version(output: &str) -> Option<String> {
++    output
++        .split(|character: char| {
++            !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
++        })
++        .map(|token| token.trim_start_matches('v'))
++        .find(|token| {
++            let mut parts = token.split('.');
++            let valid = (0..3).all(|_| {
++                parts
++                    .next()
++                    .is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
++            });
++            valid && parts.next().is_none()
++        })
++        .map(str::to_owned)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn advertisement() -> CodexAcpAdvertisement {
++        CodexAcpAdvertisement {
++            protocol_version: ACP_STABLE_PROTOCOL_VERSION,
++            agent_name: CODEX_ACP_PACKAGE_NAME.to_owned(),
++            agent_version: Some(CODEX_ACP_PACKAGE_VERSION.to_owned()),
++            session_load: true,
++            session_resume: true,
++            session_list: true,
++            mcp_http: true,
++            mcp_sse: false,
++            mcp_over_acp: false,
++            config_options: BTreeMap::from([
++                (MODEL_CONFIG_ID.to_owned(), CodexAcpConfigOptionKind::Select),
++                (
++                    REASONING_EFFORT_CONFIG_ID.to_owned(),
++                    CodexAcpConfigOptionKind::Select,
++                ),
++                (MODE_CONFIG_ID.to_owned(), CodexAcpConfigOptionKind::Select),
++                (
++                    FAST_MODE_CONFIG_ID.to_owned(),
++                    CodexAcpConfigOptionKind::Boolean,
++                ),
++            ]),
++            auth_methods: BTreeSet::from([
++                "api-key".to_owned(),
++                "chat-gpt".to_owned(),
++                "chat-gpt-device-code".to_owned(),
++            ]),
++            extensions: BTreeSet::from(["steering".to_owned(), "goal".to_owned()]),
++        }
++    }
++
++    fn available_probe() -> CodexAcpProbe {
++        CodexAcpProbe {
++            availability: CodexAcpAvailability::Available,
++            installer_available: true,
++            expected_identity: AcpRuntimeIdentity::stable(
++                CODEX_ACP_PACKAGE_NAME,
++                Some(CODEX_ACP_PACKAGE_VERSION.to_owned()),
++            ),
++        }
++    }
++
++    fn read_only_binding() -> AcpSessionBinding {
++        AcpSessionBinding::read_only(
++            "session-1",
++            "http://127.0.0.1:4000/mcp",
++            "secret",
++        )
++        .expect("read-only binding")
++    }
++
++    fn run_bound_binding() -> AcpSessionBinding {
++        AcpSessionBinding::run_bound(
++            "session-1",
++            "run-1",
++            "http://127.0.0.1:4000/mcp",
++            "secret",
++        )
++        .expect("run-bound binding")
++    }
++
++    #[test]
++    fn version_probe_requires_the_exact_pinned_adapter_version() {
++        assert_eq!(
++            extract_version("@agentclientprotocol/codex-acp 1.6.2\n"),
++            Some("1.6.2".to_owned())
++        );
++        assert!(output_reports_exact_version("codex-acp 1.6.2"));
++        assert!(!output_reports_exact_version("codex-acp 1.6.3"));
++    }
++
++    #[test]
++    fn descriptor_uses_exact_advertised_identity_and_normalized_capabilities() {
++        let descriptor = codex_acp_descriptor(
++            &available_probe(),
++            &ExternalAgentExecutionPlacement::windows_native(),
++            &advertisement(),
++        )
++        .expect("descriptor");
++
++        assert_eq!(descriptor.id, CODEX_ACP_DESCRIPTOR_ID);
++        assert_eq!(
++            descriptor.runtime_identity.agent_name,
++            CODEX_ACP_PACKAGE_NAME
++        );
++        assert_eq!(
++            descriptor.runtime_identity.agent_version.as_deref(),
++            Some(CODEX_ACP_PACKAGE_VERSION)
++        );
++        assert!(descriptor.capabilities.session_load);
++        assert!(descriptor.capabilities.session_resume);
++        assert!(descriptor.capabilities.session_list);
++        assert!(descriptor.capabilities.session_config_options);
++        assert!(descriptor.capabilities.mcp_http);
++        assert!(!descriptor.capabilities.mcp_over_acp);
++        assert!(descriptor.capabilities.extensions.contains("goal"));
++    }
++
++
++    #[test]
++    fn registration_exposes_only_the_codex_logical_target_and_descriptor() {
++        let registration = codex_acp_registration(
++            &available_probe(),
++            &ExternalAgentExecutionPlacement::windows_native(),
++            &advertisement(),
++        )
++        .expect("registration");
++
++        assert_eq!(registration.logical_target, CODEX_ACP_LOGICAL_TARGET);
++        assert_eq!(registration.descriptor.id, CODEX_ACP_DESCRIPTOR_ID);
++    }
++
++    #[test]
++    fn mismatched_initialized_identity_is_rejected() {
++        let mut advertisement = advertisement();
++        advertisement.agent_version = Some("1.6.3".to_owned());
++
++        assert!(matches!(
++            advertisement.validate_exact_identity(),
++            Err(AcpRuntimeError::Protocol(_))
++        ));
++    }
++
++    #[test]
++    fn install_command_pins_the_codex_acp_package_without_touching_legacy_codex() {
++        let plan = codex_acp_install_command(
++            &ExternalAgentExecutionPlacement::windows_native(),
++        );
++        assert!(plan.arguments.iter().any(|argument| {
++            argument.to_string_lossy() == CODEX_ACP_INSTALL_PACKAGE
++        }));
++        assert!(!plan.arguments.iter().any(|argument| {
++            argument.to_string_lossy() == "@openai/codex@0.148.0"
++        }));
++    }
++
++    #[test]
++    fn wsl_server_launch_preserves_agent_name_and_forwards_initial_mode() {
++        let placement = ExternalAgentExecutionPlacement {
++            environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
++            distribution: "Ubuntu-24.04".to_owned(),
++        };
++        let command = codex_acp_server_command(&placement, &run_bound_binding());
++
++        assert_eq!(command.program, OsString::from("wsl.exe"));
++        assert_eq!(
++            command.arguments[..4],
++            [
++                OsString::from("-d"),
++                OsString::from("Ubuntu-24.04"),
++                OsString::from("--"),
++                OsString::from(CODEX_ACP_EXECUTABLE),
++            ]
++        );
++        assert!(command.environment.iter().any(|(name, value)| {
++            name == INITIAL_AGENT_MODE_ENV && value == AGENT_MODE_ID
++        }));
++        assert!(command.environment.iter().any(|(name, value)| {
++            name == "WSLENV"
++                && value
++                    .to_string_lossy()
++                    .split(':')
++                    .any(|entry| entry == INITIAL_AGENT_MODE_ENV)
++        }));
++    }
++
++    #[test]
++    fn gameengine_access_maps_to_safe_codex_approval_and_sandbox_modes() {
++        assert_eq!(
++            codex_acp_policy(&read_only_binding()),
++            CodexAcpPolicy {
++                approval: CodexAcpApprovalPolicy::OnRequest,
++                sandbox: CodexAcpSandboxMode::ReadOnly,
++                mode_id: READ_ONLY_MODE_ID,
++            }
++        );
++        assert_eq!(
++            codex_acp_policy(&run_bound_binding()),
++            CodexAcpPolicy {
++                approval: CodexAcpApprovalPolicy::OnRequest,
++                sandbox: CodexAcpSandboxMode::WorkspaceWrite,
++                mode_id: AGENT_MODE_ID,
++            }
++        );
++    }
++
++    #[test]
++    fn session_preferences_map_only_to_advertised_acp_config_options() {
++        let preferences = CodexAcpSessionPreferences {
++            model: Some("gpt-5.3-codex".to_owned()),
++            reasoning_effort: Some("high".to_owned()),
++            fast_mode: Some(true),
++        };
++        let selections = codex_acp_session_config(
++            &run_bound_binding(),
++            &preferences,
++            &advertisement(),
++        )
++        .expect("config selections");
++
++        assert_eq!(
++            selections,
++            vec![
++                CodexAcpConfigSelection {
++                    option_id: MODE_CONFIG_ID.to_owned(),
++                    value: CodexAcpConfigValue::Select(AGENT_MODE_ID.to_owned()),
++                },
++                CodexAcpConfigSelection {
++                    option_id: MODEL_CONFIG_ID.to_owned(),
++                    value: CodexAcpConfigValue::Select("gpt-5.3-codex".to_owned()),
++                },
++                CodexAcpConfigSelection {
++                    option_id: REASONING_EFFORT_CONFIG_ID.to_owned(),
++                    value: CodexAcpConfigValue::Select("high".to_owned()),
++                },
++                CodexAcpConfigSelection {
++                    option_id: FAST_MODE_CONFIG_ID.to_owned(),
++                    value: CodexAcpConfigValue::Boolean(true),
++                },
++            ]
++        );
++    }
++
++    #[test]
++    fn fast_mode_uses_select_values_for_clients_without_boolean_config_support() {
++        let mut advertisement = advertisement();
++        advertisement.config_options.insert(
++            FAST_MODE_CONFIG_ID.to_owned(),
++            CodexAcpConfigOptionKind::Select,
++        );
++
++        let selections = codex_acp_session_config(
++            &run_bound_binding(),
++            &CodexAcpSessionPreferences {
++                fast_mode: Some(false),
++                ..CodexAcpSessionPreferences::default()
++            },
++            &advertisement,
++        )
++        .expect("config selections");
++
++        assert_eq!(
++            selections.last(),
++            Some(&CodexAcpConfigSelection {
++                option_id: FAST_MODE_CONFIG_ID.to_owned(),
++                value: CodexAcpConfigValue::Select(FAST_MODE_OFF.to_owned()),
++            })
++        );
++    }
++
++    #[test]
++    fn missing_formal_config_option_fails_instead_of_falling_back_to_cli_flags() {
++        let mut advertisement = advertisement();
++        advertisement.config_options.remove(REASONING_EFFORT_CONFIG_ID);
++
++        let error = codex_acp_session_config(
++            &run_bound_binding(),
++            &CodexAcpSessionPreferences {
++                reasoning_effort: Some("high".to_owned()),
++                ..CodexAcpSessionPreferences::default()
++            },
++            &advertisement,
++        )
++        .expect_err("missing option must fail closed");
++
++        assert!(matches!(error, AcpRuntimeError::Unsupported(_)));
++    }
++
++    #[test]
++    fn authentication_diagnostic_names_only_advertised_provider_methods() {
++        let diagnostic = advertisement().authentication_required_diagnostic();
++        assert!(diagnostic.contains("api-key"));
++        assert!(diagnostic.contains("chat-gpt"));
++        assert!(!diagnostic.contains("secret"));
++    }
++}
+diff --git a/crates/editor/src/external_agent_provider.rs b/crates/editor/src/external_agent_provider.rs
+index bb359d210cd1d8ce2c972f5de84e1db03932f732..ecff851ac12c8faad97c06f759fc23d0502345cd 100644
+--- a/crates/editor/src/external_agent_provider.rs
++++ b/crates/editor/src/external_agent_provider.rs
+@@ -346,7 +346,7 @@ fn direct_command_output(program: OsString, args: Vec<OsString>) -> io::Result<(
+ }
+ 
+ /// Runs one command for its exit status and captured standard output.
+-fn command_output<I, S>(
++pub(crate) fn command_output<I, S>(
+     placement: &ExternalAgentExecutionPlacement,
+     program: &OsStr,
+     args: I,
+@@ -506,7 +506,7 @@ fn resolve_launcher(
+ ///
+ /// Launcher resolution happens before placement, so the WSL wrapper receives
+ /// the same argument vector the provider will see.
+-fn placed_launch_command(
++pub(crate) fn placed_launch_command(
+     placement: &ExternalAgentExecutionPlacement,
+     program: OsString,
+     args: Vec<OsString>,
+@@ -2237,7 +2237,7 @@ fn truncate_captured_line_str(line: &str) -> String {
+ }
+ 
+ /// Whether the installer used for provider CLIs can be launched here.
+-fn installer_is_available(placement: &ExternalAgentExecutionPlacement) -> bool {
++pub(crate) fn installer_is_available(placement: &ExternalAgentExecutionPlacement) -> bool {
+     let (program, args) = placed_command(
+         placement,
+         OsString::from(npm_program(placement)),
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 662bb99305d44ce95164114d4541e195f354570a..1041d31b313d30d3132c16ddde6f5cf3d483ca36 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -10,6 +10,9 @@
+ // ADR 0166 defines the provider-neutral ACP runtime contract beneath Agent Host.
+ #[allow(dead_code)]
+ mod acp_agent_runtime;
++// Codex-specific ACP discovery and configuration stay behind the common runtime boundary.
++#[allow(dead_code)]
++mod codex_acp_adapter;
+ 
+ // ADR 0146 defines the provider-neutral managed asset boundary before concrete
+ // provider integrations are enabled by AI Studio.
