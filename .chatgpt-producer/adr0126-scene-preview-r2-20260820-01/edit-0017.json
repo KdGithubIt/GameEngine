@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "        if ui.button(\"Stop\").clicked() {\n            loaded.player.stop();\n            loaded.preview_tick = TimelineTick::ZERO;\n        }",
+  "new": "        if ui.button(\"Stop\").clicked() {\n            loaded.player.stop();\n            loaded.pending_preview = None;\n            loaded.preview_tick = TimelineTick::ZERO;\n        }"
+}
