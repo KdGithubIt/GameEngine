@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "            } else {\n                preview.transform_overrides.clear();\n            }\n\n            if self.particle_preview_enabled {",
+  "new": "            } else {\n                preview.transform_overrides.clear();\n            }\n\n            apply_timeline_preview(\n                app,\n                preview.bridge.as_ref(),\n                render_scene,\n                &mut preview.timeline,\n                timeline_preview_evaluation.as_ref(),\n            );\n\n            if self.particle_preview_enabled {"
+}
