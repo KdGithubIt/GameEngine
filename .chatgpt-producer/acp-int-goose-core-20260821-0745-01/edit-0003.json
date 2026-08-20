@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"use std::sync::mpsc::{self, Receiver, TryRecvError};\n","new":"use std::sync::mpsc::{self, Receiver, TryRecvError};\nuse std::sync::{Mutex, OnceLock};\n"}
