@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-audio-track-tests-20260820-05",
+  "target_branch": "chatgpt/gameengine-adr0126-audio-track",
+  "expected_head_sha": "bf9667f25060c71b72dbc61cc7b0b27b643ab39e",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "patch_sha256": "baeede90fbea3fa0371a08dd73abb144549112ec83ebc9701cfabff75d7dc761",
+  "patch_bytes": 1422,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Timeline audio test entity construction",
+  "pr_title": "GameEngine: complete Timeline Audio Track adapter",
+  "pr_body": "## Summary\n\n- complete ADR 0126 Audio Track start/stop/seek/fade through ADR 0122 managed voices\n- keep spatial playback on the existing ADR 0122 mixer path\n- fix Audio adapter regression tests to use the public runtime Entity reconstruction API\n\nVisual validation is not required because this change is runtime/audio logic only.\n"
+}
