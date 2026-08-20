@@ -277,14 +277,16 @@ landed so far, on 2026-08-20:
   override and the bounded sequence-event queue; the `engine.timeline_player`
   component and its scene conversion; project-Rust deferred Timeline commands
   and copied views; a Sequencer workspace with transport, track and clip
-  editing, markers, frame snapping, seek-policy presentation, and undo; and
-  Editor, CLI, and MCP parity through the shared typed-document capability
+  editing, markers, frame snapping, seek-policy presentation, and undo;
+  persistent Scene View Timeline preview that drives scrub/play/pause/loop
+  through the production composition adapter while retaining the Editor camera;
+  and Editor, CLI, and MCP parity through the shared typed-document capability
   registry.
 - **Not yet landed:** the Animation track adapter that drives Animation Set
   motion slots; the Audio and VFX adapters, which ADR 0126 §14 already defers
-  until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
-  the persistent Scene View world; the curve editor and `ReplayRequired`
-  checkpoint reconstruction; and the packaged-player proving project.
+  until ADR 0122 and ADR 0125 runtime controls exist; the curve editor and
+  `ReplayRequired` checkpoint reconstruction; and the packaged-player proving
+  project.
 
 Evaluation already reports Animation, Audio, and VFX outputs, so nothing in the
 implemented path silently claims to have played a motion slot, a cue, or an

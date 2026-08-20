@@ -148,7 +148,8 @@ impl EditorShell {
                     app.prepare_vfx_visual_validation();
                 }
                 if requested == "Sequencer" {
-                    authoring_windows.prepare_sequencer_visual_validation();
+                    let subject = app.prepare_sequencer_visual_validation();
+                    authoring_windows.prepare_sequencer_visual_validation(subject);
                 }
                 let tool = AuthoringTool::ALL
                     .into_iter()
@@ -400,6 +401,13 @@ impl eframe::App for EditorShell {
                 .capture_ai_studio_live_observation(frame.wgpu_render_state());
             self.ai_studio
                 .report_live_observation_capture(result, readback_started.elapsed());
+        }
+        let sequencer_delta = context.input(|input| input.stable_dt).clamp(0.0, 0.1);
+        if self
+            .authoring_windows
+            .update_sequencer_preview(&mut self.app, sequencer_delta)
+        {
+            context.request_repaint();
         }
         eframe::App::logic(&mut self.app, context, frame);
         if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {

@@ -547,6 +547,30 @@ impl EditorApp {
         }
     }
 
+    /// Publishes one Sequencer evaluation into the persistent Scene View.
+    pub(crate) fn set_sequencer_timeline_preview(
+        &mut self,
+        evaluation: Option<engine::timeline::TimelineEvaluation>,
+    ) {
+        self.scene_view.set_timeline_preview_evaluation(evaluation);
+    }
+
+    /// Creates a visible Scene View target for the Sequencer visual-validation fixture.
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_sequencer_visual_validation(&mut self) -> Option<EntityId> {
+        self.session.scene()?;
+        let mesh = AssetId::from_stable_id(StableId::new(
+            engine::scene_bridge::BUILTIN_TRIANGLE_ASSET_ID,
+        ))
+        .ok()?;
+        let entity = self.session.create_entity_from_mesh_asset(mesh, None).ok()?;
+        self.select_single_entity(Some(entity.clone()));
+        if let Some(scene) = self.session.scene() {
+            let _ = self.scene_view.focus_entity(scene, &entity);
+        }
+        Some(entity)
+    }
+
     /// Initializes project-scoped services for the concrete workspace root.
     ///
     /// This stays private because ADR 0117 forbids rebinding one Editor
