@@ -1,6 +1,6 @@
 # ADR 0158: Conversation-First AI Studio Presentation and Transcript Projection
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-19
 Builds on: ADR 0131
 Relates to: ADR 0133, ADR 0135, ADR 0139, ADR 0142, ADR 0147, ADR 0150, ADR 0155

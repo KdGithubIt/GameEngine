@@ -15,6 +15,7 @@ mod agent_benchmark;
 // ADR 0156 owns machine-local campaign identity above the ADR 0142 record primitives.
 mod agent_benchmark_campaign;
 mod agent_host;
+mod agent_transcript;
 pub mod ai_studio;
 mod ai_studio_theme;
 pub mod anim_ux;
