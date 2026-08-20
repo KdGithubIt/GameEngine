@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "pub(crate) enum AgentHostError {\n    SessionNotFound(String),\n    RunNotFound(String),\n",
+  "new": "pub(crate) enum AgentHostError {\n    SessionNotFound(String),\n    InvalidSessionTitle,\n    SessionHasActiveRun(String),\n    RunNotFound(String),\n"
+}
