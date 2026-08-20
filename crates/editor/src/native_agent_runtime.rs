@@ -4,7 +4,9 @@
 //! services remain authoritative for every side effect and completion gate.
 
 use crate::agent_benchmark::BenchmarkRecord;
-use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};
+use crate::agent_host::{
+    AgentEventEvidence, AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus,
+};
 use crate::digest::sha256_hex;
 use crate::model_router::{
     ModelRouteDecision, ModelRoutingError, ModelRoutingPolicy, RoutingWorkload,
@@ -525,30 +527,49 @@ impl NativeAgentRuntime {
                 return reject("validation requires execution/repair");
             }
             NativeAgentAction::ReadyForValidation => {
-                let successful_code_write = self
-                    .exchanges
-                    .iter()
-                    .any(|exchange| exchange.success && exchange.tool.starts_with("code_write:"));
-                let successful_mcp_write = self
-                    .exchanges
-                    .iter()
-                    .any(|exchange| exchange.success && mcp_write(&exchange.tool));
+                let successful_code_write = run.events.iter().any(|event| {
+                    matches!(
+                        event.evidence.as_ref(),
+                        Some(AgentEventEvidence::ToolAction {
+                            tool,
+                            success: Some(true),
+                            ..
+                        }) if tool == "workspace.code_write"
+                    )
+                });
+                let successful_mcp_write = run.events.iter().any(|event| {
+                    matches!(
+                        event.evidence.as_ref(),
+                        Some(AgentEventEvidence::ToolAction {
+                            tool,
+                            success: Some(true),
+                            ..
+                        }) if mcp_write(tool)
+                    )
+                });
+                let successful_asset_acquisition = !run.audit.asset_acquisitions.is_empty();
                 let planned_code = !run.proposal_snapshot.planned_code_changes.is_empty();
-                let planned_authoring = !run.proposal_snapshot.planned_project_changes.is_empty()
-                    || !run.proposal_snapshot.planned_assets.is_empty();
+                let planned_authoring = !run.proposal_snapshot.planned_project_changes.is_empty();
+                let planned_assets = !run.proposal_snapshot.planned_assets.is_empty();
 
                 if planned_code && !successful_code_write {
                     return reject(
-                        "ready_for_validation requires a successful managed code write for planned code changes",
+                        "ready_for_validation requires host-recorded managed code-write evidence for planned code changes",
                     );
                 }
                 if planned_authoring && !successful_mcp_write {
                     return reject(
-                        "ready_for_validation requires a successful governed MCP mutation for planned project or asset changes",
+                        "ready_for_validation requires host-recorded governed MCP mutation evidence for planned project changes",
+                    );
+                }
+                if planned_assets && !successful_asset_acquisition && !successful_mcp_write {
+                    return reject(
+                        "ready_for_validation requires host-recorded asset acquisition or governed MCP mutation evidence for planned asset changes",
                     );
                 }
                 if !planned_code
                     && !planned_authoring
+                    && !planned_assets
                     && run.proposal_snapshot.validation_plan.is_empty()
                     && run.proposal_snapshot.playtest_plan.is_empty()
                 {
@@ -915,7 +936,8 @@ fn call_mcp(
 mod tests {
     use super::*;
     use crate::agent_host::{
-        AgentProposal, AgentRunAudit, AgentWorkingState, CompletionReport,
+        AgentEvent, AgentEventKind, AgentProposal, AgentRunAudit, AgentWorkingState,
+        CompletionReport,
     };
     use crate::native_agent::DEFAULT_LOCAL_MODEL_ENDPOINT;
     #[test]
@@ -1062,20 +1084,42 @@ mod tests {
         }))
     }
 
+    fn record_successful_host_tool_action(run: &mut AgentRun, tool: &str) {
+        let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
+        run.events.push(AgentEvent {
+            sequence,
+            created_unix_ms: 0,
+            kind: AgentEventKind::ToolAction,
+            message: format!("{tool}: test"),
+            validation: None,
+            evidence: Some(AgentEventEvidence::ToolAction {
+                tool: tool.to_owned(),
+                action: "test".to_owned(),
+                success: Some(true),
+            }),
+        });
+    }
+
     #[test]
-    fn ready_for_validation_requires_planned_mutation_evidence() {
+    fn ready_for_validation_requires_host_recorded_mutation_evidence() {
         let mut code_proposal = AgentProposal::default();
         code_proposal.planned_code_changes = vec!["game/player.rs".to_owned()];
-        let code_run = executing_run(code_proposal);
+        let mut code_run = executing_run(code_proposal);
         let mut code_runtime = validation_test_runtime();
         assert!(matches!(
             code_runtime.validate_action(&code_run, &NativeAgentAction::ReadyForValidation),
             Err(NativeAgentRuntimeError::Rejected(message))
-                if message.contains("successful managed code write")
+                if message.contains("host-recorded managed code-write evidence")
         ));
         code_runtime
-            .record_tool_result("code_write:game/player.rs", true, "write completed")
-            .expect("record write");
+            .record_tool_result("code_write:game/player.rs", true, "runtime exchange only")
+            .expect("record runtime exchange");
+        assert!(matches!(
+            code_runtime.validate_action(&code_run, &NativeAgentAction::ReadyForValidation),
+            Err(NativeAgentRuntimeError::Rejected(message))
+                if message.contains("host-recorded managed code-write evidence")
+        ));
+        record_successful_host_tool_action(&mut code_run, "workspace.code_write");
         assert!(
             code_runtime
                 .validate_action(&code_run, &NativeAgentAction::ReadyForValidation)
@@ -1084,20 +1128,25 @@ mod tests {
 
         let mut authoring_proposal = AgentProposal::default();
         authoring_proposal.planned_project_changes = vec!["scene player setup".to_owned()];
-        let authoring_run = executing_run(authoring_proposal);
+        let mut authoring_run = executing_run(authoring_proposal);
         let mut authoring_runtime = validation_test_runtime();
         authoring_runtime
-            .record_tool_result("project.describe", true, "inspection completed")
-            .expect("record inspection");
+            .record_tool_result("progress:inspection", true, "runtime progress only")
+            .expect("record runtime progress");
         assert!(matches!(
             authoring_runtime
                 .validate_action(&authoring_run, &NativeAgentAction::ReadyForValidation),
             Err(NativeAgentRuntimeError::Rejected(message))
-                if message.contains("successful governed MCP mutation")
+                if message.contains("host-recorded governed MCP mutation evidence")
         ));
-        authoring_runtime
-            .record_tool_result("scene.set_transform", true, "mutation completed")
-            .expect("record mutation");
+        record_successful_host_tool_action(&mut authoring_run, "project.describe");
+        assert!(matches!(
+            authoring_runtime
+                .validate_action(&authoring_run, &NativeAgentAction::ReadyForValidation),
+            Err(NativeAgentRuntimeError::Rejected(message))
+                if message.contains("host-recorded governed MCP mutation evidence")
+        ));
+        record_successful_host_tool_action(&mut authoring_run, "scene.set_transform");
         assert!(
             authoring_runtime
                 .validate_action(&authoring_run, &NativeAgentAction::ReadyForValidation)
