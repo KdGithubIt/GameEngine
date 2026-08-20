@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/external_agent_provider.rs",
+  "old": "const CODEX_VERSION: &str = \"0.148.0\";\n",
+  "new": "const CODEX_VERSION: &str = \"0.148.0\";\nconst CODEX_MCP_FEATURE: &str = \"mcp_2026_07_28\";\n"
+}
