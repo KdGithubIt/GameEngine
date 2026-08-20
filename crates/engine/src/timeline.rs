@@ -8,10 +8,13 @@
 
 pub use engine_timeline::{
     ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,
-    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,
-    LoopRegion, TimelineCompileError, TimelineEvaluation, TimelinePlayState, TimelinePlayer,
-    TimelineSeek, TimelineTrackOutput, TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction,
-    compile_timeline,
+    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation,
+    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,
+    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, FiredEvent, LoopRegion,
+    ReplayCancellationToken, ReplayCheckpointCache, ReplayCheckpointConfigError,
+    ReplayReconstruction, ReplayRequest, ReplayRequestController, TimelineCompileError,
+    TimelineEvaluation, TimelinePlayState, TimelinePlayer, TimelineSeek, TimelineTrackOutput,
+    TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction, compile_timeline,
 };
 
 use crate::transform::Transform;
