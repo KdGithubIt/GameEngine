@@ -1,0 +1,76 @@
+diff --git a/crates/editor/src/sequencer/curve_editor/graph.rs b/crates/editor/src/sequencer/curve_editor/graph.rs
+index 599b7ded205316a678d57edd125763994db00661..a7eea3235c9375d591f723c989be4bbf9e095e39 100644
+--- a/crates/editor/src/sequencer/curve_editor/graph.rs
++++ b/crates/editor/src/sequencer/curve_editor/graph.rs
+@@ -2,7 +2,7 @@ use super::sample_keys;
+ use eframe::egui;
+ use engine_authoring::{TimelineClip, TimelineKey, TimelineTick};
+ 
+-const HEIGHT: f32 = 210.0;
++const HEIGHT: f32 = 140.0;
+ const SAMPLES: usize = 96;
+ 
+ pub(super) fn show(
+@@ -12,7 +12,10 @@ pub(super) fn show(
+     preview_tick: TimelineTick,
+ ) {
+     let (rect, _) = ui.allocate_exact_size(
+-        egui::vec2(ui.available_width().max(240.0), HEIGHT),
++        egui::vec2(
++            ui.available_width().max(240.0),
++            ui.available_height().clamp(64.0, HEIGHT),
++        ),
+         egui::Sense::hover(),
+     );
+     let painter = ui.painter_at(rect);
+@@ -23,7 +26,7 @@ pub(super) fn show(
+         let ratio = step as f32 / 4.0;
+         let x = rect.left() + rect.width() * ratio;
+         let y = rect.top() + rect.height() * ratio;
+-        let grid = egui::Stroke::new(1.0, egui::Color32::from_gray(45));
++        let grid = egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45));
+         painter.line_segment(
+             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+             grid,
+@@ -46,7 +49,7 @@ pub(super) fn show(
+     }
+     painter.add(egui::Shape::line(
+         points,
+-        egui::Stroke::new(2.0, egui::Color32::from_rgb(90, 165, 220)),
++        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 165, 220)),
+     ));
+ 
+     for key in keys {
+@@ -66,7 +69,7 @@ pub(super) fn show(
+         let x = rect.left() + rect.width() * local as f32 / duration as f32;
+         painter.line_segment(
+             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+-            egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 190, 90)),
++            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(230, 190, 90)),
+         );
+     }
+ 
+diff --git a/crates/editor/src/sequencer/curve_editor/mod.rs b/crates/editor/src/sequencer/curve_editor/mod.rs
+index 142683ef77a965b3f848eda9083fe9eccd5ad25b..7e477e8d257726fca1faa80aebf53f75c1208ab5 100644
+--- a/crates/editor/src/sequencer/curve_editor/mod.rs
++++ b/crates/editor/src/sequencer/curve_editor/mod.rs
+@@ -100,9 +100,6 @@ pub(super) fn show(
+         }
+     });
+ 
+-    let draft = rows::draft_keys(ui, &clip, keys);
+-    graph::show(ui, &clip, &draft, loaded.preview_tick);
+-
+     if action.is_none() {
+         action = rows::show(
+             ui,
+@@ -113,6 +110,9 @@ pub(super) fn show(
+         );
+     }
+ 
++    let draft = rows::draft_keys(ui, &clip, keys);
++    graph::show(ui, &clip, &draft, loaded.preview_tick);
++
+     if let Some(action) = action {
+         let message = action.success_message();
+         let result = loaded.edit(permissions, |document| {
