@@ -6,8 +6,8 @@ pub use engine_animation::sprite_2d::{
 };
 pub use engine_assets::native_2d::{
     CompiledSpriteAtlas, CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileLayer,
-    CompiledTileMap, CompiledTileSet, Native2dCompileError, compile_sprite_atlas, compile_tile_map,
-    compile_tile_set,
+    CompiledTileMap, CompiledTileSet, Native2dCompileError, TileMapChunkRecompile,
+    compile_sprite_atlas, compile_tile_map, compile_tile_set, recompile_tile_map_chunks,
 };
 pub use engine_authoring::{
     SpriteBlendMode, SpriteRef, SpriteRenderer2d, TileLayerId, TileMapDocument, TileSetDocument,

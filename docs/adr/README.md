@@ -96,6 +96,7 @@ the beginning:
   [0105](0105-model-level-material-and-texture-sub-asset-overrides.md),
   [0134](0134-portable-prefab-instance-source.md), and
   [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md).
+- **Native 2D:** [0127](0127-native-2d-gameplay-and-authoring-architecture.md).
 - **Rendering and materials:**
   [0055](0055-render-authoring-and-material-v2-contract.md),
   [0100](0100-generic-shading-models-and-outline-pass.md),
@@ -139,7 +140,6 @@ contract unless and until their status becomes `Accepted`:
 - [0124](0124-production-navigation-mesh-and-bake-workflow.md) — Production Navigation Mesh and Bake Workflow
 - [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) — VFX Effect Authoring and Runtime Architecture
 - [0126](0126-timeline-sequencer-authoring-and-runtime.md) — Timeline / Sequencer Authoring and Runtime
-- [0127](0127-native-2d-gameplay-and-authoring-architecture.md) — Native 2D Gameplay and Authoring Architecture
 
 The later Accepted renderer records originally reused ADR 0122 and ADR 0123.
 They are registered as ADR 0128 and ADR 0129 so the first-merged Proposed
@@ -279,7 +279,7 @@ implementation contract.
 | [0124](0124-production-navigation-mesh-and-bake-workflow.md) | **Proposed** — Production Navigation Mesh and Bake Workflow |
 | [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) | **Proposed** — VFX Effect Authoring and Runtime Architecture |
 | [0126](0126-timeline-sequencer-authoring-and-runtime.md) | **Proposed** — Timeline / Sequencer Authoring and Runtime |
-| [0127](0127-native-2d-gameplay-and-authoring-architecture.md) | **Proposed** — Native 2D Gameplay and Authoring Architecture |
+| [0127](0127-native-2d-gameplay-and-authoring-architecture.md) | Native 2D Gameplay and Authoring Architecture |
 | [0128](0128-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
 | [0129](0129-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
 | [0130](0130-renderer-temporal-history-infrastructure.md) | Renderer Temporal History Infrastructure |

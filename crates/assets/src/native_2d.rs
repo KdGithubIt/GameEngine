@@ -3,10 +3,10 @@
 use crate::asset::RuntimeAssetId;
 use engine_authoring::{
     AssetId, PixelsPerUnit, SortingLayerId, SpriteAtlasDocument, SpriteFiltering, SpriteId,
-    SpriteRef, TileChunkCoord, TileCollisionMaterial, TileCollisionShape, TileId, TileLayerId,
-    TileMapDocument, TileSetDocument,
+    SpriteRef, TileChunk, TileChunkCoord, TileCollisionMaterial, TileCollisionShape, TileId,
+    TileLayerId, TileMapDocument, TileSetDocument,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Resolved logical sprite region independent of GPU atlas packing.
@@ -252,32 +252,119 @@ pub fn compile_tile_map(
     let mut chunks = Vec::new();
     for layer in &document.layers {
         for chunk in &layer.chunks {
-            let mut cells = Vec::with_capacity(chunk.cells.len());
-            for entry in &chunk.cells {
-                if tile_set.tile(&entry.tile).is_none() {
-                    return Err(Native2dCompileError::MissingTile(entry.tile.clone()));
-                }
-                cells.push((entry.cell.x, entry.cell.y, entry.tile.clone()));
-            }
-            cells.sort_by_key(|(x, y, tile)| (*y, *x, tile.as_str().to_owned()));
-            chunks.push(CompiledTileChunk {
-                layer: layer.id.clone(),
-                coord: chunk.coord,
-                cells,
-            });
+            chunks.push(compile_tile_chunk(&layer.id, chunk, tile_set)?);
         }
     }
-    chunks.sort_by_key(|chunk| {
-        (
-            chunk.layer.as_str().to_owned(),
-            chunk.coord.y,
-            chunk.coord.x,
-        )
-    });
+    chunks.sort_by_key(sorted_chunk_key);
     Ok(CompiledTileMap {
         chunk_size: document.chunk_size,
         layers,
         chunks,
+    })
+}
+
+/// Compiles one authored chunk against the Tile Set it references.
+fn compile_tile_chunk(
+    layer: &TileLayerId,
+    chunk: &TileChunk,
+    tile_set: &CompiledTileSet,
+) -> Result<CompiledTileChunk, Native2dCompileError> {
+    let mut cells = Vec::with_capacity(chunk.cells.len());
+    for entry in &chunk.cells {
+        if tile_set.tile(&entry.tile).is_none() {
+            return Err(Native2dCompileError::MissingTile(entry.tile.clone()));
+        }
+        cells.push((entry.cell.x, entry.cell.y, entry.tile.clone()));
+    }
+    cells.sort_by_key(|(x, y, tile)| (*y, *x, tile.as_str().to_owned()));
+    Ok(CompiledTileChunk {
+        layer: layer.clone(),
+        coord: chunk.coord,
+        cells,
+    })
+}
+
+/// Deterministic compiled-chunk ordering shared by full and incremental compiles.
+fn sorted_chunk_key(chunk: &CompiledTileChunk) -> (String, i32, i32) {
+    (
+        chunk.layer.as_str().to_owned(),
+        chunk.coord.y,
+        chunk.coord.x,
+    )
+}
+
+/// Result of updating a compiled Tile Map from a bounded set of changed chunks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileMapChunkRecompile {
+    /// Updated compiled Tile Map.
+    pub map: CompiledTileMap,
+    /// Chunks rebuilt from the authored document during this update.
+    pub recompiled_chunks: Vec<(TileLayerId, TileChunkCoord)>,
+    /// Chunks carried over from the previous compile without rebuilding.
+    pub reused_chunks: usize,
+}
+
+/// Rebuilds only the chunks a bounded edit changed.
+///
+/// ADR 0127 makes the chunk the update unit: one paint gesture reports the
+/// layer/chunk pairs it touched, and only those are rebuilt. Every other chunk
+/// is carried over from `previous` exactly as it was compiled.
+///
+/// A chunk present in the document but absent from `previous` is compiled, and
+/// a chunk that the document no longer contains is dropped. Layer records are
+/// always taken from the document because they are ordering metadata rather
+/// than per-cell work.
+///
+/// The caller must recompile the whole map when the Tile Set changes: reused
+/// chunks were validated against the Tile Set they were compiled with, and this
+/// function does not revisit them.
+pub fn recompile_tile_map_chunks(
+    previous: &CompiledTileMap,
+    document: &TileMapDocument,
+    tile_set: &CompiledTileSet,
+    changed: &[(TileLayerId, TileChunkCoord)],
+) -> Result<TileMapChunkRecompile, Native2dCompileError> {
+    let errors = document.validate();
+    if !errors.is_empty() {
+        return Err(Native2dCompileError::InvalidDocument(errors));
+    }
+    let changed = changed.iter().cloned().collect::<BTreeSet<_>>();
+    let layers = document
+        .layers
+        .iter()
+        .map(|layer| CompiledTileLayer {
+            id: layer.id.clone(),
+            enabled: layer.enabled,
+            sorting_layer: layer.sorting_layer.clone(),
+            order_in_layer: layer.order_in_layer,
+        })
+        .collect::<Vec<_>>();
+    let mut chunks = Vec::new();
+    let mut recompiled_chunks = Vec::new();
+    let mut reused_chunks = 0;
+    for layer in &document.layers {
+        for chunk in &layer.chunks {
+            let key = (layer.id.clone(), chunk.coord);
+            if !changed.contains(&key)
+                && let Some(existing) = previous.chunk(&layer.id, chunk.coord)
+            {
+                chunks.push(existing.clone());
+                reused_chunks += 1;
+                continue;
+            }
+            chunks.push(compile_tile_chunk(&layer.id, chunk, tile_set)?);
+            recompiled_chunks.push(key);
+        }
+    }
+    chunks.sort_by_key(sorted_chunk_key);
+    Ok(TileMapChunkRecompile {
+        map: CompiledTileMap {
+            chunk_size: document.chunk_size,
+            layers,
+            chunks,
+        },
+        recompiled_chunks,
+        reused_chunks,
     })
 }
 
@@ -351,6 +438,143 @@ mod tests {
         };
         let compiled = compile_tile_map(&map, &set).unwrap();
         assert_eq!(compiled.chunks[0].layer, layer_id);
+    }
+
+    fn tile_set_with(tiles: &[(TileId, &str)]) -> CompiledTileSet {
+        compile_tile_set(&TileSetDocument {
+            schema_version: TILE_SET_SCHEMA_VERSION,
+            tiles: tiles
+                .iter()
+                .map(|(id, name)| engine_authoring::TileDefinition {
+                    id: id.clone(),
+                    name: (*name).to_owned(),
+                    sprite: SpriteRef {
+                        atlas: AssetId::generate(),
+                        sprite: SpriteId::generate(),
+                    },
+                    collision: Vec::new(),
+                    collision_material: None,
+                    one_way: false,
+                    tags: Vec::new(),
+                    custom_values: BTreeMap::new(),
+                })
+                .collect(),
+        })
+        .expect("tile set")
+    }
+
+    fn map_with_chunks(
+        layer: &TileLayerId,
+        tile: &TileId,
+        coords: &[(i32, i32)],
+    ) -> TileMapDocument {
+        TileMapDocument {
+            schema_version: TILE_MAP_SCHEMA_VERSION,
+            tile_set: AssetId::generate(),
+            chunk_size: 32,
+            layers: vec![TileMapLayer {
+                id: layer.clone(),
+                name: "World".to_owned(),
+                enabled: true,
+                locked: false,
+                sorting_layer: SortingLayerId::generate(),
+                order_in_layer: 0,
+                chunks: coords
+                    .iter()
+                    .map(|(x, y)| TileChunk {
+                        coord: TileChunkCoord { x: *x, y: *y },
+                        cells: vec![TileCellEntry {
+                            cell: TileCell { x: 1, y: 1 },
+                            tile: tile.clone(),
+                        }],
+                    })
+                    .collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_changed_chunk_is_rebuilt_while_every_other_chunk_is_reused() {
+        let ground = TileId::generate();
+        let wall = TileId::generate();
+        let set = tile_set_with(&[(ground.clone(), "ground"), (wall.clone(), "wall")]);
+        let layer = TileLayerId::generate();
+        let document = map_with_chunks(&layer, &ground, &[(0, 0), (1, 0), (0, 1)]);
+        let compiled = compile_tile_map(&document, &set).expect("full compile");
+
+        let mut edited = document.clone();
+        edited.layers[0].chunks[1].cells[0].tile = wall.clone();
+        let changed = [(layer.clone(), TileChunkCoord { x: 1, y: 0 })];
+        let update =
+            recompile_tile_map_chunks(&compiled, &edited, &set, &changed).expect("incremental");
+
+        assert_eq!(update.recompiled_chunks, changed.to_vec());
+        assert_eq!(update.reused_chunks, 2);
+        assert_eq!(
+            update.map,
+            compile_tile_map(&edited, &set).expect("reference compile")
+        );
+        for coord in [TileChunkCoord { x: 0, y: 0 }, TileChunkCoord { x: 0, y: 1 }] {
+            assert_eq!(
+                update.map.chunk(&layer, coord),
+                compiled.chunk(&layer, coord)
+            );
+        }
+    }
+
+    #[test]
+    fn a_chunk_the_previous_compile_never_saw_is_built_even_when_unlisted() {
+        let ground = TileId::generate();
+        let set = tile_set_with(&[(ground.clone(), "ground")]);
+        let layer = TileLayerId::generate();
+        let document = map_with_chunks(&layer, &ground, &[(0, 0)]);
+        let compiled = compile_tile_map(&document, &set).expect("full compile");
+        let grown = map_with_chunks(&layer, &ground, &[(0, 0), (5, 5)]);
+
+        let update = recompile_tile_map_chunks(&compiled, &grown, &set, &[]).expect("incremental");
+
+        assert_eq!(
+            update.recompiled_chunks,
+            vec![(layer.clone(), TileChunkCoord { x: 5, y: 5 })]
+        );
+        assert_eq!(update.reused_chunks, 1);
+    }
+
+    #[test]
+    fn a_removed_chunk_does_not_survive_in_the_updated_compile() {
+        let ground = TileId::generate();
+        let set = tile_set_with(&[(ground.clone(), "ground")]);
+        let layer = TileLayerId::generate();
+        let document = map_with_chunks(&layer, &ground, &[(0, 0), (1, 0)]);
+        let compiled = compile_tile_map(&document, &set).expect("full compile");
+        let shrunk = map_with_chunks(&layer, &ground, &[(0, 0)]);
+
+        let update = recompile_tile_map_chunks(&compiled, &shrunk, &set, &[]).expect("incremental");
+
+        assert_eq!(update.map.chunks.len(), 1);
+        assert!(
+            update
+                .map
+                .chunk(&layer, TileChunkCoord { x: 1, y: 0 })
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tile_identity_survives_rename_and_palette_reorder() {
+        let ground = TileId::generate();
+        let wall = TileId::generate();
+        let layer = TileLayerId::generate();
+        let set = tile_set_with(&[(ground.clone(), "ground"), (wall.clone(), "wall")]);
+        let document = map_with_chunks(&layer, &ground, &[(0, 0)]);
+        let before = compile_tile_map(&document, &set).expect("compile");
+
+        // The same tiles renamed and reordered in the palette.
+        let renamed = tile_set_with(&[(wall.clone(), "brick"), (ground.clone(), "soil")]);
+        let after = compile_tile_map(&document, &renamed).expect("compile");
+
+        assert_eq!(before.chunks, after.chunks);
+        assert_eq!(before.chunks[0].cells[0].2, ground);
     }
 
     #[test]

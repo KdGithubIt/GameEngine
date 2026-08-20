@@ -178,6 +178,12 @@ struct LoadedTileMap {
     stamp: engine_authoring::TileStamp,
     dirty: bool,
     affected_chunks: Vec<engine_authoring::TileMapChunkKey>,
+    /// Compiled Tile Set the preview compile validates cells against.
+    compiled_tiles: engine::native_2d::CompiledTileSet,
+    /// Compiled preview map kept current chunk by chunk.
+    compiled: engine::native_2d::CompiledTileMap,
+    /// Chunks rebuilt and reused by the most recent gesture.
+    last_chunk_update: Option<(usize, usize)>,
 }
 
 impl LoadedTileMap {
@@ -214,6 +220,10 @@ impl LoadedTileMap {
         )
         .map_err(|error| error.to_string())?;
         let selected_tile = tiles.tiles.first().map(|tile| tile.id.clone());
+        let compiled_tiles =
+            engine::native_2d::compile_tile_set(&tiles).map_err(|error| error.to_string())?;
+        let compiled = engine::native_2d::compile_tile_map(&document, &compiled_tiles)
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             relative: relative_path,
             path,
@@ -226,6 +236,9 @@ impl LoadedTileMap {
             stamp: engine_authoring::TileStamp::default(),
             dirty: false,
             affected_chunks: Vec::new(),
+            compiled_tiles,
+            compiled,
+            last_chunk_update: None,
         })
     }
 
@@ -249,7 +262,36 @@ impl LoadedTileMap {
         self.gesture_start = None;
         self.affected_chunks = commit.affected_chunks;
         self.dirty = true;
+        self.refresh_compiled_chunks();
         Ok(())
+    }
+
+    /// Rebuilds only the chunks the last gesture touched (ADR 0127 §9).
+    ///
+    /// The gesture already reports its layer/chunk pairs, so a stroke inside one
+    /// chunk of a large map leaves every other compiled chunk untouched.
+    fn refresh_compiled_chunks(&mut self) {
+        let changed = self
+            .affected_chunks
+            .iter()
+            .map(|key| (key.layer.clone(), key.chunk))
+            .collect::<Vec<_>>();
+        match engine::native_2d::recompile_tile_map_chunks(
+            &self.compiled,
+            self.service.document(),
+            &self.compiled_tiles,
+            &changed,
+        ) {
+            Ok(update) => {
+                self.last_chunk_update =
+                    Some((update.recompiled_chunks.len(), update.reused_chunks));
+                self.compiled = update.map;
+            }
+            // A document the compiler rejects keeps the previous compiled map
+            // rather than presenting a half-updated one. Authoring validation
+            // reports the reason through the ordinary document path.
+            Err(_) => self.last_chunk_update = None,
+        }
     }
 
     fn cancel_gesture(&mut self) -> Result<(), String> {
@@ -992,6 +1034,11 @@ impl Native2dEditorState {
             self.show_collisions,
         ) {
             self.status = Some(error);
+        }
+        if let Some((recompiled, reused)) = loaded.last_chunk_update {
+            ui.small(format!(
+                "Preview rebuilt {recompiled} chunk(s) and reused {reused} unchanged chunk(s)."
+            ));
         }
         if !loaded.affected_chunks.is_empty() {
             ui.small(format!(

@@ -1,6 +1,6 @@
 # ADR 0127: Native 2D Gameplay and Authoring Architecture
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-16
 Builds on: ADR 0053, ADR 0054, ADR 0072, ADR 0107, ADR 0113, ADR 0114, ADR 0118, ADR 0121
 Relates to: ADR 0125, ADR 0126
