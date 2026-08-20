@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "            let asset_staging_path = self\n                .storage_root\n                .join(\"asset-acquisition\")\n                .join(run_id);",
+  "new": "            let asset_staging_path = self.storage_root.join(\"asset-acquisition\").join(run_id);"
+}
