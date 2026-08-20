@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                .selected_text(current_title)\n",
+  "new": "                .selected_text(current_title.clone())\n"
+}
