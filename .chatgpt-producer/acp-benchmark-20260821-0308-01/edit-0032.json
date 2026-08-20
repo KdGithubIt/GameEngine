@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_comparison.rs",
+  "old": "        BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BENCHMARK_SCHEMA_VERSION,\n        BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics, BenchmarkModelIdentity,\n        BenchmarkToolBudget, WORKLOAD_POLICY_VERSION,\n",
+  "new": "        BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BENCHMARK_SCHEMA_VERSION,\n        BenchmarkAgentRuntimeIdentity, BenchmarkHardwareIdentity, BenchmarkHarnessIdentity,\n        BenchmarkIdentity, BenchmarkMetrics, BenchmarkModelIdentity, BenchmarkRuntimeIdentity,\n        BenchmarkToolBudget, WORKLOAD_POLICY_VERSION,\n"
+}
