@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "            Ok(compiled) => {\n                self.document = previous;\n                self.compiled = compiled;\n                self.dirty = true;\n                true\n            }",
+  "new": "            Ok(compiled) => {\n                self.document = previous;\n                self.compiled = compiled;\n                self.pending_preview = None;\n                if self.player.loop_region().is_some() {\n                    self.set_loop_enabled(true);\n                }\n                self.dirty = true;\n                true\n            }"
+}
