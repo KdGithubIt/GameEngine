@@ -1175,6 +1175,29 @@ pub struct AiStudioPanel {
 impl AiStudioPanel {
     /// Opens the project-scoped AI Studio state for an Editor project.
     pub fn new(project: &ProjectRoot, connection: AiStudioConnection) -> Result<Self, String> {
+        Self::new_with_campaign_recovery(project, connection, true)
+    }
+
+    /// Opens one isolated benchmark child without restoring interactive campaign state.
+    ///
+    /// The child belongs to an already-running campaign parent. Restoring a `Running`
+    /// checkpoint here would mistake normal child startup for an Editor restart and
+    /// create the parent's `pause.requested` marker.
+    pub fn new_benchmark_child(
+        project: &ProjectRoot,
+        connection: AiStudioConnection,
+        benchmark_run: &std::path::Path,
+    ) -> Result<Self, String> {
+        let mut panel = Self::new_with_campaign_recovery(project, connection, false)?;
+        panel.configure_benchmark_child(benchmark_run)?;
+        Ok(panel)
+    }
+
+    fn new_with_campaign_recovery(
+        project: &ProjectRoot,
+        connection: AiStudioConnection,
+        restore_campaign_checkpoint: bool,
+    ) -> Result<Self, String> {
         let ai_root = dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join("GameEngine")
@@ -1191,9 +1214,13 @@ impl AiStudioPanel {
             .map_err(|error| error.to_string())?;
         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
         let benchmark_experiment_root = ai_root.join("benchmark-experiments");
-        let benchmark_campaign = benchmark_campaign_ui::BenchmarkCampaignPanel::load_checkpoint(
-            &benchmark_experiment_root,
-        );
+        let benchmark_campaign = if restore_campaign_checkpoint {
+            benchmark_campaign_ui::BenchmarkCampaignPanel::load_checkpoint(
+                &benchmark_experiment_root,
+            )
+        } else {
+            benchmark_campaign_ui::BenchmarkCampaignPanel::default()
+        };
         let (benchmark_records, benchmark_status) = match benchmark_store.load() {
             Ok(records) => (records, None),
             Err(error) => (
