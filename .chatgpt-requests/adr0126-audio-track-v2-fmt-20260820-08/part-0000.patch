@@ -1,0 +1,16 @@
+diff --git a/crates/engine/src/timeline/audio_adapter.rs b/crates/engine/src/timeline/audio_adapter.rs
+index 3b0ce016ce2ee55bbfb83de45a89fefd60d84a5d..70cb7eb690a6c4ff581045f7be2c6baad3c5294d 100644
+--- a/crates/engine/src/timeline/audio_adapter.rs
++++ b/crates/engine/src/timeline/audio_adapter.rs
+@@ -581,10 +581,7 @@ mod tests {
+ 
+     #[test]
+     fn tick_offsets_convert_to_audio_time_without_frame_rate_rounding() {
+-        assert_eq!(
+-            ticks_to_duration(TIMELINE_TICKS_PER_SECOND),
+-            Duration::from_secs(1)
+-        );
++        assert_eq!(ticks_to_duration(TIMELINE_TICKS_PER_SECOND), Duration::from_secs(1));
+         assert_eq!(
+             ticks_to_duration(TIMELINE_TICKS_PER_SECOND / 2),
+             Duration::from_millis(500)
