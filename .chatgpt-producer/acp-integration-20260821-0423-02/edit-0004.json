@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"#[allow(dead_code)]\nmod acp_agent_runtime;\n","new":"#[allow(dead_code)]\nmod acp_agent_host_bridge;\n#[allow(dead_code)]\nmod acp_agent_runtime;\n"}
