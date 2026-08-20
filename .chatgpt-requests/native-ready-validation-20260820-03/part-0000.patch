@@ -1,0 +1,43 @@
+diff --git a/crates/editor/src/native_agent_runtime.rs b/crates/editor/src/native_agent_runtime.rs
+index ce75c9e661d541021571592ef391078a96ab757c..a6790736e1b3fd52b73539667366649cb4aab1f1 100644
+--- a/crates/editor/src/native_agent_runtime.rs
++++ b/crates/editor/src/native_agent_runtime.rs
+@@ -537,6 +537,7 @@ impl NativeAgentRuntime {
+                         }) if tool == "workspace.code_write"
+                     )
+                 });
++                let mcp_tools = authoring_tool_descriptors();
+                 let successful_mcp_write = run.events.iter().any(|event| {
+                     matches!(
+                         event.evidence.as_ref(),
+@@ -545,6 +546,7 @@ impl NativeAgentRuntime {
+                             success: Some(true),
+                             ..
+                         }) if mcp_write(tool)
++                            && mcp_tools.iter().any(|descriptor| descriptor.name == tool.as_str())
+                     )
+                 });
+                 let successful_asset_acquisition = !run.audit.asset_acquisitions.is_empty();
+@@ -1139,6 +1141,13 @@ mod tests {
+             Err(NativeAgentRuntimeError::Rejected(message))
+                 if message.contains("host-recorded governed MCP mutation evidence")
+         ));
++        record_successful_host_tool_action(&mut authoring_run, "workspace.code_write");
++        assert!(matches!(
++            authoring_runtime
++                .validate_action(&authoring_run, &NativeAgentAction::ReadyForValidation),
++            Err(NativeAgentRuntimeError::Rejected(message))
++                if message.contains("host-recorded governed MCP mutation evidence")
++        ));
+         record_successful_host_tool_action(&mut authoring_run, "project.describe");
+         assert!(matches!(
+             authoring_runtime
+@@ -1146,7 +1155,7 @@ mod tests {
+             Err(NativeAgentRuntimeError::Rejected(message))
+                 if message.contains("host-recorded governed MCP mutation evidence")
+         ));
+-        record_successful_host_tool_action(&mut authoring_run, "scene.set_transform");
++        record_successful_host_tool_action(&mut authoring_run, "authoring.apply");
+         assert!(
+             authoring_runtime
+                 .validate_action(&authoring_run, &NativeAgentAction::ReadyForValidation)
