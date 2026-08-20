@@ -7,6 +7,7 @@
 mod benchmark_campaign_ui;
 mod benchmark_child;
 mod benchmark_experiment_ui;
+mod settings_ui;
 
 use crate::agent_benchmark::{
     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
@@ -65,6 +66,7 @@ use eframe::egui;
 use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
 use serde::{Deserialize, Serialize};
+use settings_ui::SettingsSection;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
@@ -106,9 +108,52 @@ impl ModelBackendPreference {
     }
 }
 
+/// What submitting a message does.
+///
+/// ADR 0162 §1 replaces the separate Go control with a mode carried by the
+/// composer: the mode is the explicit act, and submission performs it. Write
+/// capability follows the displayed mode and nothing else, so a message can
+/// never silently acquire it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+enum ConversationMode {
+    /// Read-only. The agent may inspect the project and answer.
+    ///
+    /// This is the default so an installation that predates ADR 0162 never
+    /// gains write-on-send without the user selecting it once.
+    #[default]
+    Ask,
+    /// Write-capable. Submission commits the intent and starts a run.
+    Build,
+}
+
+impl ConversationMode {
+    /// Every mode, in the order the composer lists them.
+    const ALL: [Self; 2] = [Self::Ask, Self::Build];
+
+    /// Returns the label the composer shows.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask",
+            Self::Build => "Build",
+        }
+    }
+
+    /// Returns what submitting a message does in this mode.
+    const fn description(self) -> &'static str {
+        match self {
+            Self::Ask => "Read-only. The agent inspects the project and answers; it never writes.",
+            Self::Build => {
+                "Write-capable. Sending commits your message as the proposal and starts a run."
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AiStudioPreferences {
     schema_version: u32,
+    #[serde(default)]
+    conversation_mode: ConversationMode,
     #[serde(default)]
     quality_preference: QualityPreference,
     #[serde(default)]
@@ -141,6 +186,7 @@ impl Default for AiStudioPreferences {
     fn default() -> Self {
         Self {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+            conversation_mode: ConversationMode::Ask,
             quality_preference: QualityPreference::Auto,
             confinement_requirement: AgentConfinementRequirement::default(),
             external_agent_provider: ExternalAgentProviderKind::default(),
@@ -724,12 +770,27 @@ pub struct AiStudioPanel {
     selected_session: String,
     proposal_draft: AgentProposal,
     message_draft: String,
+    /// What submitting the draft will do (ADR 0162 §1).
+    conversation_mode: ConversationMode,
+    /// An instruction submitted while a run was already executing.
+    ///
+    /// ADR 0162 §3 keeps a running snapshot immutable, so the instruction waits
+    /// for the next run instead of steering this one.
+    deferred_intent: Option<String>,
     preferences_path: PathBuf,
     quality_preference: QualityPreference,
     confinement_requirement: AgentConfinementRequirement,
     external_provider_kind: ExternalAgentProviderKind,
     /// Whether the machine-local settings surface is open (ADR 0158 §5).
     settings_open: bool,
+    /// Which section of that surface is being read (ADR 0162 §5).
+    settings_section: SettingsSection,
+    /// Whether the editable proposal surface is open (ADR 0162 §4).
+    ///
+    /// The proposal no longer sits between the transcript and the composer:
+    /// the snapshot a run started from is read where that run is read, and the
+    /// draft that will seed the next run is edited on demand from the header.
+    proposal_open: bool,
     external_provider_environment: ExternalAgentExecutionEnvironment,
     external_provider_wsl_distribution: String,
     external_provider_status: ExternalAgentProviderStatus,
@@ -865,11 +926,15 @@ impl AiStudioPanel {
             selected_session,
             proposal_draft,
             message_draft: String::new(),
+            conversation_mode: preferences.conversation_mode,
+            deferred_intent: None,
             preferences_path,
             quality_preference: preferences.quality_preference,
             confinement_requirement: preferences.confinement_requirement,
             external_provider_kind: preferences.external_agent_provider,
             settings_open: false,
+            settings_section: SettingsSection::Models,
+            proposal_open: false,
             external_provider_environment: preferences.external_agent_execution_environment,
             external_provider_wsl_distribution: preferences.external_agent_wsl_distribution,
             external_provider_status: ExternalAgentProviderStatus::unchecked(
@@ -1054,9 +1119,11 @@ impl AiStudioPanel {
             self.status = Some("Transcript fixture could not start a run.".to_owned());
             return;
         };
-        let _ =
-            self.host
-                .transition_run(&run, AgentRunState::Executing, "Go authorized proposal v1.");
+        let _ = self.host.transition_run(
+            &run,
+            AgentRunState::Executing,
+            "Build authorized proposal v1.",
+        );
         let _ = self.host.record_semantic_progress(
             &run,
             "inspect_timeline",
@@ -1151,7 +1218,8 @@ impl AiStudioPanel {
             "Preserve reconnect-safe progress and exact proposal authorization.".to_owned(),
         ];
         proposal.acceptance_criteria = vec![
-            "Go and Stop remain available without exposing raw MCP or process controls.".to_owned(),
+            "Build and Stop remain available without exposing raw MCP or process controls."
+                .to_owned(),
             "Captured frame review stays readable at responsive browser widths.".to_owned(),
         ];
         proposal.validation_plan = vec![
@@ -2002,6 +2070,76 @@ impl AiStudioPanel {
                     Err(error) => RemoteAiStudioResponse::error(409, "go_rejected", error, false),
                 }
             }
+            RemoteOperation::CommitIntent {
+                session_id,
+                text,
+                proposal_version,
+                ..
+            } => {
+                let proposal = match self.host.session(&session_id) {
+                    Ok(session) if session.proposal.version == proposal_version => {
+                        session.proposal.clone()
+                    }
+                    Ok(session) => {
+                        return RemoteAiStudioResponse::error(
+                            409,
+                            "stale_proposal",
+                            format!(
+                                "Proposal version {proposal_version} is stale; current version is {}.",
+                                session.proposal.version
+                            ),
+                            false,
+                        );
+                    }
+                    Err(error) => {
+                        return RemoteAiStudioResponse::error(
+                            404,
+                            "session_not_found",
+                            error.to_string(),
+                            false,
+                        );
+                    }
+                };
+                if let Err(error) =
+                    self.host
+                        .append_message(&session_id, ConversationRole::User, text.clone())
+                {
+                    return RemoteAiStudioResponse::error(
+                        404,
+                        "message_rejected",
+                        error.to_string(),
+                        false,
+                    );
+                }
+                self.selected_session = session_id;
+                self.proposal_draft = proposal;
+                self.derive_intent_proposal(&text);
+                let committed = match self
+                    .host
+                    .update_proposal(&self.selected_session, self.proposal_draft.clone())
+                {
+                    Ok(version) => {
+                        self.proposal_draft.version = version;
+                        version
+                    }
+                    Err(error) => {
+                        return RemoteAiStudioResponse::error(
+                            409,
+                            "intent_rejected",
+                            error.to_string(),
+                            false,
+                        );
+                    }
+                };
+                match self.begin_run_authorized(committed) {
+                    Ok(run_id) => RemoteAiStudioResponse::json(
+                        serde_json::json!({"run_id": run_id, "proposal_version": committed}),
+                    ),
+                    Err(error) => {
+                        RemoteAiStudioResponse::error(409, "intent_rejected", error, false)
+                    }
+                }
+            }
             RemoteOperation::Stop { run_id, .. } => match self.stop_run_exact(&run_id) {
                 Ok(()) => RemoteAiStudioResponse::json(
                     serde_json::json!({"stopped": true, "run_id": run_id}),
@@ -2217,39 +2355,29 @@ impl AiStudioPanel {
             .map_err(|error| error.to_string())
     }
 
-    fn show_remote_companion(&mut self, ui: &mut egui::Ui) {
-        let Some(server) = self.remote_server.as_ref() else {
-            return;
-        };
-        egui::CollapsingHeader::new("Remote companion")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.small("Loopback-only companion gateway. Expose it only through a trusted private overlay or local reverse proxy. Remote authentication is separate from Agent Host permissions; MCP is never exposed remotely.");
-                theme::selectable_text(ui, format!("Gateway: {}", server.endpoint()));
-                theme::selectable_text(ui, egui::RichText::new(server.companion_url()).monospace());
-            });
-    }
-
     fn show_contents(&mut self, ui: &mut egui::Ui) {
         // Scoped to this Ui and its children, so the surrounding Editor chrome
         // keeps the style installed by `crate::ui::chrome`.
         theme::apply_studio_style(ui);
         self.show_studio_header(ui);
-        // ADR 0158: one transcript is the primary surface, with the composer
-        // pinned to its lower edge and the decisions that apply right now
-        // between them. Nothing else is permanently stacked above or below.
+        // ADR 0158 §1: one transcript is the primary surface, with the composer
+        // pinned to its lower edge. ADR 0162 §4 narrows what may share that
+        // dock to the decisions that block the user, one run status line, and
+        // the composer, so the transcript keeps the height ADR 0158 intended.
         egui::Panel::bottom("ai_studio_composer_dock")
             .frame(egui::Frame::NONE)
             .show_separator_line(false)
             .show_inside(ui, |ui| {
                 self.show_pinned_affordances(ui);
+                self.show_run_status_strip(ui);
                 self.show_composer(ui);
                 if let Some(status) = self.status.clone() {
-                    theme::attention_card(ui, theme::ACCENT, |ui| {
-                        ui.horizontal_top(|ui| {
-                            theme::status_dot(ui, theme::ACCENT_TEXT);
-                            theme::selectable_text(ui, status);
-                        });
+                    ui.horizontal_top(|ui| {
+                        theme::status_dot(ui, theme::ACCENT_TEXT);
+                        theme::selectable_text(
+                            ui,
+                            egui::RichText::new(status).small().color(theme::TEXT_MUTED),
+                        );
                     });
                 }
             });
@@ -2257,12 +2385,18 @@ impl AiStudioPanel {
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| self.show_transcript(ui));
         self.show_settings_surface(ui.ctx());
+        self.show_proposal_surface(ui.ctx());
     }
 
     /// Draws the session row and the entry point to the settings surface.
     fn show_studio_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             self.show_session_header(ui);
+            // ADR 0162 §4: the proposal is edited on demand rather than being
+            // stacked above the composer on every frame.
+            if ui.button("Proposal").clicked() {
+                self.proposal_open = !self.proposal_open;
+            }
             if ui.button("Settings").clicked() {
                 self.settings_open = !self.settings_open;
             }
@@ -2282,40 +2416,100 @@ impl AiStudioPanel {
             .id_salt("ai_studio_transcript")
             .auto_shrink([false, false])
             .stick_to_bottom(true);
-        transcript_scroll
-            .show(ui, |ui| {
-                if transcript.entries.is_empty() {
-                    ui.weak(
-                        "Describe what you want to build, change, inspect, or validate. Go stays an explicit action.",
-                    );
-                    return;
-                }
-                let mut current_run: Option<String> = None;
-                for entry in &transcript.entries {
-                    if entry.run_id != current_run {
-                        current_run.clone_from(&entry.run_id);
-                        if let Some(run_id) = entry.run_id.as_deref()
-                            && let Some(span) = transcript
-                                .runs
-                                .iter()
-                                .find(|span| span.run_id == run_id)
-                        {
-                            ui.add_space(6.0);
-                            ui.horizontal_wrapped(|ui| {
-                                theme::status_dot(ui, theme::ACCENT_TEXT);
-                                ui.strong(format!("Run · {}", span.proposal_summary));
-                                ui.small(format!("{:?}", span.state));
-                            });
-                        }
+        transcript_scroll.show(ui, |ui| {
+            if transcript.entries.is_empty() {
+                ui.weak("Describe what you want to build, change, inspect, or validate.");
+                return;
+            }
+            let mut current_run: Option<String> = None;
+            let mut steps: Vec<&crate::agent_transcript::TranscriptEntry> = Vec::new();
+            for entry in &transcript.entries {
+                if entry.run_id != current_run {
+                    flush_internal_steps(ui, &mut steps, &mut requested_navigation);
+                    if let Some(previous) = current_run.as_deref() {
+                        self.show_run_span_footer(ui, previous);
                     }
-                    if let Some(navigation) = show_transcript_entry(ui, entry) {
-                        requested_navigation = Some((entry.run_id.clone(), navigation));
+                    current_run.clone_from(&entry.run_id);
+                    if let Some(run_id) = entry.run_id.as_deref()
+                        && let Some(span) =
+                            transcript.runs.iter().find(|span| span.run_id == run_id)
+                    {
+                        self.show_run_span_header(ui, span);
                     }
                 }
-            });
+                if is_internal_step(entry) {
+                    steps.push(entry);
+                    continue;
+                }
+                flush_internal_steps(ui, &mut steps, &mut requested_navigation);
+                if let Some(navigation) = show_transcript_entry(ui, entry) {
+                    requested_navigation = Some((entry.run_id.clone(), navigation));
+                }
+            }
+            flush_internal_steps(ui, &mut steps, &mut requested_navigation);
+            if let Some(last) = current_run.as_deref() {
+                self.show_run_span_footer(ui, last);
+            }
+        });
         if let Some((run_id, navigation)) = requested_navigation {
             self.open_transcript_navigation(run_id.as_deref(), navigation);
         }
+    }
+
+    /// Draws the head of a run span: what the run is, and the immutable
+    /// proposal snapshot it was started from.
+    ///
+    /// ADR 0162 §2 requires the snapshot to be readable where the run is read.
+    /// It is presented read-only here because a run's input never changes after
+    /// Go; the editable draft lives on the proposal surface.
+    fn show_run_span_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        span: &crate::agent_transcript::TranscriptRunSpan,
+    ) {
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            theme::status_dot(ui, theme::ACCENT_TEXT);
+            ui.strong(format!("Run · {}", span.proposal_summary));
+            ui.small(format!("{:?}", span.state));
+        });
+        let Ok(snapshot) = self
+            .host
+            .run(&span.run_id)
+            .map(|run| run.proposal_snapshot.clone())
+        else {
+            return;
+        };
+        egui::CollapsingHeader::new(format!("Proposal snapshot · v{}", snapshot.version))
+            .id_salt(("ai_studio_run_proposal", span.run_id.clone()))
+            .default_open(false)
+            .show(ui, |ui| show_proposal_snapshot(ui, &snapshot));
+    }
+
+    /// Draws the foot of a run span: what the run did and did not perform.
+    ///
+    /// ADR 0131 §13 requires completion to report unperformed checks, so the
+    /// contract is expanded whenever a criterion is unperformed or failed even
+    /// though it now scrolls with the run it belongs to (ADR 0162 §4).
+    fn show_run_span_footer(&mut self, ui: &mut egui::Ui, run_id: &str) {
+        let Ok(completion) = self.host.run(run_id).map(|run| run.completion.clone()) else {
+            return;
+        };
+        // ADR 0162 §5: a code change set is run output, not configuration, so
+        // it is reviewed and applied inside the run that produced it.
+        if self.active_run_id.as_deref() == Some(run_id) {
+            self.show_code_changes(ui);
+        }
+        let unresolved = completion_statuses(&completion)
+            .iter()
+            .any(|status| matches!(status, CompletionStatus::Pending | CompletionStatus::Failed));
+        let run_id = run_id.to_owned();
+        egui::CollapsingHeader::new("Completion contract")
+            .id_salt(("ai_studio_run_completion", run_id.clone()))
+            .default_open(unresolved)
+            .show(ui, |ui| {
+                self.show_completion_contract(ui, &run_id, completion);
+            });
     }
 
     /// Opens the Editor context one transcript entry refers to.
@@ -2351,44 +2545,61 @@ impl AiStudioPanel {
         }
     }
 
-    /// Draws the decisions that must stay reachable without scrolling.
+    /// Draws the decisions that block the user, and nothing else.
+    ///
+    /// ADR 0162 §4 limits this dock to a pending permission request and a
+    /// pending question. The proposal, the completion contract, and the rest of
+    /// a run's content are read inside the run span in the transcript, where
+    /// ADR 0158 §3 already places run content.
     fn show_pinned_affordances(&mut self, ui: &mut egui::Ui) {
         self.show_permission_prompt(ui);
         if let Some(question) = self.pending_agent_question() {
             theme::attention_card(ui, theme::ACCENT, |ui| {
                 ui.strong("The agent is waiting on you");
                 theme::selectable_text(ui, question);
-                ui.small("Answer in the composer below; sending a message never starts a run.");
+                ui.small("Answer in the composer below.");
             });
         }
-        egui::CollapsingHeader::new("Proposal")
-            .id_salt("ai_studio_proposal_affordance")
-            .default_open(false)
-            .show(ui, |ui| self.show_proposal(ui));
-        // ADR 0131 §13: completion reports what was and was not performed, so
-        // the contract stays pinned rather than scrolling away with the run.
-        if let Some(run_id) = self.active_run_id.clone()
-            && let Ok(run) = self.host.run(&run_id).cloned()
-        {
+        self.show_deferred_intent(ui);
+    }
+
+    /// Draws the instruction that arrived while a run was already executing.
+    ///
+    /// ADR 0162 §3: the user is told which run their message applies to and is
+    /// offered the choice to stop that run and commit the new instruction
+    /// instead. Deferral is what happens if they do nothing.
+    fn show_deferred_intent(&mut self, ui: &mut egui::Ui) {
+        let Some(intent) = self.deferred_intent.clone() else {
+            return;
+        };
+        let run_active = self.run_is_active();
+        let mut replace_run = false;
+        let mut build_now = false;
+        let mut discard = false;
+        theme::attention_card(ui, theme::WARNING, |ui| {
+            ui.strong("Recorded for the next run");
+            theme::selectable_text(ui, intent.clone());
             ui.horizontal_wrapped(|ui| {
-                theme::status_dot(ui, theme::ACCENT_TEXT);
-                ui.strong(format!("Run {:?}", run.state));
-                ui.small(format!(
-                    "proposal v{} · {}",
-                    run.proposal_snapshot.version, run.provider_label
-                ));
+                if run_active {
+                    if ui.button("Stop the run and build this").clicked() {
+                        replace_run = true;
+                    }
+                } else if ui.button("Build this now").clicked() {
+                    build_now = true;
+                }
+                if ui.button("Keep it as conversation only").clicked() {
+                    discard = true;
+                }
             });
-            egui::CollapsingHeader::new("Completion contract")
-                .id_salt("ai_studio_completion_affordance")
-                .default_open(matches!(
-                    run.state,
-                    AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
-                ))
-                .show(ui, |ui| {
-                    self.show_completion_contract(ui, &run_id, run.completion);
-                });
+        });
+        if replace_run {
+            self.stop_active_run();
         }
-        self.show_run_controls(ui);
+        if replace_run || build_now {
+            self.commit_intent(&intent);
+        } else if discard {
+            self.deferred_intent = None;
+        }
     }
 
     /// Question the active run is waiting on, when it is waiting on one.
@@ -2408,86 +2619,164 @@ impl AiStudioPanel {
     /// Draws the message composer and its compact backend indicator.
     fn show_composer(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            // ADR 0131 requires provider and connection state to stay visible;
-            // selecting a backend here is allowed, configuring one is not.
-            egui::ComboBox::from_id_salt("ai_studio_composer_backend")
-                .selected_text(self.model_backend.label())
-                .show_ui(ui, |ui| {
-                    for backend in ModelBackendPreference::ALL {
-                        if ui
-                            .selectable_value(&mut self.model_backend, backend, backend.label())
-                            .changed()
-                        {
-                            self.save_preferences();
-                        }
-                    }
-                });
-            match self.described_native_model_config() {
-                Ok(config) => {
-                    ui.small(config.label());
-                }
-                Err(error) => {
-                    ui.small(format!("not ready · {error}"));
-                }
-            }
-            if ui.small_button("Configure").clicked() {
-                self.settings_open = true;
-            }
+            self.show_mode_selection(ui);
+            self.show_model_selection(ui);
+            self.show_effort_selection(ui);
         });
         ui.add(
             egui::TextEdit::multiline(&mut self.message_draft)
-                .desired_rows(2)
+                .desired_rows(3)
                 .desired_width(f32::INFINITY)
                 .hint_text("Ask a question, add a constraint, or continue the same conversation…"),
         );
         self.show_send_controls(ui);
     }
 
-    /// Draws the configuration surface reached from the studio header.
-    fn show_settings_surface(&mut self, context: &egui::Context) {
-        if !self.settings_open {
-            return;
-        }
-        let mut open = self.settings_open;
-        egui::Window::new("AI Studio settings")
-            .id(egui::Id::new("ai_studio_settings"))
-            .open(&mut open)
-            .default_width(560.0)
-            .default_height(620.0)
-            .resizable(true)
-            .show(context, |ui| {
-                theme::apply_studio_style(ui);
-                egui::ScrollArea::vertical()
-                    .id_salt("ai_studio_settings_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        theme::hint(
-                            ui,
-                            "Machine-local configuration. Closing this window never affects an active run.",
-                        );
-                        theme::card(ui, |ui| {
-                            theme::card_header(ui, "Model backend");
-                            self.show_local_model_settings(ui);
-                        });
-                        theme::card(ui, |ui| {
-                            theme::card_header(ui, "External agent provider");
-                            self.show_provider_settings(ui);
-                        });
-                        theme::card(ui, |ui| {
-                            theme::card_header(ui, "Benchmarks");
-                            self.show_agent_benchmark(ui);
-                        });
-                        theme::card(ui, |ui| {
-                            theme::card_header(ui, "Remote companion gateway");
-                            self.show_remote_companion(ui);
-                        });
-                        theme::card(ui, |ui| {
-                            theme::card_header(ui, "Code changes");
-                            self.show_code_changes(ui);
-                        });
-                    });
+    /// Draws the mode entry of the composer's selection tier.
+    ///
+    /// ADR 0162 §1: the mode is displayed on the control that submits it, and
+    /// write capability follows the displayed mode, so what Send will do is
+    /// visible before it is pressed and cannot differ from what is shown.
+    fn show_mode_selection(&mut self, ui: &mut egui::Ui) {
+        let previous = self.conversation_mode;
+        egui::ComboBox::from_id_salt("ai_studio_composer_mode")
+            .selected_text(self.conversation_mode.label())
+            .width(92.0)
+            .show_ui(ui, |ui| {
+                for mode in ConversationMode::ALL {
+                    ui.selectable_value(&mut self.conversation_mode, mode, mode.label())
+                        .on_hover_text(mode.description());
+                }
             });
-        self.settings_open = open;
+        if self.conversation_mode != previous {
+            self.save_preferences();
+        }
+    }
+
+    /// Draws the model entry of the composer's selection tier.
+    ///
+    /// ADR 0131 §1 requires the provider and its connection state to stay
+    /// visible, and ADR 0162 §5 limits this control to choosing among entries
+    /// that are already registered: nothing here installs, registers,
+    /// authenticates, or removes anything. The one action that leaves the tier
+    /// opens the configuration surface at the section that does.
+    fn show_model_selection(&mut self, ui: &mut egui::Ui) {
+        let selected_label = match self.described_native_model_config() {
+            Ok(config) => config.label(),
+            Err(_) => format!("{} · not ready", self.model_backend.label()),
+        };
+        let managed_models = self
+            .managed_local_runtime
+            .registered_models()
+            .unwrap_or_default();
+        let mut open_models_configuration = false;
+        egui::ComboBox::from_id_salt("ai_studio_composer_model")
+            .selected_text(selected_label)
+            .width(300.0)
+            .show_ui(ui, |ui| {
+                theme::caption(ui, "Managed Local AI");
+                if managed_models.is_empty() {
+                    theme::hint(ui, "No GGUF is registered on this machine yet.");
+                }
+                for model in &managed_models {
+                    let selected = self.model_backend == ModelBackendPreference::ManagedLocal
+                        && self.managed_model_id == model.model_id;
+                    if ui.selectable_label(selected, &model.display_name).clicked() && !selected {
+                        self.model_backend = ModelBackendPreference::ManagedLocal;
+                        self.managed_model_id = model.model_id.clone();
+                        self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+                        self.save_preferences();
+                    }
+                }
+                ui.separator();
+                theme::caption(ui, "Other backends");
+                // Managed Local AI is listed above as the models it has
+                // registered, so it is not repeated as a backend here.
+                for backend in ModelBackendPreference::ALL
+                    .into_iter()
+                    .filter(|backend| *backend != ModelBackendPreference::ManagedLocal)
+                {
+                    let selected = self.model_backend == backend;
+                    let response = ui.selectable_label(
+                        selected,
+                        format!("{} · {}", backend.label(), self.backend_readiness(backend)),
+                    );
+                    if response.clicked() && !selected {
+                        self.model_backend = backend;
+                        self.save_preferences();
+                    }
+                }
+                ui.separator();
+                if ui.button("Configure models…").clicked() {
+                    open_models_configuration = true;
+                }
+            });
+        if open_models_configuration {
+            self.settings_section = SettingsSection::Models;
+            self.settings_open = true;
+        }
+    }
+
+    /// Describes whether a backend can be used as it currently stands.
+    ///
+    /// This reads configured values only. It never contacts a backend and never
+    /// writes, so listing an entry costs nothing and cannot change what the
+    /// entry is.
+    fn backend_readiness(&self, backend: ModelBackendPreference) -> &'static str {
+        match backend {
+            ModelBackendPreference::ManagedLocal => {
+                if self.managed_model_id.trim().is_empty() {
+                    "no GGUF selected"
+                } else {
+                    "registered"
+                }
+            }
+            ModelBackendPreference::Local => {
+                if self.local_model_name.trim().is_empty() {
+                    "no model set"
+                } else {
+                    "configured"
+                }
+            }
+            ModelBackendPreference::HostedApi => {
+                if !self.hosted_model_endpoint.trim().starts_with("https://")
+                    || self.hosted_model_name.trim().is_empty()
+                {
+                    "not configured"
+                } else if hosted_model_backend::credential_is_configured(&self.hosted_secret_path) {
+                    "signed in"
+                } else {
+                    "no credential"
+                }
+            }
+            ModelBackendPreference::Enterprise => {
+                if !self.hosted_model_endpoint.trim().starts_with("https://")
+                    || self.hosted_model_name.trim().is_empty()
+                {
+                    "not configured"
+                } else {
+                    "configured"
+                }
+            }
+        }
+    }
+
+    /// Draws the effort entry of the composer's selection tier.
+    ///
+    /// ADR 0150 makes this a machine-local latency/reasoning preference, and
+    /// ADR 0162 §5 puts it beside the model because it is chosen as often.
+    fn show_effort_selection(&mut self, ui: &mut egui::Ui) {
+        let previous = self.quality_preference;
+        egui::ComboBox::from_id_salt("ai_studio_composer_effort")
+            .selected_text(format!("Effort · {}", self.quality_preference.label()))
+            .show_ui(ui, |ui| {
+                for quality in QualityPreference::ALL {
+                    ui.selectable_value(&mut self.quality_preference, quality, quality.label());
+                }
+            });
+        if self.quality_preference != previous {
+            self.save_preferences();
+        }
     }
 
     fn show_session_header(&mut self, ui: &mut egui::Ui) {
@@ -2546,743 +2835,189 @@ impl AiStudioPanel {
 
     /// Draws the Send control for the composer.
     ///
-    /// Sending a message never starts, resumes, or extends a run: it appends to
-    /// the conversation and, when the run is waiting on the user, answers that
-    /// question. Go remains the only affirmative start.
+    /// ADR 0162 §1: Send performs what the displayed mode says it performs.
+    /// In Ask it answers from read-only evidence, in Build it commits the
+    /// instruction and starts a run, and in either mode it answers a run that
+    /// is waiting on the user.
     fn show_send_controls(&mut self, ui: &mut egui::Ui) {
+        let awaiting_native = self.native_run_awaits_user();
+        let run_active = self.run_is_active();
+        let commit_blocked = match self.conversation_mode {
+            ConversationMode::Ask => None,
+            ConversationMode::Build if awaiting_native || run_active => None,
+            ConversationMode::Build => self.intent_commit_blocked(),
+        };
+        let can_send = !self.message_draft.trim().is_empty()
+            && self.native_question.is_none()
+            && self.pending_question_permission.is_none()
+            && commit_blocked.is_none();
         ui.horizontal(|ui| {
-            let can_send = !self.message_draft.trim().is_empty()
-                && self.native_question.is_none()
-                && self.pending_question_permission.is_none();
-            if ui.add_enabled(can_send, egui::Button::new("Send")).clicked() {
-                let text = self.message_draft.trim().to_owned();
-                match self.host.append_message(
-                    &self.selected_session,
-                    ConversationRole::User,
-                    text,
-                ) {
-                    Ok(()) => {
-                        self.message_draft.clear();
-                        let awaiting_native = self.active_runtime_mode == Some(AgentRuntimeMode::Native)
-                            && self.active_run_id.as_ref().is_some_and(|run_id| {
-                                self.host.run(run_id).is_ok_and(|run| run.state == AgentRunState::AwaitingUser)
-                            });
-                        if awaiting_native {
-                            if let Some(run_id) = self.active_run_id.clone() {
-                                match self.host.transition_run(&run_id, AgentRunState::Executing, "User response received; native execution may continue.") {
-                                    Ok(()) => {
-                                        if let Err(error) = self.start_native_agent_turn(&run_id, Some("User answered the pending product question. Re-read current conversation and continue without expanding the immutable proposal.".to_owned()), Vec::new()) {
-                                            self.fail_run(&run_id, error);
-                                        }
-                                    }
-                                    Err(error) => self.status = Some(error.to_string()),
-                                }
-                            }
-                        } else {
-                            self.start_native_question();
-                        }
-                    }
-                    Err(error) => self.status = Some(error.to_string()),
-                }
+            if ui
+                .add_enabled(can_send, egui::Button::new("Send"))
+                .clicked()
+            {
+                self.submit_message();
             }
             if self.native_question.is_some() {
                 ui.spinner();
                 ui.small("Reading current GameEngine/project evidence…");
-            } else if self.described_native_model_config().is_err() {
-                ui.small("Configure the selected model backend to receive read-only answers.");
-            } else {
-                ui.small("Questions use the read-only native harness; Go remains explicit for writes.");
+                return;
+            }
+            if awaiting_native {
+                ui.small("Your answer continues the run that is waiting on you.");
+                return;
+            }
+            if let Some(reason) = commit_blocked {
+                ui.small(reason);
+                return;
+            }
+            match self.conversation_mode {
+                ConversationMode::Ask => {
+                    ui.small(ConversationMode::Ask.description());
+                }
+                ConversationMode::Build if run_active => {
+                    ui.small(
+                        "A run is executing; sending records the instruction for the next run.",
+                    );
+                }
+                ConversationMode::Build => {
+                    ui.small(ConversationMode::Build.description());
+                }
             }
         });
     }
 
-    fn show_local_model_settings(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Model backend · questions and native runs")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Backend");
-                    let previous = self.model_backend;
-                    egui::ComboBox::from_id_salt("ai_studio_model_backend")
-                        .selected_text(match self.model_backend {
-                            ModelBackendPreference::Local => "External local (Ollama-compatible)",
-                            ModelBackendPreference::ManagedLocal => "Managed Local AI",
-                            ModelBackendPreference::HostedApi => "Hosted API",
-                            ModelBackendPreference::Enterprise => "Enterprise",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.model_backend,
-                                ModelBackendPreference::ManagedLocal,
-                                "Managed Local AI",
-                            );
-                            ui.selectable_value(
-                                &mut self.model_backend,
-                                ModelBackendPreference::Local,
-                                "External local (Ollama-compatible)",
-                            );
-                            ui.selectable_value(
-                                &mut self.model_backend,
-                                ModelBackendPreference::HostedApi,
-                                "Hosted API",
-                            );
-                            ui.selectable_value(
-                                &mut self.model_backend,
-                                ModelBackendPreference::Enterprise,
-                                "Enterprise",
-                            );
-                        });
-                    if self.model_backend != previous {
-                        self.save_preferences();
-                    }
-                });
-                ui.small(match self.model_backend {
-                    ModelBackendPreference::Local => "Processing posture: external loopback local runtime; existing Ollama-compatible settings retain their original meaning.",
-                    ModelBackendPreference::ManagedLocal => "Processing posture: GameEngine-managed llama.cpp on this machine; the inference server remains loopback-only and never gains authoring authority.",
-                    ModelBackendPreference::HostedApi => "Processing posture: selected task context is sent to the configured remote HTTPS provider only after Network access approval.",
-                    ModelBackendPreference::Enterprise => "Processing posture: selected task context is sent to the configured enterprise HTTPS endpoint only after Network access approval.",
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Quality");
-                    let previous = self.quality_preference;
-                    for quality in QualityPreference::ALL {
-                        ui.selectable_value(&mut self.quality_preference, quality, quality.label());
-                    }
-                    if self.quality_preference != previous {
-                        self.save_preferences();
-                    }
-                });
-                ui.small(
-                    "Quality is a machine-local latency/reasoning preference. Remote GPU controls are never projected as local residency controls.",
+    /// Whether the active run is a native run waiting on the user.
+    fn native_run_awaits_user(&self) -> bool {
+        self.active_runtime_mode == Some(AgentRuntimeMode::Native)
+            && self.active_run_id.as_ref().is_some_and(|run_id| {
+                self.host
+                    .run(run_id)
+                    .is_ok_and(|run| run.state == AgentRunState::AwaitingUser)
+            })
+    }
+
+    /// Whether a run is under way and has not reached a terminal state.
+    fn run_is_active(&self) -> bool {
+        self.active_run_id.as_ref().is_some_and(|run_id| {
+            self.host.run(run_id).is_ok_and(|run| {
+                !matches!(
+                    run.state,
+                    AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+                )
+            })
+        })
+    }
+
+    /// Returns why an intent cannot be committed right now, if it cannot be.
+    ///
+    /// This is the predicate the removed Go control carried (ADR 0162 §1): a
+    /// run starts only when no other execution owns the studio and a usable
+    /// runtime has been selected.
+    fn intent_commit_blocked(&mut self) -> Option<&'static str> {
+        if self.process.is_some() || self.native_runtime_busy() {
+            return Some("An agent process is already running.");
+        }
+        if self.pending_permission.is_some() || self.pending_question_permission.is_some() {
+            return Some("Resolve the pending approval first.");
+        }
+        if self.external_provider_is_ready() {
+            return None;
+        }
+        if self.external_provider_is_requested() {
+            return Some("The selected external agent provider is not ready.");
+        }
+        if self.described_native_model_config().is_err() {
+            return Some("Select a configured model before building.");
+        }
+        None
+    }
+
+    /// Performs what the composer's mode says submitting a message does.
+    ///
+    /// ADR 0162 §1: submission is the affirmative action, and what it does
+    /// follows the displayed mode. Answering a run that is waiting on the user
+    /// is not a mode decision and continues that run in either mode.
+    fn submit_message(&mut self) {
+        let text = self.message_draft.trim().to_owned();
+        if text.is_empty() {
+            return;
+        }
+        if let Err(error) =
+            self.host
+                .append_message(&self.selected_session, ConversationRole::User, text.clone())
+        {
+            self.status = Some(error.to_string());
+            return;
+        }
+        self.message_draft.clear();
+        if self.native_run_awaits_user() {
+            self.continue_awaiting_run();
+            return;
+        }
+        match self.conversation_mode {
+            ConversationMode::Ask => self.start_native_question(),
+            ConversationMode::Build if self.run_is_active() => {
+                // ADR 0162 §3: the running snapshot stays immutable, so the
+                // instruction is carried to the next run and the user is told
+                // so at the moment they submit it.
+                self.deferred_intent = Some(text);
+                self.status = Some(
+                    "A run is already executing. This instruction was recorded for the next run."
+                        .to_owned(),
                 );
-                match self.model_backend {
-                    ModelBackendPreference::ManagedLocal => {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Execution environment");
-                            let previous = self.managed_execution_environment;
-                            egui::ComboBox::from_id_salt("ai_studio_managed_environment")
-                                .selected_text(self.managed_execution_environment.label())
-                                .show_ui(ui, |ui| {
-                                    for environment in ManagedExecutionEnvironment::ALL {
-                                        ui.selectable_value(
-                                            &mut self.managed_execution_environment,
-                                            environment,
-                                            environment.label(),
-                                        );
-                                    }
-                                });
-                            if self.managed_execution_environment != previous {
-                                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
-                                self.save_preferences();
-                            }
-                        });
-                        ui.small(
-                            "Managed Local AI remains an engineering path until Windows-native versus WSL2 characterization selects the normal product default. Windows native is the currently selected candidate; WSL2 remains available for characterization and fallback in the dedicated GameEngine-LocalAI distribution.",
-                        );
-                        let probe = self.managed_probe_for_panel();
-                        let setup_status = probe.as_ref().map(|probe| probe.setup_status.clone());
-                        let setup_busy = self.managed_setup_task.is_some();
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Runtime");
-                            ui.monospace(format!(
-                                "llama.cpp {PINNED_LLAMA_CPP_TAG} @ {PINNED_LLAMA_CPP_REVISION}"
-                            ));
-                            match setup_status.as_ref() {
-                                None => {
-                                    ui.weak("Checking...");
-                                }
-                                Some(ManagedSetupStatus::Ready) => {
-                                    ui.strong("Ready");
-                                }
-                                Some(ManagedSetupStatus::RuntimeNotInstalled) => {
-                                    if ui
-                                        .add_enabled(
-                                            !setup_busy,
-                                            egui::Button::new("Set up Local AI"),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.start_managed_setup(
-                                            ManagedSetupOperation::InstallRuntime(
-                                                self.managed_execution_environment,
-                                            ),
-                                            "Downloading and verifying the pinned GameEngine llama.cpp runtime...",
-                                        );
-                                    }
-                                }
-                                Some(ManagedSetupStatus::WslDistributionMissing) => {
-                                    if ui
-                                        .add_enabled(
-                                            !setup_busy,
-                                            egui::Button::new("Set up WSL2 Local AI"),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.start_managed_setup(
-                                            ManagedSetupOperation::ProvisionWsl,
-                                            "Provisioning the dedicated GameEngine-LocalAI WSL environment. Windows may require explicit elevation or restart; GameEngine never bypasses either boundary.",
-                                        );
-                                    }
-                                }
-                                Some(ManagedSetupStatus::RestartRequired) => {
-                                    ui.strong("Restart required");
-                                }
-                                Some(ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
-                                    message,
-                                )) => {
-                                    ui.strong("Unavailable");
-                                    ui.small(message);
-                                }
-                            }
-                            if setup_busy || setup_status.is_none() {
-                                ui.spinner();
-                            }
-                        });
-                        if matches!(setup_status.as_ref(), Some(ManagedSetupStatus::RestartRequired))
-                        {
-                            ui.small(
-                                "Windows reported that setup requires a restart. GameEngine persists only a machine-local continuation marker and does not reboot automatically. Reopen the Editor after the restart to continue.",
-                            );
-                        }
-                        if matches!(
-                            setup_status.as_ref(),
-                            Some(
-                                ManagedSetupStatus::Ready
-                                    | ManagedSetupStatus::WslDistributionMissing
-                                    | ManagedSetupStatus::RestartRequired
-                            )
-                        ) {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.small(
-                                    "Removal deletes GameEngine-owned runtime/cache state and unregisters only the dedicated GameEngine-LocalAI WSL distribution. User-owned GGUF source files are preserved.",
-                                );
-                                if ui
-                                    .add_enabled(
-                                        !setup_busy,
-                                        egui::Button::new("Remove managed environment"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.start_managed_setup(
-                                        ManagedSetupOperation::RemoveEnvironment(
-                                            self.managed_execution_environment,
-                                        ),
-                                        "Removing the selected GameEngine-managed Local AI environment...",
-                                    );
-                                }
-                            });
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Managed GGUF");
-                            let models = self
-                                .managed_local_runtime
-                                .registered_models()
-                                .unwrap_or_default();
-                            egui::ComboBox::from_id_salt("ai_studio_managed_model")
-                                .selected_text(
-                                    models
-                                        .iter()
-                                        .find(|model| model.model_id == self.managed_model_id)
-                                        .map(|model| model.display_name.as_str())
-                                        .unwrap_or("Select registered GGUF"),
-                                )
-                                .width(260.0)
-                                .show_ui(ui, |ui| {
-                                    for model in &models {
-                                        if ui
-                                            .selectable_label(
-                                                self.managed_model_id == model.model_id,
-                                                &model.display_name,
-                                            )
-                                            .clicked()
-                                        {
-                                            self.managed_model_id = model.model_id.clone();
-                                            self.last_model_resource_telemetry =
-                                                ModelResourceTelemetry::default();
-                                            self.save_preferences();
-                                        }
-                                    }
-                                });
-                            if ui
-                                .add_enabled(
-                                    !setup_busy,
-                                    egui::Button::new("Register existing GGUF..."),
-                                )
-                                .clicked()
-                                && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("GGUF model", &["gguf"])
-                                    .pick_file()
-                            {
-                                self.start_managed_setup(
-                                    ManagedSetupOperation::RegisterModel(path),
-                                    "Hashing and registering the exact GGUF bytes without modifying the source file...",
-                                );
-                            }
-                        });
-                        let selected_model = self
-                            .managed_local_runtime
-                            .registered_models()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .find(|model| model.model_id == self.managed_model_id);
-                        if let Some(model) = selected_model {
-                            ui.small(format!(
-                                "Representation: sha256={} · size={} · quantization={}",
-                                model.content_sha256,
-                                format_model_bytes(model.size_bytes),
-                                optional_text(model.quantization.as_deref()),
-                            ));
-                            ui.horizontal_wrapped(|ui| {
-                                match model.projector.as_ref() {
-                                    Some(projector) => {
-                                        ui.small(format!(
-                                            "Vision projector: {} · sha256={}",
-                                            format_model_bytes(projector.size_bytes),
-                                            projector.content_sha256,
-                                        ));
-                                        if ui
-                                            .add_enabled(
-                                                !setup_busy,
-                                                egui::Button::new("Remove projector"),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.start_managed_setup(
-                                                ManagedSetupOperation::RemoveProjector {
-                                                    model_id: model.model_id.clone(),
-                                                },
-                                                "Removing the vision projector registration; the model returns to text-only input.",
-                                            );
-                                        }
-                                    }
-                                    None => {
-                                        ui.small("Vision projector: none (text input only).");
-                                        if ui
-                                            .add_enabled(
-                                                !setup_busy,
-                                                egui::Button::new("Register projector..."),
-                                            )
-                                            .clicked()
-                                            && let Some(path) = rfd::FileDialog::new()
-                                                .add_filter("GGUF projector", &["gguf"])
-                                                .pick_file()
-                                        {
-                                            self.start_managed_setup(
-                                                ManagedSetupOperation::RegisterProjector {
-                                                    model_id: model.model_id.clone(),
-                                                    path,
-                                                },
-                                                "Hashing and registering the multimodal projector that gives this model image input...",
-                                            );
-                                        }
-                                    }
-                                }
-                            });
-                            if self.managed_execution_environment
-                                == ManagedExecutionEnvironment::Wsl2Linux
-                            {
-                                match probe.as_ref().map(|probe| &probe.additional_storage_bytes) {
-                                    None => {
-                                        ui.small("Checking the Linux-native WSL model copy...");
-                                    }
-                                    Some(Ok(0)) => {
-                                        ui.small("Linux-native WSL model copy: verified/present.");
-                                    }
-                                    Some(Ok(bytes)) => {
-                                        ui.horizontal_wrapped(|ui| {
-                                            ui.small(format!(
-                                                "WSL2 needs an additional {} Linux-native copy of these same model bytes.",
-                                                format_model_bytes(*bytes)
-                                            ));
-                                            if ui
-                                                .add_enabled(
-                                                    !setup_busy,
-                                                    egui::Button::new("Approve copy"),
-                                                )
-                                                .clicked()
-                                            {
-                                                self.start_managed_setup(
-                                                    ManagedSetupOperation::PrepareModel {
-                                                        model_id: model.model_id.clone(),
-                                                        environment: self.managed_execution_environment,
-                                                        duplicate_storage_approved: true,
-                                                    },
-                                                    "Copying the exact verified GGUF bytes into the dedicated Linux-native WSL model store...",
-                                                );
-                                            }
-                                        });
-                                    }
-                                    Some(Err(error)) => {
-                                        ui.small(format!(
-                                            "WSL model preparation unavailable: {error}"
-                                        ));
-                                    }
-                                }
-                            }
-                        } else {
-                            ui.small(
-                                "No managed model selected. Model weights are never downloaded merely because a model is recommended; register an existing GGUF or use an explicit future catalog acquisition action.",
-                            );
-                        }
-                    }
-                    ModelBackendPreference::Local => {
-                        ui.horizontal(|ui| {
-                            ui.label("Endpoint");
-                            if ui
-                                .add(egui::TextEdit::singleline(&mut self.local_model_endpoint).desired_width(300.0))
-                                .changed()
-                            {
-                                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
-                                self.save_preferences();
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Installed models");
-                            if ui
-                                .add_enabled(
-                                    self.model_discovery.is_none(),
-                                    egui::Button::new("Discover"),
-                                )
-                                .clicked()
-                            {
-                                self.start_model_discovery();
-                            }
-                            if self.model_discovery.is_some() {
-                                ui.spinner();
-                            }
-                        });
-                        let inventory = self.current_installed_inventory().cloned();
-                        if let Some(inventory) = inventory.as_ref() {
-                            ui.horizontal(|ui| {
-                                ui.label("Detected model");
-                                egui::ComboBox::from_id_salt("ai_studio_installed_model")
-                                    .selected_text(if self.local_model_name.trim().is_empty() {
-                                        "Select discovered model"
-                                    } else {
-                                        self.local_model_name.trim()
-                                    })
-                                    .width(260.0)
-                                    .show_ui(ui, |ui| {
-                                        for model in &inventory.models {
-                                            if ui
-                                                .selectable_label(
-                                                    self.local_model_name == model.name,
-                                                    &model.name,
-                                                )
-                                                .clicked()
-                                            {
-                                                self.local_model_name = model.name.clone();
-                                                self.last_model_resource_telemetry =
-                                                    ModelResourceTelemetry::default();
-                                                self.save_preferences();
-                                            }
-                                        }
-                                    });
-                                ui.small(format!("{} found", inventory.models.len()));
-                            });
-                        } else {
-                            ui.small(
-                                "No installed-model inventory is loaded. Discovery is explicit and loopback-only.",
-                            );
-                        }
-                        ui.horizontal(|ui| {
-                            ui.label("Custom / exact ID");
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut self.local_model_name)
-                                        .desired_width(260.0)
-                                        .hint_text("model:tag"),
-                                )
-                                .changed()
-                            {
-                                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
-                                self.save_preferences();
-                            }
-                        });
-                        if let Some(inventory) = inventory.as_ref()
-                            && let Some(model) = inventory
-                                .models
-                                .iter()
-                                .find(|model| model.name == self.local_model_name)
-                        {
-                            ui.small(format!(
-                                "Installed evidence: digest={} · size={} · parameters={} · quantization={} · family={} · backend={}",
-                                optional_text(model.digest.as_deref()),
-                                model
-                                    .size_bytes
-                                    .map(format_model_bytes)
-                                    .unwrap_or_else(|| "n/a".to_owned()),
-                                optional_text(model.parameter_size.as_deref()),
-                                optional_text(model.quantization_level.as_deref()),
-                                optional_text(model.family.as_deref()),
-                                optional_text(inventory.backend_version.as_deref()),
-                            ));
-                        }
-                    }
-                    ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
-                        ui.horizontal(|ui| {
-                            ui.label("HTTPS chat endpoint");
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut self.hosted_model_endpoint)
-                                        .desired_width(320.0)
-                                        .hint_text("https://…/v1/chat/completions"),
-                                )
-                                .changed()
-                            {
-                                self.save_preferences();
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Model");
-                            if ui
-                                .add(egui::TextEdit::singleline(&mut self.hosted_model_name).desired_width(260.0))
-                                .changed()
-                            {
-                                self.save_preferences();
-                            }
-                        });
-                        if self.model_backend == ModelBackendPreference::HostedApi {
-                            ui.horizontal(|ui| {
-                                ui.label("API credential");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.hosted_secret_draft)
-                                        .password(true)
-                                        .desired_width(220.0)
-                                        .hint_text("stored with Windows DPAPI"),
-                                );
-                                if ui.button("Store securely").clicked() {
-                                    match hosted_model_backend::store_api_key(
-                                        &self.hosted_secret_path,
-                                        &self.hosted_secret_draft,
-                                    ) {
-                                        Ok(()) => {
-                                            self.hosted_secret_draft.clear();
-                                            self.status = Some(
-                                                "Hosted API credential stored in the machine-local OS-protected secret store.".to_owned(),
-                                            );
-                                        }
-                                        Err(error) => self.status = Some(error.to_string()),
-                                    }
-                                }
-                                if ui.button("Remove").clicked() {
-                                    match hosted_model_backend::remove_api_key(&self.hosted_secret_path) {
-                                        Ok(()) => {
-                                            self.status = Some("Hosted API credential removed.".to_owned())
-                                        }
-                                        Err(error) => self.status = Some(error.to_string()),
-                                    }
-                                }
-                            });
-                            ui.small(if hosted_model_backend::credential_is_configured(
-                                &self.hosted_secret_path,
-                            ) {
-                                "Credential status: configured. Secret value is never serialized or exposed to Remote AI Studio."
-                            } else {
-                                "Credential status: not configured."
-                            });
-                        } else {
-                            ui.small(
-                                "Enterprise authentication uses the organization-managed Windows identity/session; GameEngine stores no API key.",
-                            );
-                        }
-                    }
-                }
-                let mut profile = match self.model_backend {
-                    ModelBackendPreference::Local => NativeModelConfig::Local(LocalModelConfig {
-                        endpoint: self.local_model_endpoint.clone(),
-                        model: self.local_model_name.clone(),
-                    })
-                    .capability_profile(),
-                    ModelBackendPreference::ManagedLocal => self
-                        .described_managed_model_config()
-                        .map(|config| NativeModelConfig::Managed(Box::new(config)))
-                        .map(|config| config.capability_profile())
-                        .unwrap_or_else(|_| {
-                            NativeModelConfig::Managed(Box::new(ManagedLocalModelConfig {
-                                state_root: self.managed_local_runtime.root().to_path_buf(),
-                                environment: self.managed_execution_environment,
-                                model_id: self.managed_model_id.clone(),
-                                model_content_sha256: String::new(),
-                                model_path: PathBuf::new(),
-                                model_size_bytes: 0,
-                                quantization: None,
-                                model_representation: None,
-                                capability: GgufModelCapability::default(),
-                                projector_path: None,
-                                runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
-                                runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
-                                runtime_artifact_sha256: String::new(),
-                                runtime_compatibility_version: "llama-server-openai-v1".to_owned(),
-                            }))
-                            .capability_profile()
-                        }),
-                    ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
-                        NativeModelConfig::Hosted(HostedModelConfig {
-                            endpoint: self.hosted_model_endpoint.clone(),
-                            model: self.hosted_model_name.clone(),
-                            auth_mode: if self.model_backend == ModelBackendPreference::HostedApi {
-                                HostedAuthMode::ApiKey
-                            } else {
-                                HostedAuthMode::EnterpriseManaged
-                            },
-                            encrypted_secret_path: self.hosted_secret_path.clone(),
-                        })
-                        .capability_profile()
-                    }
-                };
-                let recommendation_profiles = self
-                    .model_catalog
-                    .profiles_for_model(profile.backend_id, &profile.model_id);
-                profile.benchmark_verified = !recommendation_profiles.is_empty();
-                ui.small(model_capability_summary(&profile));
-                if profile.model_id.trim().is_empty() {
-                    ui.small("GameEngine status: no model selected.");
-                } else if recommendation_profiles.is_empty() {
-                    ui.small(
-                        "GameEngine status: Compatible / unverified — this exact backend/model representation has no complete benchmark-qualified recommendation.",
-                    );
-                } else {
-                    let labels = recommendation_profiles
-                        .iter()
-                        .map(|profile| profile.label())
-                        .collect::<Vec<_>>()
-                        .join(", " );
-                    ui.small(format!(
-                        "GameEngine status: Recommended · {labels} · corpus {BENCHMARK_CORPUS_VERSION}"
-                    ));
-                }
-                if matches!(
-                    self.model_backend,
-                    ModelBackendPreference::Local | ModelBackendPreference::ManagedLocal
-                ) {
-                    ui.small(format!(
-                        "Resource controls: unload/reload {} · CPU offload {} · GPU residency telemetry {} · memory telemetry {}",
-                        capability_label(profile.resource_capabilities.unload_reload),
-                        capability_label(profile.resource_capabilities.cpu_gpu_offload),
-                        capability_label(profile.resource_capabilities.gpu_residency),
-                        capability_label(profile.resource_capabilities.backend_memory_telemetry),
-                    ));
-                    ui.small(format!(
-                        "Observed model resources: resident {} · model size {} · GPU residency {} · context {}",
-                        telemetry_bool_label(&self.last_model_resource_telemetry.resident),
-                        telemetry_bytes_label(
-                            &self.last_model_resource_telemetry.representation_size_bytes
-                        ),
-                        telemetry_bytes_label(&self.last_model_resource_telemetry.gpu_residency_bytes),
-                        telemetry_count_label(
-                            &self.last_model_resource_telemetry.context_length_tokens,
-                            "tokens"
-                        ),
-                    ));
-                    ui.small(
-                        "Provider-reported local model residency is shown with provenance; device-wide free VRAM and TTFT are never fabricated.",
-                    );
-                } else {
-                    ui.small(
-                        "Local GPU residency controls are unavailable for Hosted API and Enterprise backends; remote GPU state is not projected into local resource controls.",
-                    );
-                }
-                ui.small(format!(
-                    "Resource posture: {:?} · workload {:?} · reclaim {:?}",
-                    self.resource_plan.presentation,
-                    self.resolved_workload,
-                    self.resource_plan.reclaim
-                ));
-                ui.small(self.model_routing_status());
-                self.show_agent_benchmark(ui);
-            });
+            }
+            ConversationMode::Build => self.commit_intent(&text),
+        }
     }
 
-    fn show_agent_benchmark(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(format!(
-            "GameEngine Agent Benchmark · {} record(s) · {}",
-            self.benchmark_records.len(),
-            self.model_catalog.catalog_version
-        ))
-        .default_open(cfg!(feature = "visual-validation"))
-        .show(ui, |ui| {
-            ui.small(format!(
-                "Versioned corpus: {BENCHMARK_CORPUS_VERSION}. Recommendations require complete, comparable GameEngine task evidence; third-party scores alone never qualify a model."
-            ));
-            for catalog_profile in CatalogProfile::ALL {
-                if let Some(recommendation) = self.model_catalog.recommendation(catalog_profile) {
-                    ui.group(|ui| {
-                        ui.strong(format!(
-                            "{} · {}",
-                            catalog_profile.label(),
-                            recommendation.candidate.model_id
-                        ));
-                        ui.small(format!(
-                            "evidence={} runs · aggregate={} ms · benchmark={}",
-                            recommendation.evidence_runs,
-                            recommendation.aggregate_elapsed_ms,
-                            recommendation.benchmark_version
-                        ));
-                        ui.small(format!(
-                            "source={} · license={} · transfer={} · storage={}",
-                            recommendation.candidate.source,
-                            recommendation.candidate.license,
-                            format_model_bytes(recommendation.candidate.transfer_size_bytes),
-                            format_model_bytes(recommendation.candidate.storage_size_bytes),
-                        ));
-                        ui.small(format!(
-                            "memory={} · context={} · modalities={} · tools={}",
-                            recommendation.candidate.memory_guidance,
-                            recommendation
-                                .candidate
-                                .context_limit
-                                .map(|limit| limit.to_string())
-                                .unwrap_or_else(|| "n/a".to_owned()),
-                            list_or_none(&recommendation.candidate.modalities),
-                            list_or_none(&recommendation.candidate.tool_capabilities),
-                        ));
-                    });
-                } else {
-                    ui.small(format!(
-                        "{}: No benchmark-qualified recommendation yet.",
-                        catalog_profile.label()
-                    ));
+    /// Answers the question the active native run is waiting on.
+    fn continue_awaiting_run(&mut self) {
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        match self.host.transition_run(
+            &run_id,
+            AgentRunState::Executing,
+            "User response received; native execution may continue.",
+        ) {
+            Ok(()) => {
+                if let Err(error) = self.start_native_agent_turn(
+                    &run_id,
+                    Some(
+                        "User answered the pending product question. Re-read current conversation and continue without expanding the immutable proposal."
+                            .to_owned(),
+                    ),
+                    Vec::new(),
+                ) {
+                    self.fail_run(&run_id, error);
                 }
             }
-            ui.small(
-                "Model weights are never bundled or downloaded automatically. A future catalog acquisition flow must show source plus transfer/storage size before an explicit user action.",
-            );
-            ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Evidence task");
-                let selected_label = benchmark_task(&self.benchmark_task_id)
-                    .map(|task| task.label)
-                    .unwrap_or("Unknown task");
-                egui::ComboBox::from_id_salt("ai_studio_benchmark_task")
-                    .selected_text(selected_label)
-                    .show_ui(ui, |ui| {
-                        for task in BENCHMARK_TASKS {
-                            ui.selectable_value(
-                                &mut self.benchmark_task_id,
-                                task.id.to_owned(),
-                                task.label,
-                            );
-                        }
-                    });
-                if ui
-                    .add_enabled(
-                        self.benchmark_task_record_available(),
-                        egui::Button::new("Record current evidence"),
-                    )
-                    .clicked()
-                {
-                    self.record_selected_benchmark();
-                }
-            });
-            ui.small(
-                "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
-            );
-            ui.separator();
-            self.show_benchmark_experiment(ui);
-            ui.separator();
-            self.show_benchmark_campaign(ui);
-        });
+            Err(error) => self.status = Some(error.to_string()),
+        }
+    }
+
+    /// Commits a submitted instruction as the next proposal version and starts
+    /// a run from exactly that version.
+    ///
+    /// ADR 0162 §2: the message becomes the proposal's goal and every other
+    /// field of the current draft is carried forward, so the recorded artifacts
+    /// are the ones Go produced — one new version in the session's proposal
+    /// history, and one run whose immutable input is that version.
+    fn commit_intent(&mut self, message: &str) {
+        self.deferred_intent = None;
+        self.derive_intent_proposal(message);
+        self.begin_run();
+    }
+
+    /// Applies the derivation an intent commit performs on the draft proposal.
+    ///
+    /// The submitted instruction becomes the goal and every other field of the
+    /// current draft is carried forward. Both the composer and the ADR 0133
+    /// companion commit through this, so the two surfaces record the same
+    /// proposal version for the same instruction (ADR 0162 §7).
+    fn derive_intent_proposal(&mut self, message: &str) {
+        self.proposal_draft.goal = message.to_owned();
     }
 
     fn model_routing_status(&mut self) -> String {
@@ -4109,6 +3844,7 @@ impl AiStudioPanel {
     fn save_preferences(&mut self) {
         let preferences = AiStudioPreferences {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+            conversation_mode: self.conversation_mode,
             quality_preference: self.quality_preference,
             confinement_requirement: self.confinement_requirement,
             external_agent_provider: self.external_provider_kind,
@@ -4215,58 +3951,83 @@ impl AiStudioPanel {
         }
     }
 
-    fn show_proposal(&mut self, ui: &mut egui::Ui) {
+    /// Draws the editable proposal that will seed the next run.
+    ///
+    /// ADR 0162 §4 keeps this off the dock: the draft is inspected and edited
+    /// on demand, while the snapshot a run already started from is read in that
+    /// run's span. Editing here never affects a run that is already executing.
+    fn show_proposal_surface(&mut self, context: &egui::Context) {
+        if !self.proposal_open {
+            return;
+        }
         let current_version = self
             .host
             .session(&self.selected_session)
             .map(|session| session.proposal.version)
             .unwrap_or(self.proposal_draft.version);
-        egui::CollapsingHeader::new(format!("Structured proposal · v{current_version}"))
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.label("Goal");
-                ui.text_edit_singleline(&mut self.proposal_draft.goal);
-                edit_lines(ui, "Requirements", &mut self.proposal_draft.requirements);
-                edit_lines(ui, "Assumptions", &mut self.proposal_draft.assumptions);
-                edit_lines(
-                    ui,
-                    "Acceptance criteria",
-                    &mut self.proposal_draft.acceptance_criteria,
-                );
-                edit_lines(
-                    ui,
-                    "Planned project changes",
-                    &mut self.proposal_draft.planned_project_changes,
-                );
-                edit_lines(
-                    ui,
-                    "Planned code changes",
-                    &mut self.proposal_draft.planned_code_changes,
-                );
-                edit_lines(
-                    ui,
-                    "Planned assets",
-                    &mut self.proposal_draft.planned_assets,
-                );
-                edit_lines(
-                    ui,
-                    "Validation plan",
-                    &mut self.proposal_draft.validation_plan,
-                );
-                edit_lines(ui, "Playtest plan", &mut self.proposal_draft.playtest_plan);
-                if ui.button("Save proposal version").clicked() {
-                    match self
-                        .host
-                        .update_proposal(&self.selected_session, self.proposal_draft.clone())
-                    {
-                        Ok(version) => {
-                            self.proposal_draft.version = version;
-                            self.status = Some(format!("Saved proposal version {version}."));
+        let mut open = self.proposal_open;
+        egui::Window::new(format!("Structured proposal · v{current_version}"))
+            .id(egui::Id::new("ai_studio_proposal"))
+            .open(&mut open)
+            .default_width(520.0)
+            .default_height(560.0)
+            .resizable(true)
+            .show(context, |ui| {
+                theme::apply_studio_style(ui);
+                egui::ScrollArea::vertical()
+                    .id_salt("ai_studio_proposal_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        theme::hint(
+                            ui,
+                            "Editing the draft never changes a run that has already started.",
+                        );
+                        ui.label("Goal");
+                        ui.text_edit_singleline(&mut self.proposal_draft.goal);
+                        edit_lines(ui, "Requirements", &mut self.proposal_draft.requirements);
+                        edit_lines(ui, "Assumptions", &mut self.proposal_draft.assumptions);
+                        edit_lines(
+                            ui,
+                            "Acceptance criteria",
+                            &mut self.proposal_draft.acceptance_criteria,
+                        );
+                        edit_lines(
+                            ui,
+                            "Planned project changes",
+                            &mut self.proposal_draft.planned_project_changes,
+                        );
+                        edit_lines(
+                            ui,
+                            "Planned code changes",
+                            &mut self.proposal_draft.planned_code_changes,
+                        );
+                        edit_lines(
+                            ui,
+                            "Planned assets",
+                            &mut self.proposal_draft.planned_assets,
+                        );
+                        edit_lines(
+                            ui,
+                            "Validation plan",
+                            &mut self.proposal_draft.validation_plan,
+                        );
+                        edit_lines(ui, "Playtest plan", &mut self.proposal_draft.playtest_plan);
+                        if ui.button("Save proposal version").clicked() {
+                            match self.host.update_proposal(
+                                &self.selected_session,
+                                self.proposal_draft.clone(),
+                            ) {
+                                Ok(version) => {
+                                    self.proposal_draft.version = version;
+                                    self.status =
+                                        Some(format!("Saved proposal version {version}."));
+                                }
+                                Err(error) => self.status = Some(error.to_string()),
+                            }
                         }
-                        Err(error) => self.status = Some(error.to_string()),
-                    }
-                }
+                    });
             });
+        self.proposal_open = open;
     }
 
     fn native_runtime_busy(&self) -> bool {
@@ -4793,206 +4554,36 @@ impl AiStudioPanel {
         Ok(Some(self.external_provider_kind))
     }
 
-    /// Draws provider selection and confinement configuration.
+    /// Draws the one-line run status strip.
     ///
-    /// ADR 0158 keeps configuration out of the transcript column, so this is
-    /// drawn by the settings surface rather than beside the conversation.
-    fn show_provider_settings(&mut self, ui: &mut egui::Ui) {
-        let previous_provider = self.external_provider_kind;
-        let mut refresh_provider = false;
-        ui.horizontal(|ui| {
-            ui.label("External agent provider");
-            egui::ComboBox::from_id_salt("ai_studio_external_agent_provider")
-                .selected_text(self.external_provider_kind.label())
-                .show_ui(ui, |ui| {
-                    for provider in ExternalAgentProviderKind::ALL {
-                        ui.selectable_value(
-                            &mut self.external_provider_kind,
-                            provider,
-                            provider.label(),
-                        );
-                    }
-                });
-            if ui.button("Refresh status").clicked() {
-                refresh_provider = true;
-            }
-        });
-        let previous_environment = self.external_provider_environment;
-        let previous_distribution = self.external_provider_wsl_distribution.clone();
-        if self.external_provider_kind != ExternalAgentProviderKind::Generic {
-            ui.horizontal(|ui| {
-                ui.label("Provider runs in");
-                egui::ComboBox::from_id_salt("ai_studio_external_agent_environment")
-                    .selected_text(self.external_provider_environment.label())
-                    .show_ui(ui, |ui| {
-                        for environment in ExternalAgentExecutionEnvironment::ALL {
-                            ui.selectable_value(
-                                &mut self.external_provider_environment,
-                                environment,
-                                environment.label(),
-                            );
-                        }
-                    });
-                if self.external_provider_environment
-                    == ExternalAgentExecutionEnvironment::Wsl2Linux
-                {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.external_provider_wsl_distribution)
-                            .desired_width(160.0)
-                            .hint_text("default distribution"),
-                    );
-                }
-            });
-            if self.external_provider_environment == ExternalAgentExecutionEnvironment::Wsl2Linux {
-                ui.small(
-                    "The provider CLI and its sign-in live inside the distribution. The Editor MCP endpoint stays bound to loopback, so the distribution must share the host loopback (WSL mirrored networking).",
-                );
-            }
-        }
-        if previous_provider != self.external_provider_kind
-            || previous_environment != self.external_provider_environment
-            || previous_distribution != self.external_provider_wsl_distribution
-        {
-            self.external_provider_status =
-                ExternalAgentProviderStatus::unchecked(self.external_provider_kind);
-            self.save_preferences();
-        }
-        if refresh_provider {
-            self.refresh_external_provider_status();
-        }
-        let provider_status = self.current_external_provider_status();
-        let capabilities = self.external_provider_kind.capabilities();
-        ui.group(|ui| {
-            ui.strong(format!("{} status", self.external_provider_kind.label()));
-            ui.label(format!(
-                "Discovery: {} · Authentication: {}",
-                provider_status.discovery.label(),
-                provider_status.auth.label(),
-            ));
-            ui.small(format!(
-                "Capabilities: provider auth {} · MCP injection {} · structured events {} · host cancellation {}",
-                capabilities.provider_managed_auth,
-                capabilities.mcp_injection,
-                capabilities.structured_events,
-                capabilities.host_cancellation,
-            ));
-            ui.small(
-                "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
-            );
-        });
-        #[cfg(feature = "visual-validation")]
-        if self.visual_external_provider_evidence {
-            ui.group(|ui| {
-                ui.strong("First-class AgentRuntime provider evidence");
-                for provider in ExternalAgentProviderKind::ALL {
-                    let status = ExternalAgentProviderStatus::visual_fixture(provider);
-                    ui.label(format!(
-                        "{} · discovery {} · authentication {}",
-                        provider.label(),
-                        status.discovery.label(),
-                        status.auth.label(),
-                    ));
-                }
-                ui.small(
-                    "Claude Code and Codex keep provider-owned credentials; Generic command remains the explicit compatibility fallback.",
-                );
-                ui.small(
-                    "MCP bearer: ephemeral environment reference only. Secret values are never displayed, serialized, or copied into provider arguments.",
-                );
-                ui.small(
-                    "Sanitized error presentation: provider failures report adapter/status context without credential or bearer contents.",
-                );
-            });
-        }
-        if self.external_provider_kind == ExternalAgentProviderKind::Generic {
-            ui.horizontal(|ui| {
-                ui.label("Compatible agent program");
-                ui.text_edit_singleline(&mut self.provider_program);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Arguments");
-                ui.text_edit_singleline(&mut self.provider_args);
-            });
-        }
-        let previous_confinement_requirement = self.confinement_requirement;
-        ui.horizontal(|ui| {
-            ui.label("External process confinement");
-            egui::ComboBox::from_id_salt("ai_studio_process_confinement")
-                .selected_text(self.confinement_requirement.label())
-                .show_ui(ui, |ui| {
-                    for requirement in [
-                        AgentConfinementRequirement::AllowApplicationPolicyOnly,
-                        AgentConfinementRequirement::RequireProviderOrOsConfinement,
-                    ] {
-                        ui.selectable_value(
-                            &mut self.confinement_requirement,
-                            requirement,
-                            requirement.label(),
-                        );
-                    }
-                });
-        });
-        if previous_confinement_requirement != self.confinement_requirement {
-            self.save_preferences();
-        }
-        let confinement_status = self
-            .active_run_id
-            .as_deref()
-            .and_then(|run_id| self.host.run(run_id).ok())
-            .and_then(|run| run.confinement_profile.as_ref())
-            .map(|profile| profile.summary())
-            .unwrap_or_else(|| {
-                "No external process confinement profile has been recorded. Generic external launches are application-policy-only; the native AgentRuntime is not an external child-process sandbox."
-                    .to_owned()
-            });
-        ui.group(|ui| {
-            ui.strong("Confinement status");
-            ui.label(confinement_status);
-            theme::spec_note(
-                ui,
-                "What confinement guarantees",
-                "GameEngine application permissions remain authoritative. External providers are not treated as sandboxed unless their launch path reports enforceable provider/OS confinement.",
-            );
-            if self.confinement_requirement.requires_enforced_confinement() {
-                ui.small(
-                    "Fail-closed policy: an external agent will not start through the generic process runtime unless a provider/OS confinement adapter can satisfy this requirement.",
-                );
-            }
-        });
-        theme::spec_note(
-            ui,
-            "How Go selects a runtime",
-            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Managed Local, external local, Hosted API, or Enterprise ModelBackend. External and managed adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
-        );
-    }
-
-    /// Draws the run controls that must stay reachable without scrolling.
-    ///
-    /// ADR 0158 pins the active run's state and Stop beside Go, because a
-    /// decision must not scroll away while the conversation grows.
-    fn show_run_controls(&mut self, ui: &mut egui::Ui) {
+    /// ADR 0162 §4: an active run is represented outside the transcript by its
+    /// state and the actions that apply to it, on one line, and the strip is
+    /// absent when no run is active. Stop therefore stays reachable without
+    /// scrolling for as long as a run can be stopped.
+    fn show_run_status_strip(&mut self, ui: &mut egui::Ui) {
         let mut stop_requested = false;
         let mut interrupt_requested = false;
         let mut resume_requested = false;
+        let active_run = self.active_run_id.clone().and_then(|run_id| {
+            self.host.run(&run_id).ok().map(|run| {
+                (
+                    run.state,
+                    run.proposal_snapshot.version,
+                    run.provider_label.clone(),
+                )
+            })
+        });
         ui.horizontal_wrapped(|ui| {
-            let can_go = self.process.is_none()
-                && !self.native_runtime_busy()
-                && self.pending_permission.is_none()
-                && self.pending_question_permission.is_none()
-                && (self.external_provider_is_ready()
-                    || (!self.external_provider_is_requested()
-                        && self.described_native_model_config().is_ok()));
-            if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
-                self.begin_run();
+            if let Some((state, proposal_version, provider_label)) = active_run.as_ref() {
+                theme::status_dot(ui, theme::ACCENT_TEXT);
+                ui.strong(format!("{state:?}"));
+                ui.label(
+                    egui::RichText::new(format!("proposal v{proposal_version} · {provider_label}"))
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                );
             }
-            let can_stop = self.active_run_id.as_ref().is_some_and(|run_id| {
-                self.host.run(run_id).is_ok_and(|run| {
-                    !matches!(
-                        run.state,
-                        AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
-                    )
-                })
-            });
+            let can_stop = self.run_is_active();
             if can_stop && ui.button("Stop").clicked() {
                 stop_requested = true;
             }
@@ -5023,40 +4614,7 @@ impl AiStudioPanel {
             }
         });
         if stop_requested {
-            let run_id = self.active_run_id.clone();
-            if let Some(task) = self.native_question.as_ref() {
-                task.interrupt();
-            }
-            self.pending_native_question_start = None;
-            self.model_resource_continuation = None;
-            self.restore_for_editing = false;
-            if let Some(runtime) = self.native_agent_runtime.as_mut() {
-                runtime.interrupt();
-            }
-            if let Some(task) = self.native_mcp_task.as_ref() {
-                task.interrupt();
-            }
-            self.native_mcp_task = None;
-            self.pending_native_mcp_tool = None;
-            if let Some(process) = self.process.as_mut()
-                && let Err(error) = process.cancel()
-            {
-                self.status = Some(format!("Could not stop agent process: {error}"));
-            }
-            self.process = None;
-            self.process_purpose = None;
-            if let Some(run_id) = run_id
-                && let Err(error) = self.host.cancel_run(&run_id)
-            {
-                self.status = Some(error.to_string());
-            }
-            self.native_agent_runtime = None;
-            self.active_runtime_mode = None;
-            self.active_external_provider = None;
-            self.active_external_program = None;
-            self.active_external_args = None;
-            self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
-            self.pending_external_work_owner = None;
+            self.stop_active_run();
         }
         if interrupt_requested {
             if let Some(task) = self.native_question.as_ref() {
@@ -5089,6 +4647,48 @@ impl AiStudioPanel {
             self.status =
                 Some("Re-inspecting authoritative Editor state before Resume...".to_owned());
         }
+    }
+
+    /// Stops whatever the active run is doing and cancels it.
+    ///
+    /// Stop is reached from the run status strip and from the decision that
+    /// offers to replace the active run with a newer instruction (ADR 0162
+    /// §3), so the sequence lives here rather than inside either control.
+    fn stop_active_run(&mut self) {
+        let run_id = self.active_run_id.clone();
+        if let Some(task) = self.native_question.as_ref() {
+            task.interrupt();
+        }
+        self.pending_native_question_start = None;
+        self.model_resource_continuation = None;
+        self.restore_for_editing = false;
+        if let Some(runtime) = self.native_agent_runtime.as_mut() {
+            runtime.interrupt();
+        }
+        if let Some(task) = self.native_mcp_task.as_ref() {
+            task.interrupt();
+        }
+        self.native_mcp_task = None;
+        self.pending_native_mcp_tool = None;
+        if let Some(process) = self.process.as_mut()
+            && let Err(error) = process.cancel()
+        {
+            self.status = Some(format!("Could not stop agent process: {error}"));
+        }
+        self.process = None;
+        self.process_purpose = None;
+        if let Some(run_id) = run_id
+            && let Err(error) = self.host.cancel_run(&run_id)
+        {
+            self.status = Some(error.to_string());
+        }
+        self.native_agent_runtime = None;
+        self.active_runtime_mode = None;
+        self.active_external_provider = None;
+        self.active_external_program = None;
+        self.active_external_args = None;
+        self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        self.pending_external_work_owner = None;
     }
 
     fn show_permission_prompt(&mut self, ui: &mut egui::Ui) {
@@ -5182,8 +4782,6 @@ impl AiStudioPanel {
         run_id: &str,
         report: crate::agent_host::CompletionReport,
     ) {
-        ui.separator();
-        ui.strong("Completion contract");
         completion_row(ui, "Acceptance criteria", report.acceptance_criteria);
         completion_row(ui, "Authoring validation", report.authoring_validation);
         completion_row(ui, "Source validation", report.source_validation);
@@ -6697,12 +6295,118 @@ fn managed_source_repair_context(run: &crate::agent_host::AgentRun) -> String {
 /// An entry that may be collapsed still shows what happened and how it turned
 /// out; only its detail is hidden. Permission escalations, failures, and
 /// cancellations are never collapsed.
+/// Whether an entry is a step the runtime took rather than something the user
+/// is being told.
+///
+/// ADR 0158 §3 lets a presentation collapse detail but never an escalation, an
+/// escape hatch, a failed gate, or an unperformed criterion, so a failed
+/// outcome and an entry the projection marked uncollapsible are never grouped.
+fn is_internal_step(entry: &crate::agent_transcript::TranscriptEntry) -> bool {
+    use crate::agent_transcript::{TranscriptEntryKind, TranscriptOutcome};
+
+    entry.collapsible
+        && entry.outcome != Some(TranscriptOutcome::Failed)
+        && matches!(
+            entry.kind,
+            TranscriptEntryKind::RunState
+                | TranscriptEntryKind::Progress
+                | TranscriptEntryKind::ToolAction
+                | TranscriptEntryKind::ModelExchange
+                | TranscriptEntryKind::ResourcePolicy
+                | TranscriptEntryKind::WorkCoordination
+                | TranscriptEntryKind::EditingState
+                | TranscriptEntryKind::Note
+        )
+}
+
+/// Draws the machine steps accumulated so far as one closed disclosure.
+///
+/// A run reports dozens of these, and reading them one card at a time buries
+/// the conversation. They stay in host order and nothing is dropped: the
+/// disclosure states how many there are and opens onto the same entries.
+fn flush_internal_steps(
+    ui: &mut egui::Ui,
+    steps: &mut Vec<&crate::agent_transcript::TranscriptEntry>,
+    requested: &mut Option<(
+        Option<String>,
+        crate::agent_transcript::TranscriptNavigation,
+    )>,
+) {
+    match steps.len() {
+        0 => return,
+        1 => {
+            let entry = steps[0];
+            if let Some(navigation) = show_transcript_entry(ui, entry) {
+                *requested = Some((entry.run_id.clone(), navigation));
+            }
+        }
+        count => {
+            let first = steps[0];
+            egui::CollapsingHeader::new(format!("{count} internal steps"))
+                .id_salt((
+                    "ai_studio_internal_steps",
+                    first.run_id.clone(),
+                    first.sequence,
+                    first.created_unix_ms,
+                ))
+                .default_open(false)
+                .show(ui, |ui| {
+                    for entry in steps.iter() {
+                        if let Some(navigation) = show_transcript_entry(ui, entry) {
+                            *requested = Some((entry.run_id.clone(), navigation));
+                        }
+                    }
+                });
+        }
+    }
+    steps.clear();
+}
+
+/// Draws a conversation message as a message rather than as a record.
+///
+/// The studio is read as a conversation (ADR 0158 §1), so what a person and the
+/// agent said is drawn as text, and only the machinery around it is drawn as
+/// labelled records.
+fn show_message_entry(ui: &mut egui::Ui, entry: &crate::agent_transcript::TranscriptEntry) {
+    use crate::agent_transcript::TranscriptEntryKind;
+
+    let body = if entry.detail.trim().is_empty() {
+        entry.summary.clone()
+    } else {
+        entry.detail.clone()
+    };
+    ui.add_space(5.0);
+    if entry.kind == TranscriptEntryKind::UserMessage {
+        ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+            let bubble = (ui.available_width() * 0.82).max(180.0);
+            theme::card_frame()
+                .fill(theme::SURFACE_HOVERED)
+                .show(ui, |ui| {
+                    ui.set_max_width(bubble);
+                    theme::selectable_text(ui, body);
+                });
+        });
+        return;
+    }
+    theme::caption(ui, entry.kind.label());
+    theme::selectable_text(ui, body);
+}
+
 fn show_transcript_entry(
     ui: &mut egui::Ui,
     entry: &crate::agent_transcript::TranscriptEntry,
 ) -> Option<crate::agent_transcript::TranscriptNavigation> {
-    use crate::agent_transcript::{TranscriptNavigation, TranscriptOutcome};
+    use crate::agent_transcript::{TranscriptEntryKind, TranscriptNavigation, TranscriptOutcome};
 
+    if matches!(
+        entry.kind,
+        TranscriptEntryKind::UserMessage
+            | TranscriptEntryKind::AgentMessage
+            | TranscriptEntryKind::SystemMessage
+    ) {
+        show_message_entry(ui, entry);
+        return None;
+    }
     let outcome_label = entry.outcome.map(|outcome| outcome.label());
     let header = match outcome_label {
         Some(label) => format!("{} · {} [{label}]", entry.kind.label(), entry.summary),
@@ -6711,7 +6415,20 @@ fn show_transcript_entry(
     let mut requested = None;
     let mut draw_detail = |ui: &mut egui::Ui| {
         if !entry.detail.trim().is_empty() && entry.detail != entry.summary {
-            theme::selectable_text(ui, entry.detail.clone());
+            let machine_text = matches!(
+                entry.kind,
+                TranscriptEntryKind::ToolAction
+                    | TranscriptEntryKind::ModelExchange
+                    | TranscriptEntryKind::CodeChange
+            );
+            if machine_text {
+                theme::selectable_text(ui, egui::RichText::new(entry.detail.clone()).monospace());
+                if ui.small_button("Copy").clicked() {
+                    ui.ctx().copy_text(entry.detail.clone());
+                }
+            } else {
+                theme::selectable_text(ui, entry.detail.clone());
+            }
         }
         match entry.navigation.as_ref() {
             Some(TranscriptNavigation::CapturedFrame { artifact_id })
@@ -7150,6 +6867,49 @@ fn change_summary(change: &CodeChange) -> &'static str {
     }
 }
 
+/// Returns every criterion of a completion report, for reporting rules that
+/// care whether anything is still unperformed rather than which check it is.
+fn completion_statuses(report: &crate::agent_host::CompletionReport) -> [CompletionStatus; 7] {
+    [
+        report.acceptance_criteria,
+        report.authoring_validation,
+        report.source_validation,
+        report.play_launch,
+        report.frame_capture,
+        report.visual_evaluation,
+        report.interaction_scenarios,
+    ]
+}
+
+/// Draws an immutable proposal snapshot as text.
+fn show_proposal_snapshot(ui: &mut egui::Ui, proposal: &AgentProposal) {
+    theme::caption(ui, "Goal");
+    theme::selectable_text(ui, proposal.goal.clone());
+    snapshot_lines(ui, "Requirements", &proposal.requirements);
+    snapshot_lines(ui, "Assumptions", &proposal.assumptions);
+    snapshot_lines(ui, "Acceptance criteria", &proposal.acceptance_criteria);
+    snapshot_lines(
+        ui,
+        "Planned project changes",
+        &proposal.planned_project_changes,
+    );
+    snapshot_lines(ui, "Planned code changes", &proposal.planned_code_changes);
+    snapshot_lines(ui, "Planned assets", &proposal.planned_assets);
+    snapshot_lines(ui, "Validation plan", &proposal.validation_plan);
+    snapshot_lines(ui, "Playtest plan", &proposal.playtest_plan);
+}
+
+/// Draws one read-only list of a proposal snapshot, omitting empty sections.
+fn snapshot_lines(ui: &mut egui::Ui, label: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    theme::caption(ui, label);
+    for value in values {
+        theme::selectable_text(ui, format!("· {value}"));
+    }
+}
+
 fn completion_row(ui: &mut egui::Ui, label: &str, status: CompletionStatus) {
     ui.horizontal(|ui| {
         ui.label(label);
@@ -7286,6 +7046,7 @@ mod tests {
     fn hosted_preferences_exclude_sensitive_auth_state() {
         let preferences = AiStudioPreferences {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+            conversation_mode: ConversationMode::Build,
             quality_preference: QualityPreference::Balanced,
             confinement_requirement: AgentConfinementRequirement::default(),
             external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
@@ -7304,6 +7065,16 @@ mod tests {
         assert!(!json.contains("authorization"));
         assert!(!json.contains("bearer"));
         assert!(!json.contains("protected_path"));
+    }
+
+    #[test]
+    fn preferences_written_before_conversation_modes_default_to_ask() {
+        // ADR 0162 compatibility: an installation that predates the mode must
+        // not gain write-on-send from an upgrade alone.
+        let preferences: AiStudioPreferences =
+            serde_json::from_str(r#"{"schema_version":1,"model_backend":"local"}"#)
+                .expect("deserialize preferences without a conversation mode");
+        assert_eq!(preferences.conversation_mode, ConversationMode::Ask);
     }
 
     #[test]

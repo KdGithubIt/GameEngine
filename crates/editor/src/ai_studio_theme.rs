@@ -133,13 +133,6 @@ pub(crate) fn card_frame() -> egui::Frame {
         .inner_margin(egui::Margin::same(12))
 }
 
-/// Draws a card with the shared surface treatment.
-pub(crate) fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    card_frame()
-        .show(ui, |ui| full_width(ui, add_contents))
-        .inner
-}
-
 /// Makes a card span the panel instead of shrinking to its contents.
 ///
 /// An `egui::Frame` sizes to what it holds, so a card of short fields would
