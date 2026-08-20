@@ -16,7 +16,9 @@ pub(in crate::timeline) fn mark_seek(component: &mut TimelinePlayerComponent) {
         .set(PENDING_SEEK_GENERATION, component.player.generation());
 }
 
-pub(in crate::timeline) fn pending_seek(component: &TimelinePlayerComponent) -> Option<PendingSeek> {
+pub(in crate::timeline) fn pending_seek(
+    component: &TimelinePlayerComponent,
+) -> Option<PendingSeek> {
     let generation = component.player.generation();
     let pending = component.tokens.get(PENDING_SEEK_GENERATION);
     let applied = component.tokens.get(APPLIED_SEEK_GENERATION);
