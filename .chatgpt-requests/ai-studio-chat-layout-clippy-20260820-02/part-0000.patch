@@ -1,0 +1,13 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index df0b1fbdcd568d84f53035dd11d4619a93637127..336b3afdaeaa4c4bc9c4e0e89c53db5b54cad43a 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -2678,7 +2678,7 @@ impl AiStudioPanel {
+     }
+ 
+     fn conversation_lane_width(available_width: f32) -> f32 {
+-        available_width.max(0.0).min(960.0)
++        available_width.clamp(0.0, 960.0)
+     }
+ 
+     /// Keeps the header, transcript, and composer in one readable column.
