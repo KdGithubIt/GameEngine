@@ -484,10 +484,7 @@ fn managed_conflicting_active_lease(
     let desired_key = managed_endpoint_lease_key(config);
     let leases = lock_managed_endpoint_leases()?;
     Ok(leases.iter().any(|(key, state)| {
-        key != &desired_key
-            && state.holders > 0
-            && state.state_root == config.state_root
-            && state.environment == config.environment
+        key != &desired_key && state.holders > 0 && state.state_root == config.state_root
     }))
 }
 
@@ -495,9 +492,9 @@ fn managed_endpoint_has_active_lease(
     config: &ManagedLocalModelConfig,
 ) -> Result<bool, ManagedLocalRuntimeError> {
     let leases = lock_managed_endpoint_leases()?;
-    Ok(leases
-        .get(&managed_endpoint_lease_key(config))
-        .is_some_and(|state| state.holders > 0))
+    Ok(leases.values().any(|state| {
+        state.holders > 0 && state.state_root == config.state_root
+    }))
 }
 
 fn managed_environment_has_active_lease(
@@ -1534,7 +1531,6 @@ impl ManagedLocalRuntime {
                 existing_key != &key
                     && state.holders > 0
                     && state.state_root == config.state_root
-                    && state.environment == config.environment
             }) {
                 return Err(ManagedLocalRuntimeError::new(
                     ManagedDiagnosticLayer::ManagedProcessStartup,
@@ -1611,7 +1607,7 @@ impl ManagedLocalRuntime {
                     reused_process: true,
                 });
             }
-            let _ = manager.stop_process_state(&process);
+            manager.stop_process_state(&process)?;
         }
 
         let port = reserve_loopback_port()?;
