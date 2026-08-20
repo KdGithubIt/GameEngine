@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/sequencer.rs","old":"    Save,\n    Undo,\n    Close,\n","new":"    Save,\n    Undo,\n    Redo,\n    Close,\n"}

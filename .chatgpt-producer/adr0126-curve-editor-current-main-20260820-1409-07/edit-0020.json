@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/sequencer/curve_editor/graph.rs","old":"egui::Stroke::new(1.0, egui::Color32::from_gray(45))","new":"egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45))"}
