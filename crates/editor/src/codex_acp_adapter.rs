@@ -184,7 +184,7 @@ impl AcpAgentRuntime for CodexAcpRuntime {
         descriptor.arguments = command.arguments;
         descriptor.environment = command.environment.into_iter().collect();
 
-        let mut runtime = AcpProcessRuntime::new(Box::new(descriptor))?;
+        let mut runtime = AcpProcessRuntime::new(descriptor)?;
         let mut session = runtime.open_session(request.clone())?;
         for (option_id, value) in codex_acp_session_config(&request.binding, &self.preferences)? {
             session.set_session_config_option(&option_id, &value)?;
