@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-curve-editor-fmt-current-main-20260820-1422-08",
+  "target_branch": "chatgpt/gameengine-adr0126-curve-editor-current-main",
+  "expected_head_sha": "d8e91e2f200d1ef462af13de6b83b79780e9f150",
+  "baseline_main_sha": "4ed269c2f3830ef2447026a26d1cc1600340b987",
+  "patch_sha256": "012a7ae726c4dbfd15500708581def1df9bdf361f4567b7dd75ede70db2ef3e9",
+  "patch_bytes": 521,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Curve Editor rustfmt",
+  "pr_title": "GameEngine: complete Sequencer curve editing",
+  "pr_body": "## Summary\n\n- add a Sequencer Curve Editor for all Transform-backed Property Track numeric channels\n- edit key time, value, interpolation, add/delete keys, and preserve clip-local ticks\n- integrate Redo with the existing validated Timeline edit/compile/save path\n- cover undo/redo and save/reopen preservation of stable IDs and exact key ticks\n- keep key editing and the responsive curve graph fully visible in constrained Sequencer height\n- rebuild on current main after overlapping engine-editor main drift invalidated the prior stage\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
