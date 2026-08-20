@@ -1,0 +1,28 @@
+diff --git a/crates/editor/src/claude_acp_adapter.rs b/crates/editor/src/claude_acp_adapter.rs
+index 087d7d423391c6ac54fdc70a5deb3416dbd8214c..24f9d76d8096ad777691014391b8e52cf081c2e9 100644
+--- a/crates/editor/src/claude_acp_adapter.rs
++++ b/crates/editor/src/claude_acp_adapter.rs
+@@ -334,12 +334,9 @@ fn claude_acp_capabilities() -> AcpCapabilities {
+         mcp_http: true,
+         mcp_sse: true,
+         mcp_over_acp: false,
+-        extensions: BTreeSet::from([
+-            "prompt.embedded_context".to_owned(),
+-            "prompt.image".to_owned(),
+-            "session.close".to_owned(),
+-            "session.fork".to_owned(),
+-        ]),
++        // Optional ACP features are live-negotiated by the common transport.
++        // Do not turn Claude support into provider-specific extension requirements.
++        extensions: BTreeSet::new(),
+     }
+ }
+ 
+@@ -415,6 +412,7 @@ mod tests {
+         assert!(registration.descriptor.capabilities.session_resume);
+         assert!(registration.descriptor.capabilities.mcp_http);
+         assert!(!registration.descriptor.capabilities.mcp_over_acp);
++        assert!(registration.descriptor.capabilities.extensions.is_empty());
+     }
+ 
+     #[test]
