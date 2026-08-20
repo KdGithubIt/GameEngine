@@ -1,0 +1,83 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 0450377b814b17a056eb74b473fe467dc1006e22..c50e5176ea1d86d1eb73bfa4b4b19c37b4cac468 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -1175,6 +1175,29 @@ pub struct AiStudioPanel {
+ impl AiStudioPanel {
+     /// Opens the project-scoped AI Studio state for an Editor project.
+     pub fn new(project: &ProjectRoot, connection: AiStudioConnection) -> Result<Self, String> {
++        Self::new_with_campaign_recovery(project, connection, true)
++    }
++
++    /// Opens one isolated benchmark child without restoring interactive campaign state.
++    ///
++    /// The child belongs to an already-running campaign parent. Restoring a `Running`
++    /// checkpoint here would mistake normal child startup for an Editor restart and
++    /// create the parent's `pause.requested` marker.
++    pub fn new_benchmark_child(
++        project: &ProjectRoot,
++        connection: AiStudioConnection,
++        benchmark_run: &std::path::Path,
++    ) -> Result<Self, String> {
++        let mut panel = Self::new_with_campaign_recovery(project, connection, false)?;
++        panel.configure_benchmark_child(benchmark_run)?;
++        Ok(panel)
++    }
++
++    fn new_with_campaign_recovery(
++        project: &ProjectRoot,
++        connection: AiStudioConnection,
++        restore_campaign_checkpoint: bool,
++    ) -> Result<Self, String> {
+         let ai_root = dirs::data_local_dir()
+             .unwrap_or_else(std::env::temp_dir)
+             .join("GameEngine")
+@@ -1191,9 +1214,13 @@ impl AiStudioPanel {
+             .map_err(|error| error.to_string())?;
+         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
+         let benchmark_experiment_root = ai_root.join("benchmark-experiments");
+-        let benchmark_campaign = benchmark_campaign_ui::BenchmarkCampaignPanel::load_checkpoint(
+-            &benchmark_experiment_root,
+-        );
++        let benchmark_campaign = if restore_campaign_checkpoint {
++            benchmark_campaign_ui::BenchmarkCampaignPanel::load_checkpoint(
++                &benchmark_experiment_root,
++            )
++        } else {
++            benchmark_campaign_ui::BenchmarkCampaignPanel::default()
++        };
+         let (benchmark_records, benchmark_status) = match benchmark_store.load() {
+             Ok(records) => (records, None),
+             Err(error) => (
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 7a809f79b7aa8b285e85030657a300f8dc32f743..b03b76aac398d3fdd72fb7bf7dd4de647a1b4e2b 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -59,17 +59,16 @@ impl EditorShell {
+                 mcp_server.authorization_token(),
+             )
+             .map_err(|error| error.to_string())?;
+-        let mut ai_studio = AiStudioPanel::new(
+-            &root,
+-            AiStudioConnection::new(
+-                mcp_server.endpoint().to_string(),
+-                mcp_server.agent_authorization_token().to_owned(),
+-                mcp_server.read_only_authorization_token().to_owned(),
+-            ),
+-        )?;
+-        if let Some(benchmark_run) = benchmark_run {
+-            ai_studio.configure_benchmark_child(benchmark_run)?;
+-        }
++        let ai_studio_connection = AiStudioConnection::new(
++            mcp_server.endpoint().to_string(),
++            mcp_server.agent_authorization_token().to_owned(),
++            mcp_server.read_only_authorization_token().to_owned(),
++        );
++        let ai_studio = if let Some(benchmark_run) = benchmark_run {
++            AiStudioPanel::new_benchmark_child(&root, ai_studio_connection, benchmark_run)?
++        } else {
++            AiStudioPanel::new(&root, ai_studio_connection)?
++        };
+         #[cfg(feature = "visual-validation")]
+         let visual_scenario = visual_authoring_tool_scenario();
+         #[cfg(feature = "visual-validation")]
