@@ -1,0 +1,103 @@
+diff --git a/crates/engine/src/timeline/audio_adapter.rs b/crates/engine/src/timeline/audio_adapter.rs
+index d9141907bbb3d4d924f4629f1cb1cd123955f7de..56c177111c812f0383ae67cd0a274c58e0a6113b 100644
+--- a/crates/engine/src/timeline/audio_adapter.rs
++++ b/crates/engine/src/timeline/audio_adapter.rs
+@@ -106,12 +106,7 @@ pub(super) fn apply_audio_evaluation(
+         .iter()
+         .map(|voice| voice.key.clone())
+         .collect::<HashSet<_>>();
+-    stop_undesired_voices(
+-        source,
+-        &desired_keys,
+-        &mut runtime,
+-        &mut audio,
+-    );
++    stop_undesired_voices(source, &desired_keys, &mut runtime, &mut audio);
+ 
+     let entered = evaluation
+         .entered
+@@ -145,20 +140,12 @@ pub(super) fn apply_audio_evaluation(
+ 
+         if let Some(voice) = runtime.voices.get(&desired.key).copied() {
+             if let Err(error) = audio.update_voice(voice.voice_id, gains) {
+-                log::error!(
+-                    "failed to update Timeline audio voice for player {source}: {error}"
+-                );
++                log::error!("failed to update Timeline audio voice for player {source}: {error}");
+             }
+             continue;
+         }
+ 
+-        match start_voice(
+-            &desired.cue,
+-            desired.offset,
+-            gains,
+-            world,
+-            &mut audio,
+-        ) {
++        match start_voice(&desired.cue, desired.offset, gains, world, &mut audio) {
+             Ok(voice_id) => {
+                 runtime.voices.insert(
+                     desired.key,
+@@ -279,8 +266,7 @@ fn desired_audio_voices(
+                 return None;
+             }
+             let clip = compiled_clip(timeline, &active.track, &active.clip)?;
+-            let stop_fade =
+-                stop_fade_gain(timeline, cue, clip.start, evaluation.tick);
++            let stop_fade = stop_fade_gain(timeline, cue, clip.start, evaluation.tick);
+             if stop_fade <= 0.0 {
+                 return None;
+             }
+@@ -342,6 +328,7 @@ fn stop_fade_gain(
+     let elapsed = target.get().saturating_sub(stop_start.get()).max(0);
+     (1.0 - elapsed as f32 / fade_ticks as f32).clamp(0.0, 1.0)
+ }
++
+ fn output_gains(
+     entity: Option<&EntityId>,
+     fade: f32,
+@@ -379,9 +366,7 @@ fn output_gains(
+         .get_resource::<SpatialAudioRuntime>()
+         .and_then(|runtime| runtime.gains_for_entity(target, settings))
+     else {
+-        log::warn!(
+-            "Timeline spatial audio target {target} has no copied ADR 0122 emitter pose"
+-        );
++        log::warn!("Timeline spatial audio target {target} has no copied ADR 0122 emitter pose");
+         return None;
+     };
+     Some(StereoGains {
+@@ -434,9 +419,7 @@ fn start_voice(
+ }
+ 
+ fn ticks_to_duration(ticks: i64) -> Duration {
+-    Duration::from_secs_f64(
+-        ticks.max(0) as f64 / TIMELINE_TICKS_PER_SECOND as f64,
+-    )
++    Duration::from_secs_f64(ticks.max(0) as f64 / TIMELINE_TICKS_PER_SECOND as f64)
+ }
+ 
+ fn fade_gain(offset: i64, duration: i64, fade_ticks: i64) -> f32 {
+@@ -533,18 +516,14 @@ mod tests {
+         let mut player = TimelinePlayer::new();
+         player.play();
+ 
+-        let before_stop =
+-            player.seek(&timeline, TimelineTick(75), TimelineSeek::Playback);
++        let before_stop = player.seek(&timeline, TimelineTick(75), TimelineSeek::Playback);
+         assert_eq!(
+             desired_audio_voices(Entity::new(7, 0), &timeline, &before_stop).len(),
+             1
+         );
+ 
+-        let after_stop =
+-            player.seek(&timeline, TimelineTick(150), TimelineSeek::Playback);
+-        assert!(
+-            desired_audio_voices(Entity::new(7, 0), &timeline, &after_stop).is_empty()
+-        );
++        let after_stop = player.seek(&timeline, TimelineTick(150), TimelineSeek::Playback);
++        assert!(desired_audio_voices(Entity::new(7, 0), &timeline, &after_stop).is_empty());
+     }
+ 
+     #[test]
