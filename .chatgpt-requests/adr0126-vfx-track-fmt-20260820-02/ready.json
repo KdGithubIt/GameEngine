@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-vfx-track-fmt-20260820-02",
+  "target_branch": "chatgpt/gameengine-adr0126-vfx-track",
+  "expected_head_sha": "b3b38d241965d4b2626cd76cd3b6e61620bd083d",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "patch_sha256": "6926189fe0331f79ed2b0ae77944cec3493b8641329a5391f191b61daabb39e0",
+  "patch_bytes": 562,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Format ADR 0126 VFX Timeline adapter",
+  "pr_title": "ADR 0126: complete VFX Timeline adapter",
+  "pr_body": "## Summary\n\n- apply VFX Play/Stop/Restart as edge-triggered Timeline actions through ADR 0125 VfxPlayer controls\n- reconstruct VFX state on Timeline seek through the existing deterministic preview-seek interface\n- keep interval ownership and exact clip-end stop semantics in the engine composition adapter\n- cover Play, Stop, Restart, and seek behavior with focused runtime tests\n- update ADR 0126 implementation status without changing ADR 0125 ownership\n\n## Validation\n\nWindows Validation uses impact-based affected planning. Visual Validation is not required because this change adds runtime adapter behavior and tests without changing Editor or Launcher presentation."
+}
