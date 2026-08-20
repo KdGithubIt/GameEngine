@@ -24,6 +24,7 @@ const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
 const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_CODE_VERSION: &str = "2.1.237";
 const CODEX_VERSION: &str = "0.148.0";
+const CODEX_MCP_FEATURE: &str = "mcp_2026_07_28";
 
 /// Where an external agent provider process runs.
 ///
@@ -950,6 +951,8 @@ fn build_provider_launch_plan(
                 OsString::from("exec"),
                 OsString::from("--json"),
                 OsString::from("--skip-git-repo-check"),
+                OsString::from("--enable"),
+                OsString::from(CODEX_MCP_FEATURE),
                 OsString::from("--sandbox"),
                 OsString::from("workspace-write"),
                 OsString::from("-c"),
@@ -1375,6 +1378,8 @@ pub(crate) fn build_question_launch_plan(
                     OsString::from("exec"),
                     OsString::from("--json"),
                     OsString::from("--skip-git-repo-check"),
+                    OsString::from("--enable"),
+                    OsString::from(CODEX_MCP_FEATURE),
                     OsString::from("--sandbox"),
                     OsString::from("read-only"),
                     OsString::from("-c"),
@@ -2660,6 +2665,7 @@ mod tests {
             .map(|value| value.to_string_lossy())
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(args.contains(&format!("--enable\n{CODEX_MCP_FEATURE}")));
         assert!(args.contains("--sandbox\nworkspace-write"));
         assert!(args.contains("http://127.0.0.1:4321/mcp"));
         assert!(args.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
@@ -2820,6 +2826,14 @@ mod tests {
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+        let feature_index = codex_args
+            .iter()
+            .position(|argument| argument == "--enable")
+            .expect("Codex modern MCP feature flag");
+        assert_eq!(
+            codex_args.get(feature_index + 1).map(String::as_str),
+            Some(CODEX_MCP_FEATURE)
+        );
         assert!(codex_args.iter().any(|argument| argument == "read-only"));
         assert!(codex_args.iter().any(|argument| argument.contains(".url=")));
     }
