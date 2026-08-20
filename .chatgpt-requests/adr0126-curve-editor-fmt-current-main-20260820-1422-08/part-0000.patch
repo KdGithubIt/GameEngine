@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/sequencer/curve_editor/graph.rs b/crates/editor/src/sequencer/curve_editor/graph.rs
+index d76362d5e97e1a73d49c11a864738e3e5dc5339b..adce12ac7eff64017e3ad654e4c95367d448b440 100644
+--- a/crates/editor/src/sequencer/curve_editor/graph.rs
++++ b/crates/editor/src/sequencer/curve_editor/graph.rs
+@@ -72,7 +72,6 @@ pub(super) fn show(
+             egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(230, 190, 90)),
+         );
+     }
+-
+ }
+ 
+ fn value_range(keys: &[TimelineKey]) -> (f32, f32) {
