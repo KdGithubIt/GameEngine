@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/replay.rs","old":"    let next = quotient\n        .saturating_add(1)\n        .saturating_mul(interval);","new":"    let next = quotient.saturating_add(1).saturating_mul(interval);"}

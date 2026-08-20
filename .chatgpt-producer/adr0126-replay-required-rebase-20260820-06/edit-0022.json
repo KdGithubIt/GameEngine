@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/replay.rs","old":"            .unwrap_or((TimelineTick::ZERO, start_state.clone()));","new":"            .unwrap_or_else(|| (TimelineTick::ZERO, start_state.clone()));"}

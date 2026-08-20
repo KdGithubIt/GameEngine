@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline.rs",
+  "old": "pub use engine_timeline::{\n    ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,\n    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,\n    LoopRegion, TimelineCompileError, TimelineEvaluation, TimelinePlayState, TimelinePlayer,\n    TimelineSeek, TimelineTrackOutput, TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction,\n    compile_timeline,\n};\n",
+  "new": "pub use engine_timeline::{\n    ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,\n    CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation,\n    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,\n    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, FiredEvent, LoopRegion,\n    ReplayCancellationToken, ReplayCheckpointCache, ReplayCheckpointConfigError,\n    ReplayReconstruction, ReplayRequest, ReplayRequestController, TimelineCompileError,\n    TimelineEvaluation, TimelinePlayState, TimelinePlayer, TimelineSeek, TimelineTrackOutput,\n    TrackDescriptor, TrackRegistry, TrackSeekPolicy, VfxAction, compile_timeline,\n};\n"
+}
