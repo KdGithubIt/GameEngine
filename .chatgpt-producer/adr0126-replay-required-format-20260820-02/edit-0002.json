@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/timeline/src/replay.rs","old":"            let checkpoint_end = next_checkpoint_after(\n                current,\n                self.checkpoint_interval_ticks,\n            );","new":"            let checkpoint_end = next_checkpoint_after(current, self.checkpoint_interval_ticks);"}
