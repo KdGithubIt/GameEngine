@@ -1,0 +1,740 @@
+diff --git a/crates/animation/src/anim_graph.rs b/crates/animation/src/anim_graph.rs
+index adb0a6736a82e731ad54c88c919fd5b4783c3c89..04979b50b5c1e2b20efbe55fb6da96d0da6b3f1f 100644
+--- a/crates/animation/src/anim_graph.rs
++++ b/crates/animation/src/anim_graph.rs
+@@ -295,6 +295,7 @@ pub struct AnimGraphPlayer {
+     last_transition_index: Option<usize>,
+     transition_sequence: u64,
+     debug_source: Option<AnimationGraphDebugSource>,
++    external_override_depth: u32,
+ }
+ 
+ impl AnimGraphPlayer {
+@@ -330,6 +331,7 @@ impl AnimGraphPlayer {
+             last_transition_index: None,
+             transition_sequence: 0,
+             debug_source: None,
++            external_override_depth: 0,
+         }
+     }
+ 
+@@ -438,6 +440,23 @@ impl AnimGraphPlayer {
+         self.transition_sequence
+     }
+ 
++    /// Suspends graph evaluation while a top-level composition adapter owns
++    /// the sibling Animator. Nested overrides are reference counted so one
++    /// adapter cannot resume the graph while another override is still active.
++    pub fn begin_external_override(&mut self) {
++        self.external_override_depth = self.external_override_depth.saturating_add(1);
++    }
++
++    /// Releases one external Animator override.
++    pub fn end_external_override(&mut self) {
++        self.external_override_depth = self.external_override_depth.saturating_sub(1);
++    }
++
++    /// Returns whether graph evaluation is suspended by a composition adapter.
++    pub fn external_override_active(&self) -> bool {
++        self.external_override_depth != 0
++    }
++
+     /// Starts a motion registered in this player's resolved motion table.
+     pub fn play_clip(&self, animator: &mut Animator, motion_key: &str, fade_duration: f32) -> bool {
+         let Some(clip) = self.clip_handle(motion_key) else {
+@@ -481,6 +500,9 @@ impl AnimGraphPlayer {
+ /// consumed only after its target state has been resolved successfully.
+ pub fn anim_graph_system(mut query: engine_ecs::Query<(&mut AnimGraphPlayer, &mut Animator)>) {
+     for (_entity, (player, animator)) in query.iter_mut() {
++        if player.external_override_active() {
++            continue;
++        }
+         if !player.entered {
+             player.entered = true;
+             if let Some(state) = player.graph.states.get(player.current_state).cloned() {
+diff --git a/crates/animation/src/animation.rs b/crates/animation/src/animation.rs
+index 9bce3fde2bf6319d103930bd314afe260845a554..84b022c24e0a2f8916c9d8b5c78e44ed14599c4f 100644
+--- a/crates/animation/src/animation.rs
++++ b/crates/animation/src/animation.rs
+@@ -310,6 +310,25 @@ enum AnimatorDiscontinuity {
+     Seek,
+ }
+ 
++/// Runtime-only playback state captured while another composition layer
++/// temporarily drives an [`Animator`].
++///
++/// The snapshot contains no stable authoring data and is never serialized. It
++/// exists so Timeline and other top-level adapters can suspend playback
++/// without losing an in-progress crossfade or changing the Animation Graph's
++/// state after the temporary override ends.
++#[derive(Debug, Clone)]
++pub struct AnimatorPlaybackSnapshot {
++    clip: Handle<AnimationClip>,
++    state: AnimatorState,
++    time: f32,
++    looping: bool,
++    playback_speed: f32,
++    root_motion_delta: Vec3,
++    fade: Option<CrossfadeState>,
++    discontinuity: Option<AnimatorDiscontinuity>,
++}
++
+ /// An ECS component that plays an [`AnimationClip`] on an entity's
+ /// [`Transform`].
+ pub struct Animator {
+@@ -346,6 +365,7 @@ pub struct Animator {
+ /// Sampled and advanced by [`animation_system`] alongside the target clip
+ /// (`Animator::clip`/`Animator::time`) so a fade source in motion (e.g. a
+ /// walk cycle) does not freeze its feet mid-fade.
++#[derive(Debug, Clone)]
+ struct CrossfadeState {
+     /// The clip being faded out of.
+     clip: Handle<AnimationClip>,
+@@ -380,6 +400,36 @@ impl Animator {
+         }
+     }
+ 
++    /// Captures the runtime playback state for a temporary composition-layer
++    /// override.
++    ///
++    /// The returned value is session-local and must never be serialized.
++    pub fn playback_snapshot(&self) -> AnimatorPlaybackSnapshot {
++        AnimatorPlaybackSnapshot {
++            clip: self.clip,
++            state: self.state,
++            time: self.time,
++            looping: self.looping,
++            playback_speed: self.playback_speed,
++            root_motion_delta: self.root_motion_delta,
++            fade: self.fade.clone(),
++            discontinuity: self.discontinuity,
++        }
++    }
++
++    /// Restores a runtime playback snapshot captured by
++    /// [`Animator::playback_snapshot`].
++    pub fn restore_playback_snapshot(&mut self, snapshot: AnimatorPlaybackSnapshot) {
++        self.clip = snapshot.clip;
++        self.state = snapshot.state;
++        self.time = snapshot.time;
++        self.looping = snapshot.looping;
++        self.playback_speed = snapshot.playback_speed;
++        self.root_motion_delta = snapshot.root_motion_delta;
++        self.fade = snapshot.fade;
++        self.discontinuity = snapshot.discontinuity;
++    }
++
+     /// Jumps playback to `seconds`, declaring a seek discontinuity rather
+     /// than motion.
+     ///
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+index ad5c1f405a13117316bad341987291b688cf7bd1..e1635990792382ad22f2c660732277dc29943dad 100644
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -32,6 +32,9 @@ use crate::rig_pose::{publish_final_rig_pose_system, rig_pose_clear_transient_sy
+ use crate::secondary_motion::{
+     SecondaryMotionWorlds, secondary_motion_presentation_system, secondary_motion_system,
+ };
++use crate::timeline::{
++    TimelineCameraOverride, TimelineDiagnostics, TimelineEvents, timeline_fixed_system,
++};
+ use crate::transform::transform_propagation_system;
+ use engine_ecs::{SystemDescriptor, SystemOrigin, SystemRegistrationError};
+ 
+@@ -52,6 +55,19 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+     if app.world().get_resource::<AnimationEvents>().is_none() {
+         app.insert_resource(AnimationEvents::default());
+     }
++    if app
++        .world()
++        .get_resource::<TimelineCameraOverride>()
++        .is_none()
++    {
++        app.insert_resource(TimelineCameraOverride::default());
++    }
++    if app.world().get_resource::<TimelineEvents>().is_none() {
++        app.insert_resource(TimelineEvents::default());
++    }
++    if app.world().get_resource::<TimelineDiagnostics>().is_none() {
++        app.insert_resource(TimelineDiagnostics::default());
++    }
+     if app.world().get_resource::<PoseArena>().is_none() {
+         app.insert_resource(PoseArena::new());
+     }
+@@ -238,6 +254,18 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+         ),
+         anim_graph_system,
+     )?;
++    app.ecs_mut().try_add_exclusive_fixed_system_with_descriptor(
++        engine_system(
++            "engine.timeline",
++            "Timeline",
++            "Advances Timeline players and applies cross-domain track outputs.",
++        )
++        .try_before("engine.animation_graph")
++        .expect("built-in system IDs are valid")
++        .try_before("engine.animation")
++        .expect("built-in system IDs are valid"),
++        timeline_fixed_system,
++    )?;
+     app.try_add_fixed_system_with_descriptor(
+         engine_system(
+             "engine.animation",
+@@ -491,6 +519,7 @@ mod tests {
+             .collect();
+         for required in [
+             "engine.rig_pose_clear_transient",
++            "engine.timeline",
+             "engine.animation_graph",
+             "engine.animation",
+             "engine.root_motion_motor",
+@@ -517,6 +546,18 @@ mod tests {
+                 .map(|info| &info.descriptor)
+                 .unwrap()
+         };
++        assert!(
++            descriptor("engine.timeline")
++                .before()
++                .iter()
++                .any(|id| id.as_str() == "engine.animation_graph")
++        );
++        assert!(
++            descriptor("engine.timeline")
++                .before()
++                .iter()
++                .any(|id| id.as_str() == "engine.animation")
++        );
+         assert!(
+             descriptor("engine.animation")
+                 .after()
+@@ -601,6 +642,19 @@ mod tests {
+                 .get_resource::<AnimationEvents>()
+                 .is_some()
+         );
++        assert!(
++            editor_play
++                .world()
++                .get_resource::<TimelineCameraOverride>()
++                .is_some()
++        );
++        assert!(editor_play.world().get_resource::<TimelineEvents>().is_some());
++        assert!(
++            editor_play
++                .world()
++                .get_resource::<TimelineDiagnostics>()
++                .is_some()
++        );
+         assert!(
+             editor_play
+                 .world()
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index 35b219a576e9faa6b621613e04b150eb208fc107..ec55aabb88452a5a1b359045b94ebfd376a2d456 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -14,10 +14,15 @@ pub use engine_timeline::{
+     compile_timeline,
+ };
+ 
++use crate::anim_graph::AnimGraphPlayer;
++use crate::animation::{Animator, AnimatorPlaybackSnapshot, AnimatorState};
++use crate::script_api::RuntimeEntityIdentity;
++use crate::time::FixedTime;
+ use crate::transform::Transform;
+-use engine_authoring::{EntityId, TimelineProperty, TimelineTick};
++use engine_authoring::{EntityId, TimelineProperty, TimelineTick, TimelineTrackId};
+ use engine_ecs::{Entity, World};
+ use std::collections::BTreeMap;
++use std::convert::Infallible;
+ use std::sync::Arc;
+ 
+ /// Largest number of Timeline events retained for one fixed step.
+@@ -40,6 +45,7 @@ pub struct TimelinePlayerComponent {
+     pub autoplay: bool,
+     /// Adapter tokens kept between evaluations.
+     pub tokens: AdapterTokens,
++    animation_overrides: BTreeMap<TimelineTrackId, TimelineAnimationOverride>,
+ }
+ 
+ impl TimelinePlayerComponent {
+@@ -50,10 +56,17 @@ impl TimelinePlayerComponent {
+             player: TimelinePlayer::new(),
+             autoplay: false,
+             tokens: AdapterTokens::default(),
++            animation_overrides: BTreeMap::new(),
+         }
+     }
+ }
+ 
++#[derive(Debug, Clone)]
++struct TimelineAnimationOverride {
++    target: Entity,
++    snapshot: AnimatorPlaybackSnapshot,
++}
++
+ /// Runtime binding from authoring entity identity to a live runtime entity.
+ ///
+ /// Timeline bindings are authored against stable identity, so the composition
+@@ -64,6 +77,17 @@ pub struct TimelineBindings {
+ }
+ 
+ impl TimelineBindings {
++    fn from_world(world: &mut World) -> Self {
++        let mut bindings = Self::default();
++        let Ok(query) = world.query::<&RuntimeEntityIdentity>() else {
++            return bindings;
++        };
++        for (entity, identity) in query.iter() {
++            bindings.bind(&identity.authoring_id, entity);
++        }
++        bindings
++    }
++
+     /// Records the runtime entity spawned for one authoring identity.
+     pub fn bind(&mut self, authoring: &EntityId, entity: Entity) {
+         self.entities
+@@ -98,6 +122,13 @@ pub enum TimelineBindingDiagnostic {
+         /// Component the track requires.
+         component: &'static str,
+     },
++    /// The bound Animation Set does not expose the authored motion slot.
++    MissingMotionSlot {
++        /// Authoring identity that resolved.
++        authoring: String,
++        /// Motion slot requested by the Timeline clip.
++        motion_slot: String,
++    },
+ }
+ 
+ /// Transient camera-selection override installed by an active Camera Cut clip.
+@@ -279,6 +310,41 @@ pub fn advance_timelines(
+     }
+ }
+ 
++/// Shared fixed-step Timeline bridge used by Editor Play and packaged Player.
++///
++/// Timeline outputs can target arbitrary authoring identities and several
++/// runtime domains, so the final `engine` composition layer owns this
++/// exclusive bridge rather than forcing those dependencies into
++/// `engine-timeline`. Stable bindings are rebuilt from the runtime identities
++/// produced by scene conversion; runtime entity handles are never persisted.
++pub fn timeline_fixed_system(world: &mut World) -> Result<(), Infallible> {
++    let delta_seconds = world
++        .get_resource::<FixedTime>()
++        .map_or(0.0, |time| time.fixed_delta);
++    let bindings = TimelineBindings::from_world(world);
++    let mut camera_override = world
++        .remove_resource::<TimelineCameraOverride>()
++        .unwrap_or_default();
++    let mut events = world.remove_resource::<TimelineEvents>().unwrap_or_default();
++    let mut diagnostics = world
++        .remove_resource::<TimelineDiagnostics>()
++        .unwrap_or_default();
++
++    advance_timelines(
++        delta_seconds,
++        world,
++        &bindings,
++        &mut camera_override,
++        &mut events,
++        &mut diagnostics,
++    );
++
++    world.insert_resource(camera_override);
++    world.insert_resource(events);
++    world.insert_resource(diagnostics);
++    Ok(())
++}
++
+ /// Applies one already-computed evaluation to the world.
+ pub fn apply_evaluation(
+     source: Entity,
+@@ -289,6 +355,20 @@ pub fn apply_evaluation(
+     events: &mut TimelineEvents,
+     diagnostics: &mut TimelineDiagnostics,
+ ) {
++    let mut animation_overrides = world
++        .get_component_mut::<TimelinePlayerComponent>(source)
++        .map(|component| std::mem::take(&mut component.animation_overrides))
++        .unwrap_or_default();
++
++    // Restore in reverse track order so overlapping animation tracks unwind in
++    // the opposite order they were applied. A later track may have captured
++    // the earlier track's override as its suspended state.
++    for exited in evaluation.exited.iter().rev() {
++        if let Some(override_state) = animation_overrides.remove(&exited.track) {
++            restore_animation_override(world, override_state);
++        }
++    }
++
+     for fired in &evaluation.events {
+         events.push(TimelineEventRecord {
+             event: fired.event.clone(),
+@@ -332,15 +412,109 @@ pub fn apply_evaluation(
+                     source,
+                 });
+             }
+-            // Animation, Audio, and VFX adapters land with the runtime controls
+-            // their ADRs define. Until then the evaluation still reports them,
+-            // so nothing silently claims to have played a cue or an effect.
+-            TimelineTrackOutput::Animation { .. }
+-            | TimelineTrackOutput::Audio { .. }
++            TimelineTrackOutput::Animation {
++                entity,
++                motion_slot,
++                speed,
++                looping,
++            } => {
++                let Some(authoring) = entity else {
++                    continue;
++                };
++                let Some(target) = bindings.resolve(authoring) else {
++                    diagnostics.push(TimelineBindingDiagnostic::UnresolvedEntity {
++                        authoring: authoring.as_stable_id().as_str().to_owned(),
++                    });
++                    continue;
++                };
++                let Some(graph_player) = world.get_component::<AnimGraphPlayer>(target) else {
++                    diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
++                        authoring: authoring.as_stable_id().as_str().to_owned(),
++                        component: "AnimGraphPlayer",
++                    });
++                    continue;
++                };
++                let Some(clip) = graph_player.clip_handle(motion_slot) else {
++                    diagnostics.push(TimelineBindingDiagnostic::MissingMotionSlot {
++                        authoring: authoring.as_stable_id().as_str().to_owned(),
++                        motion_slot: motion_slot.clone(),
++                    });
++                    continue;
++                };
++                let raw_time = (active.offset.max(0) as f32
++                    / CompiledTimeline::ticks_per_second() as f32)
++                    * *speed;
++                let sample_time = world
++                    .get_resource::<crate::asset::Assets<crate::animation::AnimationClip>>()
++                    .and_then(|clips| clips.get(&clip))
++                    .map_or(raw_time, |clip_asset| {
++                        let duration = clip_asset.duration.max(0.0);
++                        if *looping && duration > f32::EPSILON {
++                            raw_time.rem_euclid(duration)
++                        } else {
++                            raw_time.clamp(0.0, duration)
++                        }
++                    });
++                let new_override = !animation_overrides.contains_key(&active.track);
++                {
++                    let Some(animator) = world.get_component_mut::<Animator>(target) else {
++                        diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
++                            authoring: authoring.as_stable_id().as_str().to_owned(),
++                            component: "Animator",
++                        });
++                        continue;
++                    };
++
++                    if new_override {
++                        animation_overrides.insert(
++                            active.track.clone(),
++                            TimelineAnimationOverride {
++                                target,
++                                snapshot: animator.playback_snapshot(),
++                            },
++                        );
++                    }
++                    if animator.clip != clip || animator.is_fading() {
++                        animator.crossfade_to(clip, 0.0);
++                    }
++                    animator.state = AnimatorState::Playing;
++                    animator.time = sample_time;
++                    animator.looping = *looping;
++                    // Timeline owns this clock while the clip is active. The
++                    // animation system still samples the pose later in this same
++                    // fixed step, but a zero multiplier prevents a second advance.
++                    animator.playback_speed = 0.0;
++                }
++                if new_override
++                    && let Some(graph_player) = world.get_component_mut::<AnimGraphPlayer>(target)
++                {
++                    graph_player.begin_external_override();
++                }
++            }
++            // Audio and VFX remain deferred until ADR 0122/0125 expose the
++            // stable runtime controls ADR 0126 requires.
++            TimelineTrackOutput::Audio { .. }
+             | TimelineTrackOutput::Vfx { .. }
+             | TimelineTrackOutput::Event => {}
+         }
+     }
++
++    if let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(source) {
++        component.animation_overrides = animation_overrides;
++    } else {
++        for override_state in animation_overrides.into_values().rev() {
++            restore_animation_override(world, override_state);
++        }
++    }
++}
++
++fn restore_animation_override(world: &mut World, override_state: TimelineAnimationOverride) {
++    if let Some(animator) = world.get_component_mut::<Animator>(override_state.target) {
++        animator.restore_playback_snapshot(override_state.snapshot);
++    }
++    if let Some(graph_player) = world.get_component_mut::<AnimGraphPlayer>(override_state.target) {
++        graph_player.end_external_override();
++    }
+ }
+ 
+ /// Copied Timeline state a project system may read.
+@@ -409,34 +583,54 @@ pub fn apply_timeline_control(
+     entity: Entity,
+     control: TimelineControl,
+ ) -> Result<(), TimelineControlError> {
+-    let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+-        return Err(TimelineControlError::MissingPlayer);
+-    };
+-    match control {
+-        TimelineControl::Play => component.player.play(),
+-        TimelineControl::Pause => component.player.pause(),
+-        TimelineControl::Stop => {
+-            component.player.stop();
+-            component.tokens.clear();
+-        }
+-        TimelineControl::Seek { tick } => {
+-            let timeline = Arc::clone(&component.timeline);
+-            component
+-                .player
+-                .seek(&timeline, tick, TimelineSeek::Playback);
+-        }
+-        TimelineControl::SetRate { rate } => {
+-            if !component.player.set_rate(rate) {
+-                return Err(TimelineControlError::InvalidRate);
++    let mut animation_overrides = Vec::new();
++    {
++        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
++            return Err(TimelineControlError::MissingPlayer);
++        };
++        match control {
++            TimelineControl::Play => component.player.play(),
++            TimelineControl::Pause => component.player.pause(),
++            TimelineControl::Stop => {
++                component.player.stop();
++                component.tokens.clear();
++                animation_overrides = std::mem::take(&mut component.animation_overrides)
++                    .into_values()
++                    .rev()
++                    .collect();
++            }
++            TimelineControl::Seek { tick } => {
++                // A discontinuous Timeline seek abandons the previous adapter
++                // interval. Restore the graph-owned Animator first; the next
++                // evaluation captures a fresh snapshot if the seek lands
++                // inside another Animation clip.
++                animation_overrides = std::mem::take(&mut component.animation_overrides)
++                    .into_values()
++                    .rev()
++                    .collect();
++                let timeline = Arc::clone(&component.timeline);
++                component
++                    .player
++                    .seek(&timeline, tick, TimelineSeek::Playback);
++            }
++            TimelineControl::SetRate { rate } => {
++                if !component.player.set_rate(rate) {
++                    return Err(TimelineControlError::InvalidRate);
++                }
+             }
+         }
+     }
++    for override_state in animation_overrides {
++        restore_animation_override(world, override_state);
++    }
+     Ok(())
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::animation::AnimationClip;
++    use crate::asset::Assets;
+     use engine_authoring::{
+         TimelineBinding, TimelineClip, TimelineClipId, TimelineClipPayload, TimelineDocument,
+         TimelineInterpolation, TimelineKey, TimelineMarker, TimelineMarkerId, TimelineTrack,
+@@ -504,6 +698,31 @@ mod tests {
+         document
+     }
+ 
++    fn animation_document(entity: &EntityId) -> TimelineDocument {
++        let mut document = TimelineDocument::new(TimelineTick(48_000));
++        document.tracks.push(TimelineTrack {
++            id: TimelineTrackId::generate(),
++            kind: TimelineTrackKind::Animation,
++            name: "Motion".to_owned(),
++            enabled: true,
++            binding: TimelineBinding {
++                entity: Some(entity.clone()),
++                asset: None,
++            },
++            clips: vec![TimelineClip {
++                id: TimelineClipId::generate(),
++                start: TimelineTick::ZERO,
++                end: TimelineTick(48_000),
++                payload: TimelineClipPayload::Animation {
++                    motion_slot: "walk".to_owned(),
++                    speed: 2.0,
++                    looping: false,
++                },
++            }],
++        });
++        document
++    }
++
+     #[test]
+     fn a_property_track_writes_only_the_field_it_declares() {
+         let mut world = World::new();
+@@ -542,6 +761,100 @@ mod tests {
+         assert!(diagnostics.iter().next().is_none());
+     }
+ 
++    #[test]
++    fn animation_track_samples_motion_slot_time_and_restores_graph_playback() {
++        let mut world = World::new();
++        let target = world.spawn().expect("target");
++        let authoring = EntityId::generate();
++        let mut bindings = TimelineBindings::default();
++        bindings.bind(&authoring, target);
++
++        let mut clips = Assets::<AnimationClip>::default();
++        let idle = clips.add(AnimationClip {
++            duration: 4.0,
++            channels: Vec::new(),
++            morph_channels: Vec::new(),
++            events: Vec::new(),
++            skeleton: None,
++            skeleton_identity: None,
++            root_bone: None,
++            contacts: Vec::new(),
++        });
++        let walk = clips.add(AnimationClip {
++            duration: 2.0,
++            channels: Vec::new(),
++            morph_channels: Vec::new(),
++            events: Vec::new(),
++            skeleton: None,
++            skeleton_identity: None,
++            root_bone: None,
++            contacts: Vec::new(),
++        });
++        let mut animator = Animator::playing(idle);
++        animator.time = 0.75;
++        animator.set_looping(true);
++        assert!(animator.set_playback_speed(1.25));
++        world.add_component(target, animator).expect("animator");
++
++        let graph = engine_authoring::CompiledAnimGraph {
++            states: Vec::new(),
++            transitions: Vec::new(),
++            entry_state: 0,
++            compile_warnings: Vec::new(),
++        };
++        let mut motion_slots = BTreeMap::new();
++        motion_slots.insert("walk".to_owned(), walk);
++        world
++            .add_component(target, AnimGraphPlayer::new(graph, motion_slots))
++            .expect("graph player");
++
++        let timeline =
++            Arc::new(compile_timeline(&animation_document(&authoring)).expect("compile"));
++        let player = world.spawn().expect("player");
++        let mut component = TimelinePlayerComponent::new(timeline);
++        component.autoplay = true;
++        world.add_component(player, component).expect("player component");
++
++        let mut camera_override = TimelineCameraOverride::default();
++        let mut events = TimelineEvents::default();
++        let mut diagnostics = TimelineDiagnostics::default();
++        advance_timelines(
++            0.25,
++            &mut world,
++            &bindings,
++            &mut camera_override,
++            &mut events,
++            &mut diagnostics,
++        );
++
++        let animator = world.get_component::<Animator>(target).expect("animator");
++        assert_eq!(animator.clip, walk);
++        assert!((animator.time - 0.5).abs() < 1.0e-6);
++        assert_eq!(animator.playback_speed, 0.0);
++        assert!(!animator.looping);
++        assert!(diagnostics.iter().next().is_none());
++        assert!(
++            world
++                .get_component::<AnimGraphPlayer>(target)
++                .expect("graph player")
++                .external_override_active()
++        );
++
++        apply_timeline_control(&mut world, player, TimelineControl::Stop).expect("stop");
++        let animator = world.get_component::<Animator>(target).expect("restored animator");
++        assert_eq!(animator.clip, idle);
++        assert!((animator.time - 0.75).abs() < 1.0e-6);
++        assert!((animator.playback_speed - 1.25).abs() < 1.0e-6);
++        assert!(animator.looping);
++        assert_eq!(animator.state, AnimatorState::Playing);
++        assert!(
++            !world
++                .get_component::<AnimGraphPlayer>(target)
++                .expect("graph player")
++                .external_override_active()
++        );
++    }
++
+     #[test]
+     fn a_marker_crossing_reaches_the_bounded_host_event_queue() {
+         let mut world = World::new();
+@@ -773,6 +1086,25 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn runtime_bindings_resolve_scene_identity_without_persisting_runtime_handles() {
++        let mut world = World::new();
++        let target = world.spawn().expect("target");
++        let authoring = EntityId::generate();
++        world
++            .add_component(
++                target,
++                RuntimeEntityIdentity {
++                    authoring_id: authoring.clone(),
++                    name: "Target".to_owned(),
++                },
++            )
++            .expect("identity");
++
++        let bindings = TimelineBindings::from_world(&mut world);
++        assert_eq!(bindings.resolve(&authoring), Some(target));
++    }
++
+     #[test]
+     fn the_event_queue_is_bounded_and_reports_what_it_dropped() {
+         let mut events = TimelineEvents::default();
+diff --git a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+index 14b422b6d05c3cffbe4e766e88f7916e8c9622f7..2c0ac763f346c5ad5b739c0529124cda52733f9a 100644
+--- a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
++++ b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+@@ -279,10 +279,12 @@ landed so far, on 2026-08-20:
+   and copied views; a Sequencer workspace with transport, track and clip
+   editing, markers, frame snapping, seek-policy presentation, and undo; and
+   Editor, CLI, and MCP parity through the shared typed-document capability
+-  registry.
+-- **Not yet landed:** the Animation track adapter that drives Animation Set
+-  motion slots; the Audio and VFX adapters, which ADR 0126 §14 already defers
+-  until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
++  registry; the Animation track adapter that resolves Animation Set motion
++  slots, drives exact Timeline-owned sample time, and restores suspended
++  Animator/Animation Graph playback state; and shared fixed-step Timeline
++  registration for Editor Play and packaged Player using scene runtime identity.
++- **Not yet landed:** the Audio and VFX adapters, which ADR 0126 §14 already
++  defers until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
+   the persistent Scene View world; the curve editor and `ReplayRequired`
+   checkpoint reconstruction; and the packaged-player proving project.
+ 
