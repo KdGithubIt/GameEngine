@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    #[test]\n    fn hosted_preferences_exclude_sensitive_auth_state() {\n",
+  "new": "    #[test]\n    fn logical_ai_identity_is_separate_from_execution_route_identity() {\n        assert_eq!(\n            ai_entry_id(SelectedAi::Agent(ExternalAgentProviderKind::Codex), \"\"),\n            \"agent:codex\"\n        );\n        assert_eq!(\n            ai_entry_id(\n                SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode),\n                \"\",\n            ),\n            \"agent:claude-code\"\n        );\n        let managed = SelectedAi::Model(ModelBackendPreference::ManagedLocal);\n        assert_eq!(\n            ai_entry_id(managed, \"sha256-model-a\"),\n            \"model:managed_local:sha256-model-a\"\n        );\n        assert_eq!(ai_execution_route_key(managed), \"model:managed_local\");\n    }\n\n    #[test]\n    fn hosted_preferences_exclude_sensitive_auth_state() {\n"
+}
