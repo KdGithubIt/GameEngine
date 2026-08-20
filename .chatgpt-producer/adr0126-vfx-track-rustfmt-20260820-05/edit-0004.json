@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline.rs",
+  "old": "            vfx::apply_seek(\n                &timeline,\n                seek,\n                world,\n                bindings,\n                &mut tokens,\n                diagnostics,\n            );",
+  "new": "            vfx::apply_seek(&timeline, seek, world, bindings, &mut tokens, diagnostics);"
+}
