@@ -49,8 +49,29 @@ impl AuthoringWindows {
 
     /// Loads the deterministic Sequencer fixture used by visual validation.
     #[cfg(feature = "visual-validation")]
-    pub fn prepare_sequencer_visual_validation(&mut self) {
-        self.sequencer.prepare_visual_validation();
+    pub fn prepare_sequencer_visual_validation(
+        &mut self,
+        subject: Option<engine_authoring::EntityId>,
+    ) {
+        self.sequencer.prepare_visual_validation(subject);
+    }
+
+    /// Advances Sequencer preview state and publishes it to the persistent Scene View.
+    ///
+    /// Returns `true` while the Sequencer clock is playing so the Editor shell
+    /// can keep requesting frames even when no pointer or keyboard input occurs.
+    pub fn update_sequencer_preview(
+        &mut self,
+        app: &mut crate::EditorApp,
+        delta_seconds: f32,
+    ) -> bool {
+        let evaluation = self
+            .sequencer_open
+            .then(|| self.sequencer.advance_preview(delta_seconds))
+            .flatten();
+        let playing = self.sequencer_open && self.sequencer.preview_is_playing();
+        app.set_sequencer_timeline_preview(evaluation);
+        playing
     }
 
     /// Opens one Timeline document in the Sequencer workspace.
@@ -92,17 +113,22 @@ impl AuthoringWindows {
                 .with(engine_authoring::AuthoringPermission::ProjectDataWrite)
                 .with(engine_authoring::AuthoringPermission::AssetWrite);
             let sequencer = &mut self.sequencer;
-            egui::Window::new("Sequencer")
+            let window = egui::Window::new("Sequencer")
                 .id(egui::Id::new("embedded_sequencer"))
                 .open(&mut self.sequencer_open)
                 .default_width(1_180.0)
                 .default_height(720.0)
-                .resizable(true)
-                .show(context, |ui| {
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        sequencer.show(ui, &permissions);
-                    });
+                .resizable(true);
+            #[cfg(feature = "visual-validation")]
+            let window = window
+                .default_width(610.0)
+                .default_height(620.0)
+                .default_pos(egui::pos2(650.0, 42.0));
+            window.show(context, |ui| {
+                egui::ScrollArea::both().show(ui, |ui| {
+                    sequencer.show(ui, &permissions);
                 });
+            });
         }
         if self.vfx_open {
             let vfx_open = &mut self.vfx_open;
