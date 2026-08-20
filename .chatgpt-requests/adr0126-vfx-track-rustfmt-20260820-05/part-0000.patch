@@ -1,0 +1,107 @@
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index d0c875cd67871f79ef58c0b0f87f01dab797a2cb..425d2717adcea53c7eb57c622bd9fe2a9ddfa95f 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -283,14 +283,7 @@ pub fn advance_timelines(
+         };
+ 
+         if let Some(seek) = pending_vfx_seek {
+-            vfx::apply_seek(
+-                &timeline,
+-                seek,
+-                world,
+-                bindings,
+-                &mut tokens,
+-                diagnostics,
+-            );
++            vfx::apply_seek(&timeline, seek, world, bindings, &mut tokens, diagnostics);
+             vfx::mark_seek_applied(&mut tokens, seek);
+         }
+         vfx::apply_evaluation(
+diff --git a/crates/engine/src/timeline/vfx/replay.rs b/crates/engine/src/timeline/vfx/replay.rs
+index f5d86f06cc27796150337ceb5e89cfca0414c0ea..d1ffac6035f65d97aa1c8b0a7d0dc8fc80eb92d3 100644
+--- a/crates/engine/src/timeline/vfx/replay.rs
++++ b/crates/engine/src/timeline/vfx/replay.rs
+@@ -1,6 +1,6 @@
+ use super::{
+-    set_play_owned, PendingSeek, TimelineBindingDiagnostic, TimelineBindings, TimelineDiagnostics,
+-    TimelinePlayerComponent, APPLIED_SEEK_GENERATION, PENDING_SEEK_GENERATION,
++    APPLIED_SEEK_GENERATION, PENDING_SEEK_GENERATION, PendingSeek, TimelineBindingDiagnostic,
++    TimelineBindings, TimelineDiagnostics, TimelinePlayerComponent, set_play_owned,
+ };
+ use crate::transform::GlobalTransform;
+ use crate::vfx::VfxPlayer;
+@@ -10,14 +10,13 @@ use engine_timeline::{
+     AdapterTokens, CompiledClipPayload, CompiledTimeline, TimelinePlayState, VfxAction,
+ };
+ 
+-pub(super) fn mark_seek(component: &mut TimelinePlayerComponent) {
+-    component.tokens.set(
+-        PENDING_SEEK_GENERATION,
+-        component.player.generation(),
+-    );
++pub(in crate::timeline) fn mark_seek(component: &mut TimelinePlayerComponent) {
++    component
++        .tokens
++        .set(PENDING_SEEK_GENERATION, component.player.generation());
+ }
+ 
+-pub(super) fn pending_seek(component: &TimelinePlayerComponent) -> Option<PendingSeek> {
++pub(in crate::timeline) fn pending_seek(component: &TimelinePlayerComponent) -> Option<PendingSeek> {
+     let generation = component.player.generation();
+     let pending = component.tokens.get(PENDING_SEEK_GENERATION);
+     let applied = component.tokens.get(APPLIED_SEEK_GENERATION);
+@@ -28,11 +27,11 @@ pub(super) fn pending_seek(component: &TimelinePlayerComponent) -> Option<Pendin
+     })
+ }
+ 
+-pub(super) fn mark_seek_applied(tokens: &mut AdapterTokens, seek: PendingSeek) {
++pub(in crate::timeline) fn mark_seek_applied(tokens: &mut AdapterTokens, seek: PendingSeek) {
+     tokens.set(APPLIED_SEEK_GENERATION, seek.generation);
+ }
+ 
+-pub(super) fn apply_seek(
++pub(in crate::timeline) fn apply_seek(
+     timeline: &CompiledTimeline,
+     seek: PendingSeek,
+     world: &mut World,
+diff --git a/crates/engine/src/timeline/vfx/runtime.rs b/crates/engine/src/timeline/vfx/runtime.rs
+index b76b162c0a5cacda17f8d8425c508341372ef8e8..834ae697d19d3e8926d7cee5295e0f54c75be8b8 100644
+--- a/crates/engine/src/timeline/vfx/runtime.rs
++++ b/crates/engine/src/timeline/vfx/runtime.rs
+@@ -1,5 +1,5 @@
+ use super::{
+-    apply_action, play_owned, set_play_owned, stop_track, TimelineBindings, TimelineDiagnostics,
++    TimelineBindings, TimelineDiagnostics, apply_action, play_owned, set_play_owned, stop_track,
+ };
+ use engine_authoring::TimelineTick;
+ use engine_ecs::World;
+@@ -7,7 +7,7 @@ use engine_timeline::{
+     AdapterTokens, CompiledClipPayload, CompiledTimeline, TimelineEvaluation, VfxAction,
+ };
+ 
+-pub(super) fn apply_evaluation(
++pub(in crate::timeline) fn apply_evaluation(
+     timeline: &CompiledTimeline,
+     evaluation: &TimelineEvaluation,
+     previous_tick: TimelineTick,
+diff --git a/crates/engine/src/timeline/vfx/tests.rs b/crates/engine/src/timeline/vfx/tests.rs
+index a6fb9dba2622a0467add679e53fb033de15a3d06..10be161be531268b9a5497d3eea57aad1de6340f 100644
+--- a/crates/engine/src/timeline/vfx/tests.rs
++++ b/crates/engine/src/timeline/vfx/tests.rs
+@@ -86,14 +86,7 @@ fn step(
+     events: &mut TimelineEvents,
+     diagnostics: &mut TimelineDiagnostics,
+ ) {
+-    advance_timelines(
+-        seconds,
+-        world,
+-        bindings,
+-        camera,
+-        events,
+-        diagnostics,
+-    );
++    advance_timelines(seconds, world, bindings, camera, events, diagnostics);
+ }
+ 
+ #[test]
