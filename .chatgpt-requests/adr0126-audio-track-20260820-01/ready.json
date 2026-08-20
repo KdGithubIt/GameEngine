@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-audio-track-20260820-01",
+  "target_branch": "chatgpt/gameengine-adr0126-audio-track",
+  "expected_head_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "patch_sha256": "d07586060ad5b65f4a31927c9277873d5b5be8adcb45f0450eda21379d9d0e57",
+  "patch_bytes": 28598,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete Timeline Audio Track adapter",
+  "pr_title": "GameEngine: complete Timeline Audio Track adapter",
+  "pr_body": "## Summary\n\n- add cursor-aware managed one-shot startup in the ADR 0122 audio runtime owner\n- compose Timeline Audio Play/Stop/seek/fade lifecycle through managed voices and existing ADR 0122 spatial mixing\n- mark Audio tracks seekable and cover seek reconstruction plus fade/stop semantics with regression tests\n\nVisual validation is not required because this change is runtime/audio logic only."
+}
