@@ -16,10 +16,12 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 3;
+pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 4;
 const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
 pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
 pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v2";
+pub(crate) const RAW_MODEL_BENCHMARK_TASK_ID: &str = "raw_model_generation_v1";
+pub(crate) const RAW_MODEL_COMPLETION_CRITERIA: &[&str] = &["model_response_completed"];
 pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
 const CATALOG_SCHEMA_VERSION: u32 = 1;
 
@@ -100,6 +102,121 @@ pub(crate) struct BenchmarkModelIdentity {
     pub(crate) quantization: TelemetryValue<String>,
     pub(crate) representation_size_bytes: TelemetryValue<u64>,
     pub(crate) backend_runtime_version: TelemetryValue<String>,
+}
+
+/// Explicit execution lane introduced by benchmark schema v4.
+///
+/// Records written before v4 deliberately deserialize with no lane instead of
+/// being reinterpreted as one of these migration-era benchmark classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BenchmarkLane {
+    RawModel,
+    AgentHarness,
+    CodingAgent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BenchmarkAgentRuntimeIdentity {
+    pub(crate) runtime_id: String,
+    pub(crate) runtime_version: TelemetryValue<String>,
+}
+
+impl BenchmarkAgentRuntimeIdentity {
+    fn from_acp(identity: &crate::acp_agent_runtime::AcpRuntimeIdentity) -> Self {
+        let runtime_version = identity
+            .agent_version
+            .as_ref()
+            .filter(|version| !version.trim().is_empty())
+            .cloned()
+            .map(TelemetryValue::Measured)
+            .unwrap_or(TelemetryValue::Unavailable);
+        Self {
+            runtime_id: identity.agent_name.clone(),
+            runtime_version,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BenchmarkHarnessIdentity {
+    pub(crate) harness_id: String,
+    pub(crate) harness_version: String,
+    pub(crate) adapter_version: TelemetryValue<String>,
+    pub(crate) acp_protocol_version: TelemetryValue<u16>,
+    pub(crate) mcp_tool_contract: TelemetryValue<String>,
+    pub(crate) permission_profile: TelemetryValue<String>,
+}
+
+#[allow(dead_code)]
+impl BenchmarkHarnessIdentity {
+    pub(crate) fn new(harness_id: impl Into<String>, harness_version: impl Into<String>) -> Self {
+        Self {
+            harness_id: harness_id.into(),
+            harness_version: harness_version.into(),
+            adapter_version: TelemetryValue::Unavailable,
+            acp_protocol_version: TelemetryValue::Unavailable,
+            mcp_tool_contract: TelemetryValue::Unavailable,
+            permission_profile: TelemetryValue::Unavailable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BenchmarkRuntimeIdentity {
+    pub(crate) lane: BenchmarkLane,
+    pub(crate) harness: BenchmarkHarnessIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agent_runtime: Option<BenchmarkAgentRuntimeIdentity>,
+}
+
+#[allow(dead_code)]
+impl BenchmarkRuntimeIdentity {
+    pub(crate) fn raw_model(harness: BenchmarkHarnessIdentity) -> Self {
+        Self {
+            lane: BenchmarkLane::RawModel,
+            harness,
+            agent_runtime: None,
+        }
+    }
+
+    pub(crate) fn agent_harness(
+        harness: BenchmarkHarnessIdentity,
+        agent_runtime: BenchmarkAgentRuntimeIdentity,
+    ) -> Self {
+        Self {
+            lane: BenchmarkLane::AgentHarness,
+            harness,
+            agent_runtime: Some(agent_runtime),
+        }
+    }
+
+    pub(crate) fn coding_agent(
+        harness: BenchmarkHarnessIdentity,
+        agent_runtime: BenchmarkAgentRuntimeIdentity,
+    ) -> Self {
+        Self {
+            lane: BenchmarkLane::CodingAgent,
+            harness,
+            agent_runtime: Some(agent_runtime),
+        }
+    }
+
+    pub(crate) fn acp_agent_harness(
+        mut harness: BenchmarkHarnessIdentity,
+        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
+    ) -> Self {
+        harness.acp_protocol_version = TelemetryValue::Measured(identity.protocol_version);
+        Self::agent_harness(harness, BenchmarkAgentRuntimeIdentity::from_acp(identity))
+    }
+
+    pub(crate) fn acp_coding_agent(
+        mut harness: BenchmarkHarnessIdentity,
+        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
+    ) -> Self {
+        harness.acp_protocol_version = TelemetryValue::Measured(identity.protocol_version);
+        Self::coding_agent(harness, BenchmarkAgentRuntimeIdentity::from_acp(identity))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -458,6 +575,8 @@ pub(crate) struct BenchmarkExecutionIdentity {
     pub(crate) fixture_instance_id: String,
     pub(crate) sampling_profile: String,
     pub(crate) seed_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,6 +585,8 @@ pub(crate) struct BenchmarkIdentity {
     pub(crate) task_id: String,
     pub(crate) harness_version: String,
     pub(crate) runtime_harness_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) runtime: Option<BenchmarkRuntimeIdentity>,
     pub(crate) model: BenchmarkModelIdentity,
     pub(crate) hardware: BenchmarkHardwareIdentity,
     pub(crate) quality: QualityPreference,
@@ -515,6 +636,8 @@ pub(crate) struct BenchmarkRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComparisonEquivalence {
     EquivalentModelComparison,
+    EquivalentAgentHarnessComparison,
+    EquivalentCodingAgentComparison,
     NonEquivalent(Vec<&'static str>),
 }
 
@@ -538,6 +661,86 @@ fn benchmark_identity_is_measured(identity: &BenchmarkIdentity) -> bool {
         && matches!(identity.observed_workload, TelemetryValue::Measured(_))
 }
 
+fn measured_identity_text(value: &TelemetryValue<String>) -> Option<&str> {
+    match value {
+        TelemetryValue::Measured(value) if !value.trim().is_empty() => Some(value.as_str()),
+        TelemetryValue::Measured(_)
+        | TelemetryValue::ConservativeEstimate(_)
+        | TelemetryValue::Unavailable => None,
+    }
+}
+
+fn execution_contract_matches(
+    left: &Option<BenchmarkExecutionIdentity>,
+    right: &Option<BenchmarkExecutionIdentity>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.campaign_harness_version == right.campaign_harness_version
+                && left.schedule_policy_version == right.schedule_policy_version
+                && left.comparison_class == right.comparison_class
+                && left.execution_profile == right.execution_profile
+                && left.execution_environment == right.execution_environment
+                && left.fixture_id == right.fixture_id
+                && left.fixture_version == right.fixture_version
+                && left.fixture_instance_id == right.fixture_instance_id
+                && left.sampling_profile == right.sampling_profile
+                && left.seed_policy == right.seed_policy
+        }
+        _ => false,
+    }
+}
+
+fn agent_harness_contract_matches(
+    left: &BenchmarkRuntimeIdentity,
+    right: &BenchmarkRuntimeIdentity,
+    differences: &mut Vec<&'static str>,
+) {
+    let left_harness = &left.harness;
+    let right_harness = &right.harness;
+    if !matches!(&left_harness.acp_protocol_version, TelemetryValue::Measured(version) if *version > 0)
+        || !matches!(&right_harness.acp_protocol_version, TelemetryValue::Measured(version) if *version > 0)
+        || left_harness.acp_protocol_version != right_harness.acp_protocol_version
+    {
+        differences.push("acp_protocol_version");
+    }
+    if measured_identity_text(&left_harness.mcp_tool_contract).is_none()
+        || measured_identity_text(&right_harness.mcp_tool_contract).is_none()
+        || left_harness.mcp_tool_contract != right_harness.mcp_tool_contract
+    {
+        differences.push("mcp_tool_contract");
+    }
+    if measured_identity_text(&left_harness.permission_profile).is_none()
+        || measured_identity_text(&right_harness.permission_profile).is_none()
+        || left_harness.permission_profile != right_harness.permission_profile
+    {
+        differences.push("permission_profile");
+    }
+}
+
+fn coding_agent_contract_matches(
+    left: &BenchmarkRuntimeIdentity,
+    right: &BenchmarkRuntimeIdentity,
+    differences: &mut Vec<&'static str>,
+) {
+    if left.harness.acp_protocol_version != right.harness.acp_protocol_version {
+        differences.push("acp_protocol_version");
+    }
+    if measured_identity_text(&left.harness.mcp_tool_contract).is_none()
+        || measured_identity_text(&right.harness.mcp_tool_contract).is_none()
+        || left.harness.mcp_tool_contract != right.harness.mcp_tool_contract
+    {
+        differences.push("mcp_tool_contract");
+    }
+    if measured_identity_text(&left.harness.permission_profile).is_none()
+        || measured_identity_text(&right.harness.permission_profile).is_none()
+        || left.harness.permission_profile != right.harness.permission_profile
+    {
+        differences.push("permission_profile");
+    }
+}
+
 pub(crate) fn comparison_equivalence(
     left: &BenchmarkRecord,
     right: &BenchmarkRecord,
@@ -549,21 +752,8 @@ pub(crate) fn comparison_equivalence(
     if left.identity.task_id != right.identity.task_id {
         differences.push("task_id");
     }
-    if left.identity.harness_version != right.identity.harness_version
-        || left.identity.runtime_harness_version != right.identity.runtime_harness_version
-    {
+    if left.identity.harness_version != right.identity.harness_version {
         differences.push("harness_version");
-    }
-    if !model_identity_is_measured(&left.identity.model)
-        || !model_identity_is_measured(&right.identity.model)
-    {
-        differences.push("model_representation");
-    }
-    if left.identity.model.backend_id != right.identity.model.backend_id
-        || left.identity.model.backend_runtime_version
-            != right.identity.model.backend_runtime_version
-    {
-        differences.push("backend_runtime");
     }
     if !hardware_identity_is_measured(&left.identity.hardware)
         || !hardware_identity_is_measured(&right.identity.hardware)
@@ -574,10 +764,7 @@ pub(crate) fn comparison_equivalence(
     if left.identity.quality != right.identity.quality
         || left.identity.workload_policy_version != right.identity.workload_policy_version
         || !matches!(left.identity.observed_workload, TelemetryValue::Measured(_))
-        || !matches!(
-            right.identity.observed_workload,
-            TelemetryValue::Measured(_)
-        )
+        || !matches!(right.identity.observed_workload, TelemetryValue::Measured(_))
         || left.identity.observed_workload != right.identity.observed_workload
     {
         differences.push("quality_or_workload");
@@ -588,11 +775,77 @@ pub(crate) fn comparison_equivalence(
     if left.identity.completion_criteria != right.identity.completion_criteria {
         differences.push("completion_criteria");
     }
-    if left.identity.execution != right.identity.execution {
+    if !execution_contract_matches(&left.identity.execution, &right.identity.execution) {
         differences.push("execution_identity");
     }
+
+    let equivalence = match (&left.identity.runtime, &right.identity.runtime) {
+        (None, None) => {
+            if left.identity.runtime_harness_version != right.identity.runtime_harness_version {
+                differences.push("harness_version");
+            }
+            if !model_identity_is_measured(&left.identity.model)
+                || !model_identity_is_measured(&right.identity.model)
+            {
+                differences.push("model_representation");
+            }
+            if left.identity.model.backend_id != right.identity.model.backend_id
+                || left.identity.model.backend_runtime_version
+                    != right.identity.model.backend_runtime_version
+            {
+                differences.push("backend_runtime");
+            }
+            ComparisonEquivalence::EquivalentModelComparison
+        }
+        (Some(left_runtime), Some(right_runtime))
+            if left_runtime.lane == right_runtime.lane =>
+        {
+            match left_runtime.lane {
+                BenchmarkLane::RawModel => {
+                    if left.identity.runtime_harness_version != right.identity.runtime_harness_version
+                        || left_runtime != right_runtime
+                    {
+                        differences.push("harness_version");
+                    }
+                    if !model_identity_is_measured(&left.identity.model)
+                        || !model_identity_is_measured(&right.identity.model)
+                    {
+                        differences.push("model_representation");
+                    }
+                    if left.identity.model.backend_id != right.identity.model.backend_id
+                        || left.identity.model.backend_runtime_version
+                            != right.identity.model.backend_runtime_version
+                    {
+                        differences.push("backend_runtime");
+                    }
+                    ComparisonEquivalence::EquivalentModelComparison
+                }
+                BenchmarkLane::AgentHarness => {
+                    if !model_identity_is_measured(&left.identity.model)
+                        || !model_identity_is_measured(&right.identity.model)
+                        || left.identity.model != right.identity.model
+                    {
+                        differences.push("model_representation");
+                    }
+                    agent_harness_contract_matches(left_runtime, right_runtime, &mut differences);
+                    ComparisonEquivalence::EquivalentAgentHarnessComparison
+                }
+                BenchmarkLane::CodingAgent => {
+                    coding_agent_contract_matches(left_runtime, right_runtime, &mut differences);
+                    ComparisonEquivalence::EquivalentCodingAgentComparison
+                }
+            }
+        }
+        _ => {
+            differences.push("benchmark_lane");
+            ComparisonEquivalence::EquivalentModelComparison
+        }
+    };
+
+    differences.sort_unstable();
+    differences.dedup();
     if differences.is_empty() {
-        ComparisonEquivalence::EquivalentModelComparison
+        equivalence
     } else {
         ComparisonEquivalence::NonEquivalent(differences)
     }
@@ -673,26 +926,123 @@ fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
     if record.schema_version == 1 && record.identity.execution.is_some() {
         return Err("benchmark schema v1 cannot carry campaign execution identity".to_owned());
     }
+    if record.schema_version < 4
+        && (record.identity.runtime.is_some()
+            || record
+                .identity
+                .execution
+                .as_ref()
+                .is_some_and(|execution| execution.benchmark_runtime.is_some()))
+    {
+        return Err("benchmark schemas v1-v3 cannot carry schema-v4 runtime identity".to_owned());
+    }
+    if let Some(execution) = record.identity.execution.as_ref() {
+        if execution.benchmark_runtime != record.identity.runtime {
+            return Err(
+                "campaign benchmark runtime identity must match the record runtime identity"
+                    .to_owned(),
+            );
+        }
+    }
+    if let Some(runtime) = record.identity.runtime.as_ref() {
+        if runtime.harness.harness_id.trim().is_empty()
+            || runtime.harness.harness_version.trim().is_empty()
+        {
+            return Err("benchmark harness identity must be non-empty".to_owned());
+        }
+        if record.identity.runtime_harness_version != runtime.harness.harness_version {
+            return Err(
+                "benchmark runtime harness version must match the explicit harness identity"
+                    .to_owned(),
+            );
+        }
+        let exact_or_unavailable = |value: &TelemetryValue<String>| {
+            !matches!(value, TelemetryValue::ConservativeEstimate(_))
+                && !matches!(value, TelemetryValue::Measured(text) if text.trim().is_empty())
+        };
+        if !exact_or_unavailable(&runtime.harness.adapter_version)
+            || !exact_or_unavailable(&runtime.harness.mcp_tool_contract)
+            || !exact_or_unavailable(&runtime.harness.permission_profile)
+            || matches!(
+                &runtime.harness.acp_protocol_version,
+                TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Measured(0)
+            )
+        {
+            return Err(
+                "benchmark runtime identity must be exact or explicitly unavailable".to_owned(),
+            );
+        }
+        match runtime.lane {
+            BenchmarkLane::RawModel => {
+                if runtime.agent_runtime.is_some()
+                    || runtime.harness.acp_protocol_version != TelemetryValue::Unavailable
+                    || runtime.harness.mcp_tool_contract != TelemetryValue::Unavailable
+                    || runtime.harness.permission_profile != TelemetryValue::Unavailable
+                {
+                    return Err(
+                        "raw model benchmark identity cannot carry agent, ACP, MCP, or permission identity"
+                            .to_owned(),
+                    );
+                }
+            }
+            BenchmarkLane::AgentHarness | BenchmarkLane::CodingAgent => {
+                let Some(agent_runtime) = runtime.agent_runtime.as_ref() else {
+                    return Err("agent benchmark lane requires agent runtime identity".to_owned());
+                };
+                if agent_runtime.runtime_id.trim().is_empty()
+                    || !exact_or_unavailable(&agent_runtime.runtime_version)
+                {
+                    return Err(
+                        "agent runtime identity must be non-empty and exact or unavailable"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
+    }
     if record.identity.corpus_version != BENCHMARK_CORPUS_VERSION {
         return Err(format!(
             "unsupported benchmark corpus `{}`",
             record.identity.corpus_version
         ));
     }
-    let Some(task) = benchmark_task(&record.identity.task_id) else {
-        return Err(format!(
-            "unknown benchmark task `{}`",
-            record.identity.task_id
-        ));
+    let expected = if record.identity.task_id == RAW_MODEL_BENCHMARK_TASK_ID {
+        if !matches!(
+            record.identity.runtime.as_ref().map(|runtime| runtime.lane),
+            Some(BenchmarkLane::RawModel)
+        ) {
+            return Err(
+                "raw model benchmark task requires explicit raw_model runtime identity".to_owned(),
+            );
+        }
+        RAW_MODEL_COMPLETION_CRITERIA
+            .iter()
+            .map(|criterion| (*criterion).to_owned())
+            .collect::<Vec<_>>()
+    } else {
+        if matches!(
+            record.identity.runtime.as_ref().map(|runtime| runtime.lane),
+            Some(BenchmarkLane::RawModel)
+        ) {
+            return Err(
+                "raw_model runtime identity cannot relabel an Agent Benchmark corpus task"
+                    .to_owned(),
+            );
+        }
+        let Some(task) = benchmark_task(&record.identity.task_id) else {
+            return Err(format!(
+                "unknown benchmark task `{}`",
+                record.identity.task_id
+            ));
+        };
+        task.completion_criteria
+            .iter()
+            .map(|criterion| (*criterion).to_owned())
+            .collect::<Vec<_>>()
     };
-    let expected = task
-        .completion_criteria
-        .iter()
-        .map(|criterion| (*criterion).to_owned())
-        .collect::<Vec<_>>();
     if record.identity.completion_criteria != expected {
         return Err(
-            "benchmark completion criteria do not match the versioned corpus task".to_owned(),
+            "benchmark completion criteria do not match the versioned benchmark task".to_owned(),
         );
     }
     if record.identity.model.backend_id.trim().is_empty()
@@ -1026,6 +1376,53 @@ pub(crate) fn model_identity(
     }
 }
 
+/// Builds one direct model/runtime benchmark record without AgentRun semantics.
+///
+/// The caller owns the actual model-only harness and supplies only telemetry it
+/// measured. Agent/ACP/MCP identity is structurally absent from this lane.
+#[allow(dead_code)]
+pub(crate) fn raw_model_record(
+    model: BenchmarkModelIdentity,
+    hardware: BenchmarkHardwareIdentity,
+    quality: QualityPreference,
+    workload: InferenceWorkload,
+    harness: BenchmarkHarnessIdentity,
+    metrics: BenchmarkMetrics,
+) -> Result<BenchmarkRecord, String> {
+    let runtime_harness_version = harness.harness_version.clone();
+    let record = BenchmarkRecord {
+        schema_version: BENCHMARK_SCHEMA_VERSION,
+        recorded_unix_ms: unix_ms(),
+        identity: BenchmarkIdentity {
+            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
+            task_id: RAW_MODEL_BENCHMARK_TASK_ID.to_owned(),
+            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+            runtime_harness_version,
+            runtime: Some(BenchmarkRuntimeIdentity::raw_model(harness)),
+            model,
+            hardware,
+            quality,
+            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
+            observed_workload: TelemetryValue::Measured(workload),
+            tool_budget: BenchmarkToolBudget {
+                max_model_turns: 0,
+                max_tool_failures: 0,
+                repair_budget: 0,
+                permission_budget: Vec::new(),
+                work_claims: Vec::new(),
+            },
+            completion_criteria: RAW_MODEL_COMPLETION_CRITERIA
+                .iter()
+                .map(|criterion| (*criterion).to_owned())
+                .collect(),
+            execution: None,
+        },
+        metrics,
+    };
+    validate_record(&record)?;
+    Ok(record)
+}
+
 pub(crate) fn read_question_record(
     task_id: &str,
     metrics: &NativeMetrics,
@@ -1051,6 +1448,7 @@ pub(crate) fn read_question_record(
             task_id: task.id.to_owned(),
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             runtime_harness_version: metrics.harness_version.to_owned(),
+            runtime: None,
             model: model_identity(metrics.backend_id, &metrics.model_id, inventory),
             hardware: hardware.clone(),
             quality,
@@ -1198,6 +1596,7 @@ pub(crate) fn agent_run_record(
             task_id: task.id.to_owned(),
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             runtime_harness_version: NATIVE_WRITE_HARNESS_VERSION.to_owned(),
+            runtime: None,
             model: model_identity(identity.backend_id, identity.model_id, identity.inventory),
             hardware: identity.hardware.clone(),
             quality: identity.quality,
@@ -1252,10 +1651,61 @@ pub(crate) fn agent_run_record(
     })
 }
 
-/// Metrics an AgentRun can report from its recorded model exchanges (ADR 0159).
+/// Model-internal telemetry supplied by the runtime that actually observed it.
 ///
-/// A run with no recorded exchange reports zero turns, which is itself a
-/// diagnosis and is distinct from a run that never recorded whether it had any.
+/// ACP adapters use [`BenchmarkModelTelemetry::unavailable`] when the agent does
+/// not expose model turns or token counts. GameEngine never derives those values
+/// from ACP prompt boundaries or normalized agent events.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BenchmarkModelTelemetry {
+    pub(crate) model_turns: TelemetryValue<u64>,
+    pub(crate) prompt_tokens: TelemetryValue<u64>,
+    pub(crate) response_tokens: TelemetryValue<u64>,
+}
+
+#[allow(dead_code)]
+impl BenchmarkModelTelemetry {
+    pub(crate) fn unavailable() -> Self {
+        Self {
+            model_turns: TelemetryValue::Unavailable,
+            prompt_tokens: TelemetryValue::Unavailable,
+            response_tokens: TelemetryValue::Unavailable,
+        }
+    }
+}
+
+/// Records a terminal AgentRun under an explicit agent-inclusive benchmark lane.
+///
+/// `model_telemetry` must come from the runtime that observed the underlying
+/// model. Callers that only have ACP-level evidence must pass explicit
+/// `Unavailable` values instead of estimating model turns or tokens.
+#[allow(dead_code)]
+pub(crate) fn agent_run_record_with_runtime(
+    task_id: &str,
+    run: &AgentRun,
+    identity: AgentRunBenchmarkIdentity<'_>,
+    runtime: BenchmarkRuntimeIdentity,
+    model_telemetry: BenchmarkModelTelemetry,
+) -> Result<BenchmarkRecord, String> {
+    if runtime.lane == BenchmarkLane::RawModel {
+        return Err("AgentRun evidence cannot be registered as a raw model benchmark".to_owned());
+    }
+    let mut record = agent_run_record(task_id, run, identity)?;
+    record.identity.runtime_harness_version = runtime.harness.harness_version.clone();
+    record.identity.runtime = Some(runtime);
+    record.metrics.model_turns = model_telemetry.model_turns;
+    record.metrics.prompt_tokens = model_telemetry.prompt_tokens;
+    record.metrics.response_tokens = model_telemetry.response_tokens;
+    validate_record(&record)?;
+    Ok(record)
+}
+
+/// Metrics a legacy native AgentRun can report from its recorded model exchanges (ADR 0159).
+///
+/// A legacy run with no recorded exchange reports zero turns, which preserves
+/// the existing harness meaning. ACP-backed callers must use
+/// [`agent_run_record_with_runtime`] and explicit unavailable telemetry instead.
 /// Token counts stay unavailable unless every recorded exchange reported them,
 /// so a partial sum is never presented as a measurement.
 struct ModelExchangeMetrics {
@@ -1493,7 +1943,7 @@ mod tests {
     fn a_failing_run_reports_the_model_turns_and_tokens_it_recorded() {
         let (run, directories) = failing_run_with_exchanges("failing-with-output", 3);
         let record = record_for(&run);
-        assert_eq!(record.schema_version, 3);
+        assert_eq!(record.schema_version, BENCHMARK_SCHEMA_VERSION);
         assert_eq!(record.metrics.model_turns, TelemetryValue::Measured(3));
         assert_eq!(record.metrics.prompt_tokens, TelemetryValue::Measured(300));
         assert_eq!(record.metrics.response_tokens, TelemetryValue::Measured(30));
@@ -1583,12 +2033,156 @@ mod tests {
         );
     }
 
+    fn agent_harness_identity(agent_name: &str) -> BenchmarkRuntimeIdentity {
+        let mut harness = BenchmarkHarnessIdentity::new("acp-agent-harness", "harness-v1");
+        harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
+        harness.mcp_tool_contract =
+            TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
+        harness.permission_profile =
+            TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
+        let acp = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+            agent_name,
+            Some("1.0".to_owned()),
+        );
+        BenchmarkRuntimeIdentity::acp_agent_harness(harness, &acp)
+    }
+
+    fn coding_agent_identity(agent_name: &str) -> BenchmarkRuntimeIdentity {
+        let mut harness = BenchmarkHarnessIdentity::new("coding-agent-adapter", "harness-v1");
+        harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
+        harness.mcp_tool_contract =
+            TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
+        harness.permission_profile =
+            TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
+        BenchmarkRuntimeIdentity::coding_agent(
+            harness,
+            BenchmarkAgentRuntimeIdentity {
+                runtime_id: agent_name.to_owned(),
+                runtime_version: TelemetryValue::Unavailable,
+            },
+        )
+    }
+
+    #[test]
+    fn schema_v1_through_v3_records_remain_unclassified_legacy_records() {
+        for schema_version in 1..=3 {
+            let mut legacy = record("legacy-model", BENCHMARK_TASKS[0], 10);
+            legacy.schema_version = schema_version;
+            legacy.identity.runtime = None;
+            legacy.identity.execution = None;
+            let bytes = serde_json::to_vec(&legacy).expect("legacy JSON");
+            let loaded: BenchmarkRecord = serde_json::from_slice(&bytes).expect("legacy record");
+            assert!(validate_record(&loaded).is_ok());
+            assert_eq!(loaded.identity.runtime, None);
+        }
+    }
+
+    #[test]
+    fn acp_agent_record_keeps_unobservable_model_telemetry_unavailable() {
+        let (run, directories) = failing_run_with_exchanges("acp-unavailable-model-metrics", 0);
+        let runtime = agent_harness_identity("goose");
+        let record = agent_run_record_with_runtime(
+            "project_inspection_v1",
+            &run,
+            AgentRunBenchmarkIdentity {
+                backend_id: "external-agent",
+                model_id: "agent-managed-model",
+                inventory: None,
+                quality: QualityPreference::Balanced,
+                workload: InferenceWorkload::InteractiveReasoning,
+                hardware: &BenchmarkHardwareIdentity::default(),
+            },
+            runtime,
+            BenchmarkModelTelemetry::unavailable(),
+        )
+        .expect("ACP benchmark record");
+        assert_eq!(record.metrics.model_turns, TelemetryValue::Unavailable);
+        assert_eq!(record.metrics.prompt_tokens, TelemetryValue::Unavailable);
+        assert_eq!(record.metrics.response_tokens, TelemetryValue::Unavailable);
+        assert_eq!(
+            record.identity.runtime.as_ref().map(|runtime| runtime.lane),
+            Some(BenchmarkLane::AgentHarness)
+        );
+        for directory in directories {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
+    fn raw_model_task_registers_without_reusing_agent_corpus_semantics() {
+        let identity = measured_identity("model-a");
+        let raw = raw_model_record(
+            identity.model,
+            identity.hardware,
+            identity.quality,
+            InferenceWorkload::InteractiveReasoning,
+            BenchmarkHarnessIdentity::new("llama-direct", "raw-model-harness-v1"),
+            measured_metrics(10),
+        )
+        .expect("raw model record");
+        assert_eq!(raw.identity.task_id, RAW_MODEL_BENCHMARK_TASK_ID);
+        assert_eq!(
+            raw.identity.runtime.as_ref().map(|runtime| runtime.lane),
+            Some(BenchmarkLane::RawModel)
+        );
+
+        let mut relabelled_agent_task = record("model-a", BENCHMARK_TASKS[0], 10);
+        relabelled_agent_task.identity.runtime = raw.identity.runtime.clone();
+        assert!(validate_record(&relabelled_agent_task).is_err());
+    }
+
+    #[test]
+    fn benchmark_lanes_have_distinct_comparison_equivalence() {
+        let raw_record = |model: &str| {
+            let identity = measured_identity(model);
+            raw_model_record(
+                identity.model,
+                identity.hardware,
+                identity.quality,
+                InferenceWorkload::InteractiveReasoning,
+                BenchmarkHarnessIdentity::new("llama-direct", "runtime-v1"),
+                measured_metrics(10),
+            )
+            .expect("raw model record")
+        };
+        let raw_left = raw_record("model-a");
+        let raw_right = raw_record("model-b");
+        assert_eq!(
+            comparison_equivalence(&raw_left, &raw_right),
+            ComparisonEquivalence::EquivalentModelComparison
+        );
+
+        let mut harness_left = record("model-a", BENCHMARK_TASKS[0], 10);
+        let mut harness_right = harness_left.clone();
+        harness_left.identity.runtime = Some(agent_harness_identity("goose-a"));
+        harness_right.identity.runtime = Some(agent_harness_identity("goose-b"));
+        assert_eq!(
+            comparison_equivalence(&harness_left, &harness_right),
+            ComparisonEquivalence::EquivalentAgentHarnessComparison
+        );
+
+        let mut coding_left = record("model-a", BENCHMARK_TASKS[0], 10);
+        let mut coding_right = record("model-b", BENCHMARK_TASKS[0], 10);
+        coding_left.identity.runtime = Some(coding_agent_identity("codex"));
+        coding_right.identity.runtime = Some(coding_agent_identity("claude"));
+        assert_eq!(
+            comparison_equivalence(&coding_left, &coding_right),
+            ComparisonEquivalence::EquivalentCodingAgentComparison
+        );
+
+        assert!(matches!(
+            comparison_equivalence(&raw_left, &harness_left),
+            ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"benchmark_lane")
+        ));
+    }
+
     fn measured_identity(model: &str) -> BenchmarkIdentity {
         BenchmarkIdentity {
             corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
             task_id: BENCHMARK_TASKS[0].id.to_owned(),
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             runtime_harness_version: "runtime-harness-v1".to_owned(),
+            runtime: None,
             model: BenchmarkModelIdentity {
                 backend_id: "test-backend".to_owned(),
                 model_id: model.to_owned(),

@@ -428,6 +428,7 @@ mod tests {
                 task_id: task.id.to_owned(),
                 harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
                 runtime_harness_version: "runtime-harness-v1".to_owned(),
+                runtime: None,
                 model: BenchmarkModelIdentity {
                     backend_id: "ollama-compatible".to_owned(),
                     model_id: model.to_owned(),
