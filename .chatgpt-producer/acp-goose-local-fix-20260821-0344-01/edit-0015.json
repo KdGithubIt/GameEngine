@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/goose_local_acp.rs","old":"                        .find(|option| option.option_id.to_string() == option_id)\n","new":"                        .find(|option| option.option_id.0.as_str() == option_id)\n"}
