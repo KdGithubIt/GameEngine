@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "use std::path::{Path, PathBuf};\n\n/// Ticks one Step control moves the playhead when no frame rate applies.",
+  "new": "use std::path::{Path, PathBuf};\n\nmod curve_editor;\n\n/// Ticks one Step control moves the playhead when no frame rate applies."
+}
