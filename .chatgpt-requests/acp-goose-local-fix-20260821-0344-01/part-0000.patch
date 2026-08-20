@@ -1,0 +1,586 @@
+diff --git a/crates/editor/Cargo.toml b/crates/editor/Cargo.toml
+index 64c0153990262baeb3ea4aac4bce33393773f8cb..a6b92f6e0d139c8e999b47e712b82e05fcc7de2b 100644
+--- a/crates/editor/Cargo.toml
++++ b/crates/editor/Cargo.toml
+@@ -13,7 +13,7 @@ name = "engine-editor"
+ path = "src/main.rs"
+ 
+ [dependencies]
+-agent-client-protocol = "2.0.0"
++agent-client-protocol = "=2.0.0"
+ dirs = "5"
+ eframe = "0.34.3"
+ engine = { path = "../engine" }
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index 0ef4ea7e489890477d76878757432e711255c8a7..683104fe069b97033ae91624e280ccc029244a15 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -13,8 +13,9 @@ use crate::acp_agent_runtime::{
+ use crate::agent_host::AgentCapability;
+ use crate::managed_local_runtime::{
+     ManagedExecutionEnvironment, ManagedLocalEndpointLease, ManagedLocalModelConfig,
+-    ManagedLocalRuntime,
++    ManagedLocalRuntime, managed_context_tokens,
+ };
++use engine_mcp::tool_is_mutating;
+ use agent_client_protocol::schema::{
+     ProtocolVersion,
+     v1::{
+@@ -28,7 +29,7 @@ use agent_client_protocol::util::MatchDispatch;
+ use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client, SessionMessage};
+ use futures::channel::{mpsc, oneshot};
+ use futures::{FutureExt, StreamExt};
+-use serde_json::Value;
++use serde_json::{Value, json};
+ use std::collections::BTreeMap;
+ use std::ffi::OsString;
+ use std::fs;
+@@ -41,11 +42,13 @@ use std::time::{Duration, Instant};
+ 
+ const GOOSE_AGENT_ID: &str = "goose.managed-local";
+ const GOOSE_EXECUTABLE_ENV: &str = "GAMEENGINE_GOOSE_EXECUTABLE";
++const GOOSE_PROVIDER_ID: &str = "custom_gameengine_managed_local";
++const GOOSE_PROVIDER_FILE: &str = "custom_gameengine_managed_local.json";
++const GOOSE_PATH_ROOT_ENV: &str = "GOOSE_PATH_ROOT";
+ const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
+ const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
+ const GOOSE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+-const GOOSE_SESSION_START_TIMEOUT: Duration = Duration::from_secs(20);
+-const LOCAL_OPENAI_API_KEY_SENTINEL: &str = "gameengine-managed-local";
++const GOOSE_SESSION_START_TIMEOUT: Duration = Duration::from_secs(180);
+ static GOOSE_CONFIG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+ static PERMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+ 
+@@ -83,6 +86,12 @@ impl GooseLocalAcpConfig {
+                 workspace_root.display()
+             )));
+         }
++        if !managed_model.state_root.is_absolute() {
++            return Err(AcpRuntimeError::InvalidDescriptor(
++                "Managed Local state root must be absolute before Goose ACP can isolate its machine-local configuration"
++                    .to_owned(),
++            ));
++        }
+         Ok(Self {
+             managed_model,
+             workspace_root,
+@@ -150,22 +159,6 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
+         &mut self,
+         binding: AcpSessionBinding,
+     ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
+-        let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)
+-            .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;
+-        self.identity.managed_runtime = lease.identity().runtime_identity.clone();
+-        self.identity.model_id = lease.identity().model_id.clone();
+-        self.identity.model_content_sha256 = lease.identity().model_content_sha256.clone();
+-        self.identity.model_representation = lease.identity().model_representation.clone();
+-        self.identity.execution_environment = lease.identity().execution_environment;
+-
+-        let ephemeral = GooseEphemeralConfig::create(&self.config.managed_model.state_root)
+-            .map_err(|error| {
+-                AcpRuntimeError::Transport(format!(
+-                    "could not create isolated Goose config: {error}"
+-                ))
+-            })?;
+-        let environment = goose_environment(&lease, &ephemeral);
+-        let mcp_server = gameengine_mcp_server(&binding);
+         let (command_tx, command_rx) = mpsc::unbounded();
+         let (event_tx, event_rx) = std::sync::mpsc::channel();
+         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+@@ -174,32 +167,60 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
+         let worker_pending_permissions = Arc::clone(&pending_permissions);
+         let executable = self.executable.clone();
+         let workspace_root = self.config.workspace_root.clone();
++        let managed_model = self.config.managed_model.clone();
++        let worker_binding = binding.clone();
+ 
+         thread::Builder::new()
+             .name("gameengine-goose-acp".to_owned())
+             .spawn(move || {
+-                let result = pollster::block_on(run_goose_session_until_aborted(
+-                    executable,
+-                    environment,
+-                    workspace_root,
+-                    mcp_server,
+-                    command_rx,
+-                    event_tx.clone(),
+-                    ready_tx,
+-                    worker_pending_permissions,
+-                    startup_abort_rx,
+-                ));
++                let ready_failure_tx = ready_tx.clone();
++                let result = (|| -> Result<(), AcpRuntimeError> {
++                    let lease = ManagedLocalRuntime::lease_endpoint(&managed_model)
++                        .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;
++                    validate_managed_lease_identity(&lease, &managed_model)?;
++
++                    let ephemeral = GooseEphemeralConfig::create(&managed_model, &lease).map_err(
++                        |error| {
++                            AcpRuntimeError::Transport(format!(
++                                "could not create isolated Goose config: {error}"
++                            ))
++                        },
++                    )?;
++                    let environment = goose_environment(&lease, &ephemeral);
++                    let mcp_server = gameengine_mcp_server(&worker_binding);
++                    let session_result = pollster::block_on(run_goose_session_until_aborted(
++                        executable,
++                        environment,
++                        workspace_root,
++                        mcp_server,
++                        command_rx,
++                        event_tx.clone(),
++                        ready_tx,
++                        worker_pending_permissions,
++                        startup_abort_rx,
++                    ));
++                    drop(ephemeral);
++                    if let Err(error) = lease.release() {
++                        let _ = event_tx.send(AcpNormalizedEvent::ProtocolDiagnostic {
++                            message: format!(
++                                "could not release Managed Local endpoint lease: {error}"
++                            ),
++                        });
++                        if session_result.is_ok() {
++                            return Err(AcpRuntimeError::Transport(format!(
++                                "could not release Managed Local endpoint lease: {error}"
++                            )));
++                        }
++                    }
++                    session_result
++                })();
++
+                 if let Err(error) = result {
++                    let _ = ready_failure_tx.try_send(Err(error.clone()));
+                     let _ = event_tx.send(AcpNormalizedEvent::ProtocolDiagnostic {
+                         message: error.to_string(),
+                     });
+                 }
+-                drop(ephemeral);
+-                if let Err(error) = lease.release() {
+-                    let _ = event_tx.send(AcpNormalizedEvent::ProtocolDiagnostic {
+-                        message: format!("could not release Managed Local endpoint lease: {error}"),
+-                    });
+-                }
+             })
+             .map_err(|error| {
+                 AcpRuntimeError::Transport(format!("could not start Goose ACP worker: {error}"))
+@@ -422,6 +443,19 @@ async fn run_goose_session(
+                     "goose-permission-{}",
+                     PERMISSION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+                 );
++                let Some(permission_request) =
++                    normalize_permission_request(&request_id, &request)
++                else {
++                    let _ = permission_events.send(AcpNormalizedEvent::ProtocolDiagnostic {
++                        message: format!(
++                            "Goose ACP permission `{request_id}` could not be classified into an existing GameEngine capability; request cancelled"
++                        ),
++                    });
++                    return responder.respond(RequestPermissionResponse::new(
++                        RequestPermissionOutcome::Cancelled,
++                    ));
++                };
++
+                 let (decision_tx, decision_rx) = oneshot::channel();
+                 {
+                     let mut pending = permission_state
+@@ -430,15 +464,20 @@ async fn run_goose_session(
+                     pending.insert(request_id.clone(), decision_tx);
+                 }
+                 permission_events
+-                    .send(AcpNormalizedEvent::PermissionRequest(
+-                        normalize_permission_request(&request_id, &request),
+-                    ))
++                    .send(AcpNormalizedEvent::PermissionRequest(permission_request))
+                     .map_err(|_| agent_client_protocol::Error::internal_error())?;
+ 
+                 let outcome = match decision_rx.await {
+-                    Ok(AcpPermissionOutcome::SelectedOption(option_id)) => {
+-                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
+-                    }
++                    Ok(AcpPermissionOutcome::SelectedOption(option_id)) => request
++                        .options
++                        .iter()
++                        .find(|option| option.option_id.0.as_str() == option_id)
++                        .map(|option| {
++                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
++                                option.option_id.clone(),
++                            ))
++                        })
++                        .unwrap_or(RequestPermissionOutcome::Cancelled),
+                     Ok(AcpPermissionOutcome::Cancelled) | Err(_) => {
+                         RequestPermissionOutcome::Cancelled
+                     }
+@@ -627,13 +666,13 @@ fn normalize_capabilities(
+ fn normalize_permission_request(
+     request_id: &str,
+     request: &RequestPermissionRequest,
+-) -> AcpPermissionRequest {
++) -> Option<AcpPermissionRequest> {
+     let tool_value = serde_json::to_value(&request.tool_call).unwrap_or(Value::Null);
+     let tool_call_id = first_string(&tool_value, &["toolCallId", "tool_call_id", "id"])
+         .unwrap_or_else(|| "unknown-tool-call".to_owned());
+     let title = first_string(&tool_value, &["title", "name"])
+         .unwrap_or_else(|| "Goose tool request".to_owned());
+-    let required_capability = classify_tool_capability(&tool_value);
++    let required_capability = classify_tool_capability(&tool_value)?;
+     let options = request
+         .options
+         .iter()
+@@ -650,43 +689,50 @@ fn normalize_permission_request(
+         })
+         .collect();
+ 
+-    AcpPermissionRequest {
++    Some(AcpPermissionRequest {
+         request_id: request_id.to_owned(),
+         acp_session_id: request.session_id.to_string(),
+         tool_call_id,
+         title,
+         required_capability,
+         options,
+-    }
++    })
+ }
+ 
+-fn classify_tool_capability(tool: &Value) -> AgentCapability {
+-    let text = tool.to_string().to_ascii_lowercase();
+-    let mutates_gameengine = [
+-        "apply", "write", "edit", "patch", "create", "delete", "remove", "set_",
+-    ]
+-    .iter()
+-    .any(|verb| text.contains(verb));
+-    if (text.contains("gameengine_editor") || text.contains("gameengine"))
+-        && mutates_gameengine
++fn classify_tool_capability(tool: &Value) -> Option<AgentCapability> {
++    let title = first_string_recursive(tool, &["title", "name"])?;
++    let normalized = title.trim().to_ascii_lowercase();
++
++    if let Some(tool_name) = normalized.strip_prefix("gameengine editor: ") {
++        let tool_name = tool_name.replace(' ', "_");
++        return Some(if tool_is_mutating(&tool_name) {
++            AgentCapability::CodeWorkspaceApply
++        } else {
++            AgentCapability::RawWorkspaceFilesystem
++        });
++    }
++
++    if normalized.starts_with("developer: read")
++        || normalized.starts_with("developer: search")
++        || normalized.starts_with("developer: list")
+     {
+-        AgentCapability::CodeWorkspaceApply
+-    } else if text.contains("http")
+-        || text.contains("fetch")
+-        || text.contains("network")
+-        || text.contains("web")
++        Some(AgentCapability::RawWorkspaceFilesystem)
++    } else if normalized.starts_with("developer: write")
++        || normalized.starts_with("developer: edit")
++        || normalized.starts_with("developer: patch")
+     {
+-        AgentCapability::NetworkAccess
+-    } else if text.contains("read")
+-        || text.contains("file")
+-        || text.contains("write")
+-        || text.contains("edit")
+-        || text.contains("patch")
+-        || text.contains("gameengine")
++        Some(AgentCapability::CodeWorkspaceApply)
++    } else if normalized.starts_with("developer: shell")
++        || normalized.starts_with("developer: execute")
+     {
+-        AgentCapability::RawWorkspaceFilesystem
++        Some(AgentCapability::ArbitraryCommandExecution)
++    } else if normalized.contains("fetch")
++        || normalized.starts_with("web:")
++        || normalized.starts_with("browser:")
++    {
++        Some(AgentCapability::NetworkAccess)
+     } else {
+-        AgentCapability::ArbitraryCommandExecution
++        None
+     }
+ }
+ 
+@@ -736,7 +782,17 @@ fn normalize_session_update_value(value: &Value) -> Vec<AcpNormalizedEvent> {
+                 }]
+             })
+             .unwrap_or_default(),
+-        _ => Vec::new(),
++        "user_message_chunk"
++        | "available_commands_update"
++        | "current_mode_update"
++        | "config_option_update"
++        | "usage_update" => Vec::new(),
++        "" => vec![AcpNormalizedEvent::ProtocolDiagnostic {
++            message: "Goose ACP session update omitted its discriminator".to_owned(),
++        }],
++        other => vec![AcpNormalizedEvent::ProtocolDiagnostic {
++            message: format!("unrecognized Goose ACP session update `{other}`"),
++        }],
+     }
+ }
+ 
+@@ -811,35 +867,37 @@ fn gameengine_mcp_server(binding: &AcpSessionBinding) -> McpServer {
+     )
+ }
+ 
++fn validate_managed_lease_identity(
++    lease: &ManagedLocalEndpointLease,
++    config: &ManagedLocalModelConfig,
++) -> Result<(), AcpRuntimeError> {
++    let identity = lease.identity();
++    if identity.model_id != config.model_id
++        || identity.model_content_sha256 != config.model_content_sha256
++        || identity.model_representation != config.model_representation
++        || identity.runtime_identity != config.benchmark_runtime_identity()
++        || identity.execution_environment != config.environment
++        || !identity.endpoint_url.starts_with("http://127.0.0.1:")
++    {
++        return Err(AcpRuntimeError::Transport(
++            "Managed Local endpoint lease identity does not match the frozen Goose configuration"
++                .to_owned(),
++        ));
++    }
++    Ok(())
++}
++
+ fn goose_environment(
+     lease: &ManagedLocalEndpointLease,
+     ephemeral: &GooseEphemeralConfig,
+ ) -> BTreeMap<String, String> {
+-    let identity = lease.identity();
+     BTreeMap::from([
+-        ("GOOSE_PROVIDER".to_owned(), "openai".to_owned()),
+-        ("GOOSE_MODEL".to_owned(), identity.model_id.clone()),
++        ("GOOSE_PROVIDER".to_owned(), GOOSE_PROVIDER_ID.to_owned()),
++        ("GOOSE_MODEL".to_owned(), lease.identity().model_id.clone()),
+         ("GOOSE_MODE".to_owned(), "approve".to_owned()),
+-        ("OPENAI_HOST".to_owned(), identity.endpoint_url.clone()),
+-        (
+-            "OPENAI_BASE_PATH".to_owned(),
+-            "v1/chat/completions".to_owned(),
+-        ),
+-        (
+-            "OPENAI_API_KEY".to_owned(),
+-            LOCAL_OPENAI_API_KEY_SENTINEL.to_owned(),
+-        ),
+-        (
+-            "GOOSE_CONFIG_DIR".to_owned(),
+-            ephemeral.config_dir.to_string_lossy().into_owned(),
+-        ),
+         (
+-            "XDG_STATE_HOME".to_owned(),
+-            ephemeral.state_dir.to_string_lossy().into_owned(),
+-        ),
+-        (
+-            "XDG_CACHE_HOME".to_owned(),
+-            ephemeral.cache_dir.to_string_lossy().into_owned(),
++            GOOSE_PATH_ROOT_ENV.to_owned(),
++            ephemeral.root.to_string_lossy().into_owned(),
+         ),
+         ("GOOSE_TELEMETRY_ENABLED".to_owned(), "false".to_owned()),
+         (
+@@ -849,31 +907,73 @@ fn goose_environment(
+     ])
+ }
+ 
++fn goose_provider_document(
++    lease: &ManagedLocalEndpointLease,
++    config: &ManagedLocalModelConfig,
++) -> Value {
++    json!({
++        "name": GOOSE_PROVIDER_ID,
++        "engine": "openai",
++        "display_name": "GameEngine Managed Local",
++        "description": "Ephemeral GameEngine-managed local inference endpoint",
++        "api_key_env": "",
++        "base_url": lease.identity().endpoint_url.clone(),
++        "models": [{
++            "name": lease.identity().model_id.clone(),
++            "context_limit": managed_context_tokens(config) as usize,
++            "input_token_cost": null,
++            "output_token_cost": null,
++            "currency": null,
++            "supports_cache_control": null,
++            "reasoning": false
++        }],
++        "headers": null,
++        "timeout_seconds": 900,
++        "supports_streaming": false,
++        "requires_auth": false,
++        "catalog_provider_id": null,
++        "base_path": "v1/chat/completions",
++        "env_vars": null,
++        "dynamic_models": false,
++        "skip_canonical_filtering": true,
++        "model_doc_link": null,
++        "setup_steps": [],
++        "fast_model": null,
++        "preserves_thinking": false,
++        "emit_clear_thinking": false,
++        "setup": null
++    })
++}
++
+ struct GooseEphemeralConfig {
+     root: PathBuf,
+-    config_dir: PathBuf,
+-    state_dir: PathBuf,
+-    cache_dir: PathBuf,
+ }
+ 
+ impl GooseEphemeralConfig {
+-    fn create(state_root: &Path) -> std::io::Result<Self> {
++    fn create(
++        config: &ManagedLocalModelConfig,
++        lease: &ManagedLocalEndpointLease,
++    ) -> std::io::Result<Self> {
+         let id = GOOSE_CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+-        let root = state_root
++        let root = config
++            .state_root
+             .join("goose-acp")
+             .join(format!("{}-{id}", std::process::id()));
+-        let config_dir = root.join("config");
+-        let state_dir = root.join("state");
+-        let cache_dir = root.join("cache");
+-        fs::create_dir_all(&config_dir)?;
+-        fs::create_dir_all(&state_dir)?;
+-        fs::create_dir_all(&cache_dir)?;
+-        Ok(Self {
+-            root,
+-            config_dir,
+-            state_dir,
+-            cache_dir,
+-        })
++        if !root.is_absolute() {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::InvalidInput,
++                "GOOSE_PATH_ROOT must be an absolute machine-local path",
++            ));
++        }
++        if root.exists() {
++            fs::remove_dir_all(&root)?;
++        }
++        let provider_dir = root.join("config").join("custom_providers");
++        fs::create_dir_all(&provider_dir)?;
++        let provider = serde_json::to_vec_pretty(&goose_provider_document(lease, config))
++            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
++        fs::write(provider_dir.join(GOOSE_PROVIDER_FILE), provider)?;
++        Ok(Self { root })
+     }
+ }
+ 
+@@ -1100,33 +1200,43 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn provider_environment_is_process_local_and_uses_managed_openai_endpoint() {
+-        let model = managed_model();
+-        let environment = BTreeMap::from([
+-            ("GOOSE_PROVIDER".to_owned(), "openai".to_owned()),
+-            ("GOOSE_MODEL".to_owned(), model.model_id.clone()),
+-            ("OPENAI_HOST".to_owned(), "http://127.0.0.1:8080".to_owned()),
+-            (
+-                "OPENAI_BASE_PATH".to_owned(),
+-                "v1/chat/completions".to_owned(),
+-            ),
+-        ]);
+-        assert_eq!(environment["GOOSE_PROVIDER"], "openai");
+-        assert_eq!(environment["GOOSE_MODEL"], "gguf:test");
+-        assert!(environment["OPENAI_HOST"].starts_with("http://127.0.0.1:"));
++    fn provider_document_is_process_local_and_has_no_secret() {
++        let provider = json!({
++            "name": GOOSE_PROVIDER_ID,
++            "engine": "openai",
++            "base_url": "http://127.0.0.1:8080",
++            "models": [{"name": "gguf:test"}],
++            "requires_auth": false,
++            "dynamic_models": false,
++        });
++        let text = provider.to_string();
++        assert_eq!(provider["name"], GOOSE_PROVIDER_ID);
++        assert_eq!(provider["requires_auth"], false);
++        assert_eq!(provider["dynamic_models"], false);
++        assert!(!text.contains("OPENAI_API_KEY"));
++        assert!(!text.contains("Authorization"));
+     }
+ 
+     #[test]
+-    fn tool_permission_classification_keeps_gameengine_authority_distinct() {
+-        let gameengine = serde_json::json!({"title": "gameengine_editor.apply_patch"});
+-        let shell = serde_json::json!({"title": "shell command"});
++    fn tool_permission_classification_is_specific_and_fails_closed() {
++        let gameengine_write =
++            serde_json::json!({"title": "gameengine editor: authoring.apply"});
++        let gameengine_read =
++            serde_json::json!({"title": "gameengine editor: authoring.inspect"});
++        let shell = serde_json::json!({"title": "developer: shell"});
++        let unknown = serde_json::json!({"title": "mystery extension: mutate everything"});
+         assert_eq!(
+-            classify_tool_capability(&gameengine),
+-            AgentCapability::CodeWorkspaceApply
++            classify_tool_capability(&gameengine_write),
++            Some(AgentCapability::CodeWorkspaceApply)
++        );
++        assert_eq!(
++            classify_tool_capability(&gameengine_read),
++            Some(AgentCapability::RawWorkspaceFilesystem)
+         );
+         assert_eq!(
+             classify_tool_capability(&shell),
+-            AgentCapability::ArbitraryCommandExecution
++            Some(AgentCapability::ArbitraryCommandExecution)
+         );
++        assert_eq!(classify_tool_capability(&unknown), None);
+     }
+ }
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 152969bcf2b6b877e2541618d456236f80b68923..92d1563b7cc09766fd0c194ddebb664472685974 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -484,10 +484,7 @@ fn managed_conflicting_active_lease(
+     let desired_key = managed_endpoint_lease_key(config);
+     let leases = lock_managed_endpoint_leases()?;
+     Ok(leases.iter().any(|(key, state)| {
+-        key != &desired_key
+-            && state.holders > 0
+-            && state.state_root == config.state_root
+-            && state.environment == config.environment
++        key != &desired_key && state.holders > 0 && state.state_root == config.state_root
+     }))
+ }
+ 
+@@ -495,9 +492,9 @@ fn managed_endpoint_has_active_lease(
+     config: &ManagedLocalModelConfig,
+ ) -> Result<bool, ManagedLocalRuntimeError> {
+     let leases = lock_managed_endpoint_leases()?;
+-    Ok(leases
+-        .get(&managed_endpoint_lease_key(config))
+-        .is_some_and(|state| state.holders > 0))
++    Ok(leases.values().any(|state| {
++        state.holders > 0 && state.state_root == config.state_root
++    }))
+ }
+ 
+ fn managed_environment_has_active_lease(
+@@ -1534,7 +1531,6 @@ impl ManagedLocalRuntime {
+                 existing_key != &key
+                     && state.holders > 0
+                     && state.state_root == config.state_root
+-                    && state.environment == config.environment
+             }) {
+                 return Err(ManagedLocalRuntimeError::new(
+                     ManagedDiagnosticLayer::ManagedProcessStartup,
+@@ -1611,7 +1607,7 @@ impl ManagedLocalRuntime {
+                     reused_process: true,
+                 });
+             }
+-            let _ = manager.stop_process_state(&process);
++            manager.stop_process_state(&process)?;
+         }
+ 
+         let port = reserve_loopback_port()?;
