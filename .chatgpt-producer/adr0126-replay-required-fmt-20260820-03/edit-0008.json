@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/vfx.rs","old":"        assert_eq!(\n            reconstructed.emitters()[0].particles(),\n            forward.emitters()[0].particles()\n        );","new":"        assert_eq!(\n            reconstructed.emitters()[0].particles(),\n            forward.emitters()[0].particles()\n        );"}
