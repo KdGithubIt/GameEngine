@@ -330,9 +330,14 @@ where
     wait_for_probe(&mut child).map(|status| status.success())
 }
 
-fn direct_command_output(program: OsString, args: Vec<OsString>) -> io::Result<(bool, String)> {
+fn direct_command_output(
+    program: OsString,
+    args: Vec<OsString>,
+    environment: &[(OsString, OsString)],
+) -> io::Result<(bool, String)> {
     let mut child = Command::new(program)
         .args(args)
+        .envs(environment.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .stdout(Stdio::piped())
@@ -355,6 +360,20 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    command_output_with_environment(placement, program, args, &[])
+}
+
+/// Runs one placed command with additional child-process environment.
+pub(crate) fn command_output_with_environment<I, S>(
+    placement: &ExternalAgentExecutionPlacement,
+    program: &OsStr,
+    args: I,
+    environment: &[(OsString, OsString)],
+) -> io::Result<(bool, String)>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let (program, args) = placed_launch_command(
         placement,
         program.to_os_string(),
@@ -362,7 +381,7 @@ where
             .map(|argument| argument.as_ref().to_os_string())
             .collect(),
     );
-    direct_command_output(program, args)
+    direct_command_output(program, args, environment)
 }
 
 fn wait_for_probe(child: &mut Child) -> io::Result<ExitStatus> {

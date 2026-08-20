@@ -6,8 +6,9 @@
 
 use crate::acp_agent_runtime::{AcpAgentDescriptor, AcpCapabilities, AcpRuntimeIdentity};
 use crate::external_agent_provider::{
-    claude_credential_present, command_output, placed_launch_command, wsl_environment_forwarding,
-    ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement,
+    claude_credential_present, command_output_with_environment, placed_launch_command,
+    wsl_environment_forwarding, ExternalAgentExecutionEnvironment,
+    ExternalAgentExecutionPlacement,
 };
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -133,8 +134,8 @@ pub(crate) fn discover_claude_acp(
     config: &ClaudeAcpConfig,
     placement: &ExternalAgentExecutionPlacement,
 ) -> Result<ClaudeAcpRegistration, ClaudeAcpDiagnostic> {
-    discover_claude_acp_with(config, placement, |program, arguments| {
-        command_output(placement, program, arguments.iter())
+    discover_claude_acp_with(config, placement, |program, arguments, environment| {
+        command_output_with_environment(placement, program, arguments.iter(), environment)
     })
 }
 
@@ -187,11 +188,17 @@ fn discover_claude_acp_with<F>(
     mut run: F,
 ) -> Result<ClaudeAcpRegistration, ClaudeAcpDiagnostic>
 where
-    F: FnMut(&OsStr, &[OsString]) -> io::Result<(bool, String)>,
+    F: FnMut(
+        &OsStr,
+        &[OsString],
+        &ClaudeAcpEnvironment,
+    ) -> io::Result<(bool, String)>,
 {
+    let environment = launch_environment(config, placement);
     let adapter_version_output = run(
         &config.executable,
         &[OsString::from("--version")],
+        &environment,
     )
     .map_err(|error| adapter_unavailable(error.to_string()))?;
     if !adapter_version_output.0 {
@@ -210,6 +217,7 @@ where
     let claude_version_output = run(
         &config.executable,
         &[OsString::from("--cli"), OsString::from("--version")],
+        &environment,
     )
     .map_err(|error| {
         diagnostic(
@@ -240,6 +248,7 @@ where
             OsString::from("auth"),
             OsString::from("status"),
         ],
+        &environment,
     )
     .map_err(|error| {
         diagnostic(
@@ -266,7 +275,7 @@ where
             capabilities: claude_acp_capabilities(),
             runtime_identity: AcpRuntimeIdentity::stable(CLAUDE_ACP_PACKAGE, Some(adapter_version)),
         },
-        environment: launch_environment(config, placement),
+        environment,
         claude_code_version,
         event_mapping: ClaudeAcpEventMappingMetadata {
             permission_request_method: ACP_PERMISSION_REQUEST_METHOD,
@@ -363,6 +372,7 @@ mod tests {
     fn ready_runner(
         _program: &OsStr,
         arguments: &[OsString],
+        _environment: &ClaudeAcpEnvironment,
     ) -> io::Result<(bool, String)> {
         let args = arguments
             .iter()
@@ -413,7 +423,7 @@ mod tests {
         let result = discover_claude_acp_with(
             &ClaudeAcpConfig::default(),
             &placement,
-            |_program, arguments| {
+            |_program, arguments, environment| {
                 if arguments
                     == [
                         OsString::from("--cli"),
@@ -423,7 +433,11 @@ mod tests {
                 {
                     return Ok((false, r#"{"loggedIn":false}"#.to_owned()));
                 }
-                ready_runner(OsStr::new(CLAUDE_ACP_EXECUTABLE), arguments)
+                ready_runner(
+                    OsStr::new(CLAUDE_ACP_EXECUTABLE),
+                    arguments,
+                    environment,
+                )
             },
         );
 
@@ -472,8 +486,25 @@ mod tests {
             executable: OsString::from(CLAUDE_ACP_EXECUTABLE),
             claude_code_executable: Some(OsString::from("/opt/claude/claude")),
         };
-        let registration = discover_claude_acp_with(&config, &placement, ready_runner)
-            .expect("ready WSL Claude ACP should be discoverable");
+        let registration = discover_claude_acp_with(
+            &config,
+            &placement,
+            |program, arguments, environment| {
+                assert!(environment.iter().any(|(name, value)| {
+                    name.as_os_str() == OsStr::new(CLAUDE_CODE_EXECUTABLE_ENV)
+                        && value.as_os_str() == OsStr::new("/opt/claude/claude")
+                }));
+                assert!(environment.iter().any(|(name, value)| {
+                    name.as_os_str() == OsStr::new("WSLENV")
+                        && value
+                            .to_string_lossy()
+                            .split(':')
+                            .any(|entry| entry == CLAUDE_CODE_EXECUTABLE_ENV)
+                }));
+                ready_runner(program, arguments, environment)
+            },
+        )
+        .expect("ready WSL Claude ACP should be discoverable");
 
         assert_eq!(registration.descriptor.executable, OsString::from("wsl.exe"));
         assert!(registration
