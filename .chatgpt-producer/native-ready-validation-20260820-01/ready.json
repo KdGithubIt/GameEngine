@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "native-ready-validation-20260820-01",
+  "target_branch": "chatgpt/gameengine-native-ready-validation",
+  "expected_head_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json"
+  ],
+  "commit_message": "Fix premature native AgentRuntime validation",
+  "pr_title": "Fix premature NativeAgentRuntime validation",
+  "pr_body": "Reject premature ready_for_validation actions until the immutable proposal's planned mutations have successful governed evidence, while still permitting explicit validation-only and playtest-only runs. Strengthen the model prompt so inspection/progress cannot be mistaken for implementation completion. Also preserve NotApplicable source-validation truth in AI Studio status text instead of labeling it as passed. Adds regression tests for code/MCP mutation evidence, empty execution proposals, and NotApplicable wording. Logic-only AI Studio behavior change; no layout or visual styling changes."
+}
