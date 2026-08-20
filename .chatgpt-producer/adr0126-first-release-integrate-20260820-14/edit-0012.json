@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "            relative: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            path: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            document,\n            undo: Vec::new(),\n            dirty: false,",
+  "new": "            relative: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            path: PathBuf::from(\"assets/cutscenes/intro.timeline.json\"),\n            document,\n            undo: Vec::new(),\n            redo: Vec::new(),\n            dirty: false,"
+}
