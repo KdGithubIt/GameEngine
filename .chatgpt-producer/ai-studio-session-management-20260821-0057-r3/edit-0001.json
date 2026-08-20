@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "            Self::SessionNotFound(id) => write!(formatter, \"agent session `{id}` was not found\"),\n            Self::RunNotFound(id) => write!(formatter, \"agent run `{id}` was not found\"),\n",
+  "new": "            Self::SessionNotFound(id) => write!(formatter, \"agent session `{id}` was not found\"),\n            Self::InvalidSessionTitle => {\n                write!(formatter, \"agent session title must not be empty\")\n            }\n            Self::SessionHasActiveRun(id) => write!(\n                formatter,\n                \"agent session `{id}` cannot be deleted while one of its runs is active\"\n            ),\n            Self::RunNotFound(id) => write!(formatter, \"agent run `{id}` was not found\"),\n"
+}
