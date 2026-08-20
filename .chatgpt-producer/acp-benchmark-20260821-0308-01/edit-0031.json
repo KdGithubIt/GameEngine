@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    fn a_version_two_record_stays_readable_and_comparable_against_version_three() {",
+  "new": "    fn a_version_two_record_stays_readable_and_comparable_against_version_four() {"
+}
