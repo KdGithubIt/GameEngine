@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"            let _ = manager.stop_process_state(&process);\n","new":"            manager.stop_process_state(&process)?;\n"}
