@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/external_agent_provider.rs",
+  "old": "        assert!(args.contains(\"--sandbox\\nworkspace-write\"));\n        assert!(args.contains(\"http://127.0.0.1:4321/mcp\"));\n",
+  "new": "        assert!(args.contains(&format!(\"--enable\\n{CODEX_MCP_FEATURE}\")));\n        assert!(args.contains(\"--sandbox\\nworkspace-write\"));\n        assert!(args.contains(\"http://127.0.0.1:4321/mcp\"));\n"
+}
