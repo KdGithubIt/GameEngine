@@ -346,7 +346,7 @@ fn direct_command_output(program: OsString, args: Vec<OsString>) -> io::Result<(
 }
 
 /// Runs one command for its exit status and captured standard output.
-fn command_output<I, S>(
+pub(crate) fn command_output<I, S>(
     placement: &ExternalAgentExecutionPlacement,
     program: &OsStr,
     args: I,
@@ -399,7 +399,7 @@ fn provider_version_matches(kind: ExternalAgentProviderKind, output: &str) -> bo
 /// exits successfully. An unknown response is not accepted as authenticated:
 /// the pinned adapter must understand the credential report before Build or Ask
 /// can send project evidence to the provider.
-fn claude_credential_present(output: &str, _exit_succeeded: bool) -> bool {
+pub(crate) fn claude_credential_present(output: &str, _exit_succeeded: bool) -> bool {
     serde_json::from_str::<Value>(output)
         .ok()
         .and_then(|status| status.get("loggedIn").and_then(Value::as_bool))
@@ -506,7 +506,7 @@ fn resolve_launcher(
 ///
 /// Launcher resolution happens before placement, so the WSL wrapper receives
 /// the same argument vector the provider will see.
-fn placed_launch_command(
+pub(crate) fn placed_launch_command(
     placement: &ExternalAgentExecutionPlacement,
     program: OsString,
     args: Vec<OsString>,
