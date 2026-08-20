@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "            HeaderAction::Undo => {\n                if let Some(loaded) = self.open.as_mut()\n                    && !loaded.undo()\n                {\n                    self.status = Some(\"Nothing to undo\".to_owned());\n                }\n            }\n            HeaderAction::Close => {",
+  "new": "            HeaderAction::Undo => {\n                if let Some(loaded) = self.open.as_mut()\n                    && !loaded.undo()\n                {\n                    self.status = Some(\"Nothing to undo\".to_owned());\n                }\n            }\n            HeaderAction::Redo => {\n                if let Some(loaded) = self.open.as_mut()\n                    && !loaded.redo()\n                {\n                    self.status = Some(\"Nothing to redo\".to_owned());\n                }\n            }\n            HeaderAction::Close => {"
+}
