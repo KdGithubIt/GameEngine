@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/platform/src/audio.rs","old":"            gains: Arc::clone(&gains),\n            looping,\n            respond_to,","new":"            gains: Arc::clone(&gains),\n            looping,\n            offset,\n            respond_to,"}
