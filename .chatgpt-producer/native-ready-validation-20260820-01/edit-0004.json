@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "        self.transition_run(\n            run_id,\n            next,\n            if playtest_required {\n                \"Managed source validation passed; playtest evidence is still required.\"\n            } else {\n                \"Managed source validation passed; no playtest was requested by this proposal.\"\n            },\n        )",
+  "new": "        let source_validation = self.run(run_id)?.completion.source_validation;\n        self.transition_run(\n            run_id,\n            next,\n            managed_validation_advance_message(source_validation, playtest_required),\n        )"
+}
