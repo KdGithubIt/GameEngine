@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline/audio_adapter.rs","old":"    (1.0 - elapsed as f32 / fade_ticks as f32).clamp(0.0, 1.0)\n}\nfn output_gains(","new":"    (1.0 - elapsed as f32 / fade_ticks as f32).clamp(0.0, 1.0)\n}\n\nfn output_gains("}
