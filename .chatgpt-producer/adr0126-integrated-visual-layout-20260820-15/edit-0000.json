@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/authoring_windows.rs",
+  "old": "            let window = window\n                .default_width(610.0)\n                .default_height(620.0)\n                .default_pos(egui::pos2(650.0, 42.0));",
+  "new": "            let window = window\n                .default_width(610.0)\n                .default_height(700.0)\n                .default_pos(egui::pos2(650.0, 10.0));"
+}
