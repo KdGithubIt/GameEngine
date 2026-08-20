@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-animation-runtime-20260820-1222",
+  "target_branch": "chatgpt/gameengine-adr0126-animation-runtime",
+  "expected_head_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "patch_sha256": "73eb337215b628691dd596128cd9ff449e53eb405b462d12b824cb4a1da12826",
+  "patch_bytes": 30007,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0126 Animation Timeline runtime adapter",
+  "pr_title": "Implement ADR 0126 Animation Timeline adapter",
+  "pr_body": "Implements the next ADR 0126 runtime slice on current main. Adds the Animation track adapter using Animation Set motion slots and exact Timeline-owned sample time, suspends and restores Animation Graph/Animator runtime state during Timeline overrides, rebuilds stable runtime bindings from scene identity, and registers Timeline in the shared Editor Play/packaged Player fixed-step schedule. Adds focused runtime/schedule tests and updates ADR 0126 implementation status. Audio/VFX adapters, persistent Scene View preview, curve/ReplayRequired reconstruction, and the packaged proving project remain separate follow-up slices."
+}
