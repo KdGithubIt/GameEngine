@@ -1,0 +1,976 @@
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index 35b219a576e9faa6b621613e04b150eb208fc107..d0c875cd67871f79ef58c0b0f87f01dab797a2cb 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -6,6 +6,8 @@
+ //! camera-selection override, and forwards sequence events to the ordinary
+ //! host event path. The neutral core stays free of every domain touched here.
+ 
++mod vfx;
++
+ pub use engine_timeline::{
+     ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,
+     CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,
+@@ -259,14 +261,47 @@ pub fn advance_timelines(
+     };
+     let players = query.iter().map(|(entity, _)| entity).collect::<Vec<_>>();
+     for entity in players {
+-        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+-            continue;
++        let (timeline, evaluation, previous_tick, pending_vfx_seek, mut tokens) = {
++            let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
++                continue;
++            };
++            if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
++                component.player.play();
++            }
++            let pending_vfx_seek = vfx::pending_seek(component);
++            let timeline = Arc::clone(&component.timeline);
++            let evaluation = component.player.advance(&timeline, delta_seconds);
++            let previous_tick = component.player.previous_tick();
++            let tokens = std::mem::take(&mut component.tokens);
++            (
++                timeline,
++                evaluation,
++                previous_tick,
++                pending_vfx_seek,
++                tokens,
++            )
+         };
+-        if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
+-            component.player.play();
++
++        if let Some(seek) = pending_vfx_seek {
++            vfx::apply_seek(
++                &timeline,
++                seek,
++                world,
++                bindings,
++                &mut tokens,
++                diagnostics,
++            );
++            vfx::mark_seek_applied(&mut tokens, seek);
+         }
+-        let timeline = Arc::clone(&component.timeline);
+-        let evaluation = component.player.advance(&timeline, delta_seconds);
++        vfx::apply_evaluation(
++            &timeline,
++            &evaluation,
++            previous_tick,
++            world,
++            bindings,
++            &mut tokens,
++            diagnostics,
++        );
+         apply_evaluation(
+             entity,
+             &evaluation,
+@@ -276,6 +311,9 @@ pub fn advance_timelines(
+             events,
+             diagnostics,
+         );
++        if let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) {
++            component.tokens = tokens;
++        }
+     }
+ }
+ 
+@@ -332,9 +370,9 @@ pub fn apply_evaluation(
+                     source,
+                 });
+             }
+-            // Animation, Audio, and VFX adapters land with the runtime controls
+-            // their ADRs define. Until then the evaluation still reports them,
+-            // so nothing silently claims to have played a cue or an effect.
++            // Animation and Audio remain neutral outputs until their domain
++            // adapters land. VFX edge actions are applied by the composition
++            // adapter before this per-frame output pass.
+             TimelineTrackOutput::Animation { .. }
+             | TimelineTrackOutput::Audio { .. }
+             | TimelineTrackOutput::Vfx { .. }
+@@ -418,12 +456,14 @@ pub fn apply_timeline_control(
+         TimelineControl::Stop => {
+             component.player.stop();
+             component.tokens.clear();
++            vfx::mark_seek(component);
+         }
+         TimelineControl::Seek { tick } => {
+             let timeline = Arc::clone(&component.timeline);
+             component
+                 .player
+                 .seek(&timeline, tick, TimelineSeek::Playback);
++            vfx::mark_seek(component);
+         }
+         TimelineControl::SetRate { rate } => {
+             if !component.player.set_rate(rate) {
+diff --git a/crates/engine/src/timeline/vfx/mod.rs b/crates/engine/src/timeline/vfx/mod.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..17c4faa8417299254387b196a972ae4c35a4a97e
+--- /dev/null
++++ b/crates/engine/src/timeline/vfx/mod.rs
+@@ -0,0 +1,85 @@
++//! VFX Timeline adapter at the final engine composition boundary (ADR 0126).
++//!
++//! The neutral Timeline core reports stable VFX clip boundaries. This adapter
++//! resolves those authoring bindings to live scene entities and drives the
++//! ADR 0125 `VfxPlayer` interface without moving VFX simulation ownership out
++//! of `engine-render-runtime`.
++
++mod replay;
++mod runtime;
++
++#[cfg(test)]
++mod tests;
++
++pub(super) use replay::{apply_seek, mark_seek, mark_seek_applied, pending_seek};
++pub(super) use runtime::apply_evaluation;
++
++use super::{
++    TimelineBindingDiagnostic, TimelineBindings, TimelineDiagnostics, TimelinePlayerComponent,
++};
++use crate::vfx::VfxPlayer;
++use engine_authoring::TimelineTick;
++use engine_ecs::World;
++use engine_timeline::{AdapterTokens, CompiledTrack, TimelinePlayState, VfxAction};
++
++const PENDING_SEEK_GENERATION: &str = "engine.timeline.vfx.pending_seek_generation";
++const APPLIED_SEEK_GENERATION: &str = "engine.timeline.vfx.applied_seek_generation";
++const PLAY_TOKEN_PREFIX: &str = "engine.timeline.vfx.play:";
++
++#[derive(Debug, Clone, Copy)]
++pub(super) struct PendingSeek {
++    generation: u64,
++    tick: TimelineTick,
++    state: TimelinePlayState,
++}
++
++fn apply_action(
++    track: &CompiledTrack,
++    action: VfxAction,
++    world: &mut World,
++    bindings: &TimelineBindings,
++    diagnostics: &mut TimelineDiagnostics,
++) {
++    let Some(authoring) = track.entity.as_ref() else {
++        return;
++    };
++    let Some(target) = bindings.resolve(authoring) else {
++        diagnostics.push(TimelineBindingDiagnostic::UnresolvedEntity {
++            authoring: authoring.as_stable_id().as_str().to_owned(),
++        });
++        return;
++    };
++    let Some(player) = world.get_component_mut::<VfxPlayer>(target) else {
++        diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
++            authoring: authoring.as_stable_id().as_str().to_owned(),
++            component: "VfxPlayer",
++        });
++        return;
++    };
++    match action {
++        VfxAction::Play => player.play(),
++        VfxAction::Stop => player.stop(),
++        VfxAction::Restart => player.restart(),
++    }
++}
++
++fn stop_track(
++    track: &CompiledTrack,
++    world: &mut World,
++    bindings: &TimelineBindings,
++    diagnostics: &mut TimelineDiagnostics,
++) {
++    apply_action(track, VfxAction::Stop, world, bindings, diagnostics);
++}
++
++fn play_token(track: &CompiledTrack) -> String {
++    format!("{PLAY_TOKEN_PREFIX}{}", track.id.as_str())
++}
++
++fn play_owned(tokens: &AdapterTokens, track: &CompiledTrack) -> bool {
++    tokens.get(&play_token(track)) == Some(1)
++}
++
++fn set_play_owned(tokens: &mut AdapterTokens, track: &CompiledTrack, owned: bool) {
++    tokens.set(play_token(track), u64::from(owned));
++}
+diff --git a/crates/engine/src/timeline/vfx/replay.rs b/crates/engine/src/timeline/vfx/replay.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5d86f06cc27796150337ceb5e89cfca0414c0ea
+--- /dev/null
++++ b/crates/engine/src/timeline/vfx/replay.rs
+@@ -0,0 +1,168 @@
++use super::{
++    set_play_owned, PendingSeek, TimelineBindingDiagnostic, TimelineBindings, TimelineDiagnostics,
++    TimelinePlayerComponent, APPLIED_SEEK_GENERATION, PENDING_SEEK_GENERATION,
++};
++use crate::transform::GlobalTransform;
++use crate::vfx::VfxPlayer;
++use engine_authoring::TimelineTick;
++use engine_ecs::World;
++use engine_timeline::{
++    AdapterTokens, CompiledClipPayload, CompiledTimeline, TimelinePlayState, VfxAction,
++};
++
++pub(super) fn mark_seek(component: &mut TimelinePlayerComponent) {
++    component.tokens.set(
++        PENDING_SEEK_GENERATION,
++        component.player.generation(),
++    );
++}
++
++pub(super) fn pending_seek(component: &TimelinePlayerComponent) -> Option<PendingSeek> {
++    let generation = component.player.generation();
++    let pending = component.tokens.get(PENDING_SEEK_GENERATION);
++    let applied = component.tokens.get(APPLIED_SEEK_GENERATION);
++    (pending == Some(generation) && applied != Some(generation)).then_some(PendingSeek {
++        generation,
++        tick: component.player.tick(),
++        state: component.player.state(),
++    })
++}
++
++pub(super) fn mark_seek_applied(tokens: &mut AdapterTokens, seek: PendingSeek) {
++    tokens.set(APPLIED_SEEK_GENERATION, seek.generation);
++}
++
++pub(super) fn apply_seek(
++    timeline: &CompiledTimeline,
++    seek: PendingSeek,
++    world: &mut World,
++    bindings: &TimelineBindings,
++    tokens: &mut AdapterTokens,
++    diagnostics: &mut TimelineDiagnostics,
++) {
++    for track in timeline.tracks.iter().filter(|track| track.enabled) {
++        if !track
++            .clips
++            .iter()
++            .any(|clip| matches!(&clip.payload, CompiledClipPayload::Vfx { .. }))
++        {
++            continue;
++        }
++
++        let state = replayed_state(track, seek.tick);
++        let Some(authoring) = track.entity.as_ref() else {
++            continue;
++        };
++        let Some(target) = bindings.resolve(authoring) else {
++            diagnostics.push(TimelineBindingDiagnostic::UnresolvedEntity {
++                authoring: authoring.as_stable_id().as_str().to_owned(),
++            });
++            set_play_owned(tokens, track, false);
++            continue;
++        };
++
++        if seek.state == TimelinePlayState::Stopped || matches!(state, ReplayedState::Stopped) {
++            match world.get_component_mut::<VfxPlayer>(target) {
++                Some(player) => player.stop(),
++                None => diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
++                    authoring: authoring.as_stable_id().as_str().to_owned(),
++                    component: "VfxPlayer",
++                }),
++            }
++            set_play_owned(tokens, track, false);
++            continue;
++        }
++
++        let ReplayedState::Running {
++            since,
++            play_owned: seek_play_owned,
++        } = state
++        else {
++            unreachable!("stopped replay state handled above");
++        };
++        let Some(global) = world.get_component::<GlobalTransform>(target) else {
++            diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
++                authoring: authoring.as_stable_id().as_str().to_owned(),
++                component: "GlobalTransform",
++            });
++            set_play_owned(tokens, track, false);
++            continue;
++        };
++        let origin = global.matrix().col(3).truncate();
++
++        let Some(player) = world.get_component_mut::<VfxPlayer>(target) else {
++            diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
++                authoring: authoring.as_stable_id().as_str().to_owned(),
++                component: "VfxPlayer",
++            });
++            set_play_owned(tokens, track, false);
++            continue;
++        };
++        let elapsed = seek.tick.saturating_sub(since).as_seconds() as f32 * player.time_scale;
++        player.instance_mut().seek_preview(elapsed, origin);
++        match seek.state {
++            TimelinePlayState::Playing => player.play(),
++            TimelinePlayState::Paused => {
++                player.play();
++                player.pause();
++            }
++            TimelinePlayState::Stopped => unreachable!("stopped Timeline handled above"),
++        }
++        set_play_owned(tokens, track, seek_play_owned);
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum ReplayedState {
++    Stopped,
++    Running {
++        since: TimelineTick,
++        play_owned: bool,
++    },
++}
++
++fn replayed_state(track: &engine_timeline::CompiledTrack, target: TimelineTick) -> ReplayedState {
++    let mut running_since = None;
++    let mut play_until = None;
++
++    for clip in &track.clips {
++        if clip.start > target {
++            break;
++        }
++        if play_until.is_some_and(|end| end <= clip.start) {
++            running_since = None;
++            play_until = None;
++        }
++
++        let CompiledClipPayload::Vfx { action, .. } = &clip.payload else {
++            continue;
++        };
++        match action {
++            VfxAction::Play => {
++                if running_since.is_none() {
++                    running_since = Some(clip.start);
++                }
++                play_until = Some(clip.end);
++            }
++            VfxAction::Stop => {
++                running_since = None;
++                play_until = None;
++            }
++            VfxAction::Restart => {
++                running_since = Some(clip.start);
++                play_until = None;
++            }
++        }
++    }
++
++    if play_until.is_some_and(|end| end <= target) {
++        return ReplayedState::Stopped;
++    }
++    match running_since {
++        Some(since) => ReplayedState::Running {
++            since,
++            play_owned: play_until.is_some(),
++        },
++        None => ReplayedState::Stopped,
++    }
++}
+diff --git a/crates/engine/src/timeline/vfx/runtime.rs b/crates/engine/src/timeline/vfx/runtime.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b76b162c0a5cacda17f8d8425c508341372ef8e8
+--- /dev/null
++++ b/crates/engine/src/timeline/vfx/runtime.rs
+@@ -0,0 +1,172 @@
++use super::{
++    apply_action, play_owned, set_play_owned, stop_track, TimelineBindings, TimelineDiagnostics,
++};
++use engine_authoring::TimelineTick;
++use engine_ecs::World;
++use engine_timeline::{
++    AdapterTokens, CompiledClipPayload, CompiledTimeline, TimelineEvaluation, VfxAction,
++};
++
++pub(super) fn apply_evaluation(
++    timeline: &CompiledTimeline,
++    evaluation: &TimelineEvaluation,
++    previous_tick: TimelineTick,
++    world: &mut World,
++    bindings: &TimelineBindings,
++    tokens: &mut AdapterTokens,
++    diagnostics: &mut TimelineDiagnostics,
++) {
++    let wrapped = evaluation.tick < previous_tick;
++    let mut boundaries = Vec::new();
++
++    for transition in &evaluation.entered {
++        if let Some((track_index, clip_index)) =
++            find_transition(timeline, &transition.track, &transition.clip)
++        {
++            let clip = &timeline.tracks[track_index].clips[clip_index];
++            if matches!(&clip.payload, CompiledClipPayload::Vfx { .. }) {
++                boundaries.push(Boundary {
++                    phase: boundary_phase(clip.start, previous_tick, wrapped),
++                    tick: clip.start,
++                    track_index,
++                    clip_index,
++                    edge: BoundaryEdge::Enter,
++                });
++            }
++        }
++    }
++
++    for transition in &evaluation.exited {
++        if let Some((track_index, clip_index)) =
++            find_transition(timeline, &transition.track, &transition.clip)
++        {
++            let clip = &timeline.tracks[track_index].clips[clip_index];
++            if matches!(
++                &clip.payload,
++                CompiledClipPayload::Vfx {
++                    action: VfxAction::Play,
++                    ..
++                }
++            ) {
++                boundaries.push(Boundary {
++                    phase: boundary_phase(clip.end, previous_tick, wrapped),
++                    tick: clip.end,
++                    track_index,
++                    clip_index,
++                    edge: BoundaryEdge::ExitPlay,
++                });
++            }
++        }
++    }
++
++    boundaries.sort_by_key(|boundary| {
++        (
++            boundary.phase,
++            boundary.tick,
++            boundary.track_index,
++            boundary.edge.order(),
++            boundary.clip_index,
++        )
++    });
++
++    for boundary in boundaries {
++        let track = &timeline.tracks[boundary.track_index];
++        let clip = &track.clips[boundary.clip_index];
++        match boundary.edge {
++            BoundaryEdge::Enter => {
++                let CompiledClipPayload::Vfx { action, .. } = &clip.payload else {
++                    continue;
++                };
++                apply_action(track, *action, world, bindings, diagnostics);
++                set_play_owned(tokens, track, *action == VfxAction::Play);
++            }
++            BoundaryEdge::ExitPlay => {
++                stop_track(track, world, bindings, diagnostics);
++                set_play_owned(tokens, track, false);
++            }
++        }
++    }
++
++    // `ClipTransition::exited` uses crossing intervals, so a step that lands
++    // exactly on the half-open clip end may report the exit on the next
++    // traversal. Reconcile interval ownership at the sampled tick so VFX stops
++    // at the authored exclusive end without adding a frame of emission.
++    for track in timeline.tracks.iter().filter(|track| track.enabled) {
++        if !track
++            .clips
++            .iter()
++            .any(|clip| matches!(&clip.payload, CompiledClipPayload::Vfx { .. }))
++        {
++            continue;
++        }
++        let active_play = track.clips.iter().any(|clip| {
++            clip.contains(evaluation.tick)
++                && matches!(
++                    &clip.payload,
++                    CompiledClipPayload::Vfx {
++                        action: VfxAction::Play,
++                        ..
++                    }
++                )
++        });
++        match (play_owned(tokens, track), active_play) {
++            (true, false) => {
++                stop_track(track, world, bindings, diagnostics);
++                set_play_owned(tokens, track, false);
++            }
++            (false, true) => {
++                apply_action(track, VfxAction::Play, world, bindings, diagnostics);
++                set_play_owned(tokens, track, true);
++            }
++            _ => {}
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum BoundaryEdge {
++    ExitPlay,
++    Enter,
++}
++
++impl BoundaryEdge {
++    const fn order(self) -> u8 {
++        match self {
++            Self::ExitPlay => 0,
++            Self::Enter => 1,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy)]
++struct Boundary {
++    phase: u8,
++    tick: TimelineTick,
++    track_index: usize,
++    clip_index: usize,
++    edge: BoundaryEdge,
++}
++
++fn boundary_phase(tick: TimelineTick, previous_tick: TimelineTick, wrapped: bool) -> u8 {
++    if wrapped && tick < previous_tick {
++        1
++    } else {
++        0
++    }
++}
++
++fn find_transition(
++    timeline: &CompiledTimeline,
++    track_id: &engine_authoring::TimelineTrackId,
++    clip_id: &engine_authoring::TimelineClipId,
++) -> Option<(usize, usize)> {
++    for (track_index, track) in timeline.tracks.iter().enumerate() {
++        if &track.id != track_id {
++            continue;
++        }
++        if let Some(clip_index) = track.clips.iter().position(|clip| &clip.id == clip_id) {
++            return Some((track_index, clip_index));
++        }
++    }
++    None
++}
+diff --git a/crates/engine/src/timeline/vfx/tests.rs b/crates/engine/src/timeline/vfx/tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6fb9dba2622a0467add679e53fb033de15a3d06
+--- /dev/null
++++ b/crates/engine/src/timeline/vfx/tests.rs
+@@ -0,0 +1,376 @@
++use super::*;
++use crate::timeline::{
++    TimelineCameraOverride, TimelineControl, TimelineEvents, advance_timelines,
++    apply_timeline_control,
++};
++use crate::transform::{GlobalTransform, Transform};
++use crate::vfx::{VfxPlaybackState, VfxRestartPolicy};
++use engine_authoring::{
++    AssetId, CompiledVfxEffect, EntityId, TimelineBinding, TimelineClip, TimelineClipId,
++    TimelineClipPayload, TimelineDocument, TimelineTrack, TimelineTrackId, TimelineTrackKind,
++    TimelineVfxAction, VfxCapabilityRequirements,
++};
++use std::collections::BTreeMap;
++use std::sync::Arc;
++
++fn vfx_document(
++    entity: &EntityId,
++    action: TimelineVfxAction,
++    start: i64,
++    end: i64,
++) -> TimelineDocument {
++    let mut document = TimelineDocument::new(TimelineTick(96_000));
++    document.tracks.push(TimelineTrack {
++        id: TimelineTrackId::generate(),
++        kind: TimelineTrackKind::Vfx,
++        name: "Effect".to_owned(),
++        enabled: true,
++        binding: TimelineBinding {
++            entity: Some(entity.clone()),
++            asset: None,
++        },
++        clips: vec![TimelineClip {
++            id: TimelineClipId::generate(),
++            start: TimelineTick(start),
++            end: TimelineTick(end),
++            payload: TimelineClipPayload::Vfx {
++                effect: AssetId::generate(),
++                action,
++            },
++        }],
++    });
++    document
++}
++
++fn test_player() -> VfxPlayer {
++    VfxPlayer::new(
++        CompiledVfxEffect {
++            source_schema_version: 1,
++            seed: 7,
++            max_particles: 16,
++            emitters: Vec::new(),
++            capabilities: VfxCapabilityRequirements::default(),
++        },
++        false,
++        false,
++        VfxRestartPolicy::Manual,
++        1.0,
++        None,
++        BTreeMap::new(),
++    )
++}
++
++fn world_with_vfx() -> (World, EntityId, engine_ecs::Entity, TimelineBindings) {
++    let mut world = World::new();
++    let target = world.spawn().expect("target");
++    world
++        .add_component(target, Transform::default())
++        .expect("transform");
++    world
++        .add_component(target, GlobalTransform::default())
++        .expect("global transform");
++    world
++        .add_component(target, test_player())
++        .expect("VFX player");
++    let authoring = EntityId::generate();
++    let mut bindings = TimelineBindings::default();
++    bindings.bind(&authoring, target);
++    (world, authoring, target, bindings)
++}
++
++fn step(
++    seconds: f32,
++    world: &mut World,
++    bindings: &TimelineBindings,
++    camera: &mut TimelineCameraOverride,
++    events: &mut TimelineEvents,
++    diagnostics: &mut TimelineDiagnostics,
++) {
++    advance_timelines(
++        seconds,
++        world,
++        bindings,
++        camera,
++        events,
++        diagnostics,
++    );
++}
++
++#[test]
++fn play_owns_exactly_the_clip_interval() {
++    let (mut world, authoring, target, bindings) = world_with_vfx();
++    let timeline = Arc::new(
++        engine_timeline::compile_timeline(&vfx_document(
++            &authoring,
++            TimelineVfxAction::Play,
++            0,
++            24_000,
++        ))
++        .expect("compile"),
++    );
++    let source = world.spawn().expect("source");
++    let mut component = TimelinePlayerComponent::new(timeline);
++    component.autoplay = true;
++    world.add_component(source, component).expect("timeline");
++
++    let mut camera = TimelineCameraOverride::default();
++    let mut events = TimelineEvents::default();
++    let mut diagnostics = TimelineDiagnostics::default();
++    step(
++        0.1,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++    assert_eq!(
++        world
++            .get_component::<VfxPlayer>(target)
++            .expect("player")
++            .playback_state(),
++        VfxPlaybackState::Playing
++    );
++
++    step(
++        0.4,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++    assert_eq!(
++        world
++            .get_component::<VfxPlayer>(target)
++            .expect("player")
++            .playback_state(),
++        VfxPlaybackState::Stopped
++    );
++    assert!(diagnostics.iter().next().is_none());
++}
++
++#[test]
++fn restart_is_an_edge_action_not_an_active_clip_action() {
++    let (mut world, authoring, target, bindings) = world_with_vfx();
++    let timeline = Arc::new(
++        engine_timeline::compile_timeline(&vfx_document(
++            &authoring,
++            TimelineVfxAction::Restart,
++            0,
++            48_000,
++        ))
++        .expect("compile"),
++    );
++    let source = world.spawn().expect("source");
++    let mut component = TimelinePlayerComponent::new(timeline);
++    component.autoplay = true;
++    world.add_component(source, component).expect("timeline");
++
++    let mut camera = TimelineCameraOverride::default();
++    let mut events = TimelineEvents::default();
++    let mut diagnostics = TimelineDiagnostics::default();
++    step(
++        0.1,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++    world
++        .get_component_mut::<VfxPlayer>(target)
++        .expect("player")
++        .instance_mut()
++        .step(0.05, glam::Vec3::ZERO);
++
++    step(
++        0.1,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++    let elapsed = world
++        .get_component::<VfxPlayer>(target)
++        .expect("player")
++        .instance()
++        .elapsed_seconds();
++    assert!((elapsed - 0.05).abs() < 0.0001);
++}
++
++#[test]
++fn stop_action_stops_when_its_start_is_crossed() {
++    let (mut world, authoring, target, bindings) = world_with_vfx();
++    world
++        .get_component_mut::<VfxPlayer>(target)
++        .expect("player")
++        .play();
++    let timeline = Arc::new(
++        engine_timeline::compile_timeline(&vfx_document(
++            &authoring,
++            TimelineVfxAction::Stop,
++            12_000,
++            24_000,
++        ))
++        .expect("compile"),
++    );
++    let source = world.spawn().expect("source");
++    let mut component = TimelinePlayerComponent::new(timeline);
++    component.autoplay = true;
++    world.add_component(source, component).expect("timeline");
++
++    let mut camera = TimelineCameraOverride::default();
++    let mut events = TimelineEvents::default();
++    let mut diagnostics = TimelineDiagnostics::default();
++    step(
++        0.3,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++    assert_eq!(
++        world
++            .get_component::<VfxPlayer>(target)
++            .expect("player")
++            .playback_state(),
++        VfxPlaybackState::Stopped
++    );
++}
++
++#[test]
++fn seek_replays_an_active_play_clip_to_clip_local_time() {
++    let (mut world, authoring, target, bindings) = world_with_vfx();
++    let timeline = Arc::new(
++        engine_timeline::compile_timeline(&vfx_document(
++            &authoring,
++            TimelineVfxAction::Play,
++            0,
++            48_000,
++        ))
++        .expect("compile"),
++    );
++    let source = world.spawn().expect("source");
++    world
++        .add_component(source, TimelinePlayerComponent::new(timeline))
++        .expect("timeline");
++    apply_timeline_control(&mut world, source, TimelineControl::Play).expect("play");
++    apply_timeline_control(
++        &mut world,
++        source,
++        TimelineControl::Seek {
++            tick: TimelineTick(24_000),
++        },
++    )
++    .expect("seek");
++
++    let mut camera = TimelineCameraOverride::default();
++    let mut events = TimelineEvents::default();
++    let mut diagnostics = TimelineDiagnostics::default();
++    step(
++        0.0,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++
++    let player = world.get_component::<VfxPlayer>(target).expect("player");
++    assert!((player.instance().elapsed_seconds() - 0.5).abs() < 0.0001);
++    assert_eq!(player.playback_state(), VfxPlaybackState::Playing);
++    assert!(diagnostics.iter().next().is_none());
++}
++
++#[test]
++fn seek_after_restart_replays_from_the_restart_boundary() {
++    let (mut world, authoring, target, bindings) = world_with_vfx();
++    let timeline = Arc::new(
++        engine_timeline::compile_timeline(&vfx_document(
++            &authoring,
++            TimelineVfxAction::Restart,
++            12_000,
++            18_000,
++        ))
++        .expect("compile"),
++    );
++    let source = world.spawn().expect("source");
++    world
++        .add_component(source, TimelinePlayerComponent::new(timeline))
++        .expect("timeline");
++    apply_timeline_control(&mut world, source, TimelineControl::Play).expect("play");
++    apply_timeline_control(
++        &mut world,
++        source,
++        TimelineControl::Seek {
++            tick: TimelineTick(24_000),
++        },
++    )
++    .expect("seek");
++
++    let mut camera = TimelineCameraOverride::default();
++    let mut events = TimelineEvents::default();
++    let mut diagnostics = TimelineDiagnostics::default();
++    step(
++        0.0,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++
++    let player = world.get_component::<VfxPlayer>(target).expect("player");
++    assert!((player.instance().elapsed_seconds() - 0.25).abs() < 0.0001);
++    assert_eq!(player.playback_state(), VfxPlaybackState::Playing);
++}
++
++#[test]
++fn seek_past_a_play_interval_restores_stopped_state() {
++    let (mut world, authoring, target, bindings) = world_with_vfx();
++    let timeline = Arc::new(
++        engine_timeline::compile_timeline(&vfx_document(
++            &authoring,
++            TimelineVfxAction::Play,
++            0,
++            12_000,
++        ))
++        .expect("compile"),
++    );
++    let source = world.spawn().expect("source");
++    world
++        .add_component(source, TimelinePlayerComponent::new(timeline))
++        .expect("timeline");
++    apply_timeline_control(&mut world, source, TimelineControl::Play).expect("play");
++    apply_timeline_control(
++        &mut world,
++        source,
++        TimelineControl::Seek {
++            tick: TimelineTick(24_000),
++        },
++    )
++    .expect("seek");
++
++    let mut camera = TimelineCameraOverride::default();
++    let mut events = TimelineEvents::default();
++    let mut diagnostics = TimelineDiagnostics::default();
++    step(
++        0.0,
++        &mut world,
++        &bindings,
++        &mut camera,
++        &mut events,
++        &mut diagnostics,
++    );
++
++    assert_eq!(
++        world
++            .get_component::<VfxPlayer>(target)
++            .expect("player")
++            .playback_state(),
++        VfxPlaybackState::Stopped
++    );
++}
+diff --git a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+index 14b422b6d05c3cffbe4e766e88f7916e8c9622f7..4a3fcbb1999029c8712a89b08981f49284bc1f8e 100644
+--- a/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
++++ b/docs/adr/0126-timeline-sequencer-authoring-and-runtime.md
+@@ -272,23 +272,25 @@ landed so far, on 2026-08-20:
+   clip, and marker identity; integer tick math and rational display frame rates;
+   document validation; the neutral `engine-timeline` crate carrying the compiled
+   schedule, per-player transient state, exact marker and clip crossing, seek
+-  policies, and the track registry; the Event, Camera Cut, and Property tracks
+-  applied at the `engine` composition layer, including the transient camera
+-  override and the bounded sequence-event queue; the `engine.timeline_player`
+-  component and its scene conversion; project-Rust deferred Timeline commands
+-  and copied views; a Sequencer workspace with transport, track and clip
+-  editing, markers, frame snapping, seek-policy presentation, and undo; and
+-  Editor, CLI, and MCP parity through the shared typed-document capability
+-  registry.
++  policies, and the track registry; the Event, Camera Cut, Property, and VFX
++  tracks applied at the `engine` composition layer, including transient camera
++  override, bounded sequence-event delivery, VFX start/stop/restart edge
++  semantics, and deterministic VFX reconstruction on Timeline seek through ADR
++  0125's existing `VfxPlayer`/preview-seek runtime interface; the
++  `engine.timeline_player` component and its scene conversion; project-Rust
++  deferred Timeline commands and copied views; a Sequencer workspace with
++  transport, track and clip editing, markers, frame snapping, seek-policy
++  presentation, and undo; and Editor, CLI, and MCP parity through the shared
++  typed-document capability registry.
+ - **Not yet landed:** the Animation track adapter that drives Animation Set
+-  motion slots; the Audio and VFX adapters, which ADR 0126 §14 already defers
+-  until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
+-  the persistent Scene View world; the curve editor and `ReplayRequired`
+-  checkpoint reconstruction; and the packaged-player proving project.
+-
+-Evaluation already reports Animation, Audio, and VFX outputs, so nothing in the
+-implemented path silently claims to have played a motion slot, a cue, or an
+-effect.
++  motion slots; the Audio adapter through ADR 0122; Sequencer preview inside the
++  persistent Scene View world; the curve editor and generic `ReplayRequired`
++  checkpoint/debounce/cancellation coordinator; and the packaged-player proving
++  project.
++
++Evaluation already reports Animation and Audio outputs without claiming to have
++played them. VFX outputs are applied only at the `engine` composition boundary;
++the neutral Timeline crate remains independent of ADR 0125 runtime types.
+ 
+ ## Verification
+ 
