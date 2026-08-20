@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "        BenchmarkRuntimeIdentity::coding_agent(\n            harness,\n            BenchmarkAgentRuntimeIdentity {\n                runtime_id: agent_name.to_owned(),\n                runtime_version: TelemetryValue::Unavailable,\n            },\n        )\n",
+  "new": "        let acp = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(agent_name, None);\n        BenchmarkRuntimeIdentity::acp_coding_agent(harness, &acp)\n"
+}
