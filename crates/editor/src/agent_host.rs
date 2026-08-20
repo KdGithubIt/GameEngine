@@ -2596,6 +2596,20 @@ impl AgentHost {
             AgentRunState::Evaluating
         };
         let source_validation = self.run(run_id)?.completion.source_validation;
+        // Evaluation never returns a run to execution on its own, and these two
+        // gates are reportable only while a run executes or repairs. A run that
+        // arrives here without them can therefore never satisfy its completion
+        // contract, so it ends as a failure instead of waiting in evaluation for
+        // a report that has no phase left to arrive in.
+        if next == AgentRunState::Evaluating
+            && let Some(gates) = unreported_provider_gates(&self.run(run_id)?.completion)
+        {
+            let message = format!(
+                "Completion gate(s) {gates} were never reported while the run was executing, and are not reportable during evaluation."
+            );
+            self.record_event(run_id, AgentEventKind::Failure, message.clone())?;
+            return self.transition_run(run_id, AgentRunState::Failed, message);
+        }
         self.transition_run(
             run_id,
             next,
@@ -2893,6 +2907,23 @@ fn push_validation_event(run: &mut AgentRun, message: String, validation: Manage
         Some(validation),
         None,
     );
+}
+
+/// Names the still-pending completion gates only a provider can report.
+///
+/// [`AgentHost::record_completion_gate`] accepts these from the provider, and
+/// the Native AgentRuntime policy admits them only while a run is executing or
+/// repairing, so nothing else in the engine can settle them later.
+fn unreported_provider_gates(completion: &CompletionReport) -> Option<String> {
+    let pending = [
+        ("acceptance_criteria", completion.acceptance_criteria),
+        ("authoring_validation", completion.authoring_validation),
+    ]
+    .into_iter()
+    .filter(|(_, status)| *status == CompletionStatus::Pending)
+    .map(|(gate, _)| gate)
+    .collect::<Vec<_>>();
+    (!pending.is_empty()).then(|| pending.join(", "))
 }
 
 fn managed_validation_advance_message(
@@ -4801,6 +4832,48 @@ mod tests {
         assert_eq!(unmanaged, 0);
     }
 
+    /// Reports the gates only a provider can settle, as a real run does before
+    /// it hands control back for validation.
+    fn report_provider_completion_gates(host: &mut AgentHost, run_id: &str) {
+        for gate in ["acceptance_criteria", "authoring_validation"] {
+            host.record_completion_gate(run_id, gate, CompletionStatus::Passed, "reported")
+                .expect("provider-reportable completion gate");
+        }
+    }
+
+    #[test]
+    fn a_run_that_never_reported_its_gates_fails_instead_of_waiting_in_evaluation() {
+        let project = temp_path("evaluation-deadlock-project");
+        let storage = temp_path("evaluation-deadlock-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Validation").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+
+        host.begin_managed_validation(&run, false)
+            .expect("managed validation");
+
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(
+            run_state.state,
+            AgentRunState::Failed,
+            "evaluation cannot settle provider-reported gates, so the run can never complete"
+        );
+        assert!(
+            run_state.events.iter().any(|event| {
+                event.kind == AgentEventKind::Failure
+                    && event
+                        .message
+                        .contains("acceptance_criteria, authoring_validation")
+            }),
+            "the failure names the gates that were never reported"
+        );
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
     #[test]
     fn managed_validation_without_source_work_needs_no_shell_permission() {
         let project = temp_path("validation-na-project");
@@ -4811,6 +4884,7 @@ mod tests {
         let run = host.start_run(&session, "test").expect("run");
         host.transition_run(&run, AgentRunState::Executing, "execute")
             .expect("executing");
+        report_provider_completion_gates(&mut host, &run);
         host.begin_managed_validation(&run, false)
             .expect("managed validation");
         let run_state = host.run(&run).expect("run");
