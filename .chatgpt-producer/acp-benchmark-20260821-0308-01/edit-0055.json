@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "pub(crate) const BENCHMARK_HARNESS_VERSION: &str = \"gameengine-agent-benchmark-harness-v2\";\npub(crate) const WORKLOAD_POLICY_VERSION: &str = \"adr0135-workload-policy-v1\";",
+  "new": "pub(crate) const BENCHMARK_HARNESS_VERSION: &str = \"gameengine-agent-benchmark-harness-v2\";\npub(crate) const RAW_MODEL_BENCHMARK_TASK_ID: &str = \"raw_model_generation_v1\";\npub(crate) const RAW_MODEL_COMPLETION_CRITERIA: &[&str] = &[\"model_response_completed\"];\npub(crate) const WORKLOAD_POLICY_VERSION: &str = \"adr0135-workload-policy-v1\";"
+}
