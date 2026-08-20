@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    pub(crate) fn qualified_records(&self) -> Vec<&BenchmarkRecord> {\n        if self.plan.comparison_class != CampaignComparisonClass::ModelComparison {\n            return Vec::new();\n        }",
+  "new": "    pub(crate) fn qualified_records(&self) -> Vec<&BenchmarkRecord> {\n        if self.plan.comparison_class != CampaignComparisonClass::ModelComparison {\n            return Vec::new();\n        }\n        if matches!(\n            self.plan.benchmark_runtime.as_ref().map(|runtime| runtime.lane),\n            Some(BenchmarkLane::AgentHarness | BenchmarkLane::CodingAgent)\n        ) {\n            return Vec::new();\n        }"
+}
