@@ -2685,14 +2685,21 @@ impl AiStudioPanel {
     ///
     /// Wide detached AI Studio windows should not turn a vertical conversation
     /// into full-window controls. Narrow windows keep using all available width.
+    /// The transcript opts into the available height so the horizontal centering
+    /// row cannot shrink the scroll area to the height of its current entries.
     fn show_conversation_lane<R>(
         ui: &mut egui::Ui,
+        fill_available_height: bool,
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
         let available_width = ui.available_width();
+        let available_height = ui.available_height();
         let lane_width = Self::conversation_lane_width(available_width);
         let gutter = ((available_width - lane_width) * 0.5).max(0.0);
         ui.horizontal(|ui| {
+            if fill_available_height {
+                ui.set_min_height(available_height);
+            }
             ui.add_space(gutter);
             ui.vertical(|ui| {
                 ui.set_width(lane_width);
@@ -2707,7 +2714,7 @@ impl AiStudioPanel {
         // Scoped to this Ui and its children, so the surrounding Editor chrome
         // keeps the style installed by `crate::ui::chrome`.
         theme::apply_studio_style(ui);
-        Self::show_conversation_lane(ui, |ui| self.show_studio_header(ui));
+        Self::show_conversation_lane(ui, false, |ui| self.show_studio_header(ui));
         // ADR 0158 §1: one transcript is the primary surface, with the composer
         // pinned to its lower edge. ADR 0162 §4 narrows what may share that
         // dock to the decisions that block the user, one run status line, and
@@ -2716,7 +2723,7 @@ impl AiStudioPanel {
             .frame(egui::Frame::NONE)
             .show_separator_line(false)
             .show_inside(ui, |ui| {
-                Self::show_conversation_lane(ui, |ui| {
+                Self::show_conversation_lane(ui, false, |ui| {
                     self.show_pinned_affordances(ui);
                     self.show_run_status_strip(ui);
                     self.show_composer(ui);
@@ -2734,7 +2741,7 @@ impl AiStudioPanel {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
-                Self::show_conversation_lane(ui, |ui| self.show_transcript(ui));
+                Self::show_conversation_lane(ui, true, |ui| self.show_transcript(ui));
             });
         self.show_settings_surface(ui.ctx());
         self.show_proposal_surface(ui.ctx());
