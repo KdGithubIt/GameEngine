@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-audio-track-lint-20260820-04",
+  "target_branch": "chatgpt/gameengine-adr0126-audio-track",
+  "expected_head_sha": "121bc320e6ff178d7f9c68c169c1bd0af53a0a6b",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "edit_parts": ["edit-0000.json", "edit-0001.json"],
+  "commit_message": "Refine Timeline Audio adapter input",
+  "pr_title": "GameEngine: complete Timeline Audio Track adapter",
+  "pr_body": "## Summary\n\n- complete ADR 0126 Audio Track start/stop/seek/fade through ADR 0122 managed voices\n- keep spatial playback on the existing ADR 0122 mixer path\n- group Timeline-side adapter evaluation state into a typed input to satisfy the workspace lint contract\n\nVisual validation is not required because this is runtime/audio logic only."
+}
