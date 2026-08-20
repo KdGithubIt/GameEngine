@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/sequencer/curve_editor/graph.rs","old":"    }\n\n}\n\nfn value_range","new":"    }\n}\n\nfn value_range"}
