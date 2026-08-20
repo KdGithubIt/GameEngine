@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "    pub(crate) fn prepare_visual_validation(&mut self, subject: Option<EntityId>) {",
+  "new": "    pub(crate) fn prepare_visual_validation(\n        &mut self,\n        subject: Option<engine_authoring::EntityId>,\n    ) {"
+}
