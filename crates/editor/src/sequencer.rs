@@ -17,6 +17,8 @@ use engine_timeline::{
 };
 use std::path::{Path, PathBuf};
 
+mod curve_editor;
+
 /// Ticks one Step control moves the playhead when no frame rate applies.
 const STEP_FALLBACK_TICKS: i64 = 480;
 
@@ -26,6 +28,7 @@ enum HeaderAction {
     None,
     Save,
     Undo,
+    Redo,
     Close,
 }
 
@@ -70,6 +73,7 @@ struct LoadedTimeline {
     path: PathBuf,
     document: TimelineDocument,
     undo: Vec<TimelineDocument>,
+    redo: Vec<TimelineDocument>,
     dirty: bool,
     compiled: CompiledTimeline,
     player: TimelinePlayer,
@@ -95,6 +99,7 @@ impl LoadedTimeline {
             path,
             document,
             undo: Vec::new(),
+            redo: Vec::new(),
             dirty: false,
             compiled,
             player: TimelinePlayer::new(),
@@ -128,6 +133,7 @@ impl LoadedTimeline {
         if self.undo.len() > 64 {
             self.undo.remove(0);
         }
+        self.redo.clear();
         self.compiled = compiled;
         self.diagnostics.clear();
         self.dirty = true;
@@ -140,12 +146,41 @@ impl LoadedTimeline {
         };
         match compile_timeline(&previous) {
             Ok(compiled) => {
-                self.document = previous;
+                let current = std::mem::replace(&mut self.document, previous);
+                self.redo.push(current);
+                if self.redo.len() > 64 {
+                    self.redo.remove(0);
+                }
                 self.compiled = compiled;
                 self.dirty = true;
                 true
             }
-            Err(_) => false,
+            Err(_) => {
+                self.undo.push(previous);
+                false
+            }
+        }
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some(next) = self.redo.pop() else {
+            return false;
+        };
+        match compile_timeline(&next) {
+            Ok(compiled) => {
+                let current = std::mem::replace(&mut self.document, next);
+                self.undo.push(current);
+                if self.undo.len() > 64 {
+                    self.undo.remove(0);
+                }
+                self.compiled = compiled;
+                self.dirty = true;
+                true
+            }
+            Err(_) => {
+                self.redo.push(next);
+                false
+            }
         }
     }
 
@@ -293,6 +328,7 @@ impl SequencerState {
             path: PathBuf::from("assets/cutscenes/intro.timeline.json"),
             document,
             undo: Vec::new(),
+            redo: Vec::new(),
             dirty: false,
             compiled,
             player: TimelinePlayer::new(),
@@ -337,6 +373,8 @@ impl SequencerState {
         if let Some(loaded) = self.open.as_ref() {
             let title = loaded.relative.display().to_string();
             let dirty = loaded.dirty;
+            let can_undo = !loaded.undo.is_empty();
+            let can_redo = !loaded.redo.is_empty();
             ui.horizontal_wrapped(|ui| {
                 ui.strong(title);
                 if dirty {
@@ -345,8 +383,17 @@ impl SequencerState {
                 if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
                     action = HeaderAction::Save;
                 }
-                if ui.button("Undo").clicked() {
+                if ui
+                    .add_enabled(can_undo, egui::Button::new("Undo"))
+                    .clicked()
+                {
                     action = HeaderAction::Undo;
+                }
+                if ui
+                    .add_enabled(can_redo, egui::Button::new("Redo"))
+                    .clicked()
+                {
+                    action = HeaderAction::Redo;
                 }
                 if ui.button("Close").clicked() {
                     action = HeaderAction::Close;
@@ -368,6 +415,13 @@ impl SequencerState {
                     && !loaded.undo()
                 {
                     self.status = Some("Nothing to undo".to_owned());
+                }
+            }
+            HeaderAction::Redo => {
+                if let Some(loaded) = self.open.as_mut()
+                    && !loaded.redo()
+                {
+                    self.status = Some("Nothing to redo".to_owned());
                 }
             }
             HeaderAction::Close => {
@@ -679,6 +733,16 @@ impl SequencerState {
                 });
             }
         });
+
+        curve_editor::show(
+            ui,
+            loaded,
+            track_index,
+            clip_index,
+            permissions,
+            self.snap_to_frames,
+            &mut self.status,
+        );
     }
 
     fn show_markers(&mut self, ui: &mut egui::Ui, permissions: &AuthoringPermissions) {
@@ -830,6 +894,7 @@ mod tests {
             path: PathBuf::from("cutscene.timeline.json"),
             document,
             undo: Vec::new(),
+            redo: Vec::new(),
             dirty: false,
             compiled,
             player: TimelinePlayer::new(),
@@ -886,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn undo_restores_the_previous_document_and_recompiles_it() {
+    fn undo_and_redo_restore_the_document_and_recompile_it() {
         let mut loaded = loaded_timeline();
         loaded
             .edit(&writable(), |document| {
@@ -901,10 +966,103 @@ mod tests {
             })
             .expect("valid edit");
         assert_eq!(loaded.compiled.tracks.len(), 1);
+
         assert!(loaded.undo());
         assert!(loaded.document.tracks.is_empty());
         assert!(loaded.compiled.tracks.is_empty());
         assert!(!loaded.undo());
+
+        assert!(loaded.redo());
+        assert_eq!(loaded.document.tracks.len(), 1);
+        assert_eq!(loaded.compiled.tracks.len(), 1);
+        assert!(!loaded.redo());
+    }
+
+    #[test]
+    fn a_new_edit_after_undo_clears_redo_history() {
+        let mut loaded = loaded_timeline();
+        loaded
+            .edit(&writable(), |document| {
+                document.duration = TimelineTick(24_000);
+            })
+            .expect("valid edit");
+        assert!(loaded.undo());
+        assert!(loaded.redo.len() == 1);
+
+        loaded
+            .edit(&writable(), |document| {
+                document.duration = TimelineTick(36_000);
+            })
+            .expect("replacement edit");
+        assert!(loaded.redo.is_empty());
+        assert!(!loaded.redo());
+    }
+
+    #[test]
+    fn curve_edit_save_and_reopen_preserve_ticks_and_stable_ids() {
+        let mut loaded = loaded_timeline();
+        let track_id = TimelineTrackId::generate();
+        let clip_id = TimelineClipId::generate();
+        let entity = engine_authoring::EntityId::generate();
+        loaded
+            .edit(&writable(), |document| {
+                document.tracks.push(TimelineTrack {
+                    id: track_id.clone(),
+                    kind: TimelineTrackKind::Property,
+                    name: "Transform X".to_owned(),
+                    enabled: true,
+                    binding: engine_authoring::TimelineBinding {
+                        entity: Some(entity),
+                        asset: None,
+                    },
+                    clips: vec![TimelineClip {
+                        id: clip_id.clone(),
+                        start: TimelineTick(1_000),
+                        end: TimelineTick(20_000),
+                        payload: TimelineClipPayload::Property {
+                            property: TimelineProperty::TranslationX,
+                            keys: vec![
+                                engine_authoring::TimelineKey {
+                                    tick: TimelineTick(123),
+                                    value: 1.25,
+                                    interpolation: engine_authoring::TimelineInterpolation::Smooth,
+                                },
+                                engine_authoring::TimelineKey {
+                                    tick: TimelineTick(9_876),
+                                    value: -3.5,
+                                    interpolation: engine_authoring::TimelineInterpolation::Linear,
+                                },
+                            ],
+                        },
+                    }],
+                });
+            })
+            .expect("valid curve edit");
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gameengine-sequencer-{}-{unique}.timeline.json",
+            std::process::id()
+        ));
+        loaded.path = path.clone();
+        let expected = loaded.document.clone();
+        loaded.save().expect("save Timeline");
+
+        let saved = std::fs::read_to_string(&path).expect("read saved Timeline");
+        let reopened = TimelineDocument::from_json(&saved).expect("reopen Timeline");
+        assert_eq!(reopened, expected);
+        let track = reopened.track(&track_id).expect("stable track id");
+        assert_eq!(track.clips[0].id, clip_id);
+        let TimelineClipPayload::Property { keys, .. } = &track.clips[0].payload else {
+            panic!("saved clip must remain a Property payload");
+        };
+        assert_eq!(keys[0].tick, TimelineTick(123));
+        assert_eq!(keys[1].tick, TimelineTick(9_876));
+
+        std::fs::remove_file(path).expect("remove temporary Timeline");
     }
 
     #[test]
