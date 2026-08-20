@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"                    capabilities: negotiated.clone(),\n                    runtime_identity,\n                }))\n","new":"                    capabilities: negotiated.clone(),\n                    runtime_identity,\n                    config_option_ids,\n                }))\n"}
