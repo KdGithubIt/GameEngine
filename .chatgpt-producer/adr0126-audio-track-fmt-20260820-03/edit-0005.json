@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline/audio_adapter.rs","old":"        log::warn!(\n            \"Timeline spatial audio target {target} has no copied ADR 0122 emitter pose\"\n        );","new":"        log::warn!(\"Timeline spatial audio target {target} has no copied ADR 0122 emitter pose\");"}
