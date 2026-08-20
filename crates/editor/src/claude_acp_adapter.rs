@@ -334,12 +334,9 @@ fn claude_acp_capabilities() -> AcpCapabilities {
         mcp_http: true,
         mcp_sse: true,
         mcp_over_acp: false,
-        extensions: BTreeSet::from([
-            "prompt.embedded_context".to_owned(),
-            "prompt.image".to_owned(),
-            "session.close".to_owned(),
-            "session.fork".to_owned(),
-        ]),
+        // Optional ACP features are live-negotiated by the common transport.
+        // Do not turn Claude support into provider-specific extension requirements.
+        extensions: BTreeSet::new(),
     }
 }
 
@@ -415,6 +412,7 @@ mod tests {
         assert!(registration.descriptor.capabilities.session_resume);
         assert!(registration.descriptor.capabilities.mcp_http);
         assert!(!registration.descriptor.capabilities.mcp_over_acp);
+        assert!(registration.descriptor.capabilities.extensions.is_empty());
     }
 
     #[test]
