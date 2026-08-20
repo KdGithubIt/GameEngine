@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "        if ui.button(\"Step +\").clicked() {\n            let tick = step_tick(loaded, 1, snap_to_frames);\n            loaded.seek(tick, preview_events);\n        }\n        ui.label(format!(",
+  "new": "        if ui.button(\"Step +\").clicked() {\n            let tick = step_tick(loaded, 1, snap_to_frames);\n            loaded.seek(tick, preview_events);\n        }\n        let mut loop_enabled = loaded.player.loop_region().is_some();\n        if ui.checkbox(&mut loop_enabled, \"Loop\").changed() {\n            loaded.set_loop_enabled(loop_enabled);\n        }\n        let state = match loaded.player.state() {\n            TimelinePlayState::Playing => \"Playing\",\n            TimelinePlayState::Paused => \"Paused\",\n            TimelinePlayState::Stopped => \"Stopped\",\n        };\n        ui.label(state);\n        ui.label(format!("
+}
