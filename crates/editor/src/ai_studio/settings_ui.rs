@@ -7,6 +7,7 @@
 //! rare setup task never shares a scroll position with a frequent one.
 
 use super::*;
+use crate::external_agent_provider::{ExternalAgentAuthStatus, ExternalAgentDiscoveryStatus};
 
 /// A named section of the AI Studio configuration tier.
 ///
@@ -18,34 +19,41 @@ use super::*;
 pub(super) enum SettingsSection {
     /// Registering, installing, removing, and resourcing models.
     Models,
-    /// Choosing, authenticating, and confining agent providers.
-    Providers,
-    /// Where a provider runs.
+    /// Installing, signing in, and confining external agent programs.
+    ///
+    /// ADR 0164 §3 names this after the thing the user is setting up rather
+    /// than after the internal category that keeps two execution paths apart.
+    Agents,
+    /// Where an agent runs.
     Environment,
     /// Characterizing models and runtimes.
     Benchmarks,
     /// Reaching this studio from another device.
     Remote,
+    /// Where the studio itself is drawn.
+    Presentation,
 }
 
 impl SettingsSection {
     /// Every section, in the order the navigation lists them.
-    pub(super) const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 6] = [
         Self::Models,
-        Self::Providers,
+        Self::Agents,
         Self::Environment,
         Self::Benchmarks,
         Self::Remote,
+        Self::Presentation,
     ];
 
     /// Returns the navigation label.
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Models => "Models",
-            Self::Providers => "Providers",
+            Self::Agents => "Agents",
             Self::Environment => "Environment",
             Self::Benchmarks => "Benchmarks",
             Self::Remote => "Remote",
+            Self::Presentation => "Presentation",
         }
     }
 
@@ -55,28 +63,324 @@ impl SettingsSection {
             Self::Models => {
                 "Register, install, remove, and resource the models this machine can run."
             }
-            Self::Providers => {
-                "Choose an agent provider, sign it in, and decide how tightly it is confined."
+            Self::Agents => {
+                "Install and sign in the agent programs this machine can run, and decide how tightly they are confined."
             }
-            Self::Environment => "Decide where an external provider process runs.",
+            Self::Environment => "Decide where an external agent process runs.",
             Self::Benchmarks => "Characterize models and runtimes on reproducible tasks.",
             Self::Remote => "Reach this studio from another device on the private network.",
+            Self::Presentation => "Draw the studio inside the Editor or in its own OS window.",
+        }
+    }
+}
+
+/// What the selected external provider can do right now.
+///
+/// The studio used to report discovery and authentication as two independent
+/// sentences and leave the reader to combine them into an answer. This is that
+/// answer: one state, with the one action that changes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProviderReadiness {
+    /// A probe or a setup command is running, so any reported state is stale.
+    Working,
+    /// Installed and signed in; Ask and Build may use it.
+    Ready,
+    /// Installed, but the provider has no usable credential.
+    SignInRequired,
+    /// The provider program is not on this machine.
+    NotInstalled,
+    /// A generic compatible-agent command has not been entered.
+    NotConfigured,
+    /// Nothing has looked at this machine yet.
+    NotChecked,
+}
+
+impl ProviderReadiness {
+    /// Returns the state named in the fewest words that stay accurate.
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Working => "Checking",
+            Self::Ready => "Ready",
+            Self::SignInRequired => "Sign-in required",
+            Self::NotInstalled => "Not installed",
+            Self::NotConfigured => "Not configured",
+            Self::NotChecked => "Not checked",
+        }
+    }
+
+    /// Returns the tone that carries this state.
+    fn tone(self) -> theme::StatusTone {
+        match self {
+            Self::Working => theme::StatusTone::Busy,
+            Self::Ready => theme::StatusTone::Ready,
+            Self::SignInRequired | Self::NotConfigured => theme::StatusTone::Attention,
+            Self::NotInstalled => theme::StatusTone::Blocked,
+            Self::NotChecked => theme::StatusTone::Idle,
+        }
+    }
+
+    /// Returns what the reader has to do next, or what is already true.
+    fn next_step(self, provider: &str) -> String {
+        match self {
+            Self::Working => {
+                "Checking this machine. The state below is from the last check.".to_owned()
+            }
+            Self::Ready => format!("{provider} can answer Ask and run Build."),
+            Self::SignInRequired => {
+                format!(
+                    "Sign in below. The credential stays with {provider}; GameEngine never stores it."
+                )
+            }
+            Self::NotInstalled => {
+                format!(
+                    "Install {provider} below, then sign in. Refresh status re-checks this machine."
+                )
+            }
+            Self::NotConfigured => {
+                "Enter the compatible agent program below, then use Refresh status.".to_owned()
+            }
+            Self::NotChecked => {
+                "Use Refresh status to find out whether this provider is installed and signed in."
+                    .to_owned()
+            }
+        }
+    }
+}
+
+/// Returns why the Agents section needs attention in the given state.
+fn section_attention_for(
+    readiness: ProviderReadiness,
+) -> Option<(theme::StatusTone, &'static str)> {
+    match readiness {
+        ProviderReadiness::NotInstalled => Some((
+            theme::StatusTone::Blocked,
+            "The agent selected on the composer is not installed on this machine.",
+        )),
+        ProviderReadiness::SignInRequired => Some((
+            theme::StatusTone::Attention,
+            "The agent selected on the composer is installed but not signed in.",
+        )),
+        ProviderReadiness::NotConfigured => Some((
+            theme::StatusTone::Attention,
+            "The compatible agent program has not been entered under Advanced.",
+        )),
+        ProviderReadiness::Working | ProviderReadiness::Ready | ProviderReadiness::NotChecked => {
+            None
+        }
+    }
+}
+
+/// Returns what a provider can do right now, from what is known about it.
+///
+/// `working` means a probe or a setup command is in flight, so whatever the
+/// status says is about the machine as it was before that command started.
+fn provider_readiness(
+    status: &ExternalAgentProviderStatus,
+    kind: ExternalAgentProviderKind,
+    working: bool,
+) -> ProviderReadiness {
+    if working {
+        return ProviderReadiness::Working;
+    }
+    if status.ready() {
+        return ProviderReadiness::Ready;
+    }
+    match status.discovery {
+        ExternalAgentDiscoveryStatus::Unchecked => ProviderReadiness::NotChecked,
+        ExternalAgentDiscoveryStatus::Unavailable => {
+            if kind == ExternalAgentProviderKind::Generic {
+                ProviderReadiness::NotConfigured
+            } else {
+                ProviderReadiness::NotInstalled
+            }
+        }
+        ExternalAgentDiscoveryStatus::Available => match status.auth {
+            ExternalAgentAuthStatus::Unchecked => ProviderReadiness::NotChecked,
+            _ => ProviderReadiness::SignInRequired,
+        },
+    }
+}
+
+/// Returns how a discovery result is worded and toned in the studio.
+///
+/// The protocol wording (`available`, `not found`) stays on
+/// [`ExternalAgentDiscoveryStatus::label`] for remote reporting; a person
+/// reading a row labeled "Installed" wants a yes or a no.
+fn discovery_presentation(
+    status: ExternalAgentDiscoveryStatus,
+) -> (&'static str, theme::StatusTone) {
+    match status {
+        ExternalAgentDiscoveryStatus::Available => ("Yes", theme::StatusTone::Ready),
+        ExternalAgentDiscoveryStatus::Unavailable => ("No", theme::StatusTone::Blocked),
+        ExternalAgentDiscoveryStatus::Unchecked => ("Not checked", theme::StatusTone::Idle),
+    }
+}
+
+/// Returns how an authentication result is worded and toned in the studio.
+fn auth_presentation(status: ExternalAgentAuthStatus) -> (&'static str, theme::StatusTone) {
+    match status {
+        ExternalAgentAuthStatus::Authenticated => ("Yes", theme::StatusTone::Ready),
+        ExternalAgentAuthStatus::SignInRequired => ("No", theme::StatusTone::Attention),
+        ExternalAgentAuthStatus::Unchecked => ("Not checked", theme::StatusTone::Idle),
+        ExternalAgentAuthStatus::NotApplicable => ("Not applicable", theme::StatusTone::Idle),
+        ExternalAgentAuthStatus::Unavailable => {
+            ("Provider unavailable", theme::StatusTone::Blocked)
+        }
+    }
+}
+
+/// Whether another device can be handed a URL that reaches this studio.
+///
+/// ADR 0164 §4 refuses to present the loopback URL as a substitute, so "not
+/// ready" is a state this section has to be able to report, with the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhoneAccessReadiness {
+    /// The loopback gateway is not running, so there is nothing to publish.
+    GatewayUnavailable,
+    /// The gateway is running, but no usable external origin is configured.
+    BaseUnusable(PhoneUrlBaseError),
+    /// A phone URL exists and can be copied.
+    Ready,
+}
+
+impl PhoneAccessReadiness {
+    /// Returns the state named in the fewest words that stay accurate.
+    ///
+    /// The ready label deliberately says that a URL exists, not that the phone
+    /// can reach it: the external hop is user-owned and GameEngine cannot test
+    /// it from here.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::GatewayUnavailable => "Gateway not running",
+            Self::BaseUnusable(_) => "Not ready",
+            Self::Ready => "URL ready",
+        }
+    }
+
+    /// Returns the tone that carries this state.
+    const fn tone(self) -> theme::StatusTone {
+        match self {
+            Self::GatewayUnavailable => theme::StatusTone::Blocked,
+            Self::BaseUnusable(_) => theme::StatusTone::Attention,
+            Self::Ready => theme::StatusTone::Ready,
+        }
+    }
+
+    /// Returns what the reader has to do next, or what is already true.
+    const fn next_step(self) -> &'static str {
+        match self {
+            Self::GatewayUnavailable => {
+                "The companion gateway could not start on this machine, so there is no session to publish yet."
+            }
+            Self::BaseUnusable(error) => error.reason(),
+            Self::Ready => {
+                "Copy this URL and open it on your phone. GameEngine cannot test the connection from here: if the phone cannot open it, check that the phone is signed in to the same private network."
+            }
         }
     }
 }
 
 impl AiStudioPanel {
+    /// Draws how another device reaches this studio.
+    ///
+    /// ADR 0164 §4 makes one reachable URL the primary content. The gateway's
+    /// loopback address is what the reverse proxy in front of it needs, not
+    /// what a phone can open — `127.0.0.1` names the phone — so it is disclosed
+    /// rather than displayed.
     pub(super) fn show_remote_companion(&mut self, ui: &mut egui::Ui) {
+        let base = self.remote_phone_url_base.clone();
+        let phone_url = self
+            .remote_server
+            .as_ref()
+            .map(|server| server.phone_url(&base));
+        let readiness = match phone_url.as_ref() {
+            None => PhoneAccessReadiness::GatewayUnavailable,
+            Some(Err(error)) => PhoneAccessReadiness::BaseUnusable(*error),
+            Some(Ok(_)) => PhoneAccessReadiness::Ready,
+        };
+        let mut copy_phone_url = None;
+        let mut base_edited = false;
+        theme::card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Phone access");
+                theme::status_pill(ui, readiness.tone(), readiness.label());
+            });
+            theme::hint(ui, readiness.next_step());
+            if let Some(Ok(url)) = phone_url.as_ref() {
+                ui.add_space(6.0);
+                theme::caption(ui, "Phone URL");
+                match masked_phone_url(&base) {
+                    Ok(masked) => {
+                        theme::selectable_text(ui, egui::RichText::new(masked).monospace());
+                    }
+                    Err(error) => theme::hint(ui, error.reason()),
+                }
+                if ui.button("Copy phone URL").clicked() {
+                    copy_phone_url = Some(url.clone());
+                }
+                theme::spec_note(
+                    ui,
+                    "The copied URL is a credential",
+                    "It carries the access token that authorizes this session on top of your private network's device identity. Send it to your own device only, and copy it again after restarting the Editor.",
+                );
+            }
+            ui.add_space(6.0);
+            theme::caption(ui, "Address your private network publishes for this PC");
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.remote_phone_url_base)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("https://my-pc.example-tailnet.ts.net"),
+            );
+            if response.lost_focus() {
+                base_edited = true;
+            }
+            ui.small("Your phone must be connected to that private network.");
+        });
+        if let Some(url) = copy_phone_url {
+            ui.ctx().copy_text(url);
+            self.status = Some("Phone URL copied. It carries the session access token.".to_owned());
+        }
+        if base_edited {
+            self.save_preferences();
+        }
+        self.show_remote_advanced(ui);
+    }
+
+    /// Draws the gateway detail the reverse proxy needs, once per machine.
+    ///
+    /// ADR 0164 §4 keeps this collapsed: it is what produces the external
+    /// origin entered above, and it is not the product.
+    fn show_remote_advanced(&mut self, ui: &mut egui::Ui) {
         let Some(server) = self.remote_server.as_ref() else {
             return;
         };
-        egui::CollapsingHeader::new("Remote companion")
+        let endpoint = server.endpoint().to_owned();
+        let companion_url = server.companion_url();
+        let mut copy_local_url = None;
+        egui::CollapsingHeader::new("Advanced")
+            .id_salt("ai_studio_remote_advanced")
             .default_open(false)
             .show(ui, |ui| {
-                ui.small("Loopback-only companion gateway. Expose it only through a trusted private overlay or local reverse proxy. Remote authentication is separate from Agent Host permissions; MCP is never exposed remotely.");
-                theme::selectable_text(ui, format!("Gateway: {}", server.endpoint()));
-                theme::selectable_text(ui, egui::RichText::new(server.companion_url()).monospace());
+                theme::field_row(
+                    ui,
+                    "Local gateway",
+                    egui::RichText::new(&endpoint).monospace(),
+                );
+                ui.small("Publish this loopback address to your private network with your own HTTPS reverse proxy, then enter the origin it serves above. GameEngine never binds the gateway to a LAN address, a public address, or a forwarded port.");
+                if ui.button("Copy local companion URL").clicked() {
+                    copy_local_url = Some(companion_url.clone());
+                }
+                ui.small("The local URL carries the same access token and opens only on this PC. It is useful for testing the gateway before the proxy exists.");
+                theme::spec_note(
+                    ui,
+                    "What remote access does not reach",
+                    "Remote authentication is separate from Agent Host permissions, and the Editor MCP endpoint is never exposed remotely.",
+                );
             });
+        if let Some(url) = copy_local_url {
+            ui.ctx().copy_text(url);
+            self.status = Some("Local companion URL copied. It opens only on this PC.".to_owned());
+        }
     }
 
     /// Draws the configuration tier reached from the studio header.
@@ -106,13 +410,30 @@ impl AiStudioPanel {
                     .show_inside(ui, |ui| {
                         for section in SettingsSection::ALL {
                             let selected = self.settings_section == section;
-                            if ui
-                                .selectable_label(selected, section.label())
-                                .on_hover_text(section.description())
-                                .clicked()
-                            {
-                                self.settings_section = section;
-                            }
+                            let attention = self.section_attention(section);
+                            let hover = match attention {
+                                Some((_, reason)) => {
+                                    format!(
+                                        "{}
+
+{reason}",
+                                        section.description()
+                                    )
+                                }
+                                None => section.description().to_owned(),
+                            };
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .selectable_label(selected, section.label())
+                                    .on_hover_text(hover)
+                                    .clicked()
+                                {
+                                    self.settings_section = section;
+                                }
+                                if let Some((tone, _)) = attention {
+                                    theme::status_dot(ui, tone.color());
+                                }
+                            });
                         }
                     });
                 egui::CentralPanel::default()
@@ -128,17 +449,49 @@ impl AiStudioPanel {
                                 ui.add_space(4.0);
                                 match section {
                                     SettingsSection::Models => self.show_local_model_settings(ui),
-                                    SettingsSection::Providers => self.show_provider_settings(ui),
+                                    SettingsSection::Agents => self.show_agent_settings(ui),
                                     SettingsSection::Environment => {
                                         self.show_environment_settings(ui);
                                     }
                                     SettingsSection::Benchmarks => self.show_agent_benchmark(ui),
                                     SettingsSection::Remote => self.show_remote_companion(ui),
+                                    SettingsSection::Presentation => {
+                                        self.show_presentation_settings(ui);
+                                    }
                                 }
                             });
                     });
             });
         self.settings_open = open;
+    }
+
+    /// Draws the control that chooses where the studio is presented.
+    ///
+    /// ADR 0147 keeps detach and reattach presentation operations that never
+    /// touch the session, the runtime, or the workspace behind them. They are
+    /// read here rather than from a row above the transcript, where a control
+    /// used once per machine cost the conversation a line of height on every
+    /// frame.
+    pub(super) fn show_presentation_settings(&mut self, ui: &mut egui::Ui) {
+        let detached = self.presentation.mode == AiStudioPresentationMode::Detached;
+        let (label, hint) = if detached {
+            (
+                "Reattach",
+                "The studio is its own OS window. Reattach it to draw it inside the Editor.",
+            )
+        } else {
+            (
+                "Detach",
+                "The studio is drawn inside the Editor. Detach it into its own OS window.",
+            )
+        };
+        ui.horizontal(|ui| {
+            if ui.button(label).clicked() {
+                self.presentation_toggle_requested = true;
+            }
+            ui.small("Same project Agent Host either way.");
+        });
+        theme::hint(ui, hint);
     }
 
     /// Draws where an external agent provider runs.
@@ -196,10 +549,12 @@ impl AiStudioPanel {
             .default_open(true)
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Backend");
-                    let previous = self.model_backend;
+                    // ADR 0164 §1: who runs the next message is chosen on the
+                    // composer. This only decides which backend's settings the
+                    // rest of this section is about.
+                    ui.label("Settings for");
                     egui::ComboBox::from_id_salt("ai_studio_model_backend")
-                        .selected_text(match self.model_backend {
+                        .selected_text(match self.settings_model_view {
                             ModelBackendPreference::Local => "External local (Ollama-compatible)",
                             ModelBackendPreference::ManagedLocal => "Managed Local AI",
                             ModelBackendPreference::HostedApi => "Hosted API",
@@ -207,50 +562,39 @@ impl AiStudioPanel {
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
-                                &mut self.model_backend,
+                                &mut self.settings_model_view,
                                 ModelBackendPreference::ManagedLocal,
                                 "Managed Local AI",
                             );
                             ui.selectable_value(
-                                &mut self.model_backend,
+                                &mut self.settings_model_view,
                                 ModelBackendPreference::Local,
                                 "External local (Ollama-compatible)",
                             );
                             ui.selectable_value(
-                                &mut self.model_backend,
+                                &mut self.settings_model_view,
                                 ModelBackendPreference::HostedApi,
                                 "Hosted API",
                             );
                             ui.selectable_value(
-                                &mut self.model_backend,
+                                &mut self.settings_model_view,
                                 ModelBackendPreference::Enterprise,
                                 "Enterprise",
                             );
                         });
-                    if self.model_backend != previous {
-                        self.save_preferences();
-                    }
                 });
-                ui.small(match self.model_backend {
+                ui.small(match self.settings_model_view {
                     ModelBackendPreference::Local => "Processing posture: external loopback local runtime; existing Ollama-compatible settings retain their original meaning.",
                     ModelBackendPreference::ManagedLocal => "Processing posture: GameEngine-managed llama.cpp on this machine; the inference server remains loopback-only and never gains authoring authority.",
                     ModelBackendPreference::HostedApi => "Processing posture: selected task context is sent to the configured remote HTTPS provider only after Network access approval.",
                     ModelBackendPreference::Enterprise => "Processing posture: selected task context is sent to the configured enterprise HTTPS endpoint only after Network access approval.",
                 });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Quality");
-                    let previous = self.quality_preference;
-                    for quality in QualityPreference::ALL {
-                        ui.selectable_value(&mut self.quality_preference, quality, quality.label());
-                    }
-                    if self.quality_preference != previous {
-                        self.save_preferences();
-                    }
-                });
+                // ADR 0164 §1 keeps Effort on the composer beside Mode and AI,
+                // so it is described here rather than offered a second time.
                 ui.small(
-                    "Quality is a machine-local latency/reasoning preference. Remote GPU controls are never projected as local residency controls.",
+                    "Effort is chosen on the composer. It is a machine-local latency/reasoning preference, and remote GPU controls are never projected as local residency controls.",
                 );
-                match self.model_backend {
+                match self.settings_model_view {
                     ModelBackendPreference::ManagedLocal => {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Execution environment");
@@ -637,7 +981,7 @@ impl AiStudioPanel {
                                 self.save_preferences();
                             }
                         });
-                        if self.model_backend == ModelBackendPreference::HostedApi {
+                        if self.settings_model_view == ModelBackendPreference::HostedApi {
                             ui.horizontal(|ui| {
                                 ui.label("API credential");
                                 ui.add(
@@ -683,7 +1027,7 @@ impl AiStudioPanel {
                         }
                     }
                 }
-                let mut profile = match self.model_backend {
+                let mut profile = match self.settings_model_view {
                     ModelBackendPreference::Local => NativeModelConfig::Local(LocalModelConfig {
                         endpoint: self.local_model_endpoint.clone(),
                         model: self.local_model_name.clone(),
@@ -716,7 +1060,7 @@ impl AiStudioPanel {
                         NativeModelConfig::Hosted(HostedModelConfig {
                             endpoint: self.hosted_model_endpoint.clone(),
                             model: self.hosted_model_name.clone(),
-                            auth_mode: if self.model_backend == ModelBackendPreference::HostedApi {
+                            auth_mode: if self.settings_model_view == ModelBackendPreference::HostedApi {
                                 HostedAuthMode::ApiKey
                             } else {
                                 HostedAuthMode::EnterpriseManaged
@@ -748,7 +1092,7 @@ impl AiStudioPanel {
                     ));
                 }
                 if matches!(
-                    self.model_backend,
+                    self.settings_model_view,
                     ModelBackendPreference::Local | ModelBackendPreference::ManagedLocal
                 ) {
                     ui.small(format!(
@@ -879,256 +1223,276 @@ impl AiStudioPanel {
         });
     }
 
-    /// Draws provider selection and confinement configuration.
+    /// Returns why a section needs the reader's attention, if it does.
     ///
-    /// ADR 0158 keeps configuration out of the transcript column, so this is
-    /// drawn by the settings surface rather than beside the conversation.
-    pub(super) fn show_provider_settings(&mut self, ui: &mut egui::Ui) {
-        let previous_provider = self.external_provider_kind;
-        let mut refresh_provider = false;
-        ui.horizontal(|ui| {
-            ui.label("External agent provider");
-            egui::ComboBox::from_id_salt("ai_studio_external_agent_provider")
-                .selected_text(self.external_provider_kind.label())
-                .show_ui(ui, |ui| {
-                    for provider in ExternalAgentProviderKind::ALL {
-                        ui.selectable_value(
-                            &mut self.external_provider_kind,
-                            provider,
-                            provider.label(),
-                        );
-                    }
-                });
-            if ui.button("Refresh status").clicked() {
-                refresh_provider = true;
-            }
-        });
-        if previous_provider != self.external_provider_kind {
-            self.external_provider_status =
-                ExternalAgentProviderStatus::unchecked(self.external_provider_kind);
-            self.save_preferences();
+    /// The navigation is the only part of the configuration tier that is always
+    /// visible, so a section that cannot do its job says so there rather than
+    /// waiting to be opened. Only states the user can act on are marked; a
+    /// section that has simply never been configured is not a fault.
+    fn section_attention(
+        &self,
+        section: SettingsSection,
+    ) -> Option<(theme::StatusTone, &'static str)> {
+        if section != SettingsSection::Agents {
+            return None;
         }
-        if refresh_provider {
-            if self.external_provider_kind == ExternalAgentProviderKind::Generic {
-                // A generic command is checked from configuration alone, so it
-                // needs no worker and answers immediately.
-                self.refresh_external_provider_status();
-            } else {
-                self.begin_external_provider_probe();
-            }
+        // ADR 0164 §1: an unfinished agent setup is only a fault for the user
+        // who selected that agent. Someone running a local model is not asked
+        // to fix something they are not using.
+        let SelectedAi::Agent(kind) = self.selected_ai() else {
+            return None;
+        };
+        section_attention_for(self.agent_readiness(kind))
+    }
+
+    /// Returns what is known about one agent, whether or not it is selected.
+    ///
+    /// ADR 0164 §3 lists every agent in one place, so readiness cannot be read
+    /// from the single selected-provider status alone. A status produced by an
+    /// explicit refresh wins over an older background probe report.
+    pub(super) fn agent_status(
+        &self,
+        kind: ExternalAgentProviderKind,
+    ) -> ExternalAgentProviderStatus {
+        if kind == ExternalAgentProviderKind::Generic {
+            return ExternalAgentProviderStatus::generic(!self.provider_program.trim().is_empty());
         }
-        let provider_status = self.current_external_provider_status();
-        let capabilities = self.external_provider_kind.capabilities();
-        let mut install_requested = false;
-        let mut sign_in_requested = false;
+        if self.external_provider_status.kind == kind
+            && self.external_provider_status.discovery != ExternalAgentDiscoveryStatus::Unchecked
+        {
+            return self.external_provider_status.clone();
+        }
+        self.external_provider_report(kind)
+            .map(|report| report.status.clone())
+            .unwrap_or_else(|| ExternalAgentProviderStatus::unchecked(kind))
+    }
+
+    /// Returns what one agent can do right now.
+    pub(super) fn agent_readiness(&self, kind: ExternalAgentProviderKind) -> ProviderReadiness {
+        let working = self.external_provider_probe.is_some()
+            || self
+                .external_setup
+                .as_ref()
+                .is_some_and(|task| task.kind() == kind);
+        provider_readiness(&self.agent_status(kind), kind, working)
+    }
+
+    /// Draws the agent programs this machine can run.
+    ///
+    /// ADR 0164 §3: an entry presents its name, one readiness state, and the
+    /// one action that changes that state. Discovery detail, the capability
+    /// matrix, and the resolved executable path are diagnosis, and are read
+    /// only when the state above them is not the expected one.
+    pub(super) fn show_agent_settings(&mut self, ui: &mut egui::Ui) {
+        let mut refresh_requested = false;
+        let mut setup_requested = None;
         let mut cancel_setup_requested = false;
-        ui.group(|ui| {
-            ui.strong(format!("{} status", self.external_provider_kind.label()));
-            ui.label(format!(
-                "Discovery: {} · Authentication: {}",
-                provider_status.discovery.label(),
-                provider_status.auth.label(),
-            ));
-            ui.small(format!(
-                "Capabilities: provider auth {} · MCP injection {} · structured events {} · host cancellation {}",
-                capabilities.provider_managed_auth,
-                capabilities.mcp_injection,
-                capabilities.structured_events,
-                capabilities.host_cancellation,
-            ));
-            ui.small(
-                "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
-            );
-            let report = self.external_provider_report(self.external_provider_kind);
-            if let Some(report) = report {
-                if !report.locations.is_empty() {
-                    ui.small(format!("Resolved to: {}", report.locations.join(" · ")));
-                }
-                if report.has_shadowed_copies() {
-                    ui.small(
-                        "More than one directory on PATH provides this program. The first one is the copy that runs, so an update installed elsewhere will not take effect until PATH is changed.",
-                    );
-                }
+        ui.horizontal(|ui| {
+            if ui.button("Refresh status").clicked() {
+                refresh_requested = true;
+            }
+            if self.external_provider_probe.is_some() {
+                ui.spinner();
+                ui.small("Checking which agents are installed and signed in…");
             }
         });
-        if self.external_provider_kind.can_sign_in() {
-            ui.group(|ui| {
-                ui.strong(format!("Set up {}", self.external_provider_kind.label()));
-                if let Some(task_action) = self
-                    .external_setup
-                    .as_ref()
-                    .map(ExternalAgentSetupTask::action)
-                {
+        for kind in ExternalAgentProviderKind::ALL
+            .into_iter()
+            .filter(|kind| kind.can_sign_in())
+        {
+            self.show_agent_card(ui, kind, &mut setup_requested, &mut cancel_setup_requested);
+        }
+        self.show_agent_advanced(ui);
+        if refresh_requested {
+            self.begin_external_provider_probe();
+            self.refresh_external_provider_status();
+        }
+        if let Some((kind, action)) = setup_requested {
+            self.begin_external_provider_setup(kind, action);
+        }
+        if cancel_setup_requested {
+            self.cancel_external_provider_setup();
+        }
+        #[cfg(feature = "visual-validation")]
+        self.show_external_provider_visual_evidence(ui);
+    }
+
+    /// Draws one agent: what it is, whether it is ready, and what to press.
+    fn show_agent_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        kind: ExternalAgentProviderKind,
+        setup_requested: &mut Option<(ExternalAgentProviderKind, ExternalAgentSetupAction)>,
+        cancel_setup_requested: &mut bool,
+    ) {
+        let readiness = self.agent_readiness(kind);
+        let label = kind.label();
+        let setup_running = self
+            .external_setup
+            .as_ref()
+            .filter(|task| task.kind() == kind)
+            .map(ExternalAgentSetupTask::action);
+        let installer_available = self
+            .external_provider_report(kind)
+            .is_none_or(|report| report.installer_available);
+        theme::card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(label);
+                theme::status_pill(ui, readiness.tone(), readiness.label());
+            });
+            theme::hint(ui, readiness.next_step(label));
+            match setup_running {
+                Some(action) => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.small(format!("{}…", task_action.progress_label()));
+                        ui.small(format!("{}…", action.progress_label()));
                         if ui.button("Cancel").clicked() {
-                            cancel_setup_requested = true;
+                            *cancel_setup_requested = true;
                         }
                     });
-                } else {
-                    let installer_available = self
-                        .external_provider_report(self.external_provider_kind)
-                        .is_none_or(|report| report.installer_available);
+                }
+                None => {
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
                                 installer_available,
                                 egui::Button::new(format!(
-                                    "{} {}",
-                                    ExternalAgentSetupAction::Install.label(),
-                                    self.external_provider_kind.label()
+                                    "{} {label}",
+                                    ExternalAgentSetupAction::Install.label()
                                 )),
                             )
                             .clicked()
                         {
-                            install_requested = true;
+                            *setup_requested = Some((kind, ExternalAgentSetupAction::Install));
                         }
                         if ui
                             .button(format!(
-                                "{} to {}",
-                                ExternalAgentSetupAction::SignIn.label(),
-                                self.external_provider_kind.label()
+                                "{} to {label}",
+                                ExternalAgentSetupAction::SignIn.label()
                             ))
                             .clicked()
                         {
-                            sign_in_requested = true;
+                            *setup_requested = Some((kind, ExternalAgentSetupAction::SignIn));
                         }
                     });
                     if !installer_available {
-                        ui.small(
-                            "npm was not found, so GameEngine cannot install this provider for you. Install Node.js, or install the provider CLI yourself, then use Refresh status.",
+                        ui.label(
+                            egui::RichText::new(
+                                "npm was not found, so GameEngine cannot install this agent for you. Install Node.js, or install the agent's CLI yourself, then use Refresh status.",
+                            )
+                            .small()
+                            .color(theme::WARNING),
                         );
                     }
-                    for action in [
-                        ExternalAgentSetupAction::Install,
-                        ExternalAgentSetupAction::SignIn,
-                    ] {
-                        if let Some(command) = setup_command_text(
-                            action,
-                            self.external_provider_kind,
-                            &self.external_agent_placement(),
-                        ) {
-                            ui.small(format!("{}: {command}", action.label()));
-                        }
-                    }
-                    ui.small(
-                        "These run the provider's own commands from the Editor, so no terminal has to be opened. GameEngine neither hosts the download nor stores the credential.",
-                    );
                 }
-                if let Some(url) = self.external_sign_in_url.clone() {
-                    ui.hyperlink_to("Open the provider sign-in page", &url);
-                    ui.small(
-                        "Open this only if the provider could not open your browser by itself.",
-                    );
-                }
-                if !self.external_setup_log.is_empty() {
-                    egui::CollapsingHeader::new("Provider setup output")
-                        .id_salt("ai_studio_provider_setup_output")
-                        .default_open(self.external_setup.is_some())
-                        .show(ui, |ui| {
-                            for line in &self.external_setup_log {
-                                ui.small(line);
-                            }
-                        });
-                }
-            });
-        }
-        if install_requested {
-            self.begin_external_provider_setup(ExternalAgentSetupAction::Install);
-        }
-        if sign_in_requested {
-            self.begin_external_provider_setup(ExternalAgentSetupAction::SignIn);
-        }
-        if cancel_setup_requested {
-            self.cancel_external_provider_setup();
-        }
-        if self.external_provider_probe.is_some() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.small("Checking which providers are installed and signed in…");
-            });
-        } else if !self.external_provider_probe_results.is_empty() {
-            ui.group(|ui| {
-                ui.strong("Providers detected on this machine");
-                for report in &self.external_provider_probe_results {
-                    ui.small(format!(
-                        "{} · discovery {} · authentication {}",
-                        report.status.kind.label(),
-                        report.status.discovery.label(),
-                        report.status.auth.label(),
-                    ));
-                }
-            });
-        }
-        let previous_ask_routing = self.ask_uses_external_provider;
-        ui.checkbox(
-            &mut self.ask_uses_external_provider,
-            "Answer Ask with this provider when it is ready",
-        );
-        if previous_ask_routing != self.ask_uses_external_provider {
-            self.save_preferences();
-        }
-        theme::spec_note(
-            ui,
-            "What Ask sends where",
-            "With this on, an Ask turn is answered by the signed-in provider under a read-only launch: no file writes, no Editor MCP credential, and no AgentRun. The provider uses its own account and its own subscription entitlement, and your conversation and the project evidence it reads reach that provider's service. With it off, or when the provider is not ready, Ask keeps using the selected ModelBackend.",
-        );
-        #[cfg(feature = "visual-validation")]
-        if self.visual_external_provider_evidence {
-            ui.group(|ui| {
-                ui.strong("First-class AgentRuntime provider evidence");
-                for provider in ExternalAgentProviderKind::ALL {
-                    let status = ExternalAgentProviderStatus::visual_fixture(provider);
-                    ui.label(format!(
-                        "{} · discovery {} · authentication {}",
-                        provider.label(),
-                        status.discovery.label(),
-                        status.auth.label(),
-                    ));
-                }
-                ui.small(
-                    "Claude Code and Codex keep provider-owned credentials; Generic command remains the explicit compatibility fallback.",
-                );
-                ui.small(
-                    "MCP bearer: ephemeral environment reference only. Secret values are never displayed, serialized, or copied into provider arguments.",
-                );
-                ui.small(
-                    "Sanitized error presentation: provider failures report adapter/status context without credential or bearer contents.",
-                );
-            });
-        }
-        if self.external_provider_kind == ExternalAgentProviderKind::Generic {
-            ui.horizontal(|ui| {
-                ui.label("Compatible agent program");
-                ui.text_edit_singleline(&mut self.provider_program);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Arguments");
-                ui.text_edit_singleline(&mut self.provider_args);
-            });
-        }
-        let previous_confinement_requirement = self.confinement_requirement;
-        ui.horizontal(|ui| {
-            ui.label("External process confinement");
-            egui::ComboBox::from_id_salt("ai_studio_process_confinement")
-                .selected_text(self.confinement_requirement.label())
-                .show_ui(ui, |ui| {
-                    for requirement in [
-                        AgentConfinementRequirement::AllowApplicationPolicyOnly,
-                        AgentConfinementRequirement::RequireProviderOrOsConfinement,
-                    ] {
-                        ui.selectable_value(
-                            &mut self.confinement_requirement,
-                            requirement,
-                            requirement.label(),
-                        );
-                    }
-                });
+            }
+            if let Some(url) = self
+                .external_sign_in_url
+                .clone()
+                .filter(|_| setup_running.is_some() || self.external_provider_kind == kind)
+            {
+                ui.hyperlink_to("Open the sign-in page", &url);
+                ui.small("Open this only if the agent could not open your browser by itself.");
+            }
+            self.show_agent_diagnostics(ui, kind);
         });
-        if previous_confinement_requirement != self.confinement_requirement {
-            self.save_preferences();
-        }
+    }
+
+    /// Draws the evidence behind one agent's reported state.
+    ///
+    /// ADR 0164 §3 keeps this collapsed. It answers "why does it say that",
+    /// which is a question only asked when the state above is unexpected.
+    fn show_agent_diagnostics(&mut self, ui: &mut egui::Ui, kind: ExternalAgentProviderKind) {
+        let status = self.agent_status(kind);
+        let capabilities = kind.capabilities();
+        let placement = self.external_agent_placement();
+        let report_locations = self
+            .external_provider_report(kind)
+            .map(|report| (report.locations.join("  ·  "), report.has_shadowed_copies()));
+        let setup_log_belongs_here = self
+            .external_setup
+            .as_ref()
+            .is_some_and(|task| task.kind() == kind);
+        egui::CollapsingHeader::new("Diagnostics")
+            .id_salt(("ai_studio_agent_diagnostics", kind.run_label()))
+            .default_open(false)
+            .show(ui, |ui| {
+                let (discovery_value, discovery_tone) = discovery_presentation(status.discovery);
+                theme::field_row_pill(ui, "Installed", discovery_tone, discovery_value);
+                let (auth_value, auth_tone) = auth_presentation(status.auth);
+                theme::field_row_pill(ui, "Signed in", auth_tone, auth_value);
+                if let Some((locations, shadowed)) = report_locations {
+                    if !locations.is_empty() {
+                        theme::field_row(
+                            ui,
+                            "Resolved to",
+                            egui::RichText::new(locations)
+                                .small()
+                                .monospace()
+                                .color(theme::TEXT_MUTED),
+                        );
+                    }
+                    if shadowed {
+                        ui.label(
+                            egui::RichText::new(
+                                "More than one directory on PATH provides this program. The first one is the copy that runs, so an update installed elsewhere will not take effect until PATH is changed.",
+                            )
+                            .small()
+                            .color(theme::WARNING),
+                        );
+                    }
+                }
+                for action in [
+                    ExternalAgentSetupAction::Install,
+                    ExternalAgentSetupAction::SignIn,
+                ] {
+                    if let Some(command) = setup_command_text(action, kind, &placement) {
+                        theme::field_row(
+                            ui,
+                            action.label(),
+                            egui::RichText::new(command)
+                                .small()
+                                .monospace()
+                                .color(theme::TEXT_MUTED),
+                        );
+                    }
+                }
+                theme::caption(ui, "Adapter capabilities");
+                theme::capability_chips(
+                    ui,
+                    &[
+                        ("Provider sign-in", capabilities.provider_managed_auth),
+                        ("MCP injection", capabilities.mcp_injection),
+                        ("Structured events", capabilities.structured_events),
+                        ("Host cancellation", capabilities.host_cancellation),
+                    ],
+                );
+                theme::spec_note(
+                    ui,
+                    "Where the credential lives",
+                    "Provider-managed login remains provider-owned. GameEngine stores no agent credential and reports only sanitized adapter status remotely.",
+                );
+                if setup_log_belongs_here && !self.external_setup_log.is_empty() {
+                    theme::caption(ui, "Setup output");
+                    for line in &self.external_setup_log {
+                        theme::selectable_text(
+                            ui,
+                            egui::RichText::new(line)
+                                .small()
+                                .monospace()
+                                .color(theme::TEXT_MUTED),
+                        );
+                    }
+                }
+            });
+    }
+
+    /// Draws the entries no reader reaches without already knowing them.
+    ///
+    /// ADR 0164 §3 puts the compatible-agent command here, because it is the
+    /// escape hatch for an agent GameEngine does not adapt, and confinement
+    /// here, because it is a policy decision made once per machine.
+    fn show_agent_advanced(&mut self, ui: &mut egui::Ui) {
         let confinement_status = self
             .active_run_id
             .as_deref()
@@ -1139,24 +1503,177 @@ impl AiStudioPanel {
                 "No external process confinement profile has been recorded. Generic external launches are application-policy-only; the native AgentRuntime is not an external child-process sandbox."
                     .to_owned()
             });
+        let previous_confinement_requirement = self.confinement_requirement;
+        let mut confinement_changed = false;
+        egui::CollapsingHeader::new("Advanced")
+            .id_salt("ai_studio_agents_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
+                theme::card(ui, |ui| {
+                    theme::card_header(ui, "Compatible agent program");
+                    theme::hint(
+                        ui,
+                        "Runs an agent GameEngine does not adapt. It reports no structured events and owns its own authentication.",
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Program");
+                        ui.text_edit_singleline(&mut self.provider_program);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Arguments");
+                        ui.text_edit_singleline(&mut self.provider_args);
+                    });
+                });
+                theme::card(ui, |ui| {
+                    theme::card_header(ui, "External process confinement");
+                    egui::ComboBox::from_id_salt("ai_studio_process_confinement")
+                        .selected_text(self.confinement_requirement.label())
+                        .show_ui(ui, |ui| {
+                            for requirement in [
+                                AgentConfinementRequirement::AllowApplicationPolicyOnly,
+                                AgentConfinementRequirement::RequireProviderOrOsConfinement,
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.confinement_requirement,
+                                    requirement,
+                                    requirement.label(),
+                                );
+                            }
+                        });
+                    ui.label(confinement_status);
+                    theme::spec_note(
+                        ui,
+                        "What confinement guarantees",
+                        "GameEngine application permissions remain authoritative. External agents are not treated as sandboxed unless their launch path reports enforceable provider/OS confinement.",
+                    );
+                    if self.confinement_requirement.requires_enforced_confinement() {
+                        ui.small(
+                            "Fail-closed policy: an external agent will not start through the generic process runtime unless a provider/OS confinement adapter can satisfy this requirement.",
+                        );
+                    }
+                });
+                if previous_confinement_requirement != self.confinement_requirement {
+                    confinement_changed = true;
+                }
+            });
+        if confinement_changed {
+            self.save_preferences();
+        }
+    }
+
+    /// Draws the fixture evidence the ADR 0145 visual validation captures.
+    #[cfg(feature = "visual-validation")]
+    fn show_external_provider_visual_evidence(&mut self, ui: &mut egui::Ui) {
+        if !self.visual_external_provider_evidence {
+            return;
+        }
         ui.group(|ui| {
-            ui.strong("Confinement status");
-            ui.label(confinement_status);
-            theme::spec_note(
-                ui,
-                "What confinement guarantees",
-                "GameEngine application permissions remain authoritative. External providers are not treated as sandboxed unless their launch path reports enforceable provider/OS confinement.",
-            );
-            if self.confinement_requirement.requires_enforced_confinement() {
-                ui.small(
-                    "Fail-closed policy: an external agent will not start through the generic process runtime unless a provider/OS confinement adapter can satisfy this requirement.",
-                );
+            ui.strong("First-class AgentRuntime provider evidence");
+            for provider in ExternalAgentProviderKind::ALL {
+                let status = ExternalAgentProviderStatus::visual_fixture(provider);
+                ui.label(format!(
+                    "{} · discovery {} · authentication {}",
+                    provider.label(),
+                    status.discovery.label(),
+                    status.auth.label(),
+                ));
             }
+            ui.small(
+                "Claude Code and Codex keep provider-owned credentials; Generic command remains the explicit compatibility fallback.",
+            );
+            ui.small(
+                "MCP bearer: ephemeral environment reference only. Secret values are never displayed, serialized, or copied into provider arguments.",
+            );
+            ui.small(
+                "Sanitized error presentation: provider failures report adapter/status context without credential or bearer contents.",
+            );
         });
-        theme::spec_note(
-            ui,
-            "How Build selects a runtime",
-            "Build uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Managed Local, external local, Hosted API, or Enterprise ModelBackend. External and managed adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reader must be told one state, not two facts to combine themselves.
+    ///
+    /// Reported as a configuration surface where an installed-but-signed-out
+    /// provider and a missing provider looked the same: two neutral sentences
+    /// of the same weight, neither of which said what to do next.
+    #[test]
+    fn provider_readiness_names_one_state_and_one_next_step() {
+        let claude = ExternalAgentProviderKind::ClaudeCode;
+        let missing = ExternalAgentProviderStatus {
+            kind: claude,
+            discovery: ExternalAgentDiscoveryStatus::Unavailable,
+            auth: ExternalAgentAuthStatus::Unavailable,
+        };
+        assert_eq!(
+            provider_readiness(&missing, claude, false),
+            ProviderReadiness::NotInstalled
         );
+        assert_eq!(
+            provider_readiness(&missing, claude, false).tone(),
+            theme::StatusTone::Blocked
+        );
+
+        let signed_out = ExternalAgentProviderStatus {
+            kind: claude,
+            discovery: ExternalAgentDiscoveryStatus::Available,
+            auth: ExternalAgentAuthStatus::SignInRequired,
+        };
+        assert_eq!(
+            provider_readiness(&signed_out, claude, false),
+            ProviderReadiness::SignInRequired
+        );
+        assert!(
+            provider_readiness(&signed_out, claude, false)
+                .next_step(claude.label())
+                .contains("Sign in")
+        );
+
+        let ready = ExternalAgentProviderStatus {
+            kind: claude,
+            discovery: ExternalAgentDiscoveryStatus::Available,
+            auth: ExternalAgentAuthStatus::Authenticated,
+        };
+        assert_eq!(
+            provider_readiness(&ready, claude, false),
+            ProviderReadiness::Ready
+        );
+        // A probe in flight describes the machine as it was, so a stale ready
+        // state must not be reported as the current one.
+        assert_eq!(
+            provider_readiness(&ready, claude, true),
+            ProviderReadiness::Working
+        );
+
+        // A generic command is configuration, not an installation, so the step
+        // it asks for is entering one rather than installing anything.
+        let generic = ExternalAgentProviderStatus::generic(false);
+        assert_eq!(
+            provider_readiness(&generic, ExternalAgentProviderKind::Generic, false),
+            ProviderReadiness::NotConfigured
+        );
+    }
+
+    /// A section that cannot do its job says so where the reader can see it.
+    #[test]
+    fn only_actionable_provider_states_mark_the_navigation() {
+        for (readiness, marked) in [
+            (ProviderReadiness::NotInstalled, true),
+            (ProviderReadiness::SignInRequired, true),
+            (ProviderReadiness::NotConfigured, true),
+            (ProviderReadiness::Ready, false),
+            (ProviderReadiness::Working, false),
+            // Never having been checked is not a fault to report.
+            (ProviderReadiness::NotChecked, false),
+        ] {
+            assert_eq!(
+                section_attention_for(readiness).is_some(),
+                marked,
+                "{readiness:?} navigation marking"
+            );
+        }
     }
 }

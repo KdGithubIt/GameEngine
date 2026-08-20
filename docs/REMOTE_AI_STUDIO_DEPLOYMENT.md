@@ -46,16 +46,16 @@ identity and a loopback-targeting reverse proxy satisfies the same contract.
 ## Host setup
 
 1. Open the project in the Editor and start the Remote AI Studio gateway from
-   AI Studio. The listening URL is always on `127.0.0.1`, and the companion URL
-   AI Studio shows carries the session access token in its fragment. Treat that
-   URL as a credential: it authorizes the session on top of the overlay
-   identity, so send it to your own device only.
+   AI Studio. The listening address is always on `127.0.0.1`. It is shown under
+   **Settings → Remote → Advanced**, because it is what the proxy in the next
+   steps needs and not an address a phone can open: `127.0.0.1` names whatever
+   device reads it.
 2. Install the private overlay client on the host PC and sign in with the
    personal account that owns the devices. Confirm the host appears in the
    overlay's device list.
 3. Publish the loopback gateway to the overlay, and only to the overlay. With
    Tailscale Serve that is one command, where `PORT` is the gateway port shown
-   in AI Studio:
+   under **Settings → Remote → Advanced**:
 
    ```text
    tailscale serve --bg --https=443 http://127.0.0.1:PORT
@@ -63,8 +63,21 @@ identity and a loopback-targeting reverse proxy satisfies the same contract.
 
    The equivalent for another stack is a reverse proxy that listens on the
    overlay interface, terminates TLS with a certificate the overlay issues, and
-   proxies to `http://127.0.0.1:PORT`.
-4. Do **not** enable any funnel, tunnel, or public-ingress mode. Public ingress
+   proxies to `http://127.0.0.1:PORT`. Publish it at the **root** of the origin:
+   the companion fetches its API from `/api/...`, so a path prefix does not
+   work, and AI Studio rejects a base URL that carries one.
+4. Enter the origin the proxy publishes — for example
+   `https://my-pc.tailnet-name.ts.net` — in **Settings → Remote**, under
+   *Address your private network publishes for this PC*. AI Studio composes the
+   phone URL from that origin and the gateway's own access token, and reports
+   *URL ready*. Nothing detects this origin automatically: ADR 0133 §4 keeps
+   GameEngine independent of any particular overlay, so the hop you own is the
+   hop you name.
+5. Use **Copy phone URL** and send the result to your own device. Treat it as a
+   credential: it authorizes the session on top of the overlay identity. The
+   displayed form masks the token; only the copied form carries it, and a new
+   token is issued each time the Editor starts.
+6. Do **not** enable any funnel, tunnel, or public-ingress mode. Public ingress
    is outside the supported deployment: it needs a threat model, an
    authentication design, abuse controls, and its own decision record.
 
@@ -72,11 +85,16 @@ identity and a loopback-targeting reverse proxy satisfies the same contract.
 
 1. Install the same overlay client on the phone and sign in with the same
    personal account.
-2. Open the host's overlay hostname in the phone browser. The overlay identity
-   is what authorizes the connection; the gateway access token authorizes the
-   session.
+2. Open the copied phone URL in the phone browser. The overlay identity is what
+   authorizes the connection; the gateway access token in the URL fragment
+   authorizes the session.
 3. Add the page to the home screen if you want it to behave like an app. The
    companion is a responsive web client by design; no native app is required.
+4. The companion presents the same three selections as the PC — mode, AI, and
+   effort — over the same values, so a change made on either side is what the
+   other shows (ADR 0164 §5, §6). It selects only: registering a model, signing
+   an agent in, entering a credential, and the remote address itself all stay on
+   the machine that owns them.
 
 ## Operating notes
 
@@ -100,9 +118,11 @@ Run these on the deployment, not only in tests:
 | Check | Expected |
 | --- | --- |
 | `netstat` for the gateway port on the host | bound to `127.0.0.1` only |
-| Companion URL from the host browser | loads over the overlay hostname |
-| Companion URL from the phone on cellular, overlay connected | loads |
-| Companion URL with the overlay client signed out or disabled | fails to reach the host |
+| Remote section with no address entered | reports not ready, and offers no loopback URL as a substitute |
+| Phone URL from the host browser | loads over the overlay hostname |
+| Phone URL from the phone on cellular, overlay connected | loads |
+| Phone URL with the overlay client signed out or disabled | fails to reach the host |
+| Change the AI on the phone | the PC composer shows the same AI |
 | Editor MCP port from the phone | not reachable |
 | Start a run, close the browser, reopen after a minute | run still active, timeline resumes without gaps |
 | Answer a pending permission twice (retry the request) | one recorded decision |

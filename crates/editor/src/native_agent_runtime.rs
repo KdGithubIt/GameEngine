@@ -1104,8 +1104,10 @@ mod tests {
 
     #[test]
     fn ready_for_validation_requires_host_recorded_mutation_evidence() {
-        let mut code_proposal = AgentProposal::default();
-        code_proposal.planned_code_changes = vec!["game/player.rs".to_owned()];
+        let code_proposal = AgentProposal {
+            planned_code_changes: vec!["game/player.rs".to_owned()],
+            ..AgentProposal::default()
+        };
         let mut code_run = executing_run(code_proposal);
         let mut code_runtime = validation_test_runtime();
         assert!(matches!(
@@ -1128,8 +1130,10 @@ mod tests {
                 .is_ok()
         );
 
-        let mut authoring_proposal = AgentProposal::default();
-        authoring_proposal.planned_project_changes = vec!["scene player setup".to_owned()];
+        let authoring_proposal = AgentProposal {
+            planned_project_changes: vec!["scene player setup".to_owned()],
+            ..AgentProposal::default()
+        };
         let mut authoring_run = executing_run(authoring_proposal);
         let mut authoring_runtime = validation_test_runtime();
         authoring_runtime
@@ -1173,8 +1177,10 @@ mod tests {
                 if message.contains("immutable proposal")
         ));
 
-        let mut validation_proposal = AgentProposal::default();
-        validation_proposal.validation_plan = vec!["cargo test".to_owned()];
+        let validation_proposal = AgentProposal {
+            validation_plan: vec!["cargo test".to_owned()],
+            ..AgentProposal::default()
+        };
         let validation_run = executing_run(validation_proposal);
         assert!(
             runtime

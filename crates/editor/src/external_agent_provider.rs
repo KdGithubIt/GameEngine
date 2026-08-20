@@ -274,7 +274,8 @@ pub(crate) fn probe_provider(
     }
     let auth = match kind {
         ExternalAgentProviderKind::ClaudeCode => {
-            command_success(placement, program, ["auth", "status"])
+            command_output(placement, program, ["auth", "status"])
+                .map(|(succeeded, output)| claude_credential_present(&output, succeeded))
         }
         ExternalAgentProviderKind::Codex => {
             command_success(placement, program, ["login", "status"])
@@ -301,7 +302,11 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let (program, args) = placed_command(placement, program.to_os_string(), args);
+    let (program, args) = placed_command(
+        placement,
+        launch_program(placement, program.to_os_string()),
+        args,
+    );
     Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -309,6 +314,46 @@ where
         .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
+}
+
+/// Runs one command for its exit status and captured standard output.
+fn command_output<I, S>(
+    placement: &ExternalAgentExecutionPlacement,
+    program: &OsStr,
+    args: I,
+) -> io::Result<(bool, String)>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let (program, args) = placed_command(
+        placement,
+        launch_program(placement, program.to_os_string()),
+        args,
+    );
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()?;
+    Ok((
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    ))
+}
+
+/// Reads whether Claude Code holds a credential from its status report.
+///
+/// `claude auth status` reports a signed-out session in its JSON body and still
+/// exits successfully, so an exit status alone reports every installed copy as
+/// signed in. A report this function cannot read falls back to the exit status,
+/// which keeps an older or changed CLI from being called signed out on the
+/// strength of a field it never printed.
+fn claude_credential_present(output: &str, exit_succeeded: bool) -> bool {
+    serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|status| status.get("loggedIn").and_then(Value::as_bool))
+        .unwrap_or(exit_succeeded)
 }
 
 /// Rewrites one command for the environment it must run in.
@@ -340,6 +385,65 @@ where
             (OsString::from(WSL_LAUNCHER), wrapped)
         }
     }
+}
+
+/// Extensions Windows process creation can start from a bare program name.
+///
+/// A bare name is completed with `.exe` only. A provider CLI installed by npm
+/// is reached through a `.cmd` shim instead, so launching the bare name fails
+/// with "program not found" while the provider is installed and working, and
+/// the Editor then reports a finished install as missing.
+const WINDOWS_LAUNCHER_EXTENSIONS: [&str; 3] = ["exe", "cmd", "bat"];
+
+/// Rewrites one provider name into a program this environment can start.
+///
+/// Only a Windows-native launch needs this. A WSL launch resolves the name
+/// inside the distribution, where an extension is not part of a program name.
+fn launch_program(placement: &ExternalAgentExecutionPlacement, program: OsString) -> OsString {
+    match placement.environment {
+        ExternalAgentExecutionEnvironment::WindowsNative => {
+            resolve_windows_launcher(&program, &search_path_directories(), &|candidate| {
+                candidate.is_file()
+            })
+            .unwrap_or(program)
+        }
+        ExternalAgentExecutionEnvironment::Wsl2Linux => program,
+    }
+}
+
+/// The `PATH` directories a Windows-native launch searches, in order.
+fn search_path_directories() -> Vec<PathBuf> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&path)
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .collect()
+}
+
+/// Finds the first launchable file one bare program name resolves to.
+///
+/// Returns `None` for a name that already carries an extension or a directory
+/// component: that name is what the installer or the user asked for, and
+/// process creation can start it as written.
+fn resolve_windows_launcher(
+    program: &OsStr,
+    directories: &[PathBuf],
+    is_file: &dyn Fn(&Path) -> bool,
+) -> Option<OsString> {
+    let name = Path::new(program);
+    let is_bare = name
+        .parent()
+        .is_some_and(|parent| parent.as_os_str().is_empty());
+    if !is_bare || name.extension().is_some() {
+        return None;
+    }
+    directories.iter().find_map(|directory| {
+        WINDOWS_LAUNCHER_EXTENSIONS.iter().find_map(|extension| {
+            let candidate = directory.join(name).with_extension(extension);
+            is_file(&candidate).then(|| candidate.into_os_string())
+        })
+    })
 }
 
 /// Windows launcher used to place a provider process inside a WSL distribution.
@@ -441,7 +545,11 @@ pub(crate) fn build_launch_plan(
 ) -> Result<ExternalAgentLaunchPlan, String> {
     let plan =
         build_provider_launch_plan(kind, generic_program, generic_args, prompt, mcp_endpoint)?;
-    let (program, args) = placed_command(placement, plan.program, plan.args);
+    let (program, args) = placed_command(
+        placement,
+        launch_program(placement, plan.program),
+        plan.args,
+    );
     Ok(ExternalAgentLaunchPlan { program, args })
 }
 
@@ -898,7 +1006,11 @@ pub(crate) fn build_question_launch_plan(
             );
         }
     };
-    let (program, args) = placed_command(placement, plan.program, plan.args);
+    let (program, args) = placed_command(
+        placement,
+        launch_program(placement, plan.program),
+        plan.args,
+    );
     Ok(ExternalAgentLaunchPlan { program, args })
 }
 
@@ -1403,7 +1515,12 @@ impl ExternalAgentSetupTask {
         working_directory: &Path,
     ) -> Result<Self, String> {
         let plan = action.plan(kind, placement)?;
-        let mut child = Command::new(&plan.program)
+        // The rendered command names the provider, because that is what the
+        // user agreed to run. Process creation needs the launcher file that
+        // name resolves to on this machine, which is resolved here so the
+        // displayed command stays the command and not a machine path.
+        let program = launch_program(placement, plan.program);
+        let mut child = Command::new(&program)
             .args(&plan.args)
             .current_dir(working_directory)
             .stdin(Stdio::null())
@@ -1413,7 +1530,7 @@ impl ExternalAgentSetupTask {
             .map_err(|error| {
                 format!(
                     "Could not start {} for {}: {error}",
-                    plan.program.to_string_lossy(),
+                    program.to_string_lossy(),
                     kind.label()
                 )
             })?;
@@ -1716,18 +1833,101 @@ mod tests {
         )
         .expect("wsl plan");
         assert_eq!(wsl.program, OsString::from("wsl.exe"));
+        // The distribution resolves the provider name itself, so the Linux
+        // program crosses bare while a Windows-native launch resolves the
+        // launcher file process creation on this machine accepts.
         assert_eq!(
             wsl.args[..4],
             [
                 OsString::from("-d"),
                 OsString::from("Ubuntu-24.04"),
                 OsString::from("--"),
-                native.program.clone(),
+                OsString::from("claude"),
             ]
         );
         // The provider argument vector crosses unchanged, so no shell re-quotes
         // the prompt or the injected MCP configuration.
         assert_eq!(&wsl.args[4..], native.args.as_slice());
+    }
+
+    #[test]
+    fn a_signed_out_claude_status_report_is_not_read_as_a_credential() {
+        let report = r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#;
+
+        assert!(!claude_credential_present(report, true));
+    }
+
+    #[test]
+    fn a_signed_in_claude_status_report_is_read_as_a_credential() {
+        let report = r#"{"loggedIn":true,"authMethod":"claudeai"}"#;
+
+        assert!(claude_credential_present(report, true));
+    }
+
+    #[test]
+    fn an_unreadable_claude_status_report_falls_back_to_the_exit_status() {
+        assert!(claude_credential_present("not a status report", true));
+        assert!(!claude_credential_present("not a status report", false));
+    }
+
+    #[test]
+    fn an_npm_installed_provider_launches_through_the_extension_windows_requires() {
+        let directories = [PathBuf::from("tools"), PathBuf::from("npm")];
+
+        let resolved = resolve_windows_launcher(OsStr::new("claude"), &directories, &|candidate| {
+            candidate == Path::new("npm").join("claude.cmd")
+        });
+
+        assert_eq!(
+            resolved,
+            Some(Path::new("npm").join("claude.cmd").into_os_string())
+        );
+    }
+
+    #[test]
+    fn an_executable_wins_over_a_shim_in_the_same_directory() {
+        let directories = [PathBuf::from("tools")];
+
+        let resolved = resolve_windows_launcher(OsStr::new("claude"), &directories, &|candidate| {
+            candidate == Path::new("tools").join("claude.exe")
+                || candidate == Path::new("tools").join("claude.cmd")
+        });
+
+        assert_eq!(
+            resolved,
+            Some(Path::new("tools").join("claude.exe").into_os_string())
+        );
+    }
+
+    #[test]
+    fn a_program_that_already_names_its_extension_is_launched_as_written() {
+        let directories = [PathBuf::from("tools")];
+
+        let resolved =
+            resolve_windows_launcher(OsStr::new("npm.cmd"), &directories, &|_| unreachable!());
+
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn a_provider_missing_from_every_path_directory_keeps_its_reported_name() {
+        let placement = ExternalAgentExecutionPlacement::windows_native();
+
+        let program = launch_program(&placement, OsString::from("gameengine-absent-provider"));
+
+        assert_eq!(program, OsString::from("gameengine-absent-provider"));
+    }
+
+    #[test]
+    fn a_wsl_placement_keeps_the_bare_linux_program_name() {
+        let placement = ExternalAgentExecutionPlacement {
+            environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
+            distribution: "Ubuntu-24.04".to_owned(),
+        };
+
+        let program = launch_program(&placement, OsString::from("claude"));
+
+        assert_eq!(program, OsString::from("claude"));
     }
 
     #[test]
