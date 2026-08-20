@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                Self::show_conversation_lane(ui, |ui| {\n                    self.show_pinned_affordances(ui);",
+  "new": "                Self::show_conversation_lane(ui, false, |ui| {\n                    self.show_pinned_affordances(ui);"
+}
