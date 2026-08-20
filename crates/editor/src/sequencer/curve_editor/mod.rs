@@ -100,9 +100,6 @@ pub(super) fn show(
         }
     });
 
-    let draft = rows::draft_keys(ui, &clip, keys);
-    graph::show(ui, &clip, &draft, loaded.preview_tick);
-
     if action.is_none() {
         action = rows::show(
             ui,
@@ -112,6 +109,9 @@ pub(super) fn show(
             snap_to_frames,
         );
     }
+
+    let draft = rows::draft_keys(ui, &clip, keys);
+    graph::show(ui, &clip, &draft, loaded.preview_tick);
 
     if let Some(action) = action {
         let message = action.success_message();
