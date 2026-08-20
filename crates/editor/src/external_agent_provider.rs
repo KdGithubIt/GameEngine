@@ -302,10 +302,12 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let (program, args) = placed_command(
+    let (program, args) = placed_launch_command(
         placement,
-        launch_program(placement, program.to_os_string()),
-        args,
+        program.to_os_string(),
+        args.into_iter()
+            .map(|argument| argument.as_ref().to_os_string())
+            .collect(),
     );
     Command::new(program)
         .args(args)
@@ -326,10 +328,12 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let (program, args) = placed_command(
+    let (program, args) = placed_launch_command(
         placement,
-        launch_program(placement, program.to_os_string()),
-        args,
+        program.to_os_string(),
+        args.into_iter()
+            .map(|argument| argument.as_ref().to_os_string())
+            .collect(),
     );
     let output = Command::new(program)
         .args(args)
@@ -395,20 +399,74 @@ where
 /// the Editor then reports a finished install as missing.
 const WINDOWS_LAUNCHER_EXTENSIONS: [&str; 3] = ["exe", "cmd", "bat"];
 
-/// Rewrites one provider name into a program this environment can start.
+/// Launcher extensions Windows starts through the command processor.
+///
+/// `cmd.exe` receives one command line and parses it as a line of script, so an
+/// argument containing a line break cannot be represented at all: process
+/// creation rejects the whole launch before the provider runs. A provider
+/// prompt is multi-line, which makes this the difference between a working and
+/// an impossible launch rather than a quoting detail.
+const WINDOWS_BATCH_LAUNCHER_EXTENSIONS: [&str; 2] = ["cmd", "bat"];
+
+/// One program this machine can start, and the arguments it owns.
+///
+/// A provider name can resolve to an interpreter that runs the provider's own
+/// script, so a resolved launcher is not always just a program: the script path
+/// belongs to the launcher and must precede the arguments the caller built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedLauncher {
+    program: OsString,
+    leading_args: Vec<OsString>,
+}
+
+impl ResolvedLauncher {
+    /// A launcher that is started with the caller's arguments alone.
+    fn direct(program: OsString) -> Self {
+        Self {
+            program,
+            leading_args: Vec::new(),
+        }
+    }
+
+    /// Places caller arguments after the arguments the launcher owns.
+    fn with_arguments(self, args: Vec<OsString>) -> (OsString, Vec<OsString>) {
+        let mut placed = self.leading_args;
+        placed.extend(args);
+        (self.program, placed)
+    }
+}
+
+/// Rewrites one provider name into a launcher this environment can start.
 ///
 /// Only a Windows-native launch needs this. A WSL launch resolves the name
 /// inside the distribution, where an extension is not part of a program name.
-fn launch_program(placement: &ExternalAgentExecutionPlacement, program: OsString) -> OsString {
+fn resolve_launcher(
+    placement: &ExternalAgentExecutionPlacement,
+    program: OsString,
+) -> ResolvedLauncher {
     match placement.environment {
-        ExternalAgentExecutionEnvironment::WindowsNative => {
-            resolve_windows_launcher(&program, &search_path_directories(), &|candidate| {
-                candidate.is_file()
-            })
-            .unwrap_or(program)
-        }
-        ExternalAgentExecutionEnvironment::Wsl2Linux => program,
+        ExternalAgentExecutionEnvironment::WindowsNative => resolve_windows_launcher(
+            &program,
+            &search_path_directories(),
+            &|candidate| candidate.is_file(),
+            &|candidate| std::fs::read_to_string(candidate).ok(),
+        )
+        .unwrap_or_else(|| ResolvedLauncher::direct(program)),
+        ExternalAgentExecutionEnvironment::Wsl2Linux => ResolvedLauncher::direct(program),
     }
+}
+
+/// Builds the command one launch plan runs, for this machine and placement.
+///
+/// Launcher resolution happens before placement, so the WSL wrapper receives
+/// the same argument vector the provider will see.
+fn placed_launch_command(
+    placement: &ExternalAgentExecutionPlacement,
+    program: OsString,
+    args: Vec<OsString>,
+) -> (OsString, Vec<OsString>) {
+    let (program, args) = resolve_launcher(placement, program).with_arguments(args);
+    placed_command(placement, program, args)
 }
 
 /// The `PATH` directories a Windows-native launch searches, in order.
@@ -423,14 +481,17 @@ fn search_path_directories() -> Vec<PathBuf> {
 
 /// Finds the first launchable file one bare program name resolves to.
 ///
-/// Returns `None` for a name that already carries an extension or a directory
-/// component: that name is what the installer or the user asked for, and
-/// process creation can start it as written.
+/// A resolved batch shim is unwrapped to the launcher it forwards to, because a
+/// shim cannot carry a multi-line prompt. Returns `None` for a name that
+/// already carries an extension or a directory component: that name is what the
+/// installer or the user asked for, and process creation can start it as
+/// written.
 fn resolve_windows_launcher(
     program: &OsStr,
     directories: &[PathBuf],
     is_file: &dyn Fn(&Path) -> bool,
-) -> Option<OsString> {
+    read_text: &dyn Fn(&Path) -> Option<String>,
+) -> Option<ResolvedLauncher> {
     let name = Path::new(program);
     let is_bare = name
         .parent()
@@ -441,9 +502,206 @@ fn resolve_windows_launcher(
     directories.iter().find_map(|directory| {
         WINDOWS_LAUNCHER_EXTENSIONS.iter().find_map(|extension| {
             let candidate = directory.join(name).with_extension(extension);
-            is_file(&candidate).then(|| candidate.into_os_string())
+            if !is_file(&candidate) {
+                return None;
+            }
+            Some(
+                unwrap_windows_batch_shim(&candidate, is_file, read_text)
+                    .unwrap_or_else(|| ResolvedLauncher::direct(candidate.into_os_string())),
+            )
         })
     })
+}
+
+/// Reports whether a launcher runs through the Windows command processor.
+fn is_windows_batch_launcher(program: &Path) -> bool {
+    program
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| {
+            WINDOWS_BATCH_LAUNCHER_EXTENSIONS
+                .iter()
+                .any(|batch| extension.eq_ignore_ascii_case(batch))
+        })
+}
+
+/// Marker a shim uses to forward every argument it received.
+const WINDOWS_SHIM_ARGUMENT_FORWARD: &str = "%*";
+
+/// Variable an npm shim assigns the interpreter it selected.
+const WINDOWS_SHIM_INTERPRETER_VARIABLE: &str = "_prog";
+
+/// Resolves a batch shim to the launcher it forwards the caller's arguments to.
+///
+/// A CLI installed by npm is placed on `PATH` as a `.cmd` shim. The shim cannot
+/// receive a multi-line prompt (see [`WINDOWS_BATCH_LAUNCHER_EXTENSIONS`]),
+/// while the program it forwards to receives arguments verbatim, so reading the
+/// shim is what makes a prompt with line breaks reach the provider at all. Both
+/// shapes npm writes are resolved: a package shipping a native binary forwards
+/// to a sibling executable, and a package shipping a script forwards to an
+/// interpreter that is handed that script.
+///
+/// A shim whose forwarding line this cannot fully account for is left to launch
+/// as written, because starting a guessed program would run something the user
+/// never asked for.
+fn unwrap_windows_batch_shim(
+    shim: &Path,
+    is_file: &dyn Fn(&Path) -> bool,
+    read_text: &dyn Fn(&Path) -> Option<String>,
+) -> Option<ResolvedLauncher> {
+    if !is_windows_batch_launcher(shim) {
+        return None;
+    }
+    let directory = shim.parent()?;
+    let text = read_text(shim)?;
+    let tokens = shim_forwarding_tokens(&text)?;
+    let (target, launcher_args) = tokens.split_first()?;
+    let program = resolve_shim_target(target, &text, directory, is_file)?;
+    let mut leading_args = Vec::new();
+    for argument in launcher_args {
+        if argument == WINDOWS_SHIM_ARGUMENT_FORWARD {
+            break;
+        }
+        let expanded = expand_shim_own_directory(argument, directory)?;
+        if names_shim_own_directory(argument) && !is_file(&expanded) {
+            return None;
+        }
+        leading_args.push(expanded.into_os_string());
+    }
+    Some(ResolvedLauncher {
+        program,
+        leading_args,
+    })
+}
+
+/// Splits the shim line that starts the real program into its tokens.
+///
+/// `%*` forwards every argument the shim received, so the last line carrying it
+/// is the line that starts the program. That line can chain command processor
+/// bookkeeping in front of the launch, and only the final `&` clause is the
+/// launch itself.
+fn shim_forwarding_tokens(text: &str) -> Option<Vec<String>> {
+    let launch = text
+        .lines()
+        .rev()
+        .find(|line| line.contains(WINDOWS_SHIM_ARGUMENT_FORWARD))
+        .and_then(|line| line.rsplit('&').next())?;
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut inside_quotes = false;
+    for character in launch.chars() {
+        match character {
+            '"' => inside_quotes = !inside_quotes,
+            character if character.is_whitespace() && !inside_quotes => {
+                if !token.is_empty() {
+                    tokens.push(std::mem::take(&mut token));
+                }
+            }
+            character => token.push(character),
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    (!tokens.is_empty()).then_some(tokens)
+}
+
+/// Resolves the program token of a shim's forwarding line to a launcher.
+///
+/// The token is either the program itself or the variable the shim assigned the
+/// interpreter it selected. An interpreter the shim resolves through `PATH` is
+/// kept as a bare name, because that is the program the shim would have run.
+fn resolve_shim_target(
+    target: &str,
+    text: &str,
+    directory: &Path,
+    is_file: &dyn Fn(&Path) -> bool,
+) -> Option<OsString> {
+    let candidates = if target
+        .trim_matches('%')
+        .eq_ignore_ascii_case(WINDOWS_SHIM_INTERPRETER_VARIABLE)
+    {
+        shim_assigned_values(text, WINDOWS_SHIM_INTERPRETER_VARIABLE)
+    } else {
+        vec![target.to_owned()]
+    };
+    let mut bare_name = None;
+    for candidate in candidates {
+        let Some(expanded) = expand_shim_own_directory(&candidate, directory) else {
+            continue;
+        };
+        if is_file(&expanded) {
+            return Some(expanded.into_os_string());
+        }
+        if bare_name.is_none() && Path::new(&candidate).file_name() == Some(OsStr::new(&candidate))
+        {
+            bare_name = Some(OsString::from(candidate));
+        }
+    }
+    bare_name
+}
+
+/// Collects the values one shim variable is assigned, in the order written.
+fn shim_assigned_values(text: &str, variable: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let statement = line.trim().trim_start_matches(['(', ')']).trim();
+            let (keyword, rest) = statement.split_once(char::is_whitespace)?;
+            if !keyword.eq_ignore_ascii_case("SET") {
+                return None;
+            }
+            let (name, value) = rest.trim().trim_matches('"').split_once('=')?;
+            name.trim()
+                .eq_ignore_ascii_case(variable)
+                .then(|| value.trim_matches('"').to_owned())
+        })
+        .collect()
+}
+
+/// Reports whether a shim token is written relative to the shim's directory.
+fn names_shim_own_directory(token: &str) -> bool {
+    token.contains("%~dp0") || token.contains("%dp0%")
+}
+
+/// Expands the variables a shim uses to name its own directory.
+///
+/// A shim refers to its neighbours through `%~dp0`, usually by way of a `dp0`
+/// variable it sets first. A token holding any other variable is rejected rather
+/// than guessed at, because this expansion decides what is run.
+fn expand_shim_own_directory(token: &str, directory: &Path) -> Option<PathBuf> {
+    let directory = directory.to_str()?;
+    let expanded = token
+        .replace("%~dp0", directory)
+        .replace("%dp0%", directory);
+    if expanded.contains('%') {
+        return None;
+    }
+    Some(PathBuf::from(expanded))
+}
+
+/// Rejects a launch whose arguments the resolved launcher cannot carry.
+///
+/// # Errors
+///
+/// Returns an error when a batch shim would receive an argument containing a
+/// line break. Windows rejects that command line in process creation, with a
+/// message that names neither the argument nor the shim, so the condition is
+/// reported here while the provider that caused it is still in view.
+fn ensure_launcher_carries_arguments(program: &OsStr, args: &[OsString]) -> Result<(), String> {
+    let launcher = Path::new(program);
+    if !is_windows_batch_launcher(launcher) {
+        return Ok(());
+    }
+    if !args
+        .iter()
+        .any(|argument| argument.to_string_lossy().contains(['\n', '\r']))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{} is a batch shim, and Windows cannot pass a multi-line prompt through one. Reinstall the provider so its own executable is on PATH, or run it in the WSL2 environment.",
+        launcher.file_name().unwrap_or(program).to_string_lossy()
+    ))
 }
 
 /// Windows launcher used to place a provider process inside a WSL distribution.
@@ -545,11 +803,8 @@ pub(crate) fn build_launch_plan(
 ) -> Result<ExternalAgentLaunchPlan, String> {
     let plan =
         build_provider_launch_plan(kind, generic_program, generic_args, prompt, mcp_endpoint)?;
-    let (program, args) = placed_command(
-        placement,
-        launch_program(placement, plan.program),
-        plan.args,
-    );
+    let (program, args) = placed_launch_command(placement, plan.program, plan.args);
+    ensure_launcher_carries_arguments(&program, &args)?;
     Ok(ExternalAgentLaunchPlan { program, args })
 }
 
@@ -1006,11 +1261,8 @@ pub(crate) fn build_question_launch_plan(
             );
         }
     };
-    let (program, args) = placed_command(
-        placement,
-        launch_program(placement, plan.program),
-        plan.args,
-    );
+    let (program, args) = placed_launch_command(placement, plan.program, plan.args);
+    ensure_launcher_carries_arguments(&program, &args)?;
     Ok(ExternalAgentLaunchPlan { program, args })
 }
 
@@ -1519,9 +1771,9 @@ impl ExternalAgentSetupTask {
         // user agreed to run. Process creation needs the launcher file that
         // name resolves to on this machine, which is resolved here so the
         // displayed command stays the command and not a machine path.
-        let program = launch_program(placement, plan.program);
+        let (program, args) = resolve_launcher(placement, plan.program).with_arguments(plan.args);
         let mut child = Command::new(&program)
-            .args(&plan.args)
+            .args(&args)
             .current_dir(working_directory)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1874,13 +2126,18 @@ mod tests {
     fn an_npm_installed_provider_launches_through_the_extension_windows_requires() {
         let directories = [PathBuf::from("tools"), PathBuf::from("npm")];
 
-        let resolved = resolve_windows_launcher(OsStr::new("claude"), &directories, &|candidate| {
-            candidate == Path::new("npm").join("claude.cmd")
-        });
+        let resolved = resolve_windows_launcher(
+            OsStr::new("claude"),
+            &directories,
+            &|candidate| candidate == Path::new("npm").join("claude.cmd"),
+            &|_| None,
+        );
 
         assert_eq!(
             resolved,
-            Some(Path::new("npm").join("claude.cmd").into_os_string())
+            Some(ResolvedLauncher::direct(
+                Path::new("npm").join("claude.cmd").into_os_string()
+            ))
         );
     }
 
@@ -1888,14 +2145,21 @@ mod tests {
     fn an_executable_wins_over_a_shim_in_the_same_directory() {
         let directories = [PathBuf::from("tools")];
 
-        let resolved = resolve_windows_launcher(OsStr::new("claude"), &directories, &|candidate| {
-            candidate == Path::new("tools").join("claude.exe")
-                || candidate == Path::new("tools").join("claude.cmd")
-        });
+        let resolved = resolve_windows_launcher(
+            OsStr::new("claude"),
+            &directories,
+            &|candidate| {
+                candidate == Path::new("tools").join("claude.exe")
+                    || candidate == Path::new("tools").join("claude.cmd")
+            },
+            &|_| None,
+        );
 
         assert_eq!(
             resolved,
-            Some(Path::new("tools").join("claude.exe").into_os_string())
+            Some(ResolvedLauncher::direct(
+                Path::new("tools").join("claude.exe").into_os_string()
+            ))
         );
     }
 
@@ -1903,19 +2167,178 @@ mod tests {
     fn a_program_that_already_names_its_extension_is_launched_as_written() {
         let directories = [PathBuf::from("tools")];
 
-        let resolved =
-            resolve_windows_launcher(OsStr::new("npm.cmd"), &directories, &|_| unreachable!());
+        let resolved = resolve_windows_launcher(
+            OsStr::new("npm.cmd"),
+            &directories,
+            &|_| unreachable!(),
+            &|_| unreachable!(),
+        );
 
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn an_npm_shim_launches_the_provider_executable_it_forwards_to() {
+        let directories = [PathBuf::from("npm")];
+        let shim = Path::new("npm").join("claude.cmd");
+        let executable = Path::new("npm").join("node_modules").join("claude.exe");
+
+        let resolved = resolve_windows_launcher(
+            OsStr::new("claude"),
+            &directories,
+            &|candidate| candidate == shim || candidate == executable,
+            &|candidate| {
+                (candidate == shim)
+                    .then(|| "@ECHO off\r\n\"%dp0%/node_modules/claude.exe\"   %*\r\n".to_owned())
+            },
+        );
+
+        // The shim writes its own separator style, so the resolved launcher is
+        // compared as a path rather than as raw text.
+        let resolved = resolved.expect("the shim names an executable next to itself");
+        assert_eq!(PathBuf::from(resolved.program), executable);
+        assert!(resolved.leading_args.is_empty());
+    }
+
+    /// The shim npm writes for a package whose command is a script.
+    ///
+    /// The interpreter is chosen at run time, and the script path is the
+    /// launcher's own argument, so both have to survive resolution.
+    const NPM_SCRIPT_SHIM: &str = concat!(
+        "@ECHO off\r\n",
+        "GOTO start\r\n",
+        ":find_dp0\r\n",
+        "SET dp0=%~dp0\r\n",
+        "EXIT /b\r\n",
+        ":start\r\n",
+        "SETLOCAL\r\n",
+        "CALL :find_dp0\r\n",
+        "\r\n",
+        "IF EXIST \"%dp0%/node.exe\" (\r\n",
+        "  SET \"_prog=%dp0%/node.exe\"\r\n",
+        ") ELSE (\r\n",
+        "  SET \"_prog=node\"\r\n",
+        "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n",
+        ")\r\n",
+        "\r\n",
+        "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  ",
+        "\"%dp0%/node_modules/@openai/codex/bin/codex.js\" %*\r\n",
+    );
+
+    #[test]
+    fn an_npm_script_shim_launches_the_interpreter_it_selects_with_the_provider_script() {
+        let directories = [PathBuf::from("npm")];
+        let shim = Path::new("npm").join("codex.cmd");
+        let interpreter = Path::new("npm").join("node.exe");
+        let script = Path::new("npm")
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("bin")
+            .join("codex.js");
+
+        let resolved = resolve_windows_launcher(
+            OsStr::new("codex"),
+            &directories,
+            &|candidate| candidate == shim || candidate == interpreter || candidate == script,
+            &|_| Some(NPM_SCRIPT_SHIM.to_owned()),
+        )
+        .expect("the shim names an interpreter and a script");
+
+        assert_eq!(PathBuf::from(resolved.program), interpreter);
+        assert_eq!(
+            resolved
+                .leading_args
+                .into_iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>(),
+            vec![script]
+        );
+    }
+
+    #[test]
+    fn a_script_shim_without_a_neighbouring_interpreter_keeps_the_name_on_path() {
+        let directories = [PathBuf::from("npm")];
+        let shim = Path::new("npm").join("codex.cmd");
+        let script = Path::new("npm")
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("bin")
+            .join("codex.js");
+
+        let resolved = resolve_windows_launcher(
+            OsStr::new("codex"),
+            &directories,
+            &|candidate| candidate == shim || candidate == script,
+            &|_| Some(NPM_SCRIPT_SHIM.to_owned()),
+        )
+        .expect("the shim falls back to the interpreter on PATH");
+
+        assert_eq!(resolved.program, OsString::from("node"));
+    }
+
+    #[test]
+    fn a_shim_naming_a_variable_it_does_not_set_is_launched_as_written() {
+        let directories = [PathBuf::from("npm")];
+        let shim = Path::new("npm").join("codex.cmd");
+
+        let resolved = resolve_windows_launcher(
+            OsStr::new("codex"),
+            &directories,
+            &|candidate| candidate == shim,
+            &|_| Some("\"%CODEX_HOME%/codex.exe\" %*\r\n".to_owned()),
+        );
+
+        assert_eq!(
+            resolved,
+            Some(ResolvedLauncher::direct(shim.into_os_string()))
+        );
+    }
+
+    #[test]
+    fn a_multi_line_prompt_is_refused_before_a_batch_shim_receives_it() {
+        let refusal = ensure_launcher_carries_arguments(
+            OsStr::new(r"C:\npm\claude.cmd"),
+            &[OsString::from("-p"), OsString::from("first\nsecond")],
+        )
+        .expect_err("a batch shim cannot carry an argument containing a line break");
+
+        assert!(refusal.contains("claude.cmd"), "{refusal}");
+    }
+
+    #[test]
+    fn an_executable_launcher_carries_a_multi_line_prompt() {
+        assert!(
+            ensure_launcher_carries_arguments(
+                OsStr::new(r"C:\npm\claude.exe"),
+                &[OsString::from("-p"), OsString::from("first\nsecond")],
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_single_line_batch_launch_stays_allowed() {
+        assert!(
+            ensure_launcher_carries_arguments(
+                OsStr::new("npm.cmd"),
+                &[OsString::from("install"), OsString::from("-g")],
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn a_provider_missing_from_every_path_directory_keeps_its_reported_name() {
         let placement = ExternalAgentExecutionPlacement::windows_native();
 
-        let program = launch_program(&placement, OsString::from("gameengine-absent-provider"));
+        let resolved = resolve_launcher(&placement, OsString::from("gameengine-absent-provider"));
 
-        assert_eq!(program, OsString::from("gameengine-absent-provider"));
+        assert_eq!(
+            resolved,
+            ResolvedLauncher::direct(OsString::from("gameengine-absent-provider"))
+        );
     }
 
     #[test]
@@ -1925,9 +2348,9 @@ mod tests {
             distribution: "Ubuntu-24.04".to_owned(),
         };
 
-        let program = launch_program(&placement, OsString::from("claude"));
+        let resolved = resolve_launcher(&placement, OsString::from("claude"));
 
-        assert_eq!(program, OsString::from("claude"));
+        assert_eq!(resolved, ResolvedLauncher::direct(OsString::from("claude")));
     }
 
     #[test]
