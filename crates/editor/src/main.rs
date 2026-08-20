@@ -59,17 +59,16 @@ impl EditorShell {
                 mcp_server.authorization_token(),
             )
             .map_err(|error| error.to_string())?;
-        let mut ai_studio = AiStudioPanel::new(
-            &root,
-            AiStudioConnection::new(
-                mcp_server.endpoint().to_string(),
-                mcp_server.agent_authorization_token().to_owned(),
-                mcp_server.read_only_authorization_token().to_owned(),
-            ),
-        )?;
-        if let Some(benchmark_run) = benchmark_run {
-            ai_studio.configure_benchmark_child(benchmark_run)?;
-        }
+        let ai_studio_connection = AiStudioConnection::new(
+            mcp_server.endpoint().to_string(),
+            mcp_server.agent_authorization_token().to_owned(),
+            mcp_server.read_only_authorization_token().to_owned(),
+        );
+        let ai_studio = if let Some(benchmark_run) = benchmark_run {
+            AiStudioPanel::new_benchmark_child(&root, ai_studio_connection, benchmark_run)?
+        } else {
+            AiStudioPanel::new(&root, ai_studio_connection)?
+        };
         #[cfg(feature = "visual-validation")]
         let visual_scenario = visual_authoring_tool_scenario();
         #[cfg(feature = "visual-validation")]
