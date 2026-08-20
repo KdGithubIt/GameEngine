@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "native-ready-validation-20260820-02",
+  "target_branch": "chatgpt/gameengine-native-ready-validation",
+  "expected_head_sha": "9785ba0b6d888d7b501755ffd2241c4ca253e67f",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json"
+  ],
+  "commit_message": "Use host evidence for native validation readiness",
+  "pr_title": "Fix premature NativeAgentRuntime validation",
+  "pr_body": "Require NativeAgentRuntime readiness to be proven by Agent Host-recorded successful mutations rather than generic model-loop exchange strings. Planned source work now requires a successful managed workspace write event, planned project work requires a successful governed MCP mutation event, and planned asset work requires managed acquisition or governed mutation evidence. Runtime progress/read-only exchanges cannot fabricate implementation completion. Regression tests cover exchange-only false positives and host-recorded read-only versus mutating MCP actions. This correction also restores rustfmt-compatible test imports. The existing NotApplicable source-validation wording fix remains. Logic-only change; Visual Validation is not required."
+}
