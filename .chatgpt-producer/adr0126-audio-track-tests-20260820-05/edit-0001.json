@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline/audio_adapter.rs","old":"            desired_audio_voices(Entity::new(7, 0), &timeline, &before_stop).len(),\n","new":"            desired_audio_voices(Entity::from_raw(7, 0), &timeline, &before_stop).len(),\n"}
