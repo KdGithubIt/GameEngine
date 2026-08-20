@@ -1,0 +1,776 @@
+diff --git a/crates/editor/src/acp_agent_runtime.rs b/crates/editor/src/acp_agent_runtime.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8739bf226aaf6eac151d52b0d87296f8e46db240
+--- /dev/null
++++ b/crates/editor/src/acp_agent_runtime.rs
+@@ -0,0 +1,478 @@
++//! Provider-neutral Agent Client Protocol (ACP) runtime contracts beneath Agent Host.
++//!
++//! Provider adapters translate ACP wire behavior into these types. They do not
++//! own GameEngine permissions, work claims, project mutation, validation,
++//! persistence, or completion.
++
++use crate::agent_host::{AgentCapability, AgentEventKind};
++use std::collections::{BTreeMap, BTreeSet};
++use std::ffi::OsString;
++use std::fmt;
++
++/// Stable ACP wire version used by the first GameEngine adapters.
++pub(crate) const ACP_STABLE_PROTOCOL_VERSION: u16 = 1;
++
++/// Data-driven description of one ACP-capable agent.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AcpAgentDescriptor {
++    pub(crate) id: String,
++    pub(crate) executable: OsString,
++    pub(crate) arguments: Vec<OsString>,
++    pub(crate) capabilities: AcpCapabilities,
++    pub(crate) runtime_identity: AcpRuntimeIdentity,
++}
++
++/// Negotiated ACP capabilities that affect GameEngine orchestration.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub(crate) struct AcpCapabilities {
++    pub(crate) session_load: bool,
++    pub(crate) session_resume: bool,
++    pub(crate) session_list: bool,
++    pub(crate) session_config_options: bool,
++    pub(crate) mcp_http: bool,
++    pub(crate) mcp_sse: bool,
++    pub(crate) mcp_over_acp: bool,
++    pub(crate) extensions: BTreeSet<String>,
++}
++
++/// Agent implementation identity returned by ACP initialization.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AcpRuntimeIdentity {
++    pub(crate) protocol_version: u16,
++    pub(crate) agent_name: String,
++    pub(crate) agent_version: Option<String>,
++}
++
++impl AcpRuntimeIdentity {
++    pub(crate) fn stable(agent_name: impl Into<String>, agent_version: Option<String>) -> Self {
++        Self {
++            protocol_version: ACP_STABLE_PROTOCOL_VERSION,
++            agent_name: agent_name.into(),
++            agent_version,
++        }
++    }
++}
++
++/// Editor MCP authority that may be handed to an ACP session.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum AcpMcpAccessLevel {
++    ReadOnly,
++    AgentRunBoundReadWrite,
++}
++
++/// Ephemeral Editor MCP connection for one ACP session.
++///
++/// This type is intentionally not serializable and always redacts its bearer
++/// credential from `Debug`.
++#[derive(Clone, PartialEq, Eq)]
++pub(crate) struct AcpMcpConnection {
++    endpoint: String,
++    authorization_token: String,
++    pub(crate) access: AcpMcpAccessLevel,
++}
++
++impl AcpMcpConnection {
++    pub(crate) fn new(
++        endpoint: impl Into<String>,
++        authorization_token: impl Into<String>,
++        access: AcpMcpAccessLevel,
++    ) -> Result<Self, AcpRuntimeError> {
++        let endpoint = endpoint.into();
++        let authorization_token = authorization_token.into();
++        if endpoint.trim().is_empty() || authorization_token.is_empty() {
++            return Err(AcpRuntimeError::InvalidSessionBinding(
++                "ACP MCP endpoint and credential must not be empty".to_owned(),
++            ));
++        }
++        Ok(Self {
++            endpoint,
++            authorization_token,
++            access,
++        })
++    }
++
++    pub(crate) fn endpoint(&self) -> &str {
++        &self.endpoint
++    }
++
++    pub(crate) fn authorization_token(&self) -> &str {
++        &self.authorization_token
++    }
++}
++
++impl fmt::Debug for AcpMcpConnection {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter
++            .debug_struct("AcpMcpConnection")
++            .field("endpoint", &self.endpoint)
++            .field("authorization_token", &"<redacted>")
++            .field("access", &self.access)
++            .finish()
++    }
++}
++
++/// Immutable GameEngine authority attached to one ACP session.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AcpSessionBinding {
++    pub(crate) gameengine_session_id: String,
++    pub(crate) gameengine_run_id: Option<String>,
++    pub(crate) mcp: AcpMcpConnection,
++}
++
++impl AcpSessionBinding {
++    pub(crate) fn read_only(
++        gameengine_session_id: impl Into<String>,
++        endpoint: impl Into<String>,
++        authorization_token: impl Into<String>,
++    ) -> Result<Self, AcpRuntimeError> {
++        Self::new(
++            gameengine_session_id,
++            None,
++            AcpMcpConnection::new(endpoint, authorization_token, AcpMcpAccessLevel::ReadOnly)?,
++        )
++    }
++
++    pub(crate) fn run_bound(
++        gameengine_session_id: impl Into<String>,
++        gameengine_run_id: impl Into<String>,
++        endpoint: impl Into<String>,
++        authorization_token: impl Into<String>,
++    ) -> Result<Self, AcpRuntimeError> {
++        Self::new(
++            gameengine_session_id,
++            Some(gameengine_run_id.into()),
++            AcpMcpConnection::new(
++                endpoint,
++                authorization_token,
++                AcpMcpAccessLevel::AgentRunBoundReadWrite,
++            )?,
++        )
++    }
++
++    fn new(
++        gameengine_session_id: impl Into<String>,
++        gameengine_run_id: Option<String>,
++        mcp: AcpMcpConnection,
++    ) -> Result<Self, AcpRuntimeError> {
++        let gameengine_session_id = gameengine_session_id.into();
++        if gameengine_session_id.trim().is_empty() {
++            return Err(AcpRuntimeError::InvalidSessionBinding(
++                "GameEngine session ID must not be empty".to_owned(),
++            ));
++        }
++        match mcp.access {
++            AcpMcpAccessLevel::ReadOnly if gameengine_run_id.is_some() => {
++                return Err(AcpRuntimeError::InvalidSessionBinding(
++                    "read-only ACP sessions must not carry AgentRun identity".to_owned(),
++                ));
++            }
++            AcpMcpAccessLevel::AgentRunBoundReadWrite
++                if gameengine_run_id
++                    .as_deref()
++                    .is_none_or(|run_id| run_id.trim().is_empty()) =>
++            {
++                return Err(AcpRuntimeError::InvalidSessionBinding(
++                    "run-bound ACP MCP access requires an AgentRun ID".to_owned(),
++                ));
++            }
++            _ => {}
++        }
++        Ok(Self {
++            gameengine_session_id,
++            gameengine_run_id,
++            mcp,
++        })
++    }
++}
++
++/// Agent-provided ACP permission option kind.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum AcpPermissionOptionKind {
++    AllowOnce,
++    AllowAlways,
++    RejectOnce,
++    RejectAlways,
++    Other(String),
++}
++
++/// One ACP permission option.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AcpPermissionOption {
++    pub(crate) id: String,
++    pub(crate) name: String,
++    pub(crate) kind: AcpPermissionOptionKind,
++}
++
++/// ACP permission request after classification into GameEngine authority.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AcpPermissionRequest {
++    pub(crate) request_id: String,
++    pub(crate) acp_session_id: String,
++    pub(crate) tool_call_id: String,
++    pub(crate) title: String,
++    pub(crate) required_capability: AgentCapability,
++    pub(crate) options: Vec<AcpPermissionOption>,
++}
++
++/// Result returned to ACP after Agent Host resolves its own permission policy.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AcpPermissionResolution {
++    pub(crate) request_id: String,
++    pub(crate) outcome: AcpPermissionOutcome,
++}
++
++/// ACP-side permission response.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum AcpPermissionOutcome {
++    SelectedOption(String),
++    Cancelled,
++}
++
++/// Normalized ACP tool-call state.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum AcpToolCallStatus {
++    Pending,
++    InProgress,
++    Completed,
++    Failed,
++}
++
++/// ACP updates normalized before entering the Agent Host timeline.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum AcpNormalizedEvent {
++    AgentMessage { text: String },
++    Progress { step: String, detail: String },
++    Plan { entries: Vec<String> },
++    ToolCall {
++        tool_call_id: String,
++        title: String,
++        status: AcpToolCallStatus,
++    },
++    PermissionRequest(AcpPermissionRequest),
++    SessionInfo { title: Option<String> },
++    TurnFinished { stop_reason: String },
++    ProtocolDiagnostic { message: String },
++}
++
++impl AcpNormalizedEvent {
++    /// Projects ACP semantics into the existing host event vocabulary.
++    ///
++    /// A finished ACP turn is progress, never GameEngine completion.
++    pub(crate) fn host_event_kind(&self) -> AgentEventKind {
++        match self {
++            Self::AgentMessage { .. } => AgentEventKind::AssistantMessage,
++            Self::Progress { .. }
++            | Self::Plan { .. }
++            | Self::SessionInfo { .. }
++            | Self::TurnFinished { .. } => AgentEventKind::SemanticProgress,
++            Self::ToolCall { .. } => AgentEventKind::ToolAction,
++            Self::PermissionRequest(_) => AgentEventKind::PermissionRequested,
++            Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,
++        }
++    }
++}
++
++/// One live ACP session owned by a registered runtime adapter.
++pub(crate) trait AcpAgentSession: Send {
++    fn acp_session_id(&self) -> &str;
++    fn binding(&self) -> &AcpSessionBinding;
++    fn send_prompt(&mut self, prompt: &str) -> Result<(), AcpRuntimeError>;
++    /// Polls one event without blocking the Editor thread.
++    fn try_next_event(&mut self) -> Result<Option<AcpNormalizedEvent>, AcpRuntimeError>;
++    fn resolve_permission(
++        &mut self,
++        resolution: AcpPermissionResolution,
++    ) -> Result<(), AcpRuntimeError>;
++    fn cancel(&mut self) -> Result<(), AcpRuntimeError>;
++    fn close(&mut self) -> Result<(), AcpRuntimeError>;
++}
++
++/// Provider-adapter registration point for the common ACP runtime.
++pub(crate) trait AcpAgentRuntime: Send {
++    fn descriptor(&self) -> &AcpAgentDescriptor;
++    fn open_session(
++        &mut self,
++        binding: AcpSessionBinding,
++    ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError>;
++}
++
++/// Registry interface consumed by Agent Host.
++pub(crate) trait AcpAgentRegistry {
++    fn descriptors(&self) -> Vec<&AcpAgentDescriptor>;
++    fn runtime_mut(&mut self, id: &str) -> Option<&mut (dyn AcpAgentRuntime + '_)>;
++}
++
++/// Data-driven in-process registry for ACP adapters.
++#[derive(Default)]
++pub(crate) struct AcpRuntimeRegistry {
++    runtimes: BTreeMap<String, Box<dyn AcpAgentRuntime>>,
++}
++
++impl AcpRuntimeRegistry {
++    pub(crate) fn register(
++        &mut self,
++        runtime: Box<dyn AcpAgentRuntime>,
++    ) -> Result<(), AcpRuntimeError> {
++        let descriptor = runtime.descriptor();
++        validate_descriptor(descriptor)?;
++        if self.runtimes.contains_key(&descriptor.id) {
++            return Err(AcpRuntimeError::DuplicateAgentId(descriptor.id.clone()));
++        }
++        self.runtimes.insert(descriptor.id.clone(), runtime);
++        Ok(())
++    }
++}
++
++impl AcpAgentRegistry for AcpRuntimeRegistry {
++    fn descriptors(&self) -> Vec<&AcpAgentDescriptor> {
++        self.runtimes
++            .values()
++            .map(|runtime| runtime.descriptor())
++            .collect()
++    }
++
++    fn runtime_mut(&mut self, id: &str) -> Option<&mut (dyn AcpAgentRuntime + '_)> {
++        match self.runtimes.get_mut(id) {
++            Some(runtime) => Some(runtime.as_mut()),
++            None => None,
++        }
++    }
++}
++
++fn validate_descriptor(descriptor: &AcpAgentDescriptor) -> Result<(), AcpRuntimeError> {
++    if descriptor.id.trim().is_empty()
++        || descriptor.id.trim() != descriptor.id
++        || descriptor.id.chars().any(char::is_whitespace)
++    {
++        return Err(AcpRuntimeError::InvalidDescriptor(
++            "descriptor ID must be non-empty and contain no whitespace".to_owned(),
++        ));
++    }
++    if descriptor.executable.is_empty()
++        || descriptor.runtime_identity.protocol_version == 0
++        || descriptor.runtime_identity.agent_name.trim().is_empty()
++    {
++        return Err(AcpRuntimeError::InvalidDescriptor(
++            "executable and runtime identity must be present".to_owned(),
++        ));
++    }
++    Ok(())
++}
++
++/// Failure at the GameEngine ACP runtime boundary.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum AcpRuntimeError {
++    InvalidDescriptor(String),
++    InvalidSessionBinding(String),
++    DuplicateAgentId(String),
++    Unsupported(String),
++    Transport(String),
++    Protocol(String),
++}
++
++impl fmt::Display for AcpRuntimeError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::InvalidDescriptor(message) => write!(formatter, "invalid ACP descriptor: {message}"),
++            Self::InvalidSessionBinding(message) => {
++                write!(formatter, "invalid ACP session binding: {message}")
++            }
++            Self::DuplicateAgentId(id) => write!(formatter, "ACP agent `{id}` is already registered"),
++            Self::Unsupported(message) => write!(formatter, "unsupported ACP operation: {message}"),
++            Self::Transport(message) => write!(formatter, "ACP transport error: {message}"),
++            Self::Protocol(message) => write!(formatter, "ACP protocol error: {message}"),
++        }
++    }
++}
++
++impl std::error::Error for AcpRuntimeError {}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    struct StubRuntime(AcpAgentDescriptor);
++
++    impl AcpAgentRuntime for StubRuntime {
++        fn descriptor(&self) -> &AcpAgentDescriptor {
++            &self.0
++        }
++
++        fn open_session(
++            &mut self,
++            _binding: AcpSessionBinding,
++        ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
++            Err(AcpRuntimeError::Unsupported("stub".to_owned()))
++        }
++    }
++
++    fn descriptor(id: &str) -> AcpAgentDescriptor {
++        AcpAgentDescriptor {
++            id: id.to_owned(),
++            executable: OsString::from("future-acp-agent"),
++            arguments: Vec::new(),
++            capabilities: AcpCapabilities::default(),
++            runtime_identity: AcpRuntimeIdentity::stable("future-acp-agent", None),
++        }
++    }
++
++    #[test]
++    fn registry_is_not_provider_enum_driven() {
++        let mut registry = AcpRuntimeRegistry::default();
++        registry
++            .register(Box::new(StubRuntime(descriptor("future.vendor.agent"))))
++            .expect("arbitrary ACP descriptor ID should register");
++        assert!(registry.runtime_mut("future.vendor.agent").is_some());
++    }
++
++    #[test]
++    fn duplicate_agent_id_is_rejected() {
++        let mut registry = AcpRuntimeRegistry::default();
++        registry
++            .register(Box::new(StubRuntime(descriptor("same.agent"))))
++            .expect("first registration should succeed");
++        assert_eq!(
++            registry
++                .register(Box::new(StubRuntime(descriptor("same.agent"))))
++                .expect_err("duplicate registration must fail"),
++            AcpRuntimeError::DuplicateAgentId("same.agent".to_owned())
++        );
++    }
++
++    #[test]
++    fn bindings_separate_read_only_and_run_bound_mcp() {
++        let read_only =
++            AcpSessionBinding::read_only("session-1", "http://127.0.0.1:1/mcp", "secret")
++                .expect("read-only binding should be valid");
++        assert!(read_only.gameengine_run_id.is_none());
++        assert_eq!(read_only.mcp.access, AcpMcpAccessLevel::ReadOnly);
++
++        let run_bound =
++            AcpSessionBinding::run_bound("session-1", "run-1", "http://127.0.0.1:1/mcp", "secret")
++                .expect("run-bound binding should be valid");
++        assert_eq!(run_bound.gameengine_run_id.as_deref(), Some("run-1"));
++        assert_eq!(
++            run_bound.mcp.access,
++            AcpMcpAccessLevel::AgentRunBoundReadWrite
++        );
++    }
++
++    #[test]
++    fn mcp_debug_redacts_credentials() {
++        let connection =
++            AcpMcpConnection::new("http://127.0.0.1:1/mcp", "secret", AcpMcpAccessLevel::ReadOnly)
++                .expect("MCP connection should be valid");
++        let debug = format!("{connection:?}");
++        assert!(debug.contains("<redacted>"));
++        assert!(!debug.contains("secret"));
++    }
++
++    #[test]
++    fn finished_acp_turn_is_not_host_completion() {
++        let event = AcpNormalizedEvent::TurnFinished {
++            stop_reason: "end_turn".to_owned(),
++        };
++        assert_eq!(event.host_event_kind(), AgentEventKind::SemanticProgress);
++        assert_ne!(event.host_event_kind(), AgentEventKind::Completion);
++    }
++}
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 165f794e891c01647589fed44f3aa84cd0ffd3de..662bb99305d44ce95164114d4541e195f354570a 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -7,6 +7,10 @@
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
++// ADR 0166 defines the provider-neutral ACP runtime contract beneath Agent Host.
++#[allow(dead_code)]
++mod acp_agent_runtime;
++
+ // ADR 0146 defines the provider-neutral managed asset boundary before concrete
+ // provider integrations are enabled by AI Studio.
+ #[allow(dead_code)]
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index 26a2be641c6ad767c399f7d683e27a1ab5578b46..8b8952e22eabc161625a2a2372cf6e50ced1dc24 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -1097,6 +1097,20 @@ subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
+ serialized into session records or canonical project data. External runtimes
+ receive only the ephemeral MCP connection needed for the active run.
+ 
++Per ADR 0166, ACP is the provider-neutral common runtime contract for external
++coding agents beneath the Agent Host. ACP-capable agents MUST be registered by
++descriptor identity rather than added as provider variants to central Agent Host
++architecture. ACP session updates, permission requests, and stop reasons MUST be
++normalized before entering the host timeline. ACP permission requests remain
++subject to the existing GameEngine permission broker, and an ACP stop reason
++MUST NOT satisfy Agent Host completion gates. Read-oriented ACP sessions receive
++only the Editor read-only MCP credential; write-capable ACP sessions receive only
++the AgentRun-bound credential from ADR 0165 and MUST carry the matching run
++identity on mutating MCP requests. The unrestricted Editor read-write credential
++MUST NOT be exposed to an ACP runtime. ACP SDK types and artifact versions are
++adapter implementation details and MUST NOT become Agent Host or persisted
++session contracts.
++
+ Per ADR 0144, hosted and enterprise `ModelBackend` adapters remain inference-only
+ inside the native AgentRuntime. Hosted processing requires `NetworkAccess`,
+ exposes a sanitized remote-processing posture without credentials or secret paths,
+diff --git a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c76772d57408b3f52fa1b4d89a58afebcfbc23d
+--- /dev/null
++++ b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+@@ -0,0 +1,224 @@
++# ADR 0166: ACP-Centered External Agent Runtime Foundation
++
++Status: Accepted
++Date: 2026-08-21
++Builds on: ADR 0121, ADR 0131, ADR 0145, ADR 0165
++Relates to: ADR 0152, ADR 0153, ADR 0160, ADR 0164
++
++## Context
++
++GameEngine already has an Agent Host, provider-specific external process
++adapters, and a native model/tool runtime. The external path works, but adding
++more coding agents by extending provider-specific launch, session, event,
++permission, and cancellation logic would make the central architecture depend
++on a growing provider list.
++
++ACP standardizes the editor-to-agent session boundary. It can remove duplicated
++agent harness logic without replacing GameEngine authority. ADR 0131 keeps
++permission policy, work claims, validation, persistence, audit, and completion
++in Agent Host. ADR 0121 and ADR 0165 keep project inspection/mutation behind the
++Editor MCP endpoint and distinguish read-only credentials from AgentRun-bound
++write credentials.
++
++This foundation must also support parallel migration: individual Codex, Claude,
++Goose, local-agent, and future ACP adapters should be implementable without
++editing each other's provider code or a central provider enum.
++
++## Decision
++
++### 1. ACP is the common external Agent Runtime boundary beneath Agent Host
++
++GameEngine adds an internal `acp_agent_runtime` module. ACP runtimes own only
++agent-side execution concerns: launch/connection, ACP initialization and
++capability negotiation, ACP session lifecycle, prompt delivery, structured
++updates, permission request transport, cancellation, and close.
++
++Agent Host remains authoritative for:
++
++- `AgentSession` and `AgentRun` identity and lifecycle;
++- proposal snapshots and work claims;
++- GameEngine permission policy and approval scopes;
++- authoring and code-workspace authority;
++- validation, Play, persistence, and audit; and
++- final completion gates.
++
++The native GameEngine model/tool loop remains separate during this migration. A
++local agent that exposes ACP may later register through the same ACP boundary.
++
++### 2. Registration is descriptor-driven
++
++The foundation defines `AcpAgentDescriptor` with:
++
++```text
++id
++executable
++arguments
++capabilities
++runtime_identity
++```
++
++The descriptor ID is registry data. Agent Host does not gain `Codex`, `Claude`,
++`Goose`, or similar variants in a central ACP enum.
++
++A provider adapter implements `AcpAgentRuntime` and registers with
++`AcpRuntimeRegistry`. `AcpAgentRegistry` is the host-facing lookup interface.
++Adding an ACP-compatible agent must not require changing central host match
++statements solely to recognize a provider name.
++
++The existing `ExternalAgentProviderKind` remains a compatibility surface while
++providers are migrated. This ADR does not remove the current provider path.
++
++### 3. ACP SDK types terminate at this boundary
++
++GameEngine-owned runtime contracts do not expose ACP SDK types. Wire negotiation
++and SDK/schema conversion belong to concrete adapters.
++
++The first transport implementation should use the official
++`agent-client-protocol` Rust runtime crate and negotiate stable ACP protocol v1.
++A Rust SDK artifact version is not a wire-version contract. Draft protocol-v2
++APIs and unstable MCP-over-ACP transport are not foundation requirements.
++
++This foundation performs no ACP wire I/O. It therefore registers the internal
++module without adding an unused third-party dependency or causing parallel
++`Cargo.lock` churn. The first concrete ACP transport slice owns adding and
++pinning the official SDK dependency.
++
++### 4. Capabilities and identity are normalized
++
++`AcpCapabilities` records the negotiated capabilities that affect GameEngine
++orchestration, including session load/resume/list, session configuration, and
++MCP transport support. Unknown optional capabilities may remain extension data.
++
++`AcpRuntimeIdentity` records negotiated protocol version plus agent name and
++version. Identity is compatibility/diagnostic evidence, not authorization.
++
++### 5. ACP sessions are bound to GameEngine authority
++
++`AcpSessionBinding` binds an ACP session to the authoritative GameEngine session
++and, for write-capable work, the exact AgentRun ID. It carries one ephemeral
++Editor MCP connection.
++
++Only these ACP MCP access levels are valid:
++
++```text
++ReadOnly
++AgentRunBoundReadWrite
++```
++
++They map to the current Editor transport as follows:
++
++- `ReadOnly` uses `EditorMcpAccess::ReadOnly` and carries no write-capable run
++  identity.
++- `AgentRunBoundReadWrite` uses `EditorMcpAccess::AgentRunBound` and requires the
++  matching GameEngine run ID on mutating requests as required by ADR 0165.
++- unrestricted `EditorMcpAccess::ReadWrite` is never handed to an ACP runtime.
++
++The MCP bearer credential is ephemeral process state. It is not serialized into
++sessions, project history, provider configuration, or audit messages, and its
++debug representation must be redacted.
++
++### 6. ACP permission requests do not create authority
++
++ACP permission requests normalize into `AcpPermissionRequest`. Before resolving
++one, the adapter must classify the operation into an existing `AgentCapability`.
++Provider option names do not create new GameEngine capabilities or approval
++scopes.
++
++Agent Host resolves its existing permission policy first. Only then may the ACP
++session receive `AcpPermissionResolution` selecting a compatible agent-provided
++option or cancelling the request. A request that cannot be safely classified
++fails closed.
++
++### 7. ACP updates are normalized before entering Agent Host
++
++`AcpNormalizedEvent` covers semantic agent messages, progress, plans, tool-call
++state, permission requests, session information, prompt stop reasons, and
++protocol diagnostics. These project onto the existing `AgentEventKind`
++vocabulary instead of creating a second host event model.
++
++Malformed or unknown ACP messages become explicit protocol diagnostics and do
++not invent semantic success.
++
++### 8. ACP turn completion is not GameEngine completion
++
++An ACP prompt response or stop reason means only that the agent returned control
++for that prompt. It maps to semantic progress, not
++`AgentEventKind::Completion`.
++
++Only Agent Host may mark a run complete through the existing completion report
++and `AgentHost::complete_run`. An ACP adapter cannot mark acceptance,
++authoring/source validation, Play, frame capture, visual evaluation, or
++interaction gates successful merely because the agent says it is done.
++
++### 9. Provider adapters register at one seam
++
++Each migrated provider implements `AcpAgentRuntime` and returns an
++`AcpAgentSession` bound to its immutable `AcpSessionBinding`. Session
++implementations expose prompt delivery, non-blocking normalized event polling,
++permission response delivery, cancellation, and close.
++
++Adapters may own executable discovery, provider authentication, launch
++arguments, environment placement, and provider diagnostics. They do not own
++authoring semantics, GameEngine permission policy, work-claim policy,
++completion gates, or canonical project persistence.
++
++## Consequences
++
++- New ACP agents are registry entries rather than central architecture variants.
++- Existing providers can migrate independently while the current path remains
++  functional.
++- ACP does not weaken Agent Host authority over permissions, MCP writer
++  identity, claims, validation, or completion.
++- The ACP SDK can evolve independently because SDK types terminate at the
++  adapter boundary.
++- The first concrete transport slice, rather than this contract-only slice,
++  owns the SDK dependency and lockfile update.
++
++## Verification
++
++Focused tests cover:
++
++- arbitrary descriptor IDs without a central provider enum;
++- duplicate descriptor rejection;
++- read-only versus AgentRun-bound MCP bindings;
++- credential redaction; and
++- ACP turn-finished projection to semantic progress rather than host completion.
++
++Concrete adapter slices add transport/protocol tests when they begin ACP I/O.
++
++## Alternatives Considered
++
++**Keep one custom harness per coding agent.** Rejected as the target
++architecture because session, event, permission, and cancellation behavior would
++remain duplicated.
++
++**Replace Agent Host with an ACP client.** Rejected because ACP does not own
++GameEngine writer identity, managed workspaces, claims, validation, persistence,
++audit, or completion policy.
++
++**Use one central provider enum.** Rejected because every future agent would
++require a central architecture change.
++
++**Give ACP agents unrestricted Editor MCP credentials.** Rejected by the
++run-bound credential contract in ADR 0165.
++
++**Treat an ACP stop reason as completion.** Rejected because it cannot prove
++GameEngine completion gates.
++
++## Compatibility and Migration
++
++No canonical authoring schema, stable ID, MCP tool name, CLI command, or runtime
++ECS contract changes.
++
++`AgentSession`, `AgentRun`, `AgentEvent`, and their persisted schema versions do
++not change in this foundation. ACP session bindings and registry entries are
++process-local application contracts.
++
++Current Claude Code, Codex, and generic external provider implementations remain
++available until ACP replacements are integrated and verified. Migration must
++preserve ADR 0165 read-only/run-bound MCP credentials, provider authentication
++ownership, cancellation behavior, and restart recovery.
++
++The module is internal to `engine-editor`. Moving it to a dedicated GUI-free
++workspace crate later is allowed only if the Agent Host authority and
++provider-neutral contracts in this ADR remain intact.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index d21a993aea375f143c9ecb599c19906833de6394..16b41d51ccb580c07807ed90fe372eef7e331046 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -130,8 +130,11 @@ the beginning:
+   [0160](0160-external-agent-execution-environment-and-wsl-placement.md),
+   [0161](0161-managed-local-multimodal-input-and-projector-registration.md),
+   [0162](0162-intent-driven-ai-studio-execution-and-progressive-configuration-disclosure.md),
++  [0163](0163-provider-served-ask-and-in-editor-provider-setup.md),
++  [0164](0164-unified-ai-selection-agent-vocabulary-and-reachable-remote-access.md),
++  [0165](0165-external-agent-and-mcp-reliability-boundaries.md),
+   and
+-  [0163](0163-provider-served-ask-and-in-editor-provider-setup.md).
++  [0166](0166-acp-centered-external-agent-runtime-foundation.md).
+ 
+ ## Proposed Decisions
+ 
+@@ -321,3 +324,4 @@ implementation contract.
+ | [0163](0163-provider-served-ask-and-in-editor-provider-setup.md) | Provider-Served Ask and In-Editor Provider Setup |
+ | [0164](0164-unified-ai-selection-agent-vocabulary-and-reachable-remote-access.md) | Unified AI Selection, Agent Vocabulary, and Reachable Remote Access |
+ | [0165](0165-external-agent-and-mcp-reliability-boundaries.md) | External Agent and MCP Reliability Boundaries |
++| [0166](0166-acp-centered-external-agent-runtime-foundation.md) | ACP-Centered External Agent Runtime Foundation |
