@@ -11,6 +11,10 @@
 #[allow(dead_code)]
 mod acp_agent_runtime;
 
+// Goose-specific ACP process/provider behavior terminates in this adapter.
+#[allow(dead_code)]
+mod goose_local_acp;
+
 // ADR 0146 defines the provider-neutral managed asset boundary before concrete
 // provider integrations are enabled by AI Studio.
 #[allow(dead_code)]

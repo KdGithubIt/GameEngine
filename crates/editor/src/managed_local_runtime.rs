@@ -9,7 +9,7 @@ mod gguf;
 pub(crate) use gguf::GgufModelCapability;
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -17,6 +17,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -373,6 +374,143 @@ pub(crate) struct ManagedEndpoint {
     pub(crate) reused_process: bool,
 }
 
+/// Read-only identity exposed to external local-agent adapters while a managed
+/// llama-server endpoint is leased.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedLocalEndpointIdentity {
+    pub(crate) endpoint_url: String,
+    pub(crate) model_id: String,
+    pub(crate) model_content_sha256: String,
+    pub(crate) model_representation: Option<String>,
+    pub(crate) runtime_identity: String,
+    pub(crate) execution_environment: ManagedExecutionEnvironment,
+}
+
+/// Process-local lifecycle lease for one exact managed endpoint.
+///
+/// The lease never owns or serializes Managed Local state. It prevents another
+/// runtime request or setup operation from replacing/stopping this exact
+/// llama-server while an external adapter is using it. Dropping the lease only
+/// releases that protection; ManagedLocalRuntime retains process ownership.
+#[derive(Debug)]
+pub(crate) struct ManagedLocalEndpointLease {
+    key: String,
+    identity: ManagedLocalEndpointIdentity,
+    released: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedEndpointLeaseState {
+    holders: usize,
+    state_root: PathBuf,
+    environment: ManagedExecutionEnvironment,
+}
+
+static MANAGED_ENDPOINT_LEASES: OnceLock<Mutex<BTreeMap<String, ManagedEndpointLeaseState>>> =
+    OnceLock::new();
+
+impl ManagedLocalEndpointLease {
+    pub(crate) fn identity(&self) -> &ManagedLocalEndpointIdentity {
+        &self.identity
+    }
+
+    pub(crate) fn release(mut self) -> Result<(), ManagedLocalRuntimeError> {
+        self.release_inner()?;
+        self.released = true;
+        Ok(())
+    }
+
+    fn release_inner(&self) -> Result<(), ManagedLocalRuntimeError> {
+        if self.released {
+            return Ok(());
+        }
+        release_managed_endpoint_lease(&self.key)
+    }
+}
+
+impl Drop for ManagedLocalEndpointLease {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = self.release_inner();
+            self.released = true;
+        }
+    }
+}
+
+fn managed_endpoint_lease_key(config: &ManagedLocalModelConfig) -> String {
+    format!(
+        "{}:{}:{}:{}:{}",
+        config.state_root.display(),
+        config.environment.storage_key(),
+        config.model_content_sha256,
+        config.runtime_revision,
+        config.runtime_artifact_sha256
+    )
+}
+
+fn managed_endpoint_lease_registry(
+) -> &'static Mutex<BTreeMap<String, ManagedEndpointLeaseState>> {
+    MANAGED_ENDPOINT_LEASES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn lock_managed_endpoint_leases(
+) -> Result<
+    std::sync::MutexGuard<'static, BTreeMap<String, ManagedEndpointLeaseState>>,
+    ManagedLocalRuntimeError,
+> {
+    managed_endpoint_lease_registry().lock().map_err(|_| {
+        ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::ManagedProcessStartup,
+            "managed Local AI endpoint lease registry was poisoned",
+        )
+    })
+}
+
+fn release_managed_endpoint_lease(key: &str) -> Result<(), ManagedLocalRuntimeError> {
+    let mut leases = lock_managed_endpoint_leases()?;
+    let Some(state) = leases.get_mut(key) else {
+        return Ok(());
+    };
+    state.holders = state.holders.saturating_sub(1);
+    if state.holders == 0 {
+        leases.remove(key);
+    }
+    Ok(())
+}
+
+fn managed_conflicting_active_lease(
+    config: &ManagedLocalModelConfig,
+) -> Result<bool, ManagedLocalRuntimeError> {
+    let desired_key = managed_endpoint_lease_key(config);
+    let leases = lock_managed_endpoint_leases()?;
+    Ok(leases.iter().any(|(key, state)| {
+        key != &desired_key
+            && state.holders > 0
+            && state.state_root == config.state_root
+            && state.environment == config.environment
+    }))
+}
+
+fn managed_endpoint_has_active_lease(
+    config: &ManagedLocalModelConfig,
+) -> Result<bool, ManagedLocalRuntimeError> {
+    let leases = lock_managed_endpoint_leases()?;
+    Ok(leases
+        .get(&managed_endpoint_lease_key(config))
+        .is_some_and(|state| state.holders > 0))
+}
+
+fn managed_environment_has_active_lease(
+    state_root: &Path,
+    environment: ManagedExecutionEnvironment,
+) -> Result<bool, ManagedLocalRuntimeError> {
+    let leases = lock_managed_endpoint_leases()?;
+    Ok(leases.values().any(|state| {
+        state.holders > 0
+            && state.state_root == state_root
+            && state.environment == environment
+    }))
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ManagedSetupStatus {
     Ready,
@@ -1382,9 +1520,66 @@ impl ManagedLocalRuntime {
         Ok(())
     }
 
+    /// Acquires a process-local lease for the exact frozen managed model/runtime
+    /// and returns the endpoint plus read-only identity needed by an external
+    /// local-agent adapter.
+    pub(crate) fn lease_endpoint(
+        config: &ManagedLocalModelConfig,
+    ) -> Result<ManagedLocalEndpointLease, ManagedLocalRuntimeError> {
+        Self::verify_frozen_configuration(config)?;
+        let key = managed_endpoint_lease_key(config);
+        {
+            let mut leases = lock_managed_endpoint_leases()?;
+            if leases.iter().any(|(existing_key, state)| {
+                existing_key != &key
+                    && state.holders > 0
+                    && state.state_root == config.state_root
+                    && state.environment == config.environment
+            }) {
+                return Err(ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::ManagedProcessStartup,
+                    "managed llama.cpp is leased by another model/runtime identity",
+                ));
+            }
+            let state = leases.entry(key.clone()).or_insert_with(|| ManagedEndpointLeaseState {
+                holders: 0,
+                state_root: config.state_root.clone(),
+                environment: config.environment,
+            });
+            state.holders = state.holders.saturating_add(1);
+        }
+
+        let endpoint = match Self::ensure_endpoint(config) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                let _ = release_managed_endpoint_lease(&key);
+                return Err(error);
+            }
+        };
+        let identity = ManagedLocalEndpointIdentity {
+            endpoint_url: endpoint.url.clone(),
+            model_id: config.model_id.clone(),
+            model_content_sha256: config.model_content_sha256.clone(),
+            model_representation: config.model_representation.clone(),
+            runtime_identity: config.benchmark_runtime_identity(),
+            execution_environment: config.environment,
+        };
+        Ok(ManagedLocalEndpointLease {
+            key,
+            identity,
+            released: false,
+        })
+    }
+
     pub(crate) fn ensure_endpoint(
         config: &ManagedLocalModelConfig,
     ) -> Result<ManagedEndpoint, ManagedLocalRuntimeError> {
+        if managed_conflicting_active_lease(config)? {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ManagedProcessStartup,
+                "managed llama.cpp endpoint cannot switch model/runtime while another endpoint lease is active",
+            ));
+        }
         let manager = Self::open(config.state_root.clone())?;
         let installation = manager
             .active_installation(config.environment)?
@@ -1473,6 +1668,12 @@ impl ManagedLocalRuntime {
         &self,
         environment: ManagedExecutionEnvironment,
     ) -> Result<(), ManagedLocalRuntimeError> {
+        if managed_environment_has_active_lease(&self.root, environment)? {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ManagedProcessStartup,
+                "cannot remove a Managed Local runtime while an endpoint lease is active",
+            ));
+        }
         if let Some(process) = self.read_process_state()?
             && process.environment == environment
         {
@@ -1520,6 +1721,12 @@ impl ManagedLocalRuntime {
     pub(crate) fn stop_for_config(
         config: &ManagedLocalModelConfig,
     ) -> Result<(), ManagedLocalRuntimeError> {
+        if managed_endpoint_has_active_lease(config)? {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ManagedProcessStartup,
+                "cannot stop a Managed Local endpoint while its lifecycle lease is active",
+            ));
+        }
         let manager = Self::open(config.state_root.clone())?;
         let Some(process) = manager.read_process_state()? else {
             return Ok(());
