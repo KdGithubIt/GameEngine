@@ -1,0 +1,84 @@
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index f532a0ca1cc224feb08b9dd96ff37c8e0e5cf0a1..a1508ab6403a74fe35b47b3d36ae30f143d02ded 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -277,16 +277,14 @@ pub fn advance_timelines(
+                 component.player.generation(),
+             )
+         };
+-        audio_adapter::apply_audio_evaluation(
++        let audio_input = audio_adapter::AudioEvaluationInput::new(
+             entity,
+             &timeline,
+             &evaluation,
+             state,
+             generation,
+-            world,
+-            bindings,
+-            diagnostics,
+         );
++        audio_adapter::apply_audio_evaluation(audio_input, world, bindings, diagnostics);
+         apply_evaluation(
+             entity,
+             &evaluation,
+diff --git a/crates/engine/src/timeline/audio_adapter.rs b/crates/engine/src/timeline/audio_adapter.rs
+index 56c177111c812f0383ae67cd0a274c58e0a6113b..b469bbccea9e3004aca6cd00815288b700d646f7 100644
+--- a/crates/engine/src/timeline/audio_adapter.rs
++++ b/crates/engine/src/timeline/audio_adapter.rs
+@@ -61,21 +61,51 @@ struct DesiredAudioVoice {
+     stop_fade: f32,
+ }
+ 
++/// Copied Timeline-side inputs for one Audio adapter evaluation.
++pub(super) struct AudioEvaluationInput<'a> {
++    source: Entity,
++    timeline: &'a CompiledTimeline,
++    evaluation: &'a TimelineEvaluation,
++    state: TimelinePlayState,
++    generation: u64,
++}
++
++impl<'a> AudioEvaluationInput<'a> {
++    pub(super) fn new(
++        source: Entity,
++        timeline: &'a CompiledTimeline,
++        evaluation: &'a TimelineEvaluation,
++        state: TimelinePlayState,
++        generation: u64,
++    ) -> Self {
++        Self {
++            source,
++            timeline,
++            evaluation,
++            state,
++            generation,
++        }
++    }
++}
++
+ /// Applies Audio Track state for one Timeline player.
+ ///
+ /// The adapter deliberately owns only Timeline-to-audio composition. Decoding,
+ /// backend voice lifetime, bus gain, and spatial mixing stay in ADR 0122's
+ /// `AudioSystem` / `SpatialAudioRuntime`.
+ pub(super) fn apply_audio_evaluation(
+-    source: Entity,
+-    timeline: &CompiledTimeline,
+-    evaluation: &TimelineEvaluation,
+-    state: TimelinePlayState,
+-    generation: u64,
++    input: AudioEvaluationInput<'_>,
+     world: &mut World,
+     bindings: &TimelineBindings,
+     diagnostics: &mut TimelineDiagnostics,
+ ) {
++    let AudioEvaluationInput {
++        source,
++        timeline,
++        evaluation,
++        state,
++        generation,
++    } = input;
+     let mut runtime = world
+         .remove_resource::<TimelineAudioRuntime>()
+         .unwrap_or_default();
