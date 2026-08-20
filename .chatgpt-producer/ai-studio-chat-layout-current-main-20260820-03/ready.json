@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "ai-studio-chat-layout-current-main-20260820-03",
+  "target_branch": "chatgpt/gameengine-ai-studio-compact-chat-r2",
+  "expected_head_sha": "acf9319c5218ba14d1ab3b8b8e37375eccd3eb65",
+  "baseline_main_sha": "acf9319c5218ba14d1ab3b8b8e37375eccd3eb65",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Compact AI Studio conversation layout",
+  "pr_title": "Compact AI Studio conversation layout",
+  "pr_body": "## Summary\n\n- Center the AI Studio header, transcript, and composer in a responsive 960px conversation lane on wide windows.\n- Keep narrow windows full-width and reduce the composer draft from three rows to two.\n- Preserve the existing approval, run-control, proposal, settings, and Agent Host governance behavior.\n- Rebuild from current main after the prior correction became incompatible with overlapping engine-editor main drift.\n\n## Validation\n\n- Windows Validation\n- Visual Validation of the AI Studio conversation-first presentation\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR First Release -->\n"
+}
