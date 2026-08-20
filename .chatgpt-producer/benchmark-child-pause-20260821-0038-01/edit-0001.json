@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        let benchmark_experiment_root = ai_root.join(\"benchmark-experiments\");\n        let benchmark_campaign = benchmark_campaign_ui::BenchmarkCampaignPanel::load_checkpoint(\n            &benchmark_experiment_root,\n        );",
+  "new": "        let benchmark_experiment_root = ai_root.join(\"benchmark-experiments\");\n        let benchmark_campaign = if restore_campaign_checkpoint {\n            benchmark_campaign_ui::BenchmarkCampaignPanel::load_checkpoint(\n                &benchmark_experiment_root,\n            )\n        } else {\n            benchmark_campaign_ui::BenchmarkCampaignPanel::default()\n        };"
+}
