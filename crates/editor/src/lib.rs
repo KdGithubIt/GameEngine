@@ -9,6 +9,8 @@
 
 // ADR 0166 defines the provider-neutral ACP runtime contract beneath Agent Host.
 #[allow(dead_code)]
+mod acp_agent_host_bridge;
+#[allow(dead_code)]
 mod acp_agent_runtime;
 
 // ADR 0146 defines the provider-neutral managed asset boundary before concrete
