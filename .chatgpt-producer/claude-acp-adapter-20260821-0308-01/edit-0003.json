@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/external_agent_provider.rs","old":"fn claude_credential_present(output: &str, _exit_succeeded: bool) -> bool {","new":"pub(crate) fn claude_credential_present(output: &str, _exit_succeeded: bool) -> bool {"}
