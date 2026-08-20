@@ -6059,6 +6059,9 @@ impl AiStudioPanel {
         }
         match self.host.check_permission(&run_id, capability) {
             Ok(PermissionCheck::Granted) => self.execute_permission_action(&run_id, action),
+            Ok(PermissionCheck::RequiresApproval) if self.benchmark_child_active() => {
+                self.refuse_unbudgeted_benchmark_child_permission(capability);
+            }
             Ok(PermissionCheck::RequiresApproval) => {
                 self.pending_permission = Some(PendingPermission {
                     run_id,

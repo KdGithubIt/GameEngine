@@ -41,6 +41,12 @@ impl AiStudioPanel {
                 ));
             }
         }
+        // Both supported benchmark backends are model backends, and the campaign
+        // plan froze which one produces this run's evidence. The persisted Editor
+        // preferences this child loaded may still select an external agent
+        // provider, which would route the run to an executor the campaign never
+        // froze and stall it on a permission no campaign child can answer.
+        self.selected_ai_family = SelectedAiFamily::Model;
         self.quality_preference = spec.quality;
         self.benchmark_task_id = spec.task_id.clone();
         let compatible_backend = spec.backend_id == "ollama-compatible";
@@ -76,6 +82,23 @@ impl AiStudioPanel {
         };
         campaign_task_agent_policy(&child.spec.task_id)
             .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
+    }
+
+    /// Ends this run because it asked for a capability its campaign never froze.
+    ///
+    /// A campaign child runs without an operator, so an approval prompt it did
+    /// not pre-authorize can never be answered. Recording the refusal as an
+    /// unavailable capability lets the parent continue the schedule instead of
+    /// leaving the whole campaign waiting on a dialog nobody can see.
+    pub(super) fn refuse_unbudgeted_benchmark_child_permission(
+        &mut self,
+        capability: AgentCapability,
+    ) {
+        let message = format!(
+            "Benchmark child requested `{}`, which this task's frozen capability budget does not authorize.",
+            capability.label()
+        );
+        self.write_benchmark_child_failure(BenchmarkRunFailureKind::CapabilityUnavailable, message);
     }
 
     pub(super) fn poll_benchmark_child(&mut self) {
@@ -437,5 +460,31 @@ mod tests {
             inspection.validation_plan,
             vec!["authoring validation".to_owned()]
         );
+    }
+
+    #[test]
+    fn no_benchmark_task_authorizes_launching_an_external_agent_runtime() {
+        // A child that reaches the external-agent route measures a provider the
+        // campaign never froze, and its permission request cannot be approved
+        // because the child has no operator. Every task budget must therefore
+        // exclude the capability, which is what keeps the frozen model backend
+        // the only executor a campaign can produce evidence from.
+        for task_id in [
+            "read_question_v1",
+            "project_inspection_v1",
+            "code_implementation_v1",
+            "typed_authoring_mutation_v1",
+            "validation_repair_v1",
+            "runtime_interaction_v1",
+            "visual_evaluation_v1",
+        ] {
+            let policy = campaign_task_agent_policy(task_id).expect("task agent policy");
+            assert!(
+                !policy
+                    .requested_capabilities
+                    .contains(&AgentCapability::ExternalAgentProcess),
+                "task `{task_id}` must not authorize an external agent runtime"
+            );
+        }
     }
 }
