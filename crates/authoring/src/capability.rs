@@ -176,6 +176,8 @@ pub enum AuthoringDomain {
     AnimationSet,
     /// Native 2D sprite, animation, and tile asset documents.
     Native2d,
+    /// Timeline / Sequencer asset documents.
+    Timeline,
 }
 
 /// Authoring document a capability reads or mutates.
@@ -217,6 +219,8 @@ pub enum AuthoringDocumentKind {
     TileSet,
     /// A Native 2D Tile Map asset document.
     TileMap,
+    /// A Timeline / Sequencer asset document.
+    Timeline,
 }
 
 /// Semantic shape of one capability.
@@ -1180,6 +1184,42 @@ fn builtin_capabilities() -> Vec<AuthoringCapability> {
                 "Apply one atomic sparse Tile Map replacement.",
             ),
             typed_document_replace_schema("TileMapDocument"),
+        ),
+        query(
+            "timeline.inspect",
+            AuthoringDomain::Timeline,
+            vec![AuthoringDocumentKind::Timeline],
+            AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<TimelineDocument>"),
+            "Inspect a Timeline through the shared typed-document boundary.",
+        ),
+        validation(
+            "timeline.validate",
+            AuthoringDomain::Timeline,
+            vec![AuthoringDocumentKind::Timeline],
+            AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"),
+            "Validate a Timeline through the shared typed-document boundary.",
+        ),
+        with_input(
+            preview(
+                "timeline.preview",
+                AuthoringDomain::Timeline,
+                vec![AuthoringDocumentKind::Timeline],
+                "TimelineDocument",
+                AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<TimelineDocument>"),
+                "Preview one atomic Timeline replacement.",
+            ),
+            typed_document_replace_schema("TimelineDocument"),
+        ),
+        with_input(
+            commit(
+                "timeline.apply",
+                AuthoringDomain::Timeline,
+                vec![AuthoringDocumentKind::Timeline],
+                "TimelineDocument",
+                AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<TimelineDocument>"),
+                "Apply one atomic Timeline replacement.",
+            ),
+            typed_document_replace_schema("TimelineDocument"),
         ),
     ];
     capabilities.extend(specialized_capabilities());

@@ -621,6 +621,7 @@ fn split_asset_file_name(file_name: &str) -> (&str, &str) {
         ".navmesh.json",
         ".tileset.json",
         ".tilemap.json",
+        ".timeline.json",
         ".graph.json",
         ".ui.json",
     ] {

@@ -1348,6 +1348,7 @@ pub(in crate::ui) fn asset_kind_icon(kind: AssetKind) -> &'static str {
         AssetKind::SpriteAnimation => "▷",
         AssetKind::TileSet => "▦",
         AssetKind::TileMap => "▧",
+        AssetKind::Timeline => "⏱",
         AssetKind::Texture => "▤",
         AssetKind::Mesh => "△",
         AssetKind::Audio => "♪",

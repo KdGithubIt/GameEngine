@@ -80,6 +80,10 @@ pub(crate) enum PreparedGameCommand {
         entity: Entity,
         operation: VfxPlaybackOperation,
     },
+    Timeline {
+        entity: Entity,
+        control: crate::timeline::TimelineControl,
+    },
     SetUiBinding {
         name: String,
         value: UiBindingValue,
@@ -343,6 +347,19 @@ pub(crate) fn prepare_game_commands(
                 };
                 prepared.push(PreparedGameCommand::Vfx { entity, operation });
             }
+            GameCommandFamily::Timeline => {
+                let (target, entity) = targeted_entity(world, command, index, &despawned)?;
+                if world
+                    .get_component::<crate::timeline::TimelinePlayerComponent>(entity)
+                    .is_none()
+                {
+                    return Err(GameCommandError::MissingTimelinePlayer { index, target });
+                }
+                prepared.push(PreparedGameCommand::Timeline {
+                    entity,
+                    control: parse_timeline_control(index, &command.payload)?,
+                });
+            }
             GameCommandFamily::Ui => prepared.push(parse_ui_command(
                 world,
                 command,
@@ -399,6 +416,58 @@ pub(crate) fn prepare_game_commands(
 }
 
 /// Applies commands whose complete failure surface was checked by preflight.
+/// Parses one deferred Timeline control payload.
+///
+/// Rates and ticks are validated here, before anything is applied, so a bad
+/// payload is reported as a rejected command rather than as a player that
+/// silently kept its previous rate.
+fn parse_timeline_control(
+    index: usize,
+    payload: &Value,
+) -> Result<crate::timeline::TimelineControl, GameCommandError> {
+    let fields = object(payload, index, "Timeline payload")?;
+    match string_field(fields, "operation", index)? {
+        "play" => Ok(crate::timeline::TimelineControl::Play),
+        "pause" => Ok(crate::timeline::TimelineControl::Pause),
+        "stop" => Ok(crate::timeline::TimelineControl::Stop),
+        "seek" => {
+            let tick = match fields.get("tick") {
+                Some(Value::I64(value)) => *value,
+                Some(Value::U64(value)) => i64::try_from(*value).unwrap_or(i64::MAX),
+                _ => {
+                    return Err(GameCommandError::InvalidPayload {
+                        index,
+                        message: "field `tick` must be an integer timeline tick".to_owned(),
+                    });
+                }
+            };
+            if tick < 0 {
+                return Err(GameCommandError::InvalidPayload {
+                    index,
+                    message: "Timeline seek tick must not be negative".to_owned(),
+                });
+            }
+            Ok(crate::timeline::TimelineControl::Seek {
+                tick: engine_authoring::TimelineTick(tick),
+            })
+        }
+        "set_rate" => {
+            let rate = number_field(fields, "rate", index)?;
+            if !rate.is_finite() || rate < 0.0 {
+                return Err(GameCommandError::InvalidPayload {
+                    index,
+                    message: "Timeline rate must be a finite non-negative multiplier".to_owned(),
+                });
+            }
+            Ok(crate::timeline::TimelineControl::SetRate { rate })
+        }
+        other => Err(GameCommandError::InvalidPayload {
+            index,
+            message: format!("unknown Timeline operation `{other}`"),
+        }),
+    }
+}
+
 pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<PreparedGameCommand>) {
     for command in commands {
         match command {
@@ -512,6 +581,12 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
                     VfxPlaybackOperation::Stop => player.stop(),
                     VfxPlaybackOperation::Restart => player.restart(),
                 }
+            }
+            PreparedGameCommand::Timeline { entity, control } => {
+                // Preflight proved the player exists; a control the player
+                // rejects is a payload defect, and rejecting it here keeps the
+                // batch honest rather than half-applying it.
+                let _ = crate::timeline::apply_timeline_control(world, entity, control);
             }
             PreparedGameCommand::SetUiBinding { name, value } => {
                 world
@@ -1791,6 +1866,12 @@ pub enum GameCommandError {
         target: GameEntityHandle,
     },
     /// A VFX command targeted an entity without a runtime VFX player.
+    MissingTimelinePlayer {
+        /// Zero-based command index.
+        index: usize,
+        /// Rejected target.
+        target: GameEntityHandle,
+    },
     MissingVfxPlayer {
         /// Zero-based command index.
         index: usize,
@@ -2024,6 +2105,11 @@ impl fmt::Display for GameCommandError {
                 "game command {index} targets entity {} generation {} without Animator",
                 target.id, target.generation
             ),
+            Self::MissingTimelinePlayer { index, target } => write!(
+                formatter,
+                "game command {index} targets entity {} generation {} without a Timeline player",
+                target.id, target.generation
+            ),
             Self::MissingVfxPlayer { index, target } => write!(
                 formatter,
                 "game command {index} targets entity {} generation {} without VfxPlayer",
@@ -2226,6 +2312,62 @@ mod tests {
                 .translation,
             Vec3::new(1.0, 2.0, 3.0)
         );
+    }
+
+    fn timeline_player_component() -> crate::timeline::TimelinePlayerComponent {
+        use engine_authoring::{TimelineDocument, TimelineTick};
+        let document = TimelineDocument::new(TimelineTick(48_000));
+        let compiled = crate::timeline::compile_timeline(&document).expect("compile");
+        crate::timeline::TimelinePlayerComponent::new(std::sync::Arc::new(compiled))
+    }
+
+    #[test]
+    fn timeline_commands_preflight_then_control_the_player() {
+        let mut world = World::new();
+        let entity = world.spawn_with(timeline_player_component()).unwrap();
+        let commands = vec![
+            GameCommand::play_timeline(handle(entity)),
+            GameCommand::set_timeline_rate(handle(entity), 2.0),
+            GameCommand::seek_timeline(handle(entity), 4_800),
+        ];
+
+        let prepared = prepare_game_commands(&world, &commands).unwrap();
+        apply_prepared_game_commands(&mut world, prepared);
+
+        let view = crate::timeline::timeline_view(&world, entity).expect("view");
+        assert!(view.playing);
+        assert_eq!(view.rate, 2.0);
+        assert_eq!(view.tick, engine_authoring::TimelineTick(4_800));
+    }
+
+    #[test]
+    fn a_timeline_command_without_a_player_is_rejected_before_anything_is_applied() {
+        let mut world = World::new();
+        let entity = world.spawn_with(Transform::default()).unwrap();
+        let commands = vec![GameCommand::play_timeline(handle(entity))];
+        assert!(matches!(
+            prepare_game_commands(&world, &commands),
+            Err(GameCommandError::MissingTimelinePlayer { index: 0, .. })
+        ));
+        assert!(crate::timeline::timeline_view(&world, entity).is_none());
+        let _ = &mut world;
+    }
+
+    #[test]
+    fn an_invalid_timeline_payload_is_reported_rather_than_partially_applied() {
+        let mut world = World::new();
+        let entity = world.spawn_with(timeline_player_component()).unwrap();
+        let commands = vec![
+            GameCommand::play_timeline(handle(entity)),
+            GameCommand::set_timeline_rate(handle(entity), -1.0),
+        ];
+        assert!(matches!(
+            prepare_game_commands(&world, &commands),
+            Err(GameCommandError::InvalidPayload { index: 1, .. })
+        ));
+        let view = crate::timeline::timeline_view(&world, entity).expect("view");
+        assert!(!view.playing, "a rejected batch applies nothing");
+        let _ = &mut world;
     }
 
     #[test]

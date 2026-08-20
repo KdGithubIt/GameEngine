@@ -15,17 +15,20 @@ pub enum AuthoringTool {
     Native2d,
     /// Typed multi-emitter VFX asset authoring.
     VfxBuilder,
+    /// Timeline track, clip, and marker authoring over one shared time axis.
+    Sequencer,
 }
 
 impl AuthoringTool {
     /// Stable display order used by editor menus.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::AbilityDesigner,
         Self::RuntimeEventTimeline,
         Self::UiContractDesigner,
         Self::AdvancedGeometryDesigner,
         Self::Native2d,
         Self::VfxBuilder,
+        Self::Sequencer,
     ];
 
     /// Human-readable tool name.
@@ -37,6 +40,7 @@ impl AuthoringTool {
             Self::AdvancedGeometryDesigner => "Advanced Geometry Designer",
             Self::Native2d => "Native 2D",
             Self::VfxBuilder => "VFX Builder",
+            Self::Sequencer => "Sequencer",
         }
     }
 
@@ -61,6 +65,9 @@ impl AuthoringTool {
             Self::VfxBuilder => {
                 "Author typed emitters and ordered spawn, update, and render modules."
             }
+            Self::Sequencer => {
+                "Author cutscene tracks, clips, and markers on one shared integer time axis."
+            }
         }
     }
 }
@@ -71,10 +78,11 @@ mod tests {
 
     #[test]
     fn catalog_order_and_labels_are_stable() {
-        assert_eq!(AuthoringTool::ALL.len(), 6);
+        assert_eq!(AuthoringTool::ALL.len(), 7);
         assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
         assert_eq!(AuthoringTool::ALL[3].label(), "Advanced Geometry Designer");
         assert_eq!(AuthoringTool::ALL[4].label(), "Native 2D");
         assert_eq!(AuthoringTool::ALL[5].label(), "VFX Builder");
+        assert_eq!(AuthoringTool::ALL[6].label(), "Sequencer");
     }
 }

@@ -61,6 +61,8 @@ pub enum AssetKind {
     TileSet,
     /// A versioned `*.tilemap.json` Native 2D tile-map document.
     TileMap,
+    /// A versioned `*.timeline.json` Timeline / Sequencer document (ADR 0126).
+    Timeline,
     /// A glTF/GLB, FBX, or PMX source document used for mesh, skin, or
     /// animation import (ADR 0081 widened this from glTF/GLB-only, ADR 0097
     /// widened it again to PMX; the variant name is a pre-existing misnomer
@@ -123,6 +125,7 @@ pub fn asset_path_matches_kind(kind: AssetKind, path: &Path) -> bool {
         AssetKind::SpriteAnimation => file_name.ends_with(".spriteanim.json"),
         AssetKind::TileSet => file_name.ends_with(".tileset.json"),
         AssetKind::TileMap => file_name.ends_with(".tilemap.json"),
+        AssetKind::Timeline => file_name.ends_with(".timeline.json"),
         AssetKind::GltfSource => extension_matches(extension, &["gltf", "glb", "fbx", "pmx"]),
         AssetKind::MotionSource => extension_matches(extension, &["vmd"]),
         // Skins, skeletons, morphs, and secondary-motion rigs are only ever

@@ -459,6 +459,35 @@ const TILE_MAP_2D_FIELDS: &[FieldDef] = &[
     ),
 ];
 
+const TIMELINE_PLAYER_FIELDS: &[FieldDef] = &[
+    asset_ref(
+        "timeline",
+        "Timeline",
+        "Timeline document this entity plays.",
+        AssetKind::Timeline,
+        FieldDefaultSpec::Unassigned,
+    ),
+    boolean(
+        "autoplay",
+        "Autoplay",
+        "Whether playback starts when the scene spawns.",
+        false,
+    ),
+    number(
+        "rate",
+        "Rate",
+        "Playback rate multiplier applied to timeline time.",
+        1.0,
+        POSITIVE,
+    ),
+    boolean(
+        "looping",
+        "Looping",
+        "Whether playback repeats the authored sequence without a bounded count.",
+        false,
+    ),
+];
+
 const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
     FieldDef::new(
         "direction_x",
@@ -2521,6 +2550,15 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             spawn_vfx_player_component,
         )
         .collapsed_by_default(),
+        BuiltinComponent::new(
+            TIMELINE_PLAYER_COMPONENT,
+            "Timeline Player",
+            "Plays one Timeline document with per-entity playback state over a shared compiled schedule.",
+            "Sequencing",
+            1,
+            TIMELINE_PLAYER_FIELDS,
+            spawn_timeline_player_component,
+        ),
         BuiltinComponent::new(
             TILE_MAP_2D_COMPONENT,
             "Tile Map 2D",

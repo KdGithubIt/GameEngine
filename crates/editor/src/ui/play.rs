@@ -747,6 +747,11 @@ impl EditorApp {
         }
     }
 
+    /// Takes the Timeline document the Asset Browser asked to open, if any.
+    pub fn take_sequencer_open_request(&mut self) -> Option<std::path::PathBuf> {
+        self.pending_sequencer_open.take()
+    }
+
     /// Returns a one-shot signal only after a normal Editor frame has drawn following restore.
     pub fn take_ai_studio_restore_completed(&mut self) -> bool {
         std::mem::take(&mut self.inference_restore_completed)

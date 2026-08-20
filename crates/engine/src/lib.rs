@@ -184,6 +184,7 @@ pub mod skinning;
 /// Frame timing resources.
 pub mod time;
 /// Local and global transform components.
+pub mod timeline;
 pub mod transform;
 /// Runtime HUD and in-game menu UI integration.
 pub mod ui;

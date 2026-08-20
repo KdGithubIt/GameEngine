@@ -373,6 +373,11 @@ impl eframe::App for EditorShell {
             context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
             return;
         }
+        if let Some(relative) = self.app.take_sequencer_open_request() {
+            let project = self.app.project_root().clone();
+            self.authoring_windows.open(AuthoringTool::Sequencer);
+            self.authoring_windows.open_timeline(&project, &relative);
+        }
         if self.app.take_ai_studio_restore_completed() {
             self.ai_studio.report_runtime_result(
                 context,

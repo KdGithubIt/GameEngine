@@ -98,7 +98,8 @@ pub(in crate::ui) fn asset_reference_browser_kind(
         | engine::AssetKind::BehaviorTree
         | engine::AssetKind::VfxEffect
         | engine::AssetKind::TileSet
-        | engine::AssetKind::TileMap => BrowserKind::Graph,
+        | engine::AssetKind::TileMap
+        | engine::AssetKind::Timeline => BrowserKind::Graph,
         engine::AssetKind::AnimationSet => BrowserKind::AnimationSet,
         engine::AssetKind::Audio => BrowserKind::Audio,
         engine::AssetKind::NavMesh => BrowserKind::NavMesh,

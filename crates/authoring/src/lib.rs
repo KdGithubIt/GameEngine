@@ -72,6 +72,7 @@ pub mod scene;
 pub mod scene_authoring;
 pub mod schema;
 pub mod test_fixtures;
+pub mod timeline;
 pub mod transaction;
 pub mod typed_document_authoring;
 pub mod ui;
@@ -187,6 +188,13 @@ pub use scene_authoring::{
     SceneAuthoringValidation,
 };
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
+pub use timeline::{
+    DisplayFrameRate, TIMELINE_SCHEMA_VERSION, TIMELINE_TICKS_PER_SECOND, TimelineAudioAction,
+    TimelineBinding, TimelineClip, TimelineClipId, TimelineClipPayload, TimelineDocument,
+    TimelineId, TimelineIdError, TimelineInterpolation, TimelineKey, TimelineMarker,
+    TimelineMarkerId, TimelineProperty, TimelineTick, TimelineTrack, TimelineTrackId,
+    TimelineTrackKind, TimelineVfxAction,
+};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
 pub use typed_document_authoring::{
     TypedAuthoringDocument, TypedDocumentAuthoringError, TypedDocumentAuthoringMutation,
