@@ -458,6 +458,31 @@ impl AudioSystem {
         gains: StereoGains,
         looping: bool,
     ) -> Result<AudioVoiceId, AudioError> {
+        self.start_voice_internal(asset, gains, looping, Duration::ZERO)
+    }
+
+    /// Starts one tracked one-shot voice at an exact offset in the decoded clip.
+    ///
+    /// This is the cursor-aware variant used when a higher-level runtime restores
+    /// deterministic state after a seek. The decoder is positioned before the
+    /// voice is submitted to the output sink, so playback never emits the skipped
+    /// prefix.
+    pub fn start_voice_at(
+        &mut self,
+        asset: &AudioAsset,
+        gains: StereoGains,
+        offset: Duration,
+    ) -> Result<AudioVoiceId, AudioError> {
+        self.start_voice_internal(asset, gains, false, offset)
+    }
+
+    fn start_voice_internal(
+        &mut self,
+        asset: &AudioAsset,
+        gains: StereoGains,
+        looping: bool,
+        offset: Duration,
+    ) -> Result<AudioVoiceId, AudioError> {
         if self.voice_gains.len() >= MAX_ACTIVE_VOICES {
             return Err(AudioError::Playback {
                 message: format!("active audio voice limit ({MAX_ACTIVE_VOICES}) reached"),
@@ -476,6 +501,7 @@ impl AudioSystem {
             encoded: asset.encoded(),
             gains: Arc::clone(&gains),
             looping,
+            offset,
             respond_to,
         })?;
         self.next_voice_id = next_voice_id;
@@ -640,6 +666,15 @@ impl AudioSystem {
         Err(AudioError::UnsupportedTarget)
     }
     /// Returns an error because this phase does not support WASM audio.
+    pub fn start_voice_at(
+        &mut self,
+        _asset: &AudioAsset,
+        _gains: StereoGains,
+        _offset: Duration,
+    ) -> Result<AudioVoiceId, AudioError> {
+        Err(AudioError::UnsupportedTarget)
+    }
+    /// Returns an error because this phase does not support WASM audio.
     pub fn update_voice(
         &self,
         _voice_id: AudioVoiceId,
@@ -711,6 +746,7 @@ enum AudioCommand {
         encoded: Arc<[u8]>,
         gains: Arc<Mutex<[f32; 2]>>,
         looping: bool,
+        offset: Duration,
         respond_to: mpsc::Sender<Result<(), AudioError>>,
     },
     StopVoice {
@@ -779,6 +815,7 @@ fn run_audio_thread(
                 encoded,
                 gains,
                 looping,
+                offset,
                 respond_to,
             }) => {
                 let result = if voices.len() >= MAX_ACTIVE_VOICES {
@@ -791,6 +828,7 @@ fn run_audio_thread(
                         encoded,
                         gains,
                         looping,
+                        offset,
                         volumes.sound_effects(),
                     )
                     .map(|voice| {
@@ -1052,9 +1090,15 @@ fn play_voice_on_thread(
     encoded: Arc<[u8]>,
     gains: Arc<Mutex<[f32; 2]>>,
     looping: bool,
+    offset: Duration,
     bus_volume: f32,
 ) -> Result<ActiveVoice, AudioError> {
-    let decoder = decoder_for_encoded(encoded)?;
+    let mut decoder = decoder_for_encoded(encoded)?;
+    if !offset.is_zero() {
+        decoder.try_seek(offset).map_err(|source| AudioError::Playback {
+            message: format!("failed to seek managed audio voice: {source}"),
+        })?;
+    }
     let initial = gains.lock().map(|gains| *gains).unwrap_or([0.0, 0.0]);
     let shared = Arc::clone(&gains);
     let source = rodio::source::ChannelVolume::new(decoder, vec![initial[0], initial[1]])

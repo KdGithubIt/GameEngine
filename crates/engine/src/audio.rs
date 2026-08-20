@@ -56,6 +56,20 @@ pub(crate) struct SpatialAudioRuntime {
     game_voices: Vec<GameSpatialVoice>,
 }
 
+impl SpatialAudioRuntime {
+    /// Computes one voice using the copied ADR 0122 listener/emitter frame.
+    pub(crate) fn gains_for_entity(
+        &self,
+        entity: Entity,
+        settings: AudioVoiceSpatialSettings,
+    ) -> Option<StereoGains> {
+        self.poses
+            .get(&entity)
+            .copied()
+            .map(|emitter| emitter_gains(self.listener, emitter, settings))
+    }
+}
+
 /// Copies the current listener selection and entity poses into the neutral audio frame.
 pub(crate) fn spatial_audio_frame_system(
     mut transforms: Query<&GlobalTransform>,
