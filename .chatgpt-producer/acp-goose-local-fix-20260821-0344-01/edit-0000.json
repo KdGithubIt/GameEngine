@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/Cargo.toml","old":"agent-client-protocol = \"2.0.0\"\n","new":"agent-client-protocol = \"=2.0.0\"\n"}
