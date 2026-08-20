@@ -1,0 +1,34 @@
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index 299f0af89e513f47000d99ab2d8ac3e511ee8200..c82e7021f3676210d0d74bd3ac80ab6f0c427182 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -849,12 +849,8 @@ mod tests {
+             .expect("graph player");
+ 
+         let timeline = Arc::new(
+-            compile_timeline(&animation_document(
+-                &authoring,
+-                &animation_set,
+-                &motion_slot,
+-            ))
+-            .expect("compile"),
++            compile_timeline(&animation_document(&authoring, &animation_set, &motion_slot))
++                .expect("compile"),
+         );
+         let player = world.spawn().expect("player");
+         let mut component = TimelinePlayerComponent::new(timeline);
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+index da271c5b3d973c59825c2af3154a100340efbd21..dff1c7da0d0b5fcc5553094bde9449ff032a58e9 100644
+--- a/crates/timeline/src/lib.rs
++++ b/crates/timeline/src/lib.rs
+@@ -533,9 +533,7 @@ mod tests {
+     #[test]
+     fn clip_exit_is_reported_on_the_step_that_lands_at_its_end() {
+         let mut document = TimelineDocument::new(TimelineTick(48_000));
+-        document.tracks.push(property_track(vec![property_clip(
+-            0, 48_000, 0.0, 1.0,
+-        )]));
++        document.tracks.push(property_track(vec![property_clip(0, 48_000, 0.0, 1.0)]));
+         let timeline = compile_timeline(&document).expect("compile");
+         let clip = timeline.tracks[0].clips[0].id.clone();
+         let mut player = TimelinePlayer::new();
