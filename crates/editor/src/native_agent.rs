@@ -6,9 +6,11 @@
 //! not acquire mutation permissions or participate in the write-capable
 //! [`crate::agent_host::AgentRun`] state machine.
 
-use crate::hosted_model_backend::{HostedBackendError, HostedModelConfig, generate_hosted};
+use crate::hosted_model_backend::{
+    HostedBackendError, HostedModelConfig, generate_hosted, json_schema_response_format,
+};
 use crate::managed_local_runtime::{
-    MANAGED_BACKEND_ID, ManagedLocalModelConfig, ManagedLocalRuntime,
+    MANAGED_BACKEND_ID, ManagedLocalModelConfig, ManagedLocalRuntime, managed_context_tokens,
 };
 use crate::resource_arbitration::{
     CapabilityAvailability, ModelResourceCapabilities, ModelResourceOperation,
@@ -16,6 +18,7 @@ use crate::resource_arbitration::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -161,7 +164,10 @@ impl LocalModelConfig {
         ModelCapabilityProfile {
             backend_id: BACKEND_ID,
             model_id: self.model.trim().to_owned(),
-            structured_output: None,
+            // The adapter requests schema-constrained decoding and retries once
+            // unconstrained when the backend rejects the request, so structured
+            // output is a property of this adapter, not of the loaded model.
+            structured_output: Some(true),
             tool_use: None,
             image_input: None,
             reasoning: None,
@@ -186,7 +192,9 @@ impl LocalModelConfig {
 #[derive(Debug, Clone)]
 pub(crate) enum NativeModelConfig {
     Local(LocalModelConfig),
-    Managed(ManagedLocalModelConfig),
+    /// Boxed because the managed configuration carries measured model shape and
+    /// paths, which would otherwise dominate the size of every variant.
+    Managed(Box<ManagedLocalModelConfig>),
     Hosted(HostedModelConfig),
 }
 
@@ -197,11 +205,18 @@ impl NativeModelConfig {
             Self::Managed(config) => ModelCapabilityProfile {
                 backend_id: MANAGED_BACKEND_ID,
                 model_id: config.model_id.clone(),
-                structured_output: Some(false),
+                // The managed runtime constrains generation to a requested JSON
+                // Schema. A build that does not support it answers 400 and the
+                // adapter retries once unconstrained, so the claim stays true of
+                // the adapter rather than of one model family.
+                structured_output: Some(true),
                 tool_use: Some(false),
-                image_input: Some(false),
+                // Image input is a property of the configuration, not of a
+                // model family: a registered projector is what makes the
+                // managed runtime able to read an image at all.
+                image_input: Some(config.projector_path.is_some()),
                 reasoning: None,
-                context_limit: None,
+                context_limit: Some(u64::from(managed_context_tokens(config))),
                 streaming: Some(false),
                 usage: Some(true),
                 resource_capabilities: ModelResourceCapabilities {
@@ -451,7 +466,7 @@ impl LocalModelResourceConfig {
         match self {
             Self::Ollama(config) => config.capability_profile(),
             Self::Managed(config) => {
-                NativeModelConfig::Managed(config.as_ref().clone()).capability_profile()
+                NativeModelConfig::Managed(config.clone()).capability_profile()
             }
         }
     }
@@ -714,9 +729,21 @@ impl NativeQuestionTask {
     }
 }
 
+/// One completed request/response pair against a model.
+///
+/// ADR 0159 makes this the unit of recorded evidence: a failing run must carry
+/// what the model actually returned, not only that a turn happened.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelTurnOutcome {
+    pub(crate) text: String,
+    pub(crate) prompt_tokens: Option<u64>,
+    pub(crate) response_tokens: Option<u64>,
+    pub(crate) finish_reason: Option<String>,
+}
+
 /// Cancellable raw model turn used by the write-capable native AgentRuntime.
 pub(crate) struct NativeModelTask {
-    result: Receiver<Result<String, NativeAgentError>>,
+    result: Receiver<Result<ModelTurnOutcome, NativeAgentError>>,
     interrupted: Arc<AtomicBool>,
     active_stream: Arc<Mutex<Option<TcpStream>>>,
 }
@@ -726,6 +753,7 @@ impl NativeModelTask {
         config: NativeModelConfig,
         prompt: String,
         images: Vec<Vec<u8>>,
+        response_schema: Option<Value>,
     ) -> Result<Self, NativeAgentError> {
         validate_native_model_config(&config)?;
         let (sender, result) = mpsc::channel();
@@ -741,6 +769,7 @@ impl NativeModelTask {
                         config,
                         &prompt,
                         &images,
+                        response_schema.as_ref(),
                         &worker_interrupted,
                         &worker_stream,
                     )
@@ -749,41 +778,59 @@ impl NativeModelTask {
                         if text.is_empty() {
                             Err(NativeAgentError::EmptyResponse)
                         } else {
-                            Ok(text)
+                            Ok(ModelTurnOutcome {
+                                text,
+                                prompt_tokens: response.prompt_eval_count,
+                                response_tokens: response.eval_count,
+                                finish_reason: response.done_reason,
+                            })
                         }
                     }),
-                    NativeModelConfig::Managed(_) if !images.is_empty() => {
-                        Err(NativeAgentError::UnsupportedCapability(
-                            "image input for the managed llama.cpp adapter".to_owned(),
-                        ))
-                    }
-                    NativeModelConfig::Managed(config) => {
-                        generate_managed(config, &prompt, &worker_interrupted, &worker_stream)
-                            .and_then(|response| {
-                                if response.text.is_empty() {
-                                    Err(NativeAgentError::EmptyResponse)
-                                } else {
-                                    Ok(response.text)
-                                }
+                    NativeModelConfig::Managed(config) => generate_managed(
+                        config,
+                        &prompt,
+                        &images,
+                        response_schema.as_ref(),
+                        &worker_interrupted,
+                        &worker_stream,
+                    )
+                    .and_then(|response| {
+                        if response.text.is_empty() {
+                            Err(NativeAgentError::EmptyResponse)
+                        } else {
+                            Ok(ModelTurnOutcome {
+                                text: response.text,
+                                prompt_tokens: response.prompt_tokens,
+                                response_tokens: response.response_tokens,
+                                finish_reason: response.finish_reason,
                             })
-                    }
+                        }
+                    }),
                     NativeModelConfig::Hosted(_) if !images.is_empty() => {
                         Err(NativeAgentError::UnsupportedCapability(
                             "image input for the configured hosted adapter".to_owned(),
                         ))
                     }
-                    NativeModelConfig::Hosted(config) => {
-                        generate_hosted(config, &prompt, &worker_interrupted)
-                            .map_err(NativeAgentError::from)
-                            .and_then(|response| {
-                                let text = response.text.trim().to_owned();
-                                if text.is_empty() {
-                                    Err(NativeAgentError::EmptyResponse)
-                                } else {
-                                    Ok(text)
-                                }
+                    NativeModelConfig::Hosted(config) => generate_hosted(
+                        config,
+                        &prompt,
+                        response_schema.as_ref(),
+                        &worker_interrupted,
+                    )
+                    .map_err(NativeAgentError::from)
+                    .and_then(|response| {
+                        let text = response.text.trim().to_owned();
+                        if text.is_empty() {
+                            Err(NativeAgentError::EmptyResponse)
+                        } else {
+                            Ok(ModelTurnOutcome {
+                                text,
+                                prompt_tokens: response.prompt_tokens,
+                                response_tokens: response.response_tokens,
+                                finish_reason: response.finish_reason,
                             })
-                    }
+                        }
+                    }),
                 };
                 let _ = sender.send(result);
             })?;
@@ -803,7 +850,7 @@ impl NativeModelTask {
         }
     }
 
-    pub(crate) fn poll(&self) -> Option<Result<String, NativeAgentError>> {
+    pub(crate) fn poll(&self) -> Option<Result<ModelTurnOutcome, NativeAgentError>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -1028,11 +1075,12 @@ fn answer_question(
     }
     let backend = match config {
         NativeModelConfig::Local(config) => {
-            let response = generate_local(config, &prompt, &[], interrupted, active_stream)?;
+            let response = generate_local(config, &prompt, &[], None, interrupted, active_stream)?;
             BackendGeneration {
                 text: response.response.trim().to_owned(),
                 prompt_tokens: response.prompt_eval_count,
                 response_tokens: response.eval_count,
+                finish_reason: response.done_reason.clone(),
                 backend_duration_ms: response.total_duration.map(|nanos| nanos / 1_000_000),
                 load_latency_ms: response.load_duration.map(|nanos| nanos / 1_000_000),
                 prompt_eval_duration_ms: response
@@ -1046,14 +1094,15 @@ fn answer_question(
             }
         }
         NativeModelConfig::Managed(config) => {
-            generate_managed(config, &prompt, interrupted, active_stream)?
+            generate_managed(config, &prompt, &[], None, interrupted, active_stream)?
         }
         NativeModelConfig::Hosted(config) => {
-            let response = generate_hosted(config, &prompt, interrupted)?;
+            let response = generate_hosted(config, &prompt, None, interrupted)?;
             BackendGeneration {
                 text: response.text.trim().to_owned(),
                 prompt_tokens: response.prompt_tokens,
                 response_tokens: response.response_tokens,
+                finish_reason: response.finish_reason.clone(),
                 backend_duration_ms: None,
                 load_latency_ms: None,
                 prompt_eval_duration_ms: None,
@@ -1102,6 +1151,7 @@ struct BackendGeneration {
     text: String,
     prompt_tokens: Option<u64>,
     response_tokens: Option<u64>,
+    finish_reason: Option<String>,
     backend_duration_ms: Option<u64>,
     load_latency_ms: Option<u64>,
     prompt_eval_duration_ms: Option<u64>,
@@ -1258,12 +1308,38 @@ struct ManagedChatRequest<'a> {
     model: &'a str,
     messages: [ManagedChatMessage<'a>; 1],
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
 struct ManagedChatMessage<'a> {
     role: &'static str,
-    content: &'a str,
+    content: ManagedChatContent<'a>,
+}
+
+/// Either plain text or an OpenAI-compatible multimodal content array.
+///
+/// A text-only turn keeps the exact request shape the runtime has always
+/// received, so adding image support does not change text behaviour.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ManagedChatContent<'a> {
+    Text(&'a str),
+    Parts(Vec<ManagedChatPart<'a>>),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ManagedChatPart<'a> {
+    Text { text: &'a str },
+    ImageUrl { image_url: ManagedChatImageUrl },
+}
+
+#[derive(Debug, Serialize)]
+struct ManagedChatImageUrl {
+    /// Data URL carrying the image bytes; nothing leaves this machine.
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1277,6 +1353,8 @@ struct ManagedChatResponse {
 #[derive(Debug, Deserialize)]
 struct ManagedChatChoice {
     message: ManagedChatResponseMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1295,9 +1373,17 @@ struct ManagedChatUsage {
 fn generate_managed(
     config: &ManagedLocalModelConfig,
     prompt: &str,
+    images: &[Vec<u8>],
+    response_schema: Option<&Value>,
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<BackendGeneration, NativeAgentError> {
+    if !images.is_empty() && config.projector_path.is_none() {
+        return Err(NativeAgentError::UnsupportedCapability(
+            "image input requires a multimodal projector registered for this managed model"
+                .to_owned(),
+        ));
+    }
     if interrupted.load(Ordering::Acquire) {
         return Err(NativeAgentError::Interrupted);
     }
@@ -1318,28 +1404,84 @@ fn generate_managed(
         return Err(NativeAgentError::Interrupted);
     }
     let endpoint = LocalHttpEndpoint::parse(&managed_endpoint.url)?;
-    let request = ManagedChatRequest {
-        model: &config.model_id,
-        messages: [ManagedChatMessage {
-            role: "user",
-            content: prompt,
-        }],
-        stream: false,
+    let content = if images.is_empty() {
+        ManagedChatContent::Text(prompt)
+    } else {
+        let mut parts = vec![ManagedChatPart::Text { text: prompt }];
+        for image in images {
+            parts.push(ManagedChatPart::ImageUrl {
+                image_url: ManagedChatImageUrl {
+                    url: format!("data:image/png;base64,{}", encode_base64(image)),
+                },
+            });
+        }
+        ManagedChatContent::Parts(parts)
     };
-    let body = serde_json::to_vec(&request)?;
-    let response: ManagedChatResponse = request_local_json_interruptible(
-        &endpoint,
-        "POST",
-        "/v1/chat/completions",
-        &body,
-        interrupted,
-        active_stream,
-    )?;
-    let text = response
+    let request = |schema: Option<&Value>| -> Result<Vec<u8>, NativeAgentError> {
+        serde_json::to_vec(&ManagedChatRequest {
+            model: &config.model_id,
+            messages: [ManagedChatMessage {
+                role: "user",
+                content: match &content {
+                    ManagedChatContent::Text(text) => ManagedChatContent::Text(text),
+                    ManagedChatContent::Parts(parts) => ManagedChatContent::Parts(
+                        parts
+                            .iter()
+                            .map(|part| match part {
+                                ManagedChatPart::Text { text } => ManagedChatPart::Text { text },
+                                ManagedChatPart::ImageUrl { image_url } => {
+                                    ManagedChatPart::ImageUrl {
+                                        image_url: ManagedChatImageUrl {
+                                            url: image_url.url.clone(),
+                                        },
+                                    }
+                                }
+                            })
+                            .collect(),
+                    ),
+                },
+            }],
+            stream: false,
+            response_format: schema.map(json_schema_response_format),
+        })
+        .map_err(NativeAgentError::from)
+    };
+    let mut structured = response_schema.is_some();
+    let mut response: Result<ManagedChatResponse, NativeAgentError> =
+        request_local_json_interruptible(
+            &endpoint,
+            "POST",
+            "/v1/chat/completions",
+            &request(response_schema)?,
+            interrupted,
+            active_stream,
+        );
+    // A runtime build without constrained decoding rejects the request outright.
+    // Retrying once without the schema keeps such a build usable and leaves the
+    // response shape to the prompt, which is what the parser already tolerates.
+    if structured && matches!(response, Err(NativeAgentError::HttpStatus(400, _))) {
+        structured = false;
+        response = request_local_json_interruptible(
+            &endpoint,
+            "POST",
+            "/v1/chat/completions",
+            &request(None)?,
+            interrupted,
+            active_stream,
+        );
+    }
+    let _ = structured;
+    let response = response?;
+    let (text, finish_reason) = response
         .choices
         .into_iter()
         .next()
-        .map(|choice| choice.message.content.trim().to_owned())
+        .map(|choice| {
+            (
+                choice.message.content.trim().to_owned(),
+                choice.finish_reason,
+            )
+        })
         .unwrap_or_default();
     let (prompt_tokens, response_tokens) = response
         .usage
@@ -1349,6 +1491,7 @@ fn generate_managed(
         text,
         prompt_tokens,
         response_tokens,
+        finish_reason,
         backend_duration_ms: None,
         load_latency_ms,
         prompt_eval_duration_ms: None,
@@ -1425,11 +1568,16 @@ struct GenerateRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
+    /// JSON Schema the backend constrains generation to, when one is requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GenerateResponse {
     response: String,
+    #[serde(default)]
+    done_reason: Option<String>,
     #[serde(default)]
     prompt_eval_count: Option<u64>,
     #[serde(default)]
@@ -1448,6 +1596,32 @@ fn generate_local(
     config: &LocalModelConfig,
     prompt: &str,
     images: &[Vec<u8>],
+    response_schema: Option<&Value>,
+    interrupted: &AtomicBool,
+    active_stream: &Mutex<Option<TcpStream>>,
+) -> Result<GenerateResponse, NativeAgentError> {
+    let response = generate_local_once(
+        config,
+        prompt,
+        images,
+        response_schema,
+        interrupted,
+        active_stream,
+    );
+    // A backend build without schema-constrained decoding rejects the request
+    // outright. Retrying once without the schema keeps such a build usable and
+    // leaves the response shape to the prompt, which the parser already tolerates.
+    if response_schema.is_some() && matches!(response, Err(NativeAgentError::HttpStatus(400, _))) {
+        return generate_local_once(config, prompt, images, None, interrupted, active_stream);
+    }
+    response
+}
+
+fn generate_local_once(
+    config: &LocalModelConfig,
+    prompt: &str,
+    images: &[Vec<u8>],
+    response_schema: Option<&Value>,
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<GenerateResponse, NativeAgentError> {
@@ -1463,6 +1637,7 @@ fn generate_local(
         prompt,
         stream: false,
         images: encoded_images,
+        format: response_schema.cloned(),
     })?;
     let mut stream = endpoint.connect()?;
     if interrupted.load(Ordering::Acquire) {
@@ -2107,6 +2282,33 @@ mod tests {
     }
 
     #[test]
+    fn managed_image_input_follows_the_registered_projector() {
+        let base = ManagedLocalModelConfig {
+            state_root: std::path::PathBuf::from("state"),
+            environment: crate::managed_local_runtime::ManagedExecutionEnvironment::WindowsNative,
+            model_id: "gguf:test".to_owned(),
+            model_content_sha256: "a".repeat(64),
+            model_path: std::path::PathBuf::from("model.gguf"),
+            model_size_bytes: 1,
+            quantization: None,
+            model_representation: None,
+            capability: Default::default(),
+            projector_path: None,
+            runtime_tag: "tag".to_owned(),
+            runtime_revision: "revision".to_owned(),
+            runtime_artifact_sha256: "b".repeat(64),
+            runtime_compatibility_version: "compat".to_owned(),
+        };
+        let text_only = NativeModelConfig::Managed(Box::new(base.clone())).capability_profile();
+        assert_eq!(text_only.image_input, Some(false));
+
+        let mut with_projector = base;
+        with_projector.projector_path = Some(std::path::PathBuf::from("projector.gguf"));
+        let visual = NativeModelConfig::Managed(Box::new(with_projector)).capability_profile();
+        assert_eq!(visual.image_input, Some(true));
+    }
+
+    #[test]
     fn ollama_capability_profile_is_truthful_about_first_release_controls() {
         let profile = LocalModelConfig {
             endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
@@ -2241,6 +2443,8 @@ mod tests {
                         "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:1"
                             .to_owned(),
                     ),
+                    capability: Default::default(),
+                    projector_path: None,
                     runtime_tag: "test-runtime".to_owned(),
                     runtime_revision: "test-revision".to_owned(),
                     runtime_artifact_sha256: "b".repeat(64),
@@ -2274,7 +2478,7 @@ mod tests {
                 environment.benchmark_id()
             ));
             let _ = fs::remove_dir_all(&state_root);
-            let config = NativeModelConfig::Managed(ManagedLocalModelConfig {
+            let config = NativeModelConfig::Managed(Box::new(ManagedLocalModelConfig {
                 state_root: state_root.clone(),
                 environment,
                 model_id: "gguf:test".to_owned(),
@@ -2283,13 +2487,15 @@ mod tests {
                 model_size_bytes: 1,
                 quantization: Some("Q4_K_M".to_owned()),
                 model_representation: None,
+                capability: Default::default(),
+                projector_path: None,
                 runtime_tag: "test-runtime".to_owned(),
                 runtime_revision: "test-revision".to_owned(),
                 runtime_artifact_sha256: "b".repeat(64),
                 runtime_compatibility_version: "test-compat".to_owned(),
-            });
+            }));
 
-            let task = NativeModelTask::spawn(config, "test turn".to_owned(), Vec::new())
+            let task = NativeModelTask::spawn(config, "test turn".to_owned(), Vec::new(), None)
                 .expect("spawning a managed model turn must not verify managed files inline");
             let result = task
                 .result

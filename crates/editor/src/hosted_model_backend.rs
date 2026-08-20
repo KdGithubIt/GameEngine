@@ -7,6 +7,7 @@
 //! credential into project or Agent Host state.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -123,6 +124,7 @@ pub(crate) struct HostedGeneration {
     pub(crate) text: String,
     pub(crate) prompt_tokens: Option<u64>,
     pub(crate) response_tokens: Option<u64>,
+    pub(crate) finish_reason: Option<String>,
 }
 
 struct SecretBytes(Vec<u8>);
@@ -221,6 +223,7 @@ fn load_api_key(path: &Path) -> Result<SecretBytes, HostedBackendError> {
 pub(crate) fn generate_hosted(
     config: &HostedModelConfig,
     prompt: &str,
+    response_schema: Option<&Value>,
     interrupted: &AtomicBool,
 ) -> Result<HostedGeneration, HostedBackendError> {
     ensure_windows()?;
@@ -250,6 +253,7 @@ pub(crate) fn generate_hosted(
             content: prompt,
         }],
         stream: false,
+        response_format: response_schema.map(json_schema_response_format),
     })
     .map_err(json_error)?;
     let envelope = HostedRequestEnvelope {
@@ -319,6 +323,23 @@ struct ChatCompletionRequest<'a> {
     model: &'a str,
     messages: [ChatMessage<'a>; 1],
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<Value>,
+}
+
+/// Wraps one JSON Schema in the OpenAI-compatible structured-output envelope.
+///
+/// Every backend GameEngine talks to accepts this shape, so the agent protocol
+/// schema is expressed once and never per provider.
+pub(crate) fn json_schema_response_format(schema: &Value) -> Value {
+    serde_json::json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "gameengine_agent_turn",
+            "strict": true,
+            "schema": schema,
+        }
+    })
 }
 
 #[derive(Serialize)]
@@ -422,6 +443,7 @@ fn parse_chat_completion(body: &str) -> Result<HostedGeneration, HostedBackendEr
             "hosted provider returned an empty completion",
         ));
     }
+    let finish_reason = choice.finish_reason.clone();
     Ok(HostedGeneration {
         text,
         prompt_tokens: response
@@ -432,6 +454,7 @@ fn parse_chat_completion(body: &str) -> Result<HostedGeneration, HostedBackendEr
             .usage
             .as_ref()
             .and_then(|usage| usage.completion_tokens),
+        finish_reason,
     })
 }
 
@@ -720,6 +743,7 @@ mod tests {
                 encrypted_secret_path: PathBuf::from("unused-protected-state"),
             },
             "hello",
+            None,
             &interrupted,
         )
         .expect_err("interrupted inference must fail");

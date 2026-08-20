@@ -6,6 +6,8 @@
 
 mod gguf;
 
+pub(crate) use gguf::GgufModelCapability;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -55,18 +57,30 @@ const MANAGED_GPU_FIT_TARGET_MIB: u32 = 1024;
 /// times the slot count. Managed local inference is issued sequentially, so extra slots only
 /// multiply KV residency and scatter prompt-prefix reuse across cold slots.
 const MANAGED_SERVER_PARALLEL_SLOTS: u32 = 1;
-/// Size the per-request context window from measured managed-agent prompts rather than the
-/// llama-server default of 4096, which truncated or rejected every benchmark prompt.
+/// Smallest context window the managed agent protocol is usable at.
 ///
 /// Observed managed-agent prompts reach roughly 6400 tokens and grow as tool results accumulate,
-/// so this leaves several turns of headroom. The upper bound is device memory, and the cost per
-/// token varies by more than an order of magnitude across architectures: a dense 14B spends about
-/// 160 KiB per token, while an interleaved sliding-window 12B spends about 16 KiB per token plus a
-/// fixed window reservation. This window therefore reserves roughly 830 MiB on a sliding-window
-/// model but would exceed device memory on a dense model of similar size. Deriving it from model
-/// metadata and free device memory instead of a shared constant is the correct fix once more than
-/// one architecture has to be resident.
-const MANAGED_SERVER_CONTEXT_TOKENS: u32 = 12288;
+/// so a smaller window truncates or rejects the prompt regardless of which model is loaded.
+const MANAGED_CONTEXT_FLOOR_TOKENS: u32 = 8_192;
+/// Largest context window managed inference requests, whatever the model declares.
+///
+/// Long-context models declare windows far beyond what an agent turn uses, and llama-server
+/// reserves KV cache for the whole window at load time, so following a declared 128K window
+/// would spend device memory on context the harness never fills.
+const MANAGED_CONTEXT_CEILING_TOKENS: u32 = 32_768;
+/// Window used when the registered GGUF declares no usable shape.
+///
+/// This is the value GameEngine measured as sufficient for managed-agent prompts before model
+/// metadata was read. It applies only when the file itself says nothing, never in preference to
+/// what a file declares.
+const MANAGED_CONTEXT_UNMEASURED_TOKENS: u32 = 12_288;
+/// Share of measured device memory the KV cache may occupy.
+///
+/// The remainder stays available to model weights, compute buffers, and the Editor renderer that
+/// shares the device.
+const MANAGED_KV_CACHE_MEMORY_PERCENT: u64 = 25;
+/// Context windows are aligned down to this multiple so a launch stays reproducible.
+const MANAGED_CONTEXT_ALIGNMENT_TOKENS: u32 = 512;
 /// Allow a released llama-server to finish exiting before another one measures device memory.
 ///
 /// A forced kill closes the loopback socket long before the process frees its device allocations,
@@ -195,8 +209,34 @@ pub(crate) struct ManagedModelRegistration {
     /// Stable descriptor measured from GGUF metadata and every tensor descriptor.
     #[serde(default)]
     pub(crate) representation: Option<String>,
+    /// Optional multimodal projector paired with this model.
+    ///
+    /// A projector is what makes a local model able to read an image at all.
+    /// It is registered per model rather than inferred from a model name, so a
+    /// new model family works the moment its projector is registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) projector: Option<ManagedProjectorRegistration>,
+    /// Launch-relevant model shape measured from the same GGUF metadata block.
+    ///
+    /// Registrations written before GameEngine measured model shape carry the
+    /// default, which reports every value as unmeasured rather than guessing.
+    #[serde(default)]
+    pub(crate) capability: GgufModelCapability,
     pub(crate) source: Option<String>,
     pub(crate) license: Option<String>,
+}
+
+/// A registered multimodal projector file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ManagedProjectorRegistration {
+    /// Projector file on the Windows filesystem.
+    pub(crate) source_path: PathBuf,
+    /// Content digest of the projector file.
+    pub(crate) content_sha256: String,
+    /// Size in bytes, used for the WSL2 duplicate-storage decision.
+    pub(crate) size_bytes: u64,
+    /// Modification time recorded at registration.
+    pub(crate) modified_unix_ms: Option<u64>,
 }
 
 impl ManagedModelRegistration {
@@ -223,7 +263,9 @@ impl ManagedModelRegistration {
 fn remeasure_unmeasured_representations(registry: &mut ManagedModelRegistry) -> bool {
     let mut remeasured = false;
     for model in &mut registry.models {
-        if model.exact_representation().is_some() {
+        if model.exact_representation().is_some()
+            && model.capability != GgufModelCapability::default()
+        {
             continue;
         }
         let Some(representation) = remeasure_registered_representation(model) else {
@@ -233,6 +275,7 @@ fn remeasure_unmeasured_representations(registry: &mut ManagedModelRegistry) -> 
         // descriptor, so both fields keep describing one inspection of one file.
         model.quantization = representation.canonical_quantization;
         model.representation = Some(representation.descriptor);
+        model.capability = representation.capability;
         remeasured = true;
     }
     remeasured
@@ -287,6 +330,10 @@ pub(crate) struct ManagedLocalModelConfig {
     pub(crate) model_size_bytes: u64,
     pub(crate) quantization: Option<String>,
     pub(crate) model_representation: Option<String>,
+    /// Model shape measured from the registered GGUF, used for launch policy.
+    pub(crate) capability: GgufModelCapability,
+    /// Prepared multimodal projector path, when one is registered.
+    pub(crate) projector_path: Option<PathBuf>,
     pub(crate) runtime_tag: String,
     pub(crate) runtime_revision: String,
     pub(crate) runtime_artifact_sha256: String,
@@ -432,6 +479,15 @@ pub(crate) enum ManagedSetupOperation {
     InstallRuntime(ManagedExecutionEnvironment),
     ProvisionWsl,
     RegisterModel(PathBuf),
+    /// Pairs a multimodal projector with one registered model.
+    RegisterProjector {
+        model_id: String,
+        path: PathBuf,
+    },
+    /// Drops the projector registration, returning the model to text only.
+    RemoveProjector {
+        model_id: String,
+    },
     PrepareModel {
         model_id: String,
         environment: ManagedExecutionEnvironment,
@@ -472,6 +528,12 @@ impl ManagedSetupTask {
                     ManagedSetupOperation::RegisterModel(path) => manager
                         .register_existing_gguf(&path, None)
                         .map(ManagedSetupResult::ModelRegistered),
+                    ManagedSetupOperation::RegisterProjector { model_id, path } => manager
+                        .register_projector(&model_id, &path)
+                        .map(ManagedSetupResult::ModelRegistered),
+                    ManagedSetupOperation::RemoveProjector { model_id } => manager
+                        .remove_projector(&model_id)
+                        .map(ManagedSetupResult::ModelRegistered),
                     ManagedSetupOperation::PrepareModel {
                         model_id,
                         environment,
@@ -482,6 +544,18 @@ impl ManagedSetupTask {
                             environment,
                             duplicate_storage_approved,
                         )
+                        .and_then(|path| {
+                            // A projector is part of the same preparation: an
+                            // image-capable model that reached WSL without it
+                            // would start and then fail on the first image.
+                            manager
+                                .prepare_projector_for_environment(
+                                    &model_id,
+                                    environment,
+                                    duplicate_storage_approved,
+                                )
+                                .map(|_| path)
+                        })
                         .map(ManagedSetupResult::ModelPrepared),
                     ManagedSetupOperation::RemoveEnvironment(environment) => manager
                         .remove_environment(environment)
@@ -966,6 +1040,8 @@ impl ManagedLocalRuntime {
             modified_unix_ms: metadata.modified().ok().and_then(system_time_unix_ms),
             quantization: representation.canonical_quantization,
             representation: Some(representation.descriptor),
+            capability: representation.capability,
+            projector: None,
             source: None,
             license: None,
         };
@@ -986,6 +1062,66 @@ impl ManagedLocalRuntime {
         }
         write_json(&self.model_registry_path(), &registry).map_err(model_io)?;
         Ok(registration)
+    }
+
+    /// Registers a multimodal projector for one already registered model.
+    ///
+    /// The projector is what gives a local model image input. Nothing here
+    /// depends on which model family it belongs to: any GGUF projector paired
+    /// with any registered model makes that configuration image-capable.
+    pub(crate) fn register_projector(
+        &self,
+        model_id: &str,
+        path: &Path,
+    ) -> Result<ManagedModelRegistration, ManagedLocalRuntimeError> {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("gguf") {
+            return Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+                "only an explicit .gguf projector file can be registered",
+            ));
+        }
+        let canonical = fs::canonicalize(path).map_err(model_io)?;
+        let content_sha256 = sha256_via_platform(&canonical)?;
+        let metadata = fs::metadata(&canonical).map_err(model_io)?;
+        let projector = ManagedProjectorRegistration {
+            source_path: canonical,
+            content_sha256,
+            size_bytes: metadata.len(),
+            modified_unix_ms: metadata.modified().ok().and_then(system_time_unix_ms),
+        };
+        self.update_registration(model_id, |model| model.projector = Some(projector.clone()))
+    }
+
+    /// Removes the projector registration from one model.
+    pub(crate) fn remove_projector(
+        &self,
+        model_id: &str,
+    ) -> Result<ManagedModelRegistration, ManagedLocalRuntimeError> {
+        self.update_registration(model_id, |model| model.projector = None)
+    }
+
+    fn update_registration(
+        &self,
+        model_id: &str,
+        mutate: impl FnOnce(&mut ManagedModelRegistration),
+    ) -> Result<ManagedModelRegistration, ManagedLocalRuntimeError> {
+        let mut registry: ManagedModelRegistry = read_optional_json(&self.model_registry_path())
+            .map_err(model_io)?
+            .unwrap_or_default();
+        let record = registry
+            .models
+            .iter_mut()
+            .find(|model| model.model_id == model_id)
+            .ok_or_else(|| {
+                ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::ModelResource,
+                    format!("managed model `{model_id}` is not registered"),
+                )
+            })?;
+        mutate(record);
+        let updated = record.clone();
+        write_json(&self.model_registry_path(), &registry).map_err(model_io)?;
+        Ok(updated)
     }
 
     #[cfg(feature = "visual-validation")]
@@ -1080,41 +1216,38 @@ impl ManagedLocalRuntime {
             }
         }
         self.verify_registered_model(&model)?;
-        let target = wsl_model_path(&model.content_sha256);
-        if wsl_file_exists(&target)? {
-            verify_wsl_sha256(&target, &model.content_sha256)?;
-            return Ok(PathBuf::from(target));
+        prepare_wsl_copy(
+            &model.source_path,
+            &model.content_sha256,
+            model.size_bytes,
+            duplicate_storage_approved,
+        )
+    }
+
+    /// Prepares the multimodal projector for one environment, when registered.
+    ///
+    /// Returns `Ok(None)` for a model with no projector, which is the ordinary
+    /// text-only case rather than a failure.
+    pub(crate) fn prepare_projector_for_environment(
+        &self,
+        model_id: &str,
+        environment: ManagedExecutionEnvironment,
+        duplicate_storage_approved: bool,
+    ) -> Result<Option<PathBuf>, ManagedLocalRuntimeError> {
+        let model = self.require_model(model_id)?;
+        let Some(projector) = model.projector else {
+            return Ok(None);
+        };
+        if environment == ManagedExecutionEnvironment::WindowsNative {
+            return Ok(Some(projector.source_path));
         }
-        if !duplicate_storage_approved {
-            return Err(ManagedLocalRuntimeError::new(
-                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-                format!(
-                    "WSL2 execution requires an additional {} bytes for a Linux-native copy; explicit storage approval is required",
-                    model.size_bytes
-                ),
-            ));
-        }
-        let staging = format!("{target}.staging");
-        if let Err(error) = stream_file_into_wsl(&model.source_path, &staging) {
-            let _ = wsl_shell(
-                &format!("rm -f {}", shell_quote(&staging)),
-                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-            );
-            return Err(error);
-        }
-        if let Err(error) = verify_wsl_sha256(&staging, &model.content_sha256) {
-            let _ = wsl_shell(
-                &format!("rm -f {}", shell_quote(&staging)),
-                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-            );
-            return Err(error);
-        }
-        wsl_shell(
-            &format!("mv -f {} {}", shell_quote(&staging), shell_quote(&target)),
-            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-        )?;
-        verify_wsl_sha256(&target, &model.content_sha256)?;
-        Ok(PathBuf::from(target))
+        prepare_wsl_copy(
+            &projector.source_path,
+            &projector.content_sha256,
+            projector.size_bytes,
+            duplicate_storage_approved,
+        )
+        .map(Some)
     }
 
     /// Resolves the launch configuration of a registered managed model.
@@ -1171,6 +1304,28 @@ impl ManagedLocalRuntime {
             }
             PathBuf::from(path)
         };
+        let projector_path = match model.projector.as_ref() {
+            Some(projector) if environment == ManagedExecutionEnvironment::WindowsNative => {
+                Some(projector.source_path.clone())
+            }
+            Some(projector) => {
+                let path = wsl_model_path(&projector.content_sha256);
+                if !wsl_file_exists(&path)? {
+                    return Err(ManagedLocalRuntimeError::new(
+                        ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+                        format!(
+                            "model {} has a registered projector with no verified Linux-native WSL2 copy",
+                            model.display_name
+                        ),
+                    ));
+                }
+                if enforced {
+                    verify_wsl_sha256(&path, &projector.content_sha256)?;
+                }
+                Some(PathBuf::from(path))
+            }
+            None => None,
+        };
         Ok(ManagedLocalModelConfig {
             state_root: self.root.clone(),
             environment,
@@ -1180,6 +1335,8 @@ impl ManagedLocalRuntime {
             model_size_bytes: model.size_bytes,
             quantization: model.quantization,
             model_representation: model.representation,
+            capability: model.capability,
+            projector_path,
             runtime_tag: installation.runtime_tag,
             runtime_revision: installation.runtime_revision,
             runtime_artifact_sha256: installation.artifact_sha256,
@@ -1403,7 +1560,12 @@ impl ManagedLocalRuntime {
             .map_err(runtime_io)?;
         let stderr = stdout.try_clone().map_err(runtime_io)?;
         let child = Command::new(&installation.server_path)
-            .args(windows_server_arguments(&config.model_path, port))
+            .args(windows_server_arguments(
+                &config.model_path,
+                config.projector_path.as_deref(),
+                port,
+                managed_context_tokens(config),
+            ))
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -1445,8 +1607,10 @@ impl ManagedLocalRuntime {
         let command = wsl_server_launch_command(
             &installation.server_path,
             &config.model_path,
+            config.projector_path.as_deref(),
             port,
             config.environment,
+            managed_context_tokens(config),
         );
         let output = wsl_shell(&command, ManagedDiagnosticLayer::ManagedProcessStartup)?;
         String::from_utf8_lossy(&output.stdout)
@@ -1766,8 +1930,48 @@ fn classify_wsl_status(
     }
 }
 
-fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
-    vec![
+/// Resolves the managed context window from measured model shape and device memory.
+///
+/// The policy is deliberately model-family independent: it reads what the GGUF declares,
+/// bounds it by what the measured device can hold, and clamps the result to the range the
+/// managed agent protocol needs. A model that declares nothing keeps the previously measured
+/// default rather than receiving a value invented from its name.
+fn resolve_managed_context_tokens(
+    capability: &GgufModelCapability,
+    device_memory_bytes: Option<u64>,
+) -> u32 {
+    let memory_budget_tokens = match (capability.kv_cache_bytes_per_token, device_memory_bytes) {
+        (Some(bytes_per_token), Some(device_memory)) if bytes_per_token > 0 => {
+            let budget = device_memory / 100 * MANAGED_KV_CACHE_MEMORY_PERCENT;
+            Some(u32::try_from(budget / bytes_per_token).unwrap_or(u32::MAX))
+        }
+        _ => None,
+    };
+    let requested = match (capability.train_context_tokens, memory_budget_tokens) {
+        (Some(declared), Some(budget)) => declared.min(budget),
+        (Some(declared), None) => declared,
+        (None, Some(budget)) => budget,
+        (None, None) => return MANAGED_CONTEXT_UNMEASURED_TOKENS,
+    };
+    let aligned = requested / MANAGED_CONTEXT_ALIGNMENT_TOKENS * MANAGED_CONTEXT_ALIGNMENT_TOKENS;
+    aligned.clamp(MANAGED_CONTEXT_FLOOR_TOKENS, MANAGED_CONTEXT_CEILING_TOKENS)
+}
+
+/// Context window a managed configuration launches with on this machine.
+pub(crate) fn managed_context_tokens(config: &ManagedLocalModelConfig) -> u32 {
+    resolve_managed_context_tokens(
+        &config.capability,
+        crate::agent_benchmark::largest_device_memory_bytes(),
+    )
+}
+
+fn windows_server_arguments(
+    model_path: &Path,
+    projector_path: Option<&Path>,
+    port: u16,
+    context_tokens: u32,
+) -> Vec<String> {
+    let mut arguments = vec![
         "--model".to_owned(),
         model_path.to_string_lossy().into_owned(),
         "--host".to_owned(),
@@ -1781,8 +1985,13 @@ fn windows_server_arguments(model_path: &Path, port: u16) -> Vec<String> {
         "--parallel".to_owned(),
         MANAGED_SERVER_PARALLEL_SLOTS.to_string(),
         "--ctx-size".to_owned(),
-        MANAGED_SERVER_CONTEXT_TOKENS.to_string(),
-    ]
+        context_tokens.to_string(),
+    ];
+    if let Some(projector) = projector_path {
+        arguments.push("--mmproj".to_owned());
+        arguments.push(projector.to_string_lossy().into_owned());
+    }
+    arguments
 }
 
 fn managed_process_exited_before_health(endpoint_healthy: bool, process_alive: bool) -> bool {
@@ -2193,6 +2402,52 @@ fn managed_wsl_script_command() -> Command {
     command
 }
 
+/// Copies one verified file into the managed WSL distribution.
+///
+/// The copy lands only after its digest matches in the distribution, so an
+/// interrupted transfer can never be mistaken for a prepared file.
+fn prepare_wsl_copy(
+    source: &Path,
+    content_sha256: &str,
+    size_bytes: u64,
+    duplicate_storage_approved: bool,
+) -> Result<PathBuf, ManagedLocalRuntimeError> {
+    let target = wsl_model_path(content_sha256);
+    if wsl_file_exists(&target)? {
+        verify_wsl_sha256(&target, content_sha256)?;
+        return Ok(PathBuf::from(target));
+    }
+    if !duplicate_storage_approved {
+        return Err(ManagedLocalRuntimeError::new(
+            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+            format!(
+                "WSL2 execution requires an additional {size_bytes} bytes for a Linux-native copy; explicit storage approval is required"
+            ),
+        ));
+    }
+    let staging = format!("{target}.staging");
+    if let Err(error) = stream_file_into_wsl(source, &staging) {
+        let _ = wsl_shell(
+            &format!("rm -f {}", shell_quote(&staging)),
+            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+        );
+        return Err(error);
+    }
+    if let Err(error) = verify_wsl_sha256(&staging, content_sha256) {
+        let _ = wsl_shell(
+            &format!("rm -f {}", shell_quote(&staging)),
+            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+        );
+        return Err(error);
+    }
+    wsl_shell(
+        &format!("mv -f {} {}", shell_quote(&staging), shell_quote(&target)),
+        ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+    )?;
+    verify_wsl_sha256(&target, content_sha256)?;
+    Ok(PathBuf::from(target))
+}
+
 fn stream_file_into_wsl(local: &Path, remote: &str) -> Result<(), ManagedLocalRuntimeError> {
     let parent = Path::new(remote)
         .parent()
@@ -2449,15 +2704,20 @@ fn wsl_server_log_path(environment: ManagedExecutionEnvironment) -> String {
 fn wsl_server_launch_command(
     server_path: &str,
     model_path: &Path,
+    projector_path: Option<&Path>,
     port: u16,
     environment: ManagedExecutionEnvironment,
+    context_tokens: u32,
 ) -> String {
     let server = shell_quote(server_path);
     let model = shell_quote(&model_path.to_string_lossy());
+    let projector = projector_path
+        .map(|path| format!(" --mmproj {}", shell_quote(&path.to_string_lossy())))
+        .unwrap_or_default();
     let log = wsl_server_log_path(environment);
     let quoted_log = shell_quote(&log);
     format!(
-        "mkdir -p {}; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} --parallel {MANAGED_SERVER_PARALLEL_SLOTS} --ctx-size {MANAGED_SERVER_CONTEXT_TOKENS} > {quoted_log} 2>&1 < /dev/null & pid=$!; sleep {WSL_SERVER_LAUNCH_GRACE_SECONDS}; if ! kill -0 \"$pid\" 2>/dev/null; then printf 'managed llama-server exited during WSL startup; log: %s\\n' {quoted_log} >&2; tail -n 40 {quoted_log} >&2 2>/dev/null || true; exit 1; fi; echo \"$pid\"",
+        "mkdir -p {}; nohup {server} --model {model} --host 127.0.0.1 --port {port} --fit on --fit-target {MANAGED_GPU_FIT_TARGET_MIB} --parallel {MANAGED_SERVER_PARALLEL_SLOTS} --ctx-size {context_tokens}{projector} > {quoted_log} 2>&1 < /dev/null & pid=$!; sleep {WSL_SERVER_LAUNCH_GRACE_SECONDS}; if ! kill -0 \"$pid\" 2>/dev/null; then printf 'managed llama-server exited during WSL startup; log: %s\\n' {quoted_log} >&2; tail -n 40 {quoted_log} >&2 2>/dev/null || true; exit 1; fi; echo \"$pid\"",
         shell_quote(WSL_SERVER_LOG_ROOT)
     )
 }
@@ -3005,9 +3265,213 @@ mod tests {
     }
 
     #[test]
+    fn context_window_follows_declared_model_shape_within_device_memory() {
+        let capability = GgufModelCapability {
+            architecture: Some("any-architecture".to_owned()),
+            train_context_tokens: Some(131_072),
+            kv_cache_bytes_per_token: Some(16_384),
+            sliding_window_tokens: None,
+            chat_template: true,
+        };
+        // A 12 GiB device budgets 3 GiB of KV cache, which holds 196_608 tokens at this cost,
+        // so the declared window is the binding constraint and the ceiling clamps it.
+        assert_eq!(
+            resolve_managed_context_tokens(&capability, Some(12 * 1024 * 1024 * 1024)),
+            MANAGED_CONTEXT_CEILING_TOKENS
+        );
+    }
+
+    #[test]
+    fn a_costly_model_is_bounded_by_measured_device_memory_not_by_its_declared_window() {
+        let capability = GgufModelCapability {
+            architecture: Some("dense".to_owned()),
+            train_context_tokens: Some(32_768),
+            kv_cache_bytes_per_token: Some(163_840),
+            sliding_window_tokens: None,
+            chat_template: true,
+        };
+        // 3 GiB of KV budget divided by 160 KiB per token leaves 19_660 tokens, aligned down.
+        assert_eq!(
+            resolve_managed_context_tokens(&capability, Some(12 * 1024 * 1024 * 1024)),
+            19_456
+        );
+    }
+
+    #[test]
+    fn a_small_declared_window_never_drops_below_the_protocol_floor() {
+        let capability = GgufModelCapability {
+            architecture: Some("small".to_owned()),
+            train_context_tokens: Some(2_048),
+            kv_cache_bytes_per_token: Some(1_024),
+            sliding_window_tokens: None,
+            chat_template: false,
+        };
+        assert_eq!(
+            resolve_managed_context_tokens(&capability, Some(12 * 1024 * 1024 * 1024)),
+            MANAGED_CONTEXT_FLOOR_TOKENS
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_model_keeps_the_previously_measured_default() {
+        assert_eq!(
+            resolve_managed_context_tokens(&GgufModelCapability::default(), None),
+            MANAGED_CONTEXT_UNMEASURED_TOKENS
+        );
+        assert_eq!(
+            resolve_managed_context_tokens(
+                &GgufModelCapability::default(),
+                Some(12 * 1024 * 1024 * 1024)
+            ),
+            MANAGED_CONTEXT_UNMEASURED_TOKENS
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_device_still_follows_what_the_model_declares() {
+        let capability = GgufModelCapability {
+            architecture: Some("any-architecture".to_owned()),
+            train_context_tokens: Some(16_384),
+            kv_cache_bytes_per_token: Some(16_384),
+            sliding_window_tokens: None,
+            chat_template: true,
+        };
+        assert_eq!(resolve_managed_context_tokens(&capability, None), 16_384);
+    }
+
+    #[test]
+    fn registering_a_gguf_measures_the_launch_shape_it_declares() {
+        let state_root = temp_root("capability-registration");
+        let _ = fs::remove_dir_all(&state_root);
+        let manager = ManagedLocalRuntime::open(state_root.clone()).expect("runtime state");
+        let model = state_root.join("declared.gguf");
+        fs::create_dir_all(&state_root).expect("state root");
+        gguf::write_test_gguf_with_architecture(
+            &model,
+            "any-architecture",
+            &[
+                (".context_length", 16_384),
+                (".block_count", 4),
+                (".embedding_length", 512),
+                (".attention.head_count", 8),
+                (".attention.head_count_kv", 2),
+            ],
+        )
+        .expect("model fixture");
+        let registration = manager
+            .register_existing_gguf(&model, None)
+            .expect("registration");
+        assert_eq!(registration.capability.train_context_tokens, Some(16_384));
+        assert_eq!(
+            registration.capability.kv_cache_bytes_per_token,
+            Some(2_048)
+        );
+        let reloaded = manager.registered_models().expect("registry");
+        assert_eq!(reloaded[0].capability, registration.capability);
+        let _ = fs::remove_dir_all(&state_root);
+    }
+
+    #[test]
+    fn a_registered_projector_reaches_the_launch_command_for_both_environments() {
+        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+        let projector = Path::new(r"C:\\models\\sample-mmproj.gguf");
+        let arguments = windows_server_arguments(model, Some(projector), 18443, 12_288);
+        let mmproj = arguments
+            .iter()
+            .position(|argument| argument == "--mmproj")
+            .expect("projector flag");
+        assert_eq!(
+            arguments[mmproj + 1],
+            projector.to_string_lossy().into_owned()
+        );
+
+        let command = wsl_server_launch_command(
+            "/var/lib/gameengine/local-ai/runtime/b10336/llama-server",
+            Path::new("/var/lib/gameengine/local-ai/models/model.gguf"),
+            Some(Path::new(
+                "/var/lib/gameengine/local-ai/models/projector.gguf",
+            )),
+            18443,
+            ManagedExecutionEnvironment::Wsl2Linux,
+            12_288,
+        );
+        assert!(
+            command.contains("--mmproj '/var/lib/gameengine/local-ai/models/projector.gguf'"),
+            "{command}"
+        );
+    }
+
+    #[test]
+    fn a_text_only_model_launches_without_a_projector_flag() {
+        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+        let arguments = windows_server_arguments(model, None, 18443, 12_288);
+        assert!(!arguments.iter().any(|argument| argument == "--mmproj"));
+        let command = wsl_server_launch_command(
+            "/server",
+            Path::new("/model.gguf"),
+            None,
+            18443,
+            ManagedExecutionEnvironment::Wsl2Linux,
+            12_288,
+        );
+        assert!(!command.contains("--mmproj"));
+    }
+
+    #[test]
+    fn registering_and_removing_a_projector_changes_only_that_model() {
+        let state_root = temp_root("projector-registration");
+        let _ = fs::remove_dir_all(&state_root);
+        let manager = ManagedLocalRuntime::open(state_root.clone()).expect("runtime state");
+        fs::create_dir_all(&state_root).expect("state root");
+        let model_path = state_root.join("model.gguf");
+        gguf::write_test_gguf(&model_path, Some(15), &[12, 12, 14]).expect("model fixture");
+        let projector_path = state_root.join("projector.gguf");
+        gguf::write_test_gguf(&projector_path, Some(15), &[12]).expect("projector fixture");
+        let registration = manager
+            .register_existing_gguf(&model_path, None)
+            .expect("registration");
+        assert!(registration.projector.is_none());
+
+        let with_projector = manager
+            .register_projector(&registration.model_id, &projector_path)
+            .expect("projector registration");
+        let recorded = with_projector.projector.expect("projector record");
+        assert!(is_sha256_hex(&recorded.content_sha256));
+        assert_eq!(
+            manager.registered_models().expect("registry")[0]
+                .projector
+                .as_ref()
+                .map(|projector| projector.content_sha256.clone()),
+            Some(recorded.content_sha256)
+        );
+
+        let removed = manager
+            .remove_projector(&registration.model_id)
+            .expect("projector removal");
+        assert!(removed.projector.is_none());
+        let _ = fs::remove_dir_all(&state_root);
+    }
+
+    #[test]
+    fn registering_a_projector_for_an_unknown_model_is_refused() {
+        let state_root = temp_root("projector-unknown-model");
+        let _ = fs::remove_dir_all(&state_root);
+        let manager = ManagedLocalRuntime::open(state_root.clone()).expect("runtime state");
+        fs::create_dir_all(&state_root).expect("state root");
+        let projector_path = state_root.join("projector.gguf");
+        gguf::write_test_gguf(&projector_path, Some(15), &[12]).expect("projector fixture");
+        assert!(
+            manager
+                .register_projector("gguf:missing", &projector_path)
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(&state_root);
+    }
+
+    #[test]
     fn windows_launch_contract_leaves_gpu_layers_to_memory_fitter() {
         let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
-        let arguments = windows_server_arguments(model, 18443);
+        let arguments = windows_server_arguments(model, None, 18443, 12_288);
         assert_eq!(
             arguments,
             vec![
@@ -3080,8 +3544,10 @@ mod tests {
         let command = wsl_server_launch_command(
             "/var/lib/gameengine/local-ai/runtime/b10336/llama-server",
             Path::new("/var/lib/gameengine/local-ai/models/model.gguf"),
+            None,
             18443,
             ManagedExecutionEnvironment::Wsl2Linux,
+            12_288,
         );
         let pid_capture = command.find("pid=$!").expect("PID capture");
         let grace = command.find("sleep 1").expect("WSL launch grace");
@@ -3115,9 +3581,11 @@ mod tests {
             model_path: PathBuf::from("model.gguf"),
             model_size_bytes: 1,
             quantization: Some("Q4_K_M".to_owned()),
+            capability: GgufModelCapability::default(),
             model_representation: Some(
                 "gguf-repr-v1;gguf=3;file_type=15;quantization_version=2;types=Q4_K:1".to_owned(),
             ),
+            projector_path: None,
             runtime_tag: PINNED_LLAMA_CPP_TAG.to_owned(),
             runtime_revision: PINNED_LLAMA_CPP_REVISION.to_owned(),
             runtime_artifact_sha256: "b".repeat(64),

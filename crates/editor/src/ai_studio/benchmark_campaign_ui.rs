@@ -883,6 +883,8 @@ mod tests {
             modified_unix_ms: Some(1),
             quantization: None,
             representation: representation.map(str::to_owned),
+            capability: Default::default(),
+            projector: None,
             source: None,
             license: None,
         }

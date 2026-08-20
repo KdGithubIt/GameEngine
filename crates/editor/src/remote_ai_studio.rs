@@ -1109,6 +1109,22 @@ fn safe_evidence(event: &AgentEvent) -> Value {
             "gate": gate,
             "status": status,
         }),
+        // Model text stays on the host. The remote companion receives the shape
+        // of the exchange so a stalled run is legible remotely, never the
+        // provider output itself.
+        Some(AgentEventEvidence::ModelExchange {
+            turn,
+            prompt_tokens,
+            response_tokens,
+            finish_reason,
+            ..
+        }) => json!({
+            "evidence": "model_exchange",
+            "turn": turn,
+            "prompt_tokens": prompt_tokens,
+            "response_tokens": response_tokens,
+            "finish_reason": sanitize_text(finish_reason),
+        }),
         None => Value::Null,
     }
 }

@@ -5,11 +5,13 @@
 
 use crate::agent_benchmark::BenchmarkRecord;
 use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};
+use crate::digest::sha256_hex;
 use crate::model_router::{
     ModelRouteDecision, ModelRoutingError, ModelRoutingPolicy, RoutingWorkload,
 };
 use crate::native_agent::{
-    LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,
+    LocalModelConfig, ModelCapabilityProfile, ModelTurnOutcome, NativeAgentError,
+    NativeModelConfig, NativeModelTask,
 };
 use engine_mcp::authoring_tool_descriptors;
 use serde::Deserialize;
@@ -46,14 +48,14 @@ impl Default for HarnessPolicy {
 
 pub(crate) trait ModelTurnTask: Send {
     fn interrupt(&self);
-    fn poll(&self) -> Option<Result<String, NativeAgentError>>;
+    fn poll(&self) -> Option<Result<ModelTurnOutcome, NativeAgentError>>;
 }
 
 impl ModelTurnTask for NativeModelTask {
     fn interrupt(&self) {
         NativeModelTask::interrupt(self);
     }
-    fn poll(&self) -> Option<Result<String, NativeAgentError>> {
+    fn poll(&self) -> Option<Result<ModelTurnOutcome, NativeAgentError>> {
         NativeModelTask::poll(self)
     }
 }
@@ -66,6 +68,7 @@ pub(crate) trait ModelBackend: Send + Sync {
         &self,
         prompt: String,
         images: Vec<Vec<u8>>,
+        response_schema: Option<Value>,
     ) -> Result<Box<dyn ModelTurnTask>, NativeAgentError>;
 }
 
@@ -83,8 +86,9 @@ impl ModelBackend for ConfiguredModelBackend {
         &self,
         prompt: String,
         images: Vec<Vec<u8>>,
+        response_schema: Option<Value>,
     ) -> Result<Box<dyn ModelTurnTask>, NativeAgentError> {
-        NativeModelTask::spawn(self.0.clone(), prompt, images)
+        NativeModelTask::spawn(self.0.clone(), prompt, images, response_schema)
             .map(|task| Box::new(task) as Box<dyn ModelTurnTask>)
     }
 }
@@ -151,6 +155,54 @@ pub(crate) enum NativeAgentAction {
     ReadyForValidation,
 }
 
+/// One recorded request/response pair against a model (ADR 0159).
+///
+/// The bounded fields are what the run record carries; `prompt` and `response`
+/// are the full text the host writes to the per-run transcript artifact.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelExchange {
+    pub(crate) turn: u32,
+    pub(crate) prompt: String,
+    pub(crate) response: String,
+    pub(crate) prompt_tokens: Option<u64>,
+    pub(crate) response_tokens: Option<u64>,
+    pub(crate) finish_reason: String,
+    pub(crate) response_digest: String,
+}
+
+/// Bounded excerpt length carried in the run record instead of the full text.
+const MODEL_EXCHANGE_EXCERPT_CHARS: usize = 600;
+
+impl ModelExchange {
+    fn new(turn: u32, prompt: String, outcome: ModelTurnOutcome) -> Self {
+        Self {
+            turn,
+            prompt,
+            response_digest: sha256_hex(outcome.text.as_bytes()),
+            finish_reason: outcome
+                .finish_reason
+                .filter(|reason| !reason.trim().is_empty())
+                .unwrap_or_else(|| "unreported".to_owned()),
+            prompt_tokens: outcome.prompt_tokens,
+            response_tokens: outcome.response_tokens,
+            response: outcome.text,
+        }
+    }
+
+    pub(crate) fn response_excerpt(&self) -> String {
+        truncate(&self.response, MODEL_EXCHANGE_EXCERPT_CHARS)
+    }
+}
+
+/// What one polled model turn produced, evidence first.
+///
+/// The exchange is present whenever the model answered at all, including when
+/// the answer could not be parsed, so a failing run still records what it got.
+pub(crate) struct NativeTurnOutcome {
+    pub(crate) exchange: Option<ModelExchange>,
+    pub(crate) result: Result<NativeAgentTurn, NativeAgentRuntimeError>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct NativeAgentTurn {
     #[serde(default)]
@@ -213,6 +265,7 @@ pub(crate) struct NativeAgentRuntime {
     turns: u32,
     failures: u32,
     exchanges: Vec<Exchange>,
+    active_prompt: Option<String>,
     active: Option<Box<dyn ModelTurnTask>>,
 }
 
@@ -252,6 +305,7 @@ impl NativeAgentRuntime {
             turns: 0,
             failures: 0,
             exchanges: Vec::new(),
+            active_prompt: None,
             active: None,
         }
     }
@@ -280,6 +334,7 @@ impl NativeAgentRuntime {
             task.interrupt();
         }
         self.active = None;
+        self.active_prompt = None;
     }
     /// Starts one benchmark-attributed turn on the runtime's exact configured model.
     ///
@@ -305,7 +360,9 @@ impl NativeAgentRuntime {
             &self.exchanges,
             context,
         );
-        self.active = Some(self.backend.start_turn(prompt, images)?);
+        let schema = self.constrained_response_schema();
+        self.active_prompt = Some(prompt.clone());
+        self.active = Some(self.backend.start_turn(prompt, images, schema)?);
         self.turns += 1;
         Ok(())
     }
@@ -332,7 +389,12 @@ impl NativeAgentRuntime {
             &self.exchanges,
             context,
         );
-        match self.backend.start_turn(prompt, images.clone()) {
+        let schema = self.constrained_response_schema();
+        self.active_prompt = Some(prompt.clone());
+        match self
+            .backend
+            .start_turn(prompt, images.clone(), schema.clone())
+        {
             Ok(task) => self.active = Some(task),
             Err(error) => {
                 let Some(fallback) =
@@ -349,11 +411,28 @@ impl NativeAgentRuntime {
                     &self.exchanges,
                     context,
                 );
-                self.active = Some(self.backend.start_turn(fallback_prompt, images)?);
+                self.active_prompt = Some(fallback_prompt.clone());
+                self.active = Some(self.backend.start_turn(
+                    fallback_prompt,
+                    images,
+                    self.constrained_response_schema(),
+                )?);
             }
         }
         self.turns += 1;
         Ok(())
+    }
+
+    /// Response schema for backends that report constrained decoding support.
+    ///
+    /// A backend that does not report it receives none, so an adapter is never
+    /// sent a request shape it did not declare it understands.
+    fn constrained_response_schema(&self) -> Option<Value> {
+        self.backend
+            .profile()
+            .structured_output
+            .unwrap_or(false)
+            .then(agent_turn_response_schema)
     }
 
     fn apply_route_decision(&mut self, decision: &ModelRouteDecision) {
@@ -366,12 +445,23 @@ impl NativeAgentRuntime {
             self.routing_decisions.remove(0);
         }
     }
-    pub(crate) fn poll(&mut self) -> Option<Result<NativeAgentTurn, NativeAgentRuntimeError>> {
+    pub(crate) fn poll(&mut self) -> Option<NativeTurnOutcome> {
         let result = self.active.as_ref()?.poll()?;
         self.active = None;
+        let prompt = self.active_prompt.take().unwrap_or_default();
         Some(match result {
-            Ok(text) => parse_turn(&text),
-            Err(e) => Err(e.into()),
+            Ok(outcome) => {
+                let exchange = ModelExchange::new(self.turns, prompt, outcome);
+                let result = parse_turn(&exchange.response);
+                NativeTurnOutcome {
+                    exchange: Some(exchange),
+                    result,
+                }
+            }
+            Err(error) => NativeTurnOutcome {
+                exchange: None,
+                result: Err(error.into()),
+            },
         })
     }
     pub(crate) fn record_tool_result(
@@ -510,6 +600,100 @@ fn build_prompt(
         "{\"type\":\"progress\",\"step\":\"...\",\"detail\":\"...\"}\n",
         "{\"type\":\"await_user\",\"question\":\"...\"}\n{\"type\":\"ready_for_validation\"}\n"));
     prompt
+}
+
+/// JSON Schema for one agent turn, used for backend-constrained decoding.
+///
+/// The schema mirrors [`NativeAgentTurn`] exactly, so a backend that constrains
+/// generation to it cannot return a turn the parser rejects. It is provider
+/// independent: every backend GameEngine supports either accepts it or reports
+/// that it does not, and the runtime then falls back to prompt-shaped output.
+pub(crate) fn agent_turn_response_schema() -> Value {
+    let string_list = json!({ "type": "array", "items": { "type": "string" } });
+    let working_state_fields = [
+        "architecture_constraints",
+        "ownership_crate_decisions",
+        "target_files_documents",
+        "concrete_edits",
+        "typed_mcp_operations",
+        "tests",
+        "assumptions",
+        "replan_conditions",
+        "relevant_source_provenance",
+        "open_problems",
+    ]
+    .into_iter()
+    .map(|field| (field.to_owned(), string_list.clone()))
+    .collect::<serde_json::Map<_, _>>();
+    let action = |kind: &str, fields: Value, required: Value| {
+        let mut properties = serde_json::Map::new();
+        properties.insert("type".to_owned(), json!({ "const": kind }));
+        if let Value::Object(fields) = fields {
+            properties.extend(fields);
+        }
+        let mut required_names = vec![json!("type")];
+        if let Value::Array(names) = required {
+            required_names.extend(names);
+        }
+        json!({
+            "type": "object",
+            "properties": Value::Object(properties),
+            "required": Value::Array(required_names),
+            "additionalProperties": false,
+        })
+    };
+    json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string" },
+            "working_state": {
+                "type": "object",
+                "properties": Value::Object(working_state_fields),
+                "additionalProperties": false,
+            },
+            "action": {
+                "anyOf": [
+                    action(
+                        "mcp_call",
+                        json!({ "tool": { "type": "string" }, "arguments": { "type": "object" } }),
+                        json!(["tool", "arguments"]),
+                    ),
+                    action(
+                        "code_write",
+                        json!({ "path": { "type": "string" }, "text": { "type": "string" } }),
+                        json!(["path", "text"]),
+                    ),
+                    action(
+                        "runtime_input",
+                        json!({ "input": { "type": "object" } }),
+                        json!(["input"]),
+                    ),
+                    action(
+                        "completion_gate",
+                        json!({
+                            "gate": { "type": "string" },
+                            "status": { "enum": ["passed", "failed", "not_applicable"] },
+                            "message": { "type": "string" },
+                        }),
+                        json!(["gate", "status", "message"]),
+                    ),
+                    action(
+                        "progress",
+                        json!({ "step": { "type": "string" }, "detail": { "type": "string" } }),
+                        json!(["step", "detail"]),
+                    ),
+                    action(
+                        "await_user",
+                        json!({ "question": { "type": "string" } }),
+                        json!(["question"]),
+                    ),
+                    action("ready_for_validation", json!({}), json!([])),
+                ]
+            }
+        },
+        "required": ["summary", "action"],
+        "additionalProperties": false,
+    })
 }
 
 fn parse_turn(text: &str) -> Result<NativeAgentTurn, NativeAgentRuntimeError> {
@@ -697,6 +881,7 @@ fn call_mcp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_agent::DEFAULT_LOCAL_MODEL_ENDPOINT;
     #[test]
     fn parser_requires_structured_action() {
         assert!(parse_turn("I changed files").is_err());
@@ -711,6 +896,99 @@ mod tests {
     fn mcp_endpoint_is_loopback_only() {
         assert!(parse_mcp_endpoint("http://127.0.0.1:1234/mcp").is_ok());
         assert!(parse_mcp_endpoint("http://192.168.0.2:1234/mcp").is_err());
+    }
+
+    #[test]
+    fn response_schema_covers_every_action_the_parser_accepts() {
+        let schema = agent_turn_response_schema();
+        let actions = schema["properties"]["action"]["anyOf"]
+            .as_array()
+            .expect("action alternatives")
+            .iter()
+            .map(|action| {
+                action["properties"]["type"]["const"]
+                    .as_str()
+                    .expect("action tag")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            vec![
+                "mcp_call",
+                "code_write",
+                "runtime_input",
+                "completion_gate",
+                "progress",
+                "await_user",
+                "ready_for_validation",
+            ]
+        );
+        for action in actions {
+            let turn = json!({
+                "summary": "",
+                "action": match action.as_str() {
+                    "mcp_call" => json!({"type": action, "tool": "project.describe", "arguments": {}}),
+                    "code_write" => json!({"type": action, "path": "game/a.rs", "text": ""}),
+                    "runtime_input" => json!({"type": action, "input": {}}),
+                    "completion_gate" => json!({
+                        "type": action,
+                        "gate": "acceptance_criteria",
+                        "status": "passed",
+                        "message": "",
+                    }),
+                    "progress" => json!({"type": action, "step": "s", "detail": "d"}),
+                    "await_user" => json!({"type": action, "question": "q"}),
+                    _ => json!({"type": action}),
+                }
+            });
+            parse_turn(&turn.to_string())
+                .unwrap_or_else(|error| panic!("schema action {action} must parse: {error}"));
+        }
+    }
+
+    #[test]
+    fn a_backend_without_constrained_decoding_is_not_sent_a_schema() {
+        struct Backend(Option<bool>);
+        impl ModelBackend for Backend {
+            fn label(&self) -> String {
+                "test".to_owned()
+            }
+            fn profile(&self) -> ModelCapabilityProfile {
+                let mut profile = LocalModelConfig {
+                    endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+                    model: "test".to_owned(),
+                }
+                .capability_profile();
+                profile.structured_output = self.0;
+                profile
+            }
+            fn start_turn(
+                &self,
+                _prompt: String,
+                _images: Vec<Vec<u8>>,
+                _response_schema: Option<Value>,
+            ) -> Result<Box<dyn ModelTurnTask>, NativeAgentError> {
+                Err(NativeAgentError::EmptyResponse)
+            }
+        }
+        let config = NativeModelConfig::Local(LocalModelConfig {
+            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+            model: "test".to_owned(),
+        });
+        for (declared, expects_schema) in [(Some(true), true), (Some(false), false), (None, false)]
+        {
+            let runtime = NativeAgentRuntime::new(
+                Box::new(Backend(declared)),
+                config.clone(),
+                ModelRoutingPolicy::derive(config.clone(), Vec::new(), &[]),
+                HarnessPolicy::default(),
+            );
+            assert_eq!(
+                runtime.constrained_response_schema().is_some(),
+                expects_schema
+            );
+        }
     }
 
     #[test]

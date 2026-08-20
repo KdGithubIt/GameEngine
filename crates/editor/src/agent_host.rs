@@ -796,6 +796,32 @@ pub(crate) enum AgentEventEvidence {
         gate: String,
         status: CompletionStatus,
     },
+    /// One request/response pair against a model (ADR 0159).
+    ///
+    /// The full text lives in the per-run transcript artifact named by
+    /// `response_digest`; this variant stays bounded so a benchmark record
+    /// remains comparable.
+    ModelExchange {
+        turn: u32,
+        prompt_tokens: Option<u64>,
+        response_tokens: Option<u64>,
+        finish_reason: String,
+        response_digest: String,
+        response_excerpt: String,
+    },
+}
+
+/// One model exchange offered to the host for recording.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelExchangeRecord<'a> {
+    pub(crate) turn: u32,
+    pub(crate) prompt: &'a str,
+    pub(crate) response: &'a str,
+    pub(crate) prompt_tokens: Option<u64>,
+    pub(crate) response_tokens: Option<u64>,
+    pub(crate) finish_reason: &'a str,
+    pub(crate) response_digest: &'a str,
+    pub(crate) response_excerpt: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -806,8 +832,26 @@ pub(crate) struct AgentEvent {
     pub(crate) message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) validation: Option<ManagedValidationEvent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "tolerant_evidence"
+    )]
     pub(crate) evidence: Option<AgentEventEvidence>,
+}
+
+/// Reads recorded evidence, tolerating a variant this build does not know.
+///
+/// ADR 0159 requires a session written by a newer build to stay loadable by an
+/// older one. An unreadable evidence payload therefore costs that one event its
+/// structured detail; the event, its message, and the rest of the session are
+/// still restored.
+fn tolerant_evidence<'de, D>(deserializer: D) -> Result<Option<AgentEventEvidence>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1964,6 +2008,65 @@ impl AgentHost {
         Ok(())
     }
 
+    /// Records one model exchange as run evidence and writes its transcript.
+    ///
+    /// ADR 0159 requires this to happen while the run is still in flight, so a
+    /// run that fails mid-turn still carries the turns it completed. A
+    /// transcript that cannot be written does not discard the evidence: the
+    /// bounded record is still pushed, because the counts and the excerpt are
+    /// what the benchmark record reads.
+    pub(crate) fn record_model_exchange(
+        &mut self,
+        run_id: &str,
+        exchange: ModelExchangeRecord<'_>,
+    ) -> Result<(), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        let transcript = self.model_exchange_transcript_path(run_id, exchange.turn);
+        let written = (|| -> io::Result<()> {
+            if let Some(parent) = transcript.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let document = serde_json::json!({
+                "turn": exchange.turn,
+                "finish_reason": exchange.finish_reason,
+                "response_digest": exchange.response_digest,
+                "prompt": exchange.prompt,
+                "response": exchange.response,
+            });
+            fs::write(&transcript, serde_json::to_vec_pretty(&document)?)
+        })()
+        .is_ok();
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        push_event_with_evidence(
+            run,
+            AgentEventKind::ProviderOutput,
+            format!(
+                "Model turn {} finished as {} ({} transcript).",
+                exchange.turn,
+                exchange.finish_reason,
+                if written { "recorded" } else { "unrecorded" }
+            ),
+            None,
+            Some(AgentEventEvidence::ModelExchange {
+                turn: exchange.turn,
+                prompt_tokens: exchange.prompt_tokens,
+                response_tokens: exchange.response_tokens,
+                finish_reason: exchange.finish_reason.to_owned(),
+                response_digest: exchange.response_digest.to_owned(),
+                response_excerpt: exchange.response_excerpt.to_owned(),
+            }),
+        );
+        self.persist_session(&session_id)
+    }
+
+    /// Machine-local path of one recorded model transcript.
+    pub(crate) fn model_exchange_transcript_path(&self, run_id: &str, turn: u32) -> PathBuf {
+        self.storage_root
+            .join("artifacts")
+            .join(run_id)
+            .join(format!("model-exchange-{turn:04}.json"))
+    }
+
     pub(crate) fn record_captured_frame(
         &mut self,
         run_id: &str,
@@ -2524,6 +2627,15 @@ impl AgentHost {
                 if event.kind == AgentEventKind::ProviderOutput {
                     event.message =
                         "[provider output omitted from project-shared history]".to_owned();
+                }
+                // Recorded model text is machine-local evidence. Sharing a
+                // session with the project keeps the shape of the exchange and
+                // drops what the model actually wrote.
+                if let Some(AgentEventEvidence::ModelExchange {
+                    response_excerpt, ..
+                }) = event.evidence.as_mut()
+                {
+                    response_excerpt.clear();
                 }
             }
         }
@@ -4239,6 +4351,96 @@ mod tests {
         )));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn a_recorded_model_exchange_keeps_its_transcript_and_a_bounded_record() {
+        let project = temp_path("exchange-project");
+        let storage = temp_path("exchange-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Exchange").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.record_model_exchange(
+            &run,
+            ModelExchangeRecord {
+                turn: 1,
+                prompt: "full prompt text",
+                response: "full response text",
+                prompt_tokens: Some(120),
+                response_tokens: Some(8),
+                finish_reason: "stop",
+                response_digest: "digest",
+                response_excerpt: "full response",
+            },
+        )
+        .expect("recorded exchange");
+
+        let run_state = host.run(&run).expect("run");
+        assert!(run_state.events.iter().any(|event| matches!(
+            &event.evidence,
+            Some(AgentEventEvidence::ModelExchange {
+                turn: 1,
+                prompt_tokens: Some(120),
+                response_tokens: Some(8),
+                finish_reason,
+                response_excerpt,
+                ..
+            }) if finish_reason == "stop" && response_excerpt == "full response"
+        )));
+        let transcript = host.model_exchange_transcript_path(&run, 1);
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&transcript).expect("transcript")).expect("json");
+        assert_eq!(document["prompt"], "full prompt text");
+        assert_eq!(document["response"], "full response text");
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn a_shared_session_keeps_the_exchange_shape_and_drops_the_model_text() {
+        let project = temp_path("exchange-share-project");
+        let storage = temp_path("exchange-share-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Exchange share").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.record_model_exchange(
+            &run,
+            ModelExchangeRecord {
+                turn: 1,
+                prompt: "prompt",
+                response: "secret model text",
+                prompt_tokens: Some(1),
+                response_tokens: Some(2),
+                finish_reason: "stop",
+                response_digest: "digest",
+                response_excerpt: "secret model text",
+            },
+        )
+        .expect("recorded exchange");
+        let path = host
+            .export_shared_session(&session)
+            .expect("shared session");
+        let shared = fs::read_to_string(&path).expect("shared session file");
+        assert!(!shared.contains("secret model text"));
+        assert!(shared.contains("model_exchange"));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn an_unknown_evidence_variant_does_not_discard_the_event_or_the_session() {
+        let event: AgentEvent = serde_json::from_value(serde_json::json!({
+            "sequence": 1,
+            "created_unix_ms": 2,
+            "kind": "provider_output",
+            "message": "written by a newer build",
+            "evidence": { "evidence": "some_future_variant", "detail": "unknown" }
+        }))
+        .expect("event written by a newer build stays readable");
+        assert_eq!(event.message, "written by a newer build");
+        assert!(event.evidence.is_none());
     }
 
     #[test]
