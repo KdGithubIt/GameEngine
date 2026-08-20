@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/timeline/src/lib.rs",
+  "old": "mod evaluate;\nmod player;\nmod registry;\n\npub use evaluate::{\n    ActiveClip, ClipTransition, FiredEvent, TimelineEvaluation, TimelineTrackOutput,\n};\npub use player::{LoopRegion, TimelinePlayState, TimelinePlayer, TimelineSeek};\npub use registry::{TrackDescriptor, TrackRegistry, TrackSeekPolicy};",
+  "new": "mod evaluate;\nmod player;\nmod registry;\nmod replay;\n\npub use evaluate::{\n    ActiveClip, ClipTransition, FiredEvent, TimelineEvaluation, TimelineTrackOutput,\n};\npub use player::{LoopRegion, TimelinePlayState, TimelinePlayer, TimelineSeek};\npub use registry::{TrackDescriptor, TrackRegistry, TrackSeekPolicy};\npub use replay::{\n    DEFAULT_REPLAY_CHECKPOINT_INTERVAL_TICKS, DEFAULT_REPLAY_CHECKPOINT_LIMIT,\n    DEFAULT_REPLAY_DEBOUNCE, DEFAULT_REPLAY_STEP_TICKS, ReplayCancellationToken,\n    ReplayCheckpointCache, ReplayCheckpointConfigError, ReplayReconstruction, ReplayRequest,\n    ReplayRequestController,\n};"
+}
