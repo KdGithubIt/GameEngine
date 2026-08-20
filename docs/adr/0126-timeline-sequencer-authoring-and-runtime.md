@@ -272,23 +272,25 @@ landed so far, on 2026-08-20:
   clip, and marker identity; integer tick math and rational display frame rates;
   document validation; the neutral `engine-timeline` crate carrying the compiled
   schedule, per-player transient state, exact marker and clip crossing, seek
-  policies, and the track registry; the Event, Camera Cut, and Property tracks
-  applied at the `engine` composition layer, including the transient camera
-  override and the bounded sequence-event queue; the `engine.timeline_player`
-  component and its scene conversion; project-Rust deferred Timeline commands
-  and copied views; a Sequencer workspace with transport, track and clip
-  editing, markers, frame snapping, seek-policy presentation, and undo; and
-  Editor, CLI, and MCP parity through the shared typed-document capability
-  registry.
+  policies, and the track registry; the Event, Camera Cut, Property, and VFX
+  tracks applied at the `engine` composition layer, including transient camera
+  override, bounded sequence-event delivery, VFX start/stop/restart edge
+  semantics, and deterministic VFX reconstruction on Timeline seek through ADR
+  0125's existing `VfxPlayer`/preview-seek runtime interface; the
+  `engine.timeline_player` component and its scene conversion; project-Rust
+  deferred Timeline commands and copied views; a Sequencer workspace with
+  transport, track and clip editing, markers, frame snapping, seek-policy
+  presentation, and undo; and Editor, CLI, and MCP parity through the shared
+  typed-document capability registry.
 - **Not yet landed:** the Animation track adapter that drives Animation Set
-  motion slots; the Audio and VFX adapters, which ADR 0126 §14 already defers
-  until ADR 0122 and ADR 0125 runtime controls exist; Sequencer preview inside
-  the persistent Scene View world; the curve editor and `ReplayRequired`
-  checkpoint reconstruction; and the packaged-player proving project.
+  motion slots; the Audio adapter through ADR 0122; Sequencer preview inside the
+  persistent Scene View world; the curve editor and generic `ReplayRequired`
+  checkpoint/debounce/cancellation coordinator; and the packaged-player proving
+  project.
 
-Evaluation already reports Animation, Audio, and VFX outputs, so nothing in the
-implemented path silently claims to have played a motion slot, a cue, or an
-effect.
+Evaluation already reports Animation and Audio outputs without claiming to have
+played them. VFX outputs are applied only at the `engine` composition boundary;
+the neutral Timeline crate remains independent of ADR 0125 runtime types.
 
 ## Verification
 

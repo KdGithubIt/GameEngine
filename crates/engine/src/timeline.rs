@@ -6,6 +6,8 @@
 //! camera-selection override, and forwards sequence events to the ordinary
 //! host event path. The neutral core stays free of every domain touched here.
 
+mod vfx;
+
 pub use engine_timeline::{
     ActiveClip, AdapterTokens, ClipTransition, CompiledClip, CompiledClipPayload, CompiledCurve,
     CompiledKey, CompiledMarker, CompiledTimeline, CompiledTrack, CurveInterpolation, FiredEvent,
@@ -259,14 +261,47 @@ pub fn advance_timelines(
     };
     let players = query.iter().map(|(entity, _)| entity).collect::<Vec<_>>();
     for entity in players {
-        let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
-            continue;
+        let (timeline, evaluation, previous_tick, pending_vfx_seek, mut tokens) = {
+            let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) else {
+                continue;
+            };
+            if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
+                component.player.play();
+            }
+            let pending_vfx_seek = vfx::pending_seek(component);
+            let timeline = Arc::clone(&component.timeline);
+            let evaluation = component.player.advance(&timeline, delta_seconds);
+            let previous_tick = component.player.previous_tick();
+            let tokens = std::mem::take(&mut component.tokens);
+            (
+                timeline,
+                evaluation,
+                previous_tick,
+                pending_vfx_seek,
+                tokens,
+            )
         };
-        if component.autoplay && component.player.state() == TimelinePlayState::Stopped {
-            component.player.play();
+
+        if let Some(seek) = pending_vfx_seek {
+            vfx::apply_seek(
+                &timeline,
+                seek,
+                world,
+                bindings,
+                &mut tokens,
+                diagnostics,
+            );
+            vfx::mark_seek_applied(&mut tokens, seek);
         }
-        let timeline = Arc::clone(&component.timeline);
-        let evaluation = component.player.advance(&timeline, delta_seconds);
+        vfx::apply_evaluation(
+            &timeline,
+            &evaluation,
+            previous_tick,
+            world,
+            bindings,
+            &mut tokens,
+            diagnostics,
+        );
         apply_evaluation(
             entity,
             &evaluation,
@@ -276,6 +311,9 @@ pub fn advance_timelines(
             events,
             diagnostics,
         );
+        if let Some(component) = world.get_component_mut::<TimelinePlayerComponent>(entity) {
+            component.tokens = tokens;
+        }
     }
 }
 
@@ -332,9 +370,9 @@ pub fn apply_evaluation(
                     source,
                 });
             }
-            // Animation, Audio, and VFX adapters land with the runtime controls
-            // their ADRs define. Until then the evaluation still reports them,
-            // so nothing silently claims to have played a cue or an effect.
+            // Animation and Audio remain neutral outputs until their domain
+            // adapters land. VFX edge actions are applied by the composition
+            // adapter before this per-frame output pass.
             TimelineTrackOutput::Animation { .. }
             | TimelineTrackOutput::Audio { .. }
             | TimelineTrackOutput::Vfx { .. }
@@ -418,12 +456,14 @@ pub fn apply_timeline_control(
         TimelineControl::Stop => {
             component.player.stop();
             component.tokens.clear();
+            vfx::mark_seek(component);
         }
         TimelineControl::Seek { tick } => {
             let timeline = Arc::clone(&component.timeline);
             component
                 .player
                 .seek(&timeline, tick, TimelineSeek::Playback);
+            vfx::mark_seek(component);
         }
         TimelineControl::SetRate { rate } => {
             if !component.player.set_rate(rate) {
