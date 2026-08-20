@@ -346,7 +346,7 @@ fn direct_command_output(program: OsString, args: Vec<OsString>) -> io::Result<(
 }
 
 /// Runs one command for its exit status and captured standard output.
-fn command_output<I, S>(
+pub(crate) fn command_output<I, S>(
     placement: &ExternalAgentExecutionPlacement,
     program: &OsStr,
     args: I,
@@ -506,7 +506,7 @@ fn resolve_launcher(
 ///
 /// Launcher resolution happens before placement, so the WSL wrapper receives
 /// the same argument vector the provider will see.
-fn placed_launch_command(
+pub(crate) fn placed_launch_command(
     placement: &ExternalAgentExecutionPlacement,
     program: OsString,
     args: Vec<OsString>,
@@ -2237,7 +2237,7 @@ fn truncate_captured_line_str(line: &str) -> String {
 }
 
 /// Whether the installer used for provider CLIs can be launched here.
-fn installer_is_available(placement: &ExternalAgentExecutionPlacement) -> bool {
+pub(crate) fn installer_is_available(placement: &ExternalAgentExecutionPlacement) -> bool {
     let (program, args) = placed_command(
         placement,
         OsString::from(npm_program(placement)),
