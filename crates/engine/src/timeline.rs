@@ -283,14 +283,7 @@ pub fn advance_timelines(
         };
 
         if let Some(seek) = pending_vfx_seek {
-            vfx::apply_seek(
-                &timeline,
-                seek,
-                world,
-                bindings,
-                &mut tokens,
-                diagnostics,
-            );
+            vfx::apply_seek(&timeline, seek, world, bindings, &mut tokens, diagnostics);
             vfx::mark_seek_applied(&mut tokens, seek);
         }
         vfx::apply_evaluation(

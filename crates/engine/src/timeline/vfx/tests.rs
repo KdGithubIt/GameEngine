@@ -86,14 +86,7 @@ fn step(
     events: &mut TimelineEvents,
     diagnostics: &mut TimelineDiagnostics,
 ) {
-    advance_timelines(
-        seconds,
-        world,
-        bindings,
-        camera,
-        events,
-        diagnostics,
-    );
+    advance_timelines(seconds, world, bindings, camera, events, diagnostics);
 }
 
 #[test]

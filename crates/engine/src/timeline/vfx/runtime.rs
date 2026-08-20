@@ -1,5 +1,5 @@
 use super::{
-    apply_action, play_owned, set_play_owned, stop_track, TimelineBindings, TimelineDiagnostics,
+    TimelineBindings, TimelineDiagnostics, apply_action, play_owned, set_play_owned, stop_track,
 };
 use engine_authoring::TimelineTick;
 use engine_ecs::World;
@@ -7,7 +7,7 @@ use engine_timeline::{
     AdapterTokens, CompiledClipPayload, CompiledTimeline, TimelineEvaluation, VfxAction,
 };
 
-pub(super) fn apply_evaluation(
+pub(in crate::timeline) fn apply_evaluation(
     timeline: &CompiledTimeline,
     evaluation: &TimelineEvaluation,
     previous_tick: TimelineTick,

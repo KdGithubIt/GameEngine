@@ -1,6 +1,6 @@
 use super::{
-    set_play_owned, PendingSeek, TimelineBindingDiagnostic, TimelineBindings, TimelineDiagnostics,
-    TimelinePlayerComponent, APPLIED_SEEK_GENERATION, PENDING_SEEK_GENERATION,
+    APPLIED_SEEK_GENERATION, PENDING_SEEK_GENERATION, PendingSeek, TimelineBindingDiagnostic,
+    TimelineBindings, TimelineDiagnostics, TimelinePlayerComponent, set_play_owned,
 };
 use crate::transform::GlobalTransform;
 use crate::vfx::VfxPlayer;
@@ -10,14 +10,13 @@ use engine_timeline::{
     AdapterTokens, CompiledClipPayload, CompiledTimeline, TimelinePlayState, VfxAction,
 };
 
-pub(super) fn mark_seek(component: &mut TimelinePlayerComponent) {
-    component.tokens.set(
-        PENDING_SEEK_GENERATION,
-        component.player.generation(),
-    );
+pub(in crate::timeline) fn mark_seek(component: &mut TimelinePlayerComponent) {
+    component
+        .tokens
+        .set(PENDING_SEEK_GENERATION, component.player.generation());
 }
 
-pub(super) fn pending_seek(component: &TimelinePlayerComponent) -> Option<PendingSeek> {
+pub(in crate::timeline) fn pending_seek(component: &TimelinePlayerComponent) -> Option<PendingSeek> {
     let generation = component.player.generation();
     let pending = component.tokens.get(PENDING_SEEK_GENERATION);
     let applied = component.tokens.get(APPLIED_SEEK_GENERATION);
@@ -28,11 +27,11 @@ pub(super) fn pending_seek(component: &TimelinePlayerComponent) -> Option<Pendin
     })
 }
 
-pub(super) fn mark_seek_applied(tokens: &mut AdapterTokens, seek: PendingSeek) {
+pub(in crate::timeline) fn mark_seek_applied(tokens: &mut AdapterTokens, seek: PendingSeek) {
     tokens.set(APPLIED_SEEK_GENERATION, seek.generation);
 }
 
-pub(super) fn apply_seek(
+pub(in crate::timeline) fn apply_seek(
     timeline: &CompiledTimeline,
     seek: PendingSeek,
     world: &mut World,
