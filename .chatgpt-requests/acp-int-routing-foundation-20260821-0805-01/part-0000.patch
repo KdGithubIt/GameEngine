@@ -1,0 +1,393 @@
+diff --git a/crates/editor/src/acp_integration.rs b/crates/editor/src/acp_integration.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..41ecb14381d085bd41193b0329fc17dfb104f6a4
+--- /dev/null
++++ b/crates/editor/src/acp_integration.rs
+@@ -0,0 +1,146 @@
++//! Editor-side ACP composition seam.
++//!
++//! The registry owns provider runtime entries, the bridge owns the binding to
++//! Agent Host authority, and AI Studio owns only user selection and presentation.
++
++use crate::acp_agent_host_bridge::{
++    AcpAgentHostBridge, AcpBridgeError, AcpBridgePoll, AcpEditorMcpCredentials,
++    AcpProviderCompletionGate,
++};
++use crate::acp_agent_runtime::{
++    AcpAgentRegistry, AcpAgentRuntime, AcpRuntimeError, AcpRuntimeRegistry,
++};
++use crate::agent_host::{AgentHost, ApprovalScope, CompletionStatus};
++use std::path::PathBuf;
++
++pub(crate) struct AcpIntegration {
++    registry: AcpRuntimeRegistry,
++    bridge: AcpAgentHostBridge,
++}
++
++impl AcpIntegration {
++    pub(crate) fn new(
++        working_directory: PathBuf,
++        endpoint: impl Into<String>,
++        run_bound_token: impl Into<String>,
++        read_only_token: impl Into<String>,
++    ) -> Result<Self, AcpBridgeError> {
++        let credentials =
++            AcpEditorMcpCredentials::new(endpoint, run_bound_token, read_only_token)?;
++        Ok(Self {
++            registry: AcpRuntimeRegistry::default(),
++            bridge: AcpAgentHostBridge::new(credentials, working_directory)?,
++        })
++    }
++
++    pub(crate) fn register(
++        &mut self,
++        runtime: Box<dyn AcpAgentRuntime>,
++    ) -> Result<(), AcpRuntimeError> {
++        self.registry.register(runtime)
++    }
++
++    pub(crate) fn registry(&self) -> &dyn AcpAgentRegistry {
++        &self.registry
++    }
++
++    pub(crate) fn open_ask_session(
++        &mut self,
++        host: &AgentHost,
++        agent_id: &str,
++        gameengine_session_id: &str,
++    ) -> Result<String, AcpBridgeError> {
++        self.bridge
++            .open_ask_session(host, &mut self.registry, agent_id, gameengine_session_id)
++    }
++
++    pub(crate) fn open_run_session(
++        &mut self,
++        host: &mut AgentHost,
++        agent_id: &str,
++        gameengine_session_id: &str,
++        run_id: &str,
++    ) -> Result<String, AcpBridgeError> {
++        self.bridge.open_run_session(
++            host,
++            &mut self.registry,
++            agent_id,
++            gameengine_session_id,
++            run_id,
++        )
++    }
++
++    pub(crate) fn send_prompt(
++        &mut self,
++        host: &mut AgentHost,
++        acp_session_id: &str,
++        prompt: &str,
++    ) -> Result<(), AcpBridgeError> {
++        self.bridge.send_prompt(host, acp_session_id, prompt)
++    }
++
++    pub(crate) fn poll(
++        &mut self,
++        host: &mut AgentHost,
++        acp_session_id: &str,
++    ) -> Result<AcpBridgePoll, AcpBridgeError> {
++        self.bridge.poll_session(host, acp_session_id)
++    }
++
++    pub(crate) fn resolve_permission(
++        &mut self,
++        host: &mut AgentHost,
++        acp_session_id: &str,
++        request_id: &str,
++        scope: ApprovalScope,
++    ) -> Result<(), AcpBridgeError> {
++        self.bridge
++            .resolve_permission(host, acp_session_id, request_id, scope)
++    }
++
++    pub(crate) fn record_provider_completion_gate(
++        &mut self,
++        host: &mut AgentHost,
++        acp_session_id: &str,
++        gate: AcpProviderCompletionGate,
++        status: CompletionStatus,
++        message: impl Into<String>,
++    ) -> Result<bool, AcpBridgeError> {
++        self.bridge.record_provider_completion_gate(
++            host,
++            acp_session_id,
++            gate,
++            status,
++            message,
++        )
++    }
++
++    pub(crate) fn begin_managed_validation(
++        &mut self,
++        host: &mut AgentHost,
++        acp_session_id: &str,
++        code_changes_present: bool,
++    ) -> Result<(), AcpBridgeError> {
++        self.bridge
++            .begin_managed_validation(host, acp_session_id, code_changes_present)
++    }
++
++    pub(crate) fn cancel_run(
++        &mut self,
++        host: &mut AgentHost,
++        acp_session_id: &str,
++    ) -> Result<(), AcpBridgeError> {
++        self.bridge.cancel_run(host, acp_session_id)
++    }
++
++    pub(crate) fn close_session(&mut self, acp_session_id: &str) -> Result<(), AcpBridgeError> {
++        self.bridge.close_session(acp_session_id)
++    }
++
++    pub(crate) fn reap_terminal_sessions(
++        &mut self,
++        host: &AgentHost,
++    ) -> Result<(), AcpBridgeError> {
++        self.bridge.reap_terminal_sessions(host)
++    }
++}
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 95555c24873e2e26792fddb16237a5c3d02eb499..c5e9f4f6bbdb94513cb766faf1f8eca609f690b5 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -7,6 +7,8 @@
+ mod benchmark_campaign_ui;
+ mod benchmark_child;
+ mod benchmark_experiment_ui;
++#[allow(dead_code)]
++mod execution_routing;
+ mod settings_ui;
+ 
+ use crate::agent_benchmark::{
+diff --git a/crates/editor/src/ai_studio/execution_routing.rs b/crates/editor/src/ai_studio/execution_routing.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..16776f83a44ac7099aadf0b835353748e24847c6
+--- /dev/null
++++ b/crates/editor/src/ai_studio/execution_routing.rs
+@@ -0,0 +1,209 @@
++//! Process-local routing from stable AI Studio selections to execution drivers.
++//!
++//! User-visible logical AI identities remain stable while this table chooses
++//! Legacy or one registered ACP descriptor. Driver choice is deliberately not
++//! serialized into preferences.
++
++use crate::acp_agent_runtime::AcpAgentRegistry;
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum AiExecutionDriver {
++    Legacy,
++    Acp { agent_id: String },
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AiExecutionResolution {
++    pub(crate) logical_ai_id: String,
++    pub(crate) route_key: String,
++    pub(crate) driver: AiExecutionDriver,
++}
++
++#[derive(Debug, Default)]
++pub(super) struct AiExecutionRouter {
++    routes: BTreeMap<String, AiExecutionDriver>,
++    available_acp_agents: BTreeSet<String>,
++}
++
++impl AiExecutionRouter {
++    pub(super) fn set_acp_route(
++        &mut self,
++        route_key: impl Into<String>,
++        agent_id: impl Into<String>,
++    ) -> Result<(), AiExecutionRoutingError> {
++        let route_key = validate_route_key(route_key.into())?;
++        let agent_id = validate_agent_id(agent_id.into())?;
++        self.routes
++            .insert(route_key, AiExecutionDriver::Acp { agent_id });
++        Ok(())
++    }
++
++    pub(super) fn set_legacy_route(
++        &mut self,
++        route_key: impl Into<String>,
++    ) -> Result<(), AiExecutionRoutingError> {
++        let route_key = validate_route_key(route_key.into())?;
++        self.routes.insert(route_key, AiExecutionDriver::Legacy);
++        Ok(())
++    }
++
++    pub(super) fn sync_registry(&mut self, registry: &dyn AcpAgentRegistry) {
++        self.available_acp_agents = registry
++            .descriptors()
++            .into_iter()
++            .map(|descriptor| descriptor.id.clone())
++            .collect();
++    }
++
++    pub(super) fn resolve(
++        &self,
++        logical_ai_id: impl Into<String>,
++        route_key: impl Into<String>,
++    ) -> Result<AiExecutionResolution, AiExecutionRoutingError> {
++        let logical_ai_id = validate_logical_ai_id(logical_ai_id.into())?;
++        let route_key = validate_route_key(route_key.into())?;
++        let driver = self
++            .routes
++            .get(&route_key)
++            .cloned()
++            .unwrap_or(AiExecutionDriver::Legacy);
++        if let AiExecutionDriver::Acp { agent_id } = &driver
++            && !self.available_acp_agents.contains(agent_id)
++        {
++            return Err(AiExecutionRoutingError::AcpAgentUnavailable {
++                logical_ai_id,
++                agent_id: agent_id.clone(),
++            });
++        }
++        Ok(AiExecutionResolution {
++            logical_ai_id,
++            route_key,
++            driver,
++        })
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) enum AiExecutionRoutingError {
++    InvalidLogicalAiId(String),
++    InvalidRouteKey(String),
++    InvalidAcpAgentId(String),
++    AcpAgentUnavailable {
++        logical_ai_id: String,
++        agent_id: String,
++    },
++}
++
++impl fmt::Display for AiExecutionRoutingError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::InvalidLogicalAiId(id) => write!(formatter, "invalid logical AI identity `{id}`"),
++            Self::InvalidRouteKey(key) => write!(formatter, "invalid AI execution route key `{key}`"),
++            Self::InvalidAcpAgentId(id) => write!(formatter, "invalid ACP agent ID `{id}`"),
++            Self::AcpAgentUnavailable { logical_ai_id, agent_id } => write!(
++                formatter,
++                "ACP execution for `{logical_ai_id}` requires registered agent `{agent_id}`, but that ACP adapter is unavailable. Register it or explicitly select the Legacy route; GameEngine will not silently fall back."
++            ),
++        }
++    }
++}
++
++fn validate_logical_ai_id(value: String) -> Result<String, AiExecutionRoutingError> {
++    if valid_identifier(&value) {
++        Ok(value)
++    } else {
++        Err(AiExecutionRoutingError::InvalidLogicalAiId(value))
++    }
++}
++
++fn validate_route_key(value: String) -> Result<String, AiExecutionRoutingError> {
++    if valid_identifier(&value) {
++        Ok(value)
++    } else {
++        Err(AiExecutionRoutingError::InvalidRouteKey(value))
++    }
++}
++
++fn validate_agent_id(value: String) -> Result<String, AiExecutionRoutingError> {
++    if valid_identifier(&value) {
++        Ok(value)
++    } else {
++        Err(AiExecutionRoutingError::InvalidAcpAgentId(value))
++    }
++}
++
++fn valid_identifier(value: &str) -> bool {
++    !value.is_empty() && value.trim() == value && !value.chars().any(char::is_whitespace)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::acp_agent_runtime::{
++        AcpAgentDescriptor, AcpAgentRuntime, AcpCapabilities, AcpRuntimeIdentity,
++    };
++    use std::ffi::OsString;
++
++    struct DescriptorRegistry {
++        descriptors: Vec<AcpAgentDescriptor>,
++    }
++
++    impl AcpAgentRegistry for DescriptorRegistry {
++        fn descriptors(&self) -> Vec<&AcpAgentDescriptor> {
++            self.descriptors.iter().collect()
++        }
++
++        fn runtime_mut(&mut self, _id: &str) -> Option<&mut (dyn AcpAgentRuntime + '_)> {
++            None
++        }
++    }
++
++    fn descriptor(id: &str) -> AcpAgentDescriptor {
++        AcpAgentDescriptor {
++            id: id.to_owned(),
++            executable: OsString::from("future-acp-agent"),
++            arguments: Vec::new(),
++            environment: BTreeMap::new(),
++            capabilities: AcpCapabilities::default(),
++            runtime_identity: AcpRuntimeIdentity::stable("future-acp-agent", None),
++        }
++    }
++
++    #[test]
++    fn explicit_acp_route_requires_registered_descriptor() {
++        let mut router = AiExecutionRouter::default();
++        router
++            .set_acp_route("agent:codex", "codex.acp")
++            .expect("route");
++        let error = router
++            .resolve("agent:codex", "agent:codex")
++            .expect_err("missing descriptor");
++        assert!(matches!(error, AiExecutionRoutingError::AcpAgentUnavailable { .. }));
++    }
++
++    #[test]
++    fn managed_model_identity_can_share_one_registered_route() {
++        let mut router = AiExecutionRouter::default();
++        router
++            .set_acp_route("model:managed_local", "goose.managed-local")
++            .expect("route");
++        let registry = DescriptorRegistry {
++            descriptors: vec![descriptor("goose.managed-local")],
++        };
++        router.sync_registry(&registry);
++        let resolution = router
++            .resolve(
++                "model:managed_local:model-a",
++                "model:managed_local",
++            )
++            .expect("registered route");
++        assert_eq!(
++            resolution.driver,
++            AiExecutionDriver::Acp {
++                agent_id: "goose.managed-local".to_owned(),
++            }
++        );
++    }
++}
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 092be4bbf826f0d1908ee6d1e9c802395b47d4ea..f25d8b680f9ee292f43ca89696f597bfd4b40338 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -11,6 +11,8 @@
+ #[allow(dead_code)]
+ mod acp_agent_host_bridge;
+ #[allow(dead_code)]
++mod acp_integration;
++#[allow(dead_code)]
+ mod acp_agent_runtime;
+ #[allow(dead_code)]
+ mod claude_acp_adapter;
