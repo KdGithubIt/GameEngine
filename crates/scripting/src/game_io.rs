@@ -137,6 +137,8 @@ pub enum GameCommandFamily {
     Timer,
     /// Targeted and broadcast project-defined event emission.
     GameEvent,
+    /// Timeline playback control on an entity carrying a Timeline player.
+    Timeline,
 }
 
 /// Collision shape for a command-created attack hitbox.
@@ -899,6 +901,51 @@ impl GameCommand {
     /// Restarts a scene VFX player from deterministic time zero and resumes it.
     pub fn restart_vfx(target: GameEntityHandle) -> Self {
         simple_target_command(GameCommandFamily::Vfx, "restart", target)
+    }
+
+    /// Starts or resumes Timeline playback on a Timeline player entity.
+    pub fn play_timeline(target: GameEntityHandle) -> Self {
+        simple_target_command(GameCommandFamily::Timeline, "play", target)
+    }
+
+    /// Holds a Timeline playhead without discarding player state.
+    pub fn pause_timeline(target: GameEntityHandle) -> Self {
+        simple_target_command(GameCommandFamily::Timeline, "pause", target)
+    }
+
+    /// Stops a Timeline, resetting its playhead and loop progress.
+    pub fn stop_timeline(target: GameEntityHandle) -> Self {
+        simple_target_command(GameCommandFamily::Timeline, "stop", target)
+    }
+
+    /// Moves a Timeline playhead to an exact tick.
+    ///
+    /// Ticks are the persisted authoring unit, so a project seeks to the same
+    /// integer position the sequence was authored at rather than to a float
+    /// second that would land between two boundaries.
+    pub fn seek_timeline(target: GameEntityHandle, tick: i64) -> Self {
+        Self {
+            family: GameCommandFamily::Timeline,
+            request_id: None,
+            target: Some(target),
+            payload: Value::Object(BTreeMap::from([
+                ("operation".to_owned(), Value::String("seek".to_owned())),
+                ("tick".to_owned(), Value::I64(tick)),
+            ])),
+        }
+    }
+
+    /// Sets the playback rate multiplier of a Timeline player.
+    pub fn set_timeline_rate(target: GameEntityHandle, rate: f64) -> Self {
+        Self {
+            family: GameCommandFamily::Timeline,
+            request_id: None,
+            target: Some(target),
+            payload: Value::Object(BTreeMap::from([
+                ("operation".to_owned(), Value::String("set_rate".to_owned())),
+                ("rate".to_owned(), Value::F64(rate)),
+            ])),
+        }
     }
 
     /// Creates an initially enabled trigger hitbox on an empty carrier entity.

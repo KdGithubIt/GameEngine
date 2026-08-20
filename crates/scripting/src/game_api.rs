@@ -2223,6 +2223,7 @@ impl GameSystemParam for Commands {
             GameCommandFamily::Save,
             GameCommandFamily::Timer,
             GameCommandFamily::GameEvent,
+            GameCommandFamily::Timeline,
         ]);
     }
     fn fetch(_: &GameInvocation, output: TypedOutput) -> Result<Self, GameApiError> {

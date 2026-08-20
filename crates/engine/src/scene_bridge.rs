@@ -120,6 +120,8 @@ pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
 pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
 /// Native sparse Tile Map scene component.
 pub const TILE_MAP_2D_COMPONENT: &str = "engine.tile_map_2d";
+/// Stable component type identifier for the Timeline player (ADR 0126).
+pub const TIMELINE_PLAYER_COMPONENT: &str = "engine.timeline_player";
 
 /// The `"engine.directional_light"` component type string recognised by the bridge.
 pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";

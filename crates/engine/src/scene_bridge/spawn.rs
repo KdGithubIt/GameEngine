@@ -3332,6 +3332,75 @@ fn resolve_sprite_animation_document(
     Ok(document)
 }
 
+/// Loads, validates, and compiles one Timeline document for a scene entity.
+///
+/// The compiled schedule is immutable and shared by every player of the same
+/// document, so two entities playing one Timeline never carry two copies of it.
+fn load_compiled_timeline(
+    timeline_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<crate::timeline::CompiledTimeline>, SceneBridgeError> {
+    let path = manifest_asset_path(timeline_id, context)?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| native_2d_asset_error(timeline_id, &path, message))?
+    } else {
+        std::fs::read_to_string(&path)
+            .map_err(|error| native_2d_asset_error(timeline_id, &path, error.to_string()))?
+    };
+    let document = engine_authoring::TimelineDocument::from_json(&json)
+        .map_err(|error| native_2d_asset_error(timeline_id, &path, error.to_string()))?;
+    let compiled = crate::timeline::compile_timeline(&document)
+        .map_err(|error| native_2d_asset_error(timeline_id, &path, error.to_string()))?;
+    Ok(Arc::new(compiled))
+}
+
+pub(crate) fn spawn_timeline_player_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(TIMELINE_PLAYER_COMPONENT);
+    const EXPECTED: &str =
+        "a TimelinePlayer object with timeline, autoplay, rate, and looping fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(timeline_id) = fields.assignable_asset_ref("timeline")?.cloned() else {
+        context
+            .asset_diagnostics
+            .push(component_inactive_diagnostic(
+                context.authoring_entity,
+                &component_type,
+                "timeline",
+            ));
+        return Ok(());
+    };
+    let autoplay = fields.bool("autoplay")?;
+    let rate = fields.f32("rate")?;
+    let looping = fields.bool("looping")?;
+    let compiled = load_compiled_timeline(&timeline_id, context)?;
+    let duration = compiled.duration;
+    let mut component = crate::timeline::TimelinePlayerComponent::new(compiled);
+    component.autoplay = autoplay;
+    if !component.player.set_rate(rate) {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    if looping
+        && !component
+            .player
+            .set_loop_region(Some(crate::timeline::LoopRegion {
+                start: engine_authoring::TimelineTick::ZERO,
+                end: duration,
+                count: None,
+            }))
+    {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(entity, component)?;
+    Ok(())
+}
+
 pub(crate) fn spawn_sprite_animator_2d_component(
     entity: Entity,
     value: &Value,

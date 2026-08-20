@@ -35,6 +35,8 @@ pub enum AssetKind {
     TileSet,
     /// `*.tilemap.json` Native 2D sparse tile-map document.
     TileMap,
+    /// `*.timeline.json` Timeline / Sequencer document (ADR 0126).
+    Timeline,
     /// `*.vmd` MMD motion source (ADR 0097 §3).
     ///
     /// Its own kind rather than [`Self::Mesh`] because a `.vmd` carries no
@@ -83,6 +85,7 @@ impl AssetKind {
             Self::SpriteAnimation => "[anim2d]",
             Self::TileSet => "[tileset]",
             Self::TileMap => "[tilemap]",
+            Self::Timeline => "[timeline]",
             Self::MotionSource => "[motion]",
             Self::Texture => "[tex]",
             Self::Mesh => "[mesh]",
@@ -636,6 +639,8 @@ pub fn classify_file_name(name: &str) -> Option<(AssetKind, String)> {
         (AssetKind::TileSet, ".tileset.json".len())
     } else if lower.ends_with(".tilemap.json") {
         (AssetKind::TileMap, ".tilemap.json".len())
+    } else if lower.ends_with(".timeline.json") {
+        (AssetKind::Timeline, ".timeline.json".len())
     } else if lower.ends_with(".animset.json") {
         (AssetKind::AnimationSet, ".animset.json".len())
     } else if lower.ends_with(".material.json") {

@@ -147,6 +147,9 @@ impl EditorShell {
                 if requested == "VFX Builder" {
                     app.prepare_vfx_visual_validation();
                 }
+                if requested == "Sequencer" {
+                    authoring_windows.prepare_sequencer_visual_validation();
+                }
                 let tool = AuthoringTool::ALL
                     .into_iter()
                     .find(|tool| tool.label() == requested)
@@ -372,6 +375,11 @@ impl eframe::App for EditorShell {
         if self.project_lease.take_close_request() {
             context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
             return;
+        }
+        if let Some(relative) = self.app.take_sequencer_open_request() {
+            let project = self.app.project_root().clone();
+            self.authoring_windows.open(AuthoringTool::Sequencer);
+            self.authoring_windows.open_timeline(&project, &relative);
         }
         if self.app.take_ai_studio_restore_completed() {
             self.ai_studio.report_runtime_result(

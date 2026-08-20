@@ -278,6 +278,7 @@ fn registry_iterates_in_registration_order() {
             NAVIGATION_LINK_COMPONENT,
             NAVIGATION_MODIFIER_COMPONENT,
             VFX_PLAYER_COMPONENT,
+            TIMELINE_PLAYER_COMPONENT,
             TILE_MAP_2D_COMPONENT,
         ]
     );

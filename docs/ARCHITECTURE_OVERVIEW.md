@@ -41,6 +41,7 @@ The current workspace contains these runtime-domain packages:
 | `engine-platform` | Native input, audio, gamepad, and target-specific adapters |
 | `engine-scripting` | Host-independent project scripting and game SDK contracts |
 | `engine-scene` | Scene loading/management, save, and replay domain ownership |
+| `engine-timeline` | Neutral Timeline schedule, player state, marker crossing, and track registry |
 | `engine` | Final runtime composition, concrete cross-domain adapters, and compatibility facade |
 
 The application and authoring side contains `engine-authoring`,

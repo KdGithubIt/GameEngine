@@ -108,6 +108,10 @@ impl EditorApp {
                 self.open_animation_set_editor(PathBuf::from(&relative), abs_path);
                 return;
             }
+            AssetKind::Timeline => {
+                self.pending_sequencer_open = Some(PathBuf::from(&relative));
+                return;
+            }
             AssetKind::Mesh
             | AssetKind::AnimationClip
             | AssetKind::MotionSource

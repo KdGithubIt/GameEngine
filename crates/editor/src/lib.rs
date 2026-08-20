@@ -65,6 +65,7 @@ mod resource_arbitration;
 pub mod runtime;
 pub mod runtime_debug;
 pub mod scene_view;
+mod sequencer;
 pub mod session;
 pub mod skinned_model_bake;
 pub mod systems_panel;

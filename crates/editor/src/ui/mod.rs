@@ -250,6 +250,12 @@ pub struct EditorApp {
     inference_restore_pending: bool,
     /// One-shot completion signal emitted only after the restored Editor drew a frame.
     inference_restore_completed: bool,
+    /// Timeline document the Asset Browser asked the Sequencer to open.
+    ///
+    /// The Sequencer window lives in the Editor shell rather than in this app,
+    /// so an open request is handed over once per frame instead of the browser
+    /// reaching into a window it does not own.
+    pending_sequencer_open: Option<std::path::PathBuf>,
     /// Project-scoped CPU/GPU residency shared by every Editor preview surface.
     preview_residency: ProjectAssetResidency,
     /// Scene view offscreen renderer and editor orbit camera.
@@ -473,6 +479,7 @@ impl EditorApp {
             inference_focused: false,
             inference_restore_pending: false,
             inference_restore_completed: false,
+            pending_sequencer_open: None,
             preview_residency: preview_residency.clone(),
             scene_view: SceneView::with_residency(preview_residency.clone()),
             scene_view_problem: None,

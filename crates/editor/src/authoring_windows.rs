@@ -2,6 +2,7 @@
 
 use crate::authoring_tools::AuthoringTool;
 use crate::native_2d_editor::Native2dEditorState;
+use crate::sequencer::SequencerState;
 use crate::vfx_builder::VfxBuilderState;
 use eframe::{Frame, egui};
 use engine_authoring::ProjectRoot;
@@ -18,12 +19,14 @@ pub struct AuthoringWindows {
     advanced_geometry_open: bool,
     native_2d_open: bool,
     vfx_open: bool,
+    sequencer_open: bool,
     ability: ability::EmbeddedWindow,
     runtime_event: runtime_event::EmbeddedWindow,
     ui_contract: ui_contract::EmbeddedWindow,
     advanced_geometry: advanced_geometry::EmbeddedWindow,
     native_2d: Native2dEditorState,
     vfx: VfxBuilderState,
+    sequencer: SequencerState,
 }
 
 impl AuthoringWindows {
@@ -35,12 +38,24 @@ impl AuthoringWindows {
             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
             AuthoringTool::AdvancedGeometryDesigner => self.advanced_geometry_open = true,
             AuthoringTool::Native2d => self.native_2d_open = true,
+            AuthoringTool::Sequencer => self.sequencer_open = true,
             AuthoringTool::VfxBuilder => {
                 self.vfx_open = true;
                 #[cfg(feature = "visual-validation")]
                 self.vfx.prepare_visual_validation();
             }
         }
+    }
+
+    /// Loads the deterministic Sequencer fixture used by visual validation.
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_sequencer_visual_validation(&mut self) {
+        self.sequencer.prepare_visual_validation();
+    }
+
+    /// Opens one Timeline document in the Sequencer workspace.
+    pub fn open_timeline(&mut self, project: &ProjectRoot, relative: &std::path::Path) {
+        self.sequencer.open_document(project, relative);
     }
 
     /// Draws every visible authoring window into the current editor frame.
@@ -68,6 +83,24 @@ impl AuthoringWindows {
                 .show(context, |ui| {
                     egui::ScrollArea::both().show(ui, |ui| {
                         self.native_2d.show(ui, project, manifest);
+                    });
+                });
+        }
+        if self.sequencer_open {
+            let permissions = engine_authoring::AuthoringPermissions::read_only()
+                .with(engine_authoring::AuthoringPermission::Preview)
+                .with(engine_authoring::AuthoringPermission::ProjectDataWrite)
+                .with(engine_authoring::AuthoringPermission::AssetWrite);
+            let sequencer = &mut self.sequencer;
+            egui::Window::new("Sequencer")
+                .id(egui::Id::new("embedded_sequencer"))
+                .open(&mut self.sequencer_open)
+                .default_width(1_180.0)
+                .default_height(720.0)
+                .resizable(true)
+                .show(context, |ui| {
+                    egui::ScrollArea::both().show(ui, |ui| {
+                        sequencer.show(ui, &permissions);
                     });
                 });
         }

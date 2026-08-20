@@ -18,6 +18,7 @@ eframe = "0.34.3"
 engine = { path = "../engine" }
 engine-assets = { path = "../assets" }
 engine-authoring = { path = "../authoring" }
+engine-timeline = { path = "../timeline" }
 engine-mcp = { path = "../mcp" }
 engine-project-lifecycle = { path = "../project-lifecycle" }
 getrandom = "0.3"

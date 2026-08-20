@@ -10,7 +10,7 @@ use crate::{
     ANIMATION_SET_SCHEMA_VERSION, AnimationSet, AuthoringPermission, AuthoringPermissionError,
     AuthoringPermissions, Diagnostic, MaterialAsset, PROJECT_SETTINGS_SCHEMA_VERSION,
     ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
-    TileSetDocument,
+    TileSetDocument, TimelineDocument,
 };
 use serde::Serialize;
 use std::fmt;
@@ -107,6 +107,14 @@ impl TypedAuthoringDocument for TileSetDocument {
 
 impl TypedAuthoringDocument for TileMapDocument {
     const INVALID_CODE: &'static str = "tile_map.invalid";
+
+    fn validate_authoring(&self) -> Result<(), String> {
+        validate_native_2d(self.validate())
+    }
+}
+
+impl TypedAuthoringDocument for TimelineDocument {
+    const INVALID_CODE: &'static str = "timeline.invalid";
 
     fn validate_authoring(&self) -> Result<(), String> {
         validate_native_2d(self.validate())

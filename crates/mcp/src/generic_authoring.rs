@@ -160,6 +160,7 @@ impl GenericAuthoringMcpTools {
                 AuthoringDomain::ProjectSettings,
                 AuthoringDomain::AnimationSet,
                 AuthoringDomain::Native2d,
+                AuthoringDomain::Timeline,
             ],
         )
     }
@@ -349,7 +350,8 @@ mod tests {
         assert!(names.contains(&"sprite_animation.validate".to_owned()));
         assert!(names.contains(&"tile_set.preview".to_owned()));
         assert!(names.contains(&"tile_map.inspect".to_owned()));
-        assert_eq!(names.len(), 40);
+        assert!(names.contains(&"timeline.apply".to_owned()));
+        assert_eq!(names.len(), 44);
     }
 
     #[test]

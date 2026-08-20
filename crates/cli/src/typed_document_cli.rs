@@ -4,7 +4,7 @@ use super::{CliError, CliRunResult, to_json};
 use engine_authoring::{
     AnimationSet, AuthoringPermission, AuthoringPermissions, Diagnostic, MaterialAsset,
     ProjectRoot, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
-    TileSetDocument, TypedAuthoringDocument, TypedDocumentAuthoringError,
+    TileSetDocument, TimelineDocument, TypedAuthoringDocument, TypedDocumentAuthoringError,
     TypedDocumentAuthoringService, TypedDocumentAuthoringState, replace_file_contents,
 };
 use serde::de::DeserializeOwned;
@@ -65,9 +65,9 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
             ))
         }
         [domain, command, project, relative]
-            if is_native_2d_domain(domain) && (command == "inspect" || command == "validate") =>
+            if is_typed_asset_domain(domain) && (command == "inspect" || command == "validate") =>
         {
-            Some(native_2d_read(
+            Some(typed_asset_document_read(
                 domain,
                 command,
                 Path::new(project),
@@ -75,9 +75,9 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
             ))
         }
         [domain, command, project, relative, replacement]
-            if is_native_2d_domain(domain) && (command == "preview" || command == "apply") =>
+            if is_typed_asset_domain(domain) && (command == "preview" || command == "apply") =>
         {
-            Some(native_2d_mutate(
+            Some(typed_asset_document_mutate(
                 domain,
                 Path::new(project),
                 relative,
@@ -89,7 +89,7 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
             value == "material"
                 || value == "project_settings"
                 || value == "animation_set"
-                || is_native_2d_domain(value)
+                || is_typed_asset_domain(value)
         }) =>
         {
             Some(Err(CliError::UnknownCommand {
@@ -174,59 +174,66 @@ fn animation_set_mutate(
     })
 }
 
-fn is_native_2d_domain(domain: &str) -> bool {
+fn is_typed_asset_domain(domain: &str) -> bool {
     matches!(
         domain,
-        "sprite_atlas" | "sprite_animation" | "tile_set" | "tile_map"
+        "sprite_atlas" | "sprite_animation" | "tile_set" | "tile_map" | "timeline"
     )
 }
 
-trait Native2dCliDocument: TypedAuthoringDocument + DeserializeOwned {
-    fn to_native_2d_json(&self) -> Result<String, serde_json::Error>;
+trait TypedAssetCliDocument: TypedAuthoringDocument + DeserializeOwned {
+    fn to_typed_asset_json(&self) -> Result<String, serde_json::Error>;
 }
 
-impl Native2dCliDocument for SpriteAtlasDocument {
-    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
+impl TypedAssetCliDocument for SpriteAtlasDocument {
+    fn to_typed_asset_json(&self) -> Result<String, serde_json::Error> {
         self.to_canonical_json()
     }
 }
 
-impl Native2dCliDocument for SpriteAnimationDocument {
-    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
+impl TypedAssetCliDocument for SpriteAnimationDocument {
+    fn to_typed_asset_json(&self) -> Result<String, serde_json::Error> {
         self.to_canonical_json()
     }
 }
 
-impl Native2dCliDocument for TileSetDocument {
-    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
+impl TypedAssetCliDocument for TileSetDocument {
+    fn to_typed_asset_json(&self) -> Result<String, serde_json::Error> {
         self.to_canonical_json()
     }
 }
 
-impl Native2dCliDocument for TileMapDocument {
-    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
+impl TypedAssetCliDocument for TileMapDocument {
+    fn to_typed_asset_json(&self) -> Result<String, serde_json::Error> {
         self.to_canonical_json()
     }
 }
 
-fn native_2d_read(
+impl TypedAssetCliDocument for TimelineDocument {
+    fn to_typed_asset_json(&self) -> Result<String, serde_json::Error> {
+        self.to_canonical_json()
+    }
+}
+
+fn typed_asset_document_read(
     domain: &str,
     command: &str,
     project: &Path,
     relative: &str,
 ) -> Result<CliRunResult, CliError> {
     match domain {
-        "sprite_atlas" => native_2d_read_typed::<SpriteAtlasDocument>(command, project, relative),
+        "sprite_atlas" => typed_asset_read::<SpriteAtlasDocument>(command, project, relative),
         "sprite_animation" => {
-            native_2d_read_typed::<SpriteAnimationDocument>(command, project, relative)
+            typed_asset_read::<SpriteAnimationDocument>(command, project, relative)
         }
-        "tile_set" => native_2d_read_typed::<TileSetDocument>(command, project, relative),
-        "tile_map" => native_2d_read_typed::<TileMapDocument>(command, project, relative),
-        _ => unreachable!("caller checked Native 2D domain"),
+        "tile_set" => typed_asset_read::<TileSetDocument>(command, project, relative),
+        "tile_map" => typed_asset_read::<TileMapDocument>(command, project, relative),
+        "timeline" => typed_asset_read::<TimelineDocument>(command, project, relative),
+        _ => unreachable!("caller checked the typed asset document domain"),
     }
 }
 
-fn native_2d_mutate(
+fn typed_asset_document_mutate(
     domain: &str,
     project: &Path,
     relative: &str,
@@ -235,54 +242,54 @@ fn native_2d_mutate(
 ) -> Result<CliRunResult, CliError> {
     match domain {
         "sprite_atlas" => {
-            native_2d_mutate_typed::<SpriteAtlasDocument>(project, relative, replacement, persist)
+            typed_asset_mutate::<SpriteAtlasDocument>(project, relative, replacement, persist)
         }
-        "sprite_animation" => native_2d_mutate_typed::<SpriteAnimationDocument>(
-            project,
-            relative,
-            replacement,
-            persist,
-        ),
+        "sprite_animation" => {
+            typed_asset_mutate::<SpriteAnimationDocument>(project, relative, replacement, persist)
+        }
         "tile_set" => {
-            native_2d_mutate_typed::<TileSetDocument>(project, relative, replacement, persist)
+            typed_asset_mutate::<TileSetDocument>(project, relative, replacement, persist)
         }
         "tile_map" => {
-            native_2d_mutate_typed::<TileMapDocument>(project, relative, replacement, persist)
+            typed_asset_mutate::<TileMapDocument>(project, relative, replacement, persist)
         }
-        _ => unreachable!("caller checked Native 2D domain"),
+        "timeline" => {
+            typed_asset_mutate::<TimelineDocument>(project, relative, replacement, persist)
+        }
+        _ => unreachable!("caller checked the typed asset document domain"),
     }
 }
 
-fn native_2d_read_typed<T: Native2dCliDocument>(
+fn typed_asset_read<T: TypedAssetCliDocument>(
     command: &str,
     project: &Path,
     relative: &str,
 ) -> Result<CliRunResult, CliError> {
-    let (_, document) = load_native_2d::<T>(project, relative)?;
+    let (_, document) = load_typed_asset::<T>(project, relative)?;
     match command {
         "inspect" => inspect(document),
         "validate" => validate(document),
-        _ => unreachable!("caller checked Native 2D read command"),
+        _ => unreachable!("caller checked the typed asset read command"),
     }
 }
 
-fn native_2d_mutate_typed<T: Native2dCliDocument>(
+fn typed_asset_mutate<T: TypedAssetCliDocument>(
     project: &Path,
     relative: &str,
     replacement_path: &Path,
     persist: bool,
 ) -> Result<CliRunResult, CliError> {
-    let (path, document) = load_native_2d::<T>(project, relative)?;
+    let (path, document) = load_typed_asset::<T>(project, relative)?;
     let replacement: T = load_json(replacement_path)?;
     mutate(document, replacement, persist, |document| {
         let json = document
-            .to_native_2d_json()
+            .to_typed_asset_json()
             .map_err(|error| authoring_message(T::INVALID_CODE, error.to_string()))?;
         replace_file_contents(&path, &json).map_err(|source| CliError::Persist { source })
     })
 }
 
-fn load_native_2d<T: Native2dCliDocument>(
+fn load_typed_asset<T: TypedAssetCliDocument>(
     project: &Path,
     relative: &str,
 ) -> Result<(PathBuf, T), CliError> {
