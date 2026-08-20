@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "        let session_path = storage\n            .join(\"sessions\")\n            .join(format!(\"{session}.json\"));",
+  "new": "        let session_path = storage.join(\"sessions\").join(format!(\"{session}.json\"));"
+}
