@@ -23,8 +23,10 @@ use crate::agent_host::{
 };
 use crate::ai_studio_theme as theme;
 use crate::external_agent_provider::{
-    ExternalAgentDiagnostics, ExternalAgentProviderKind, ExternalAgentProviderStatus,
-    ExternalAgentSemanticEvent, build_launch_plan, probe_provider, translate_provider_line,
+    ExternalAgentDiagnostics, ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement,
+    ExternalAgentProviderKind, ExternalAgentProviderStatus, ExternalAgentSemanticEvent,
+    build_launch_plan, probe_provider, probe_wsl_loopback_reachability, translate_provider_line,
+    wsl_environment_forwarding,
 };
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
@@ -94,6 +96,10 @@ struct AiStudioPreferences {
     #[serde(default)]
     external_agent_provider: ExternalAgentProviderKind,
     #[serde(default)]
+    external_agent_execution_environment: ExternalAgentExecutionEnvironment,
+    #[serde(default)]
+    external_agent_wsl_distribution: String,
+    #[serde(default)]
     model_backend: ModelBackendPreference,
     #[serde(default)]
     managed_execution_environment: ManagedExecutionEnvironment,
@@ -118,6 +124,8 @@ impl Default for AiStudioPreferences {
             quality_preference: QualityPreference::Auto,
             confinement_requirement: AgentConfinementRequirement::default(),
             external_agent_provider: ExternalAgentProviderKind::default(),
+            external_agent_execution_environment: ExternalAgentExecutionEnvironment::default(),
+            external_agent_wsl_distribution: String::new(),
             model_backend: ModelBackendPreference::Local,
             managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
             managed_model_id: String::new(),
@@ -700,6 +708,8 @@ pub struct AiStudioPanel {
     quality_preference: QualityPreference,
     confinement_requirement: AgentConfinementRequirement,
     external_provider_kind: ExternalAgentProviderKind,
+    external_provider_environment: ExternalAgentExecutionEnvironment,
+    external_provider_wsl_distribution: String,
     external_provider_status: ExternalAgentProviderStatus,
     model_backend: ModelBackendPreference,
     managed_local_runtime: ManagedLocalRuntime,
@@ -839,6 +849,8 @@ impl AiStudioPanel {
             quality_preference: preferences.quality_preference,
             confinement_requirement: preferences.confinement_requirement,
             external_provider_kind: preferences.external_agent_provider,
+            external_provider_environment: preferences.external_agent_execution_environment,
+            external_provider_wsl_distribution: preferences.external_agent_wsl_distribution,
             external_provider_status: ExternalAgentProviderStatus::unchecked(
                 preferences.external_agent_provider,
             ),
@@ -3807,6 +3819,8 @@ impl AiStudioPanel {
             quality_preference: self.quality_preference,
             confinement_requirement: self.confinement_requirement,
             external_agent_provider: self.external_provider_kind,
+            external_agent_execution_environment: self.external_provider_environment,
+            external_agent_wsl_distribution: self.external_provider_wsl_distribution.clone(),
             model_backend: self.model_backend,
             managed_execution_environment: self.managed_execution_environment,
             managed_model_id: self.managed_model_id.clone(),
@@ -4445,9 +4459,20 @@ impl AiStudioPanel {
         }
     }
 
+    /// Where the selected external provider process is placed on this machine.
+    fn external_agent_placement(&self) -> ExternalAgentExecutionPlacement {
+        ExternalAgentExecutionPlacement {
+            environment: self.external_provider_environment,
+            distribution: self.external_provider_wsl_distribution.clone(),
+        }
+    }
+
     fn refresh_external_provider_status(&mut self) {
-        self.external_provider_status =
-            probe_provider(self.external_provider_kind, &self.provider_program);
+        self.external_provider_status = probe_provider(
+            self.external_provider_kind,
+            &self.provider_program,
+            &self.external_agent_placement(),
+        );
     }
 
     fn external_provider_is_requested(&self) -> bool {
@@ -4496,7 +4521,42 @@ impl AiStudioPanel {
                 refresh_provider = true;
             }
         });
-        if previous_provider != self.external_provider_kind {
+        let previous_environment = self.external_provider_environment;
+        let previous_distribution = self.external_provider_wsl_distribution.clone();
+        if self.external_provider_kind != ExternalAgentProviderKind::Generic {
+            ui.horizontal(|ui| {
+                ui.label("Provider runs in");
+                egui::ComboBox::from_id_salt("ai_studio_external_agent_environment")
+                    .selected_text(self.external_provider_environment.label())
+                    .show_ui(ui, |ui| {
+                        for environment in ExternalAgentExecutionEnvironment::ALL {
+                            ui.selectable_value(
+                                &mut self.external_provider_environment,
+                                environment,
+                                environment.label(),
+                            );
+                        }
+                    });
+                if self.external_provider_environment
+                    == ExternalAgentExecutionEnvironment::Wsl2Linux
+                {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.external_provider_wsl_distribution)
+                            .desired_width(160.0)
+                            .hint_text("default distribution"),
+                    );
+                }
+            });
+            if self.external_provider_environment == ExternalAgentExecutionEnvironment::Wsl2Linux {
+                ui.small(
+                    "The provider CLI and its sign-in live inside the distribution. The Editor MCP endpoint stays bound to loopback, so the distribution must share the host loopback (WSL mirrored networking).",
+                );
+            }
+        }
+        if previous_provider != self.external_provider_kind
+            || previous_environment != self.external_provider_environment
+            || previous_distribution != self.external_provider_wsl_distribution
+        {
             self.external_provider_status =
                 ExternalAgentProviderStatus::unchecked(self.external_provider_kind);
             self.save_preferences();
@@ -5351,8 +5411,30 @@ impl AiStudioPanel {
             runtime_evaluation_context.as_deref(),
         );
         let generic_args = split_direct_args(&generic_args_text);
+        let placement = self.external_agent_placement();
+        // A provider placed in WSL2 reaches the Editor only when the
+        // distribution shares the host loopback. Proving that here keeps the
+        // failure at launch, where it names the cause, instead of inside a turn.
+        if let Err(error) = probe_wsl_loopback_reachability(&placement, &self.connection.endpoint) {
+            match purpose {
+                ExternalAgentPurpose::BuildOrRepair => self.fail_run(run_id, error),
+                ExternalAgentPurpose::RuntimeEvaluation => {
+                    self.record_runtime_evaluation_failure(run_id, error);
+                }
+            }
+            return;
+        }
+        if placement.environment == ExternalAgentExecutionEnvironment::Wsl2Linux {
+            // Windows variables reach a Linux process only when WSLENV names
+            // them, and the captured-frame path must be translated so the
+            // provider opens the file the Editor wrote.
+            let forwarding =
+                wsl_environment_forwarding(&environment, &["GAMEENGINE_AGENT_CAPTURE_PATH"]);
+            environment.push(forwarding);
+        }
         let launch_plan = match build_launch_plan(
             provider_kind,
+            &placement,
             &generic_program,
             &generic_args,
             &provider_prompt,
@@ -6880,6 +6962,8 @@ mod tests {
             quality_preference: QualityPreference::Balanced,
             confinement_requirement: AgentConfinementRequirement::default(),
             external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
+            external_agent_execution_environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
+            external_agent_wsl_distribution: "Ubuntu-24.04".to_owned(),
             model_backend: ModelBackendPreference::HostedApi,
             managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
             managed_model_id: String::new(),

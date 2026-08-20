@@ -126,6 +126,7 @@ the beginning:
   [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md),
   [0158](0158-conversation-first-ai-studio-presentation-and-transcript-projection.md),
   [0159](0159-benchmark-model-exchange-observability-and-failure-diagnosis.md),
+  [0160](0160-external-agent-execution-environment-and-wsl-placement.md),
   and [0161](0161-managed-local-multimodal-input-and-projector-registration.md).
 
 ## Proposed Decisions
@@ -311,4 +312,5 @@ implementation contract.
 | [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md) | AI Runtime Debugging, Deterministic Playtest Control, and Host-Owned Observation |
 | [0158](0158-conversation-first-ai-studio-presentation-and-transcript-projection.md) | **Proposed** — Conversation-First AI Studio Presentation and Transcript Projection |
 | [0159](0159-benchmark-model-exchange-observability-and-failure-diagnosis.md) | Benchmark Model Exchange Observability and Failure Diagnosis |
+| [0160](0160-external-agent-execution-environment-and-wsl-placement.md) | External Agent Execution Environment and WSL Placement |
 | [0161](0161-managed-local-multimodal-input-and-projector-registration.md) | Managed Local Multimodal Input and Projector Registration |

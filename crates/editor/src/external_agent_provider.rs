@@ -14,6 +14,56 @@ pub(crate) const GAMEENGINE_AGENT_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT "
 const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
 const GAMEENGINE_MCP_TOKEN_ENV: &str = "GAMEENGINE_MCP_AUTH_TOKEN";
 
+/// Where an external agent provider process runs.
+///
+/// Provider CLIs are commonly installed in a Linux userland on a Windows
+/// workstation. The environment is a launch concern only: it changes how the
+/// process is started and how variables and paths cross the boundary, never
+/// what the provider is allowed to do, which stays owned by the Agent Host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExternalAgentExecutionEnvironment {
+    #[default]
+    WindowsNative,
+    Wsl2Linux,
+}
+
+impl ExternalAgentExecutionEnvironment {
+    pub(crate) const ALL: [Self; 2] = [Self::WindowsNative, Self::Wsl2Linux];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::WindowsNative => "Windows native",
+            Self::Wsl2Linux => "WSL2 Linux",
+        }
+    }
+}
+
+/// How one external agent launch is placed on this machine.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExternalAgentExecutionPlacement {
+    pub(crate) environment: ExternalAgentExecutionEnvironment,
+    /// WSL distribution name, or empty for the user's default distribution.
+    pub(crate) distribution: String,
+}
+
+impl ExternalAgentExecutionPlacement {
+    #[cfg(test)]
+    pub(crate) fn windows_native() -> Self {
+        Self::default()
+    }
+
+    fn wsl_prefix_args(&self) -> Vec<OsString> {
+        let mut args = Vec::new();
+        let distribution = self.distribution.trim();
+        if !distribution.is_empty() {
+            args.push(OsString::from("-d"));
+            args.push(OsString::from(distribution));
+        }
+        args
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ExternalAgentProviderKind {
@@ -187,6 +237,7 @@ impl ExternalAgentProviderStatus {
 pub(crate) fn probe_provider(
     kind: ExternalAgentProviderKind,
     generic_program: &str,
+    placement: &ExternalAgentExecutionPlacement,
 ) -> ExternalAgentProviderStatus {
     if kind == ExternalAgentProviderKind::Generic {
         return ExternalAgentProviderStatus::generic(!generic_program.trim().is_empty());
@@ -194,7 +245,7 @@ pub(crate) fn probe_provider(
     let Some(program) = kind.program() else {
         return ExternalAgentProviderStatus::unchecked(kind);
     };
-    let available = command_success(program, ["--version"]).unwrap_or(false);
+    let available = command_success(placement, program, ["--version"]).unwrap_or(false);
     if !available {
         return ExternalAgentProviderStatus {
             kind,
@@ -203,8 +254,12 @@ pub(crate) fn probe_provider(
         };
     }
     let auth = match kind {
-        ExternalAgentProviderKind::ClaudeCode => command_success(program, ["auth", "status"]),
-        ExternalAgentProviderKind::Codex => command_success(program, ["login", "status"]),
+        ExternalAgentProviderKind::ClaudeCode => {
+            command_success(placement, program, ["auth", "status"])
+        }
+        ExternalAgentProviderKind::Codex => {
+            command_success(placement, program, ["login", "status"])
+        }
         ExternalAgentProviderKind::Generic => Ok(true),
     };
     ExternalAgentProviderStatus {
@@ -218,11 +273,16 @@ pub(crate) fn probe_provider(
     }
 }
 
-fn command_success<I, S>(program: &OsStr, args: I) -> io::Result<bool>
+fn command_success<I, S>(
+    placement: &ExternalAgentExecutionPlacement,
+    program: &OsStr,
+    args: I,
+) -> io::Result<bool>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let (program, args) = placed_command(placement, program.to_os_string(), args);
     Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -232,6 +292,120 @@ where
         .map(|status| status.success())
 }
 
+/// Rewrites one command for the environment it must run in.
+///
+/// A Windows-native placement runs the provider directly. A WSL2 placement runs
+/// the same provider argument vector through `wsl.exe`, which passes it to the
+/// Linux binary without an intervening shell, so provider arguments are never
+/// re-quoted or word-split on the way in.
+fn placed_command<I, S>(
+    placement: &ExternalAgentExecutionPlacement,
+    program: OsString,
+    args: I,
+) -> (OsString, Vec<OsString>)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let provider_args = args
+        .into_iter()
+        .map(|argument| argument.as_ref().to_os_string())
+        .collect::<Vec<_>>();
+    match placement.environment {
+        ExternalAgentExecutionEnvironment::WindowsNative => (program, provider_args),
+        ExternalAgentExecutionEnvironment::Wsl2Linux => {
+            let mut wrapped = placement.wsl_prefix_args();
+            wrapped.push(OsString::from("--"));
+            wrapped.push(program);
+            wrapped.extend(provider_args);
+            (OsString::from(WSL_LAUNCHER), wrapped)
+        }
+    }
+}
+
+/// Windows launcher used to place a provider process inside a WSL distribution.
+const WSL_LAUNCHER: &str = "wsl.exe";
+/// Variable naming the Windows variables WSL forwards into the Linux session.
+const WSL_ENVIRONMENT_FORWARD_VARIABLE: &str = "WSLENV";
+/// Suffix marking a forwarded variable whose value is a path to translate.
+const WSL_PATH_TRANSLATION_SUFFIX: &str = "/p";
+
+/// Builds the `WSLENV` entry that forwards Editor variables into WSL.
+///
+/// Windows environment variables do not reach a Linux process unless they are
+/// named here, so an unlisted variable silently disappears. Variables whose
+/// value is a Windows path are marked for translation so the provider reads the
+/// same file the Editor wrote.
+pub(crate) fn wsl_environment_forwarding(
+    variables: &[(OsString, OsString)],
+    path_variables: &[&str],
+) -> (OsString, OsString) {
+    let forwarded = variables
+        .iter()
+        .filter_map(|(name, _)| name.to_str())
+        .map(|name| {
+            if path_variables.contains(&name) {
+                format!("{name}{WSL_PATH_TRANSLATION_SUFFIX}")
+            } else {
+                name.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(":");
+    (
+        OsString::from(WSL_ENVIRONMENT_FORWARD_VARIABLE),
+        OsString::from(forwarded),
+    )
+}
+
+/// Checks that a WSL2 session can reach the Editor loopback endpoint.
+///
+/// ADR 0121 keeps the Editor MCP endpoint bound to loopback. A WSL2 session
+/// reaches that endpoint only when the distribution shares the host loopback,
+/// so this proves reachability before a run starts instead of letting the
+/// provider fail mid-turn with a connection error it cannot explain.
+pub(crate) fn probe_wsl_loopback_reachability(
+    placement: &ExternalAgentExecutionPlacement,
+    mcp_endpoint: &str,
+) -> Result<(), String> {
+    if placement.environment != ExternalAgentExecutionEnvironment::Wsl2Linux {
+        return Ok(());
+    }
+    let (host, port) = loopback_authority(mcp_endpoint)?;
+    let mut args = placement.wsl_prefix_args();
+    args.push(OsString::from("--"));
+    args.push(OsString::from("bash"));
+    args.push(OsString::from("-c"));
+    args.push(OsString::from(format!("exec 3<>/dev/tcp/{host}/{port}")));
+    let reachable = Command::new(WSL_LAUNCHER)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .map_err(|error| format!("could not run {WSL_LAUNCHER}: {error}"))?;
+    if reachable {
+        return Ok(());
+    }
+    Err(format!(
+        "the WSL2 distribution cannot reach the Editor MCP endpoint at {host}:{port}. Enable mirrored networking for WSL (networkingMode=mirrored in .wslconfig) or run the provider in the Windows-native environment, because GameEngine keeps that endpoint bound to loopback."
+    ))
+}
+
+/// Splits a loopback HTTP endpoint into its host and port.
+fn loopback_authority(mcp_endpoint: &str) -> Result<(String, String), String> {
+    let authority = mcp_endpoint
+        .trim()
+        .strip_prefix("http://")
+        .and_then(|rest| rest.split('/').next())
+        .ok_or_else(|| "the Editor MCP endpoint is not a loopback HTTP endpoint".to_owned())?;
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| "the Editor MCP endpoint does not carry a port".to_owned())?;
+    Ok((host.to_owned(), port.to_owned()))
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ExternalAgentLaunchPlan {
     pub(crate) program: OsString,
@@ -239,6 +413,20 @@ pub(crate) struct ExternalAgentLaunchPlan {
 }
 
 pub(crate) fn build_launch_plan(
+    kind: ExternalAgentProviderKind,
+    placement: &ExternalAgentExecutionPlacement,
+    generic_program: &str,
+    generic_args: &[String],
+    prompt: &str,
+    mcp_endpoint: &str,
+) -> Result<ExternalAgentLaunchPlan, String> {
+    let plan =
+        build_provider_launch_plan(kind, generic_program, generic_args, prompt, mcp_endpoint)?;
+    let (program, args) = placed_command(placement, plan.program, plan.args);
+    Ok(ExternalAgentLaunchPlan { program, args })
+}
+
+fn build_provider_launch_plan(
     kind: ExternalAgentProviderKind,
     generic_program: &str,
     generic_args: &[String],
@@ -569,6 +757,106 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_wsl_placement_runs_the_same_provider_arguments_through_the_distribution() {
+        let placement = ExternalAgentExecutionPlacement {
+            environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
+            distribution: "Ubuntu-24.04".to_owned(),
+        };
+        let native = build_launch_plan(
+            ExternalAgentProviderKind::ClaudeCode,
+            &ExternalAgentExecutionPlacement::windows_native(),
+            "",
+            &[],
+            "task",
+            "http://127.0.0.1:1234/mcp",
+        )
+        .expect("native plan");
+        let wsl = build_launch_plan(
+            ExternalAgentProviderKind::ClaudeCode,
+            &placement,
+            "",
+            &[],
+            "task",
+            "http://127.0.0.1:1234/mcp",
+        )
+        .expect("wsl plan");
+        assert_eq!(wsl.program, OsString::from("wsl.exe"));
+        assert_eq!(
+            wsl.args[..4],
+            [
+                OsString::from("-d"),
+                OsString::from("Ubuntu-24.04"),
+                OsString::from("--"),
+                native.program.clone(),
+            ]
+        );
+        // The provider argument vector crosses unchanged, so no shell re-quotes
+        // the prompt or the injected MCP configuration.
+        assert_eq!(&wsl.args[4..], native.args.as_slice());
+    }
+
+    #[test]
+    fn a_default_distribution_placement_omits_the_distribution_selector() {
+        let placement = ExternalAgentExecutionPlacement {
+            environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
+            distribution: "  ".to_owned(),
+        };
+        let plan = build_launch_plan(
+            ExternalAgentProviderKind::Codex,
+            &placement,
+            "",
+            &[],
+            "task",
+            "http://127.0.0.1:4321/mcp",
+        )
+        .expect("wsl plan");
+        assert_eq!(plan.program, OsString::from("wsl.exe"));
+        assert_eq!(plan.args[0], OsString::from("--"));
+        assert_eq!(plan.args[1], OsString::from("codex"));
+    }
+
+    #[test]
+    fn environment_forwarding_names_every_variable_and_marks_paths() {
+        let variables = vec![
+            (
+                OsString::from("GAMEENGINE_MCP_AUTH_TOKEN"),
+                OsString::from("token"),
+            ),
+            (
+                OsString::from("GAMEENGINE_AGENT_CAPTURE_PATH"),
+                OsString::from("C:\\frames\\frame.png"),
+            ),
+        ];
+        let (name, value) =
+            wsl_environment_forwarding(&variables, &["GAMEENGINE_AGENT_CAPTURE_PATH"]);
+        assert_eq!(name, OsString::from("WSLENV"));
+        assert_eq!(
+            value,
+            OsString::from("GAMEENGINE_MCP_AUTH_TOKEN:GAMEENGINE_AGENT_CAPTURE_PATH/p")
+        );
+    }
+
+    #[test]
+    fn a_windows_native_placement_never_probes_wsl_reachability() {
+        assert!(
+            probe_wsl_loopback_reachability(
+                &ExternalAgentExecutionPlacement::windows_native(),
+                "http://127.0.0.1:1234/mcp",
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_non_loopback_endpoint_is_rejected_before_a_wsl_launch() {
+        let placement = ExternalAgentExecutionPlacement {
+            environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
+            distribution: String::new(),
+        };
+        assert!(probe_wsl_loopback_reachability(&placement, "https://example.test/mcp").is_err());
+    }
+
+    #[test]
     fn generic_launch_plan_preserves_direct_argument_semantics() {
         let args = vec![
             "--flag".to_owned(),
@@ -579,6 +867,7 @@ mod tests {
         ];
         let plan = build_launch_plan(
             ExternalAgentProviderKind::Generic,
+            &ExternalAgentExecutionPlacement::windows_native(),
             "custom-agent",
             &args,
             "ignored",
@@ -602,6 +891,7 @@ mod tests {
     fn claude_mcp_config_is_valid_json_and_uses_ephemeral_environment() {
         let plan = build_launch_plan(
             ExternalAgentProviderKind::ClaudeCode,
+            &ExternalAgentExecutionPlacement::windows_native(),
             "",
             &[],
             "task",
@@ -642,6 +932,7 @@ mod tests {
     fn codex_mcp_config_uses_bearer_environment_and_workspace_sandbox() {
         let plan = build_launch_plan(
             ExternalAgentProviderKind::Codex,
+            &ExternalAgentExecutionPlacement::windows_native(),
             "",
             &[],
             "task",
