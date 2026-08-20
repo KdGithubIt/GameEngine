@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/sequencer/curve_editor/graph.rs","old":"        egui::vec2(ui.available_width().max(240.0), HEIGHT),","new":"        egui::vec2(\n            ui.available_width().max(240.0),\n            ui.available_height().clamp(64.0, HEIGHT),\n        ),"}
