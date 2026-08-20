@@ -1,0 +1,441 @@
+diff --git a/crates/authoring/src/timeline.rs b/crates/authoring/src/timeline.rs
+index a4b411b4fd65e238b1744e92d89ecd0aab1296d6..a75abd7781cbff8a859c5bf534ea9a65aec35235 100644
+--- a/crates/authoring/src/timeline.rs
++++ b/crates/authoring/src/timeline.rs
+@@ -6,7 +6,7 @@
+ //! Runtime entity handles, animation handles, audio voices, GPU handles, and
+ //! Editor selection state are never part of this document.
+ 
+-use crate::{AssetId, EntityId};
++use crate::{AssetId, EntityId, MotionSlotId, StableId};
+ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ use std::fmt;
+@@ -672,6 +672,15 @@ fn validate_binding(track: &TimelineTrack) -> Vec<String> {
+             track.kind.label()
+         ));
+     }
++    if track.kind == TimelineTrackKind::Animation
++        && track.binding.asset.is_none()
++        && !track.clips.is_empty()
++    {
++        errors.push(format!(
++            "track `{}` must bind an Animation Set asset before it carries Animation clips",
++            track.id.as_str()
++        ));
++    }
+     errors
+ }
+ 
+@@ -689,9 +698,9 @@ fn validate_payload(clip: &TimelineClip) -> Vec<String> {
+         TimelineClipPayload::Animation {
+             motion_slot, speed, ..
+         } => {
+-            if motion_slot.trim().is_empty() {
++            if MotionSlotId::from_stable_id(StableId::new(motion_slot.trim())).is_err() {
+                 errors.push(format!(
+-                    "clip `{}` must name a motion slot",
++                    "clip `{}` motion slot must be a stable motion_<ULID> identifier",
+                     clip.id.as_str()
+                 ));
+             }
+@@ -907,6 +916,52 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn animation_tracks_require_a_set_binding_and_stable_motion_slot() {
++        let mut document = TimelineDocument::new(TimelineTick(48_000));
++        let motion_slot = MotionSlotId::generate();
++        document.tracks.push(TimelineTrack {
++            id: TimelineTrackId::generate(),
++            kind: TimelineTrackKind::Animation,
++            name: "Motion".to_owned(),
++            enabled: true,
++            binding: TimelineBinding {
++                entity: Some(EntityId::generate()),
++                asset: None,
++            },
++            clips: vec![TimelineClip {
++                id: TimelineClipId::generate(),
++                start: TimelineTick::ZERO,
++                end: TimelineTick(48_000),
++                payload: TimelineClipPayload::Animation {
++                    motion_slot: motion_slot.as_str().to_owned(),
++                    speed: 1.0,
++                    looping: false,
++                },
++            }],
++        });
++        assert!(
++            document
++                .validate()
++                .iter()
++                .any(|error| error.contains("must bind an Animation Set asset"))
++        );
++
++        document.tracks[0].binding.asset = Some(AssetId::generate());
++        let TimelineClipPayload::Animation { motion_slot, .. } =
++            &mut document.tracks[0].clips[0].payload
++        else {
++            panic!("fixture must remain an Animation clip");
++        };
++        *motion_slot = "walk".to_owned();
++        assert!(
++            document
++                .validate()
++                .iter()
++                .any(|error| error.contains("stable motion_<ULID> identifier"))
++        );
++    }
++
+     #[test]
+     fn identifiers_reject_a_foreign_prefix() {
+         let track = TimelineTrackId::generate();
+diff --git a/crates/editor/src/sequencer.rs b/crates/editor/src/sequencer.rs
+index 9792372001d2d510ef9a1fe4b89e6d12ba622065..bd18ec2d121c63eed51fd6d58c379c2112800071 100644
+--- a/crates/editor/src/sequencer.rs
++++ b/crates/editor/src/sequencer.rs
+@@ -790,7 +790,7 @@ fn default_payload(kind: TimelineTrackKind) -> TimelineClipPayload {
+             camera: engine_authoring::EntityId::generate(),
+         },
+         TimelineTrackKind::Animation => TimelineClipPayload::Animation {
+-            motion_slot: "motion".to_owned(),
++            motion_slot: engine_authoring::MotionSlotId::generate().as_str().to_owned(),
+             speed: 1.0,
+             looping: false,
+         },
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index ec55aabb88452a5a1b359045b94ebfd376a2d456..299f0af89e513f47000d99ab2d8ac3e511ee8200 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -19,7 +19,9 @@ use crate::animation::{Animator, AnimatorPlaybackSnapshot, AnimatorState};
+ use crate::script_api::RuntimeEntityIdentity;
+ use crate::time::FixedTime;
+ use crate::transform::Transform;
+-use engine_authoring::{EntityId, TimelineProperty, TimelineTick, TimelineTrackId};
++use engine_authoring::{
++    AssetId, EntityId, MotionSlotId, TimelineProperty, TimelineTick, TimelineTrackId,
++};
+ use engine_ecs::{Entity, World};
+ use std::collections::BTreeMap;
+ use std::convert::Infallible;
+@@ -122,12 +124,21 @@ pub enum TimelineBindingDiagnostic {
+         /// Component the track requires.
+         component: &'static str,
+     },
++    /// The target Animation Controller is not using the Animation Set bound by the track.
++    AnimationSetMismatch {
++        /// Authoring identity that resolved.
++        authoring: String,
++        /// Animation Set required by the Timeline track.
++        expected: AssetId,
++        /// Animation Set currently resolved by the target controller, when known.
++        actual: Option<AssetId>,
++    },
+     /// The bound Animation Set does not expose the authored motion slot.
+     MissingMotionSlot {
+         /// Authoring identity that resolved.
+         authoring: String,
+-        /// Motion slot requested by the Timeline clip.
+-        motion_slot: String,
++        /// Stable motion slot requested by the Timeline clip.
++        motion_slot: MotionSlotId,
+     },
+ }
+ 
+@@ -414,6 +425,7 @@ pub fn apply_evaluation(
+             }
+             TimelineTrackOutput::Animation {
+                 entity,
++                animation_set,
+                 motion_slot,
+                 speed,
+                 looping,
+@@ -427,6 +439,9 @@ pub fn apply_evaluation(
+                     });
+                     continue;
+                 };
++                let Some(animation_set) = animation_set else {
++                    continue;
++                };
+                 let Some(graph_player) = world.get_component::<AnimGraphPlayer>(target) else {
+                     diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
+                         authoring: authoring.as_stable_id().as_str().to_owned(),
+@@ -434,7 +449,18 @@ pub fn apply_evaluation(
+                     });
+                     continue;
+                 };
+-                let Some(clip) = graph_player.clip_handle(motion_slot) else {
++                let actual_set = graph_player
++                    .debug_source()
++                    .map(|source| source.animation_set_asset.clone());
++                if actual_set.as_ref() != Some(animation_set) {
++                    diagnostics.push(TimelineBindingDiagnostic::AnimationSetMismatch {
++                        authoring: authoring.as_stable_id().as_str().to_owned(),
++                        expected: animation_set.clone(),
++                        actual: actual_set,
++                    });
++                    continue;
++                }
++                let Some(clip) = graph_player.clip_handle(motion_slot.as_str()) else {
+                     diagnostics.push(TimelineBindingDiagnostic::MissingMotionSlot {
+                         authoring: authoring.as_stable_id().as_str().to_owned(),
+                         motion_slot: motion_slot.clone(),
+@@ -698,7 +724,11 @@ mod tests {
+         document
+     }
+ 
+-    fn animation_document(entity: &EntityId) -> TimelineDocument {
++    fn animation_document(
++        entity: &EntityId,
++        animation_set: &AssetId,
++        motion_slot: &MotionSlotId,
++    ) -> TimelineDocument {
+         let mut document = TimelineDocument::new(TimelineTick(48_000));
+         document.tracks.push(TimelineTrack {
+             id: TimelineTrackId::generate(),
+@@ -707,14 +737,14 @@ mod tests {
+             enabled: true,
+             binding: TimelineBinding {
+                 entity: Some(entity.clone()),
+-                asset: None,
++                asset: Some(animation_set.clone()),
+             },
+             clips: vec![TimelineClip {
+                 id: TimelineClipId::generate(),
+                 start: TimelineTick::ZERO,
+                 end: TimelineTick(48_000),
+                 payload: TimelineClipPayload::Animation {
+-                    motion_slot: "walk".to_owned(),
++                    motion_slot: motion_slot.as_str().to_owned(),
+                     speed: 2.0,
+                     looping: false,
+                 },
+@@ -766,6 +796,8 @@ mod tests {
+         let mut world = World::new();
+         let target = world.spawn().expect("target");
+         let authoring = EntityId::generate();
++        let animation_set = AssetId::generate();
++        let motion_slot = MotionSlotId::generate();
+         let mut bindings = TimelineBindings::default();
+         bindings.bind(&authoring, target);
+ 
+@@ -803,13 +835,27 @@ mod tests {
+             compile_warnings: Vec::new(),
+         };
+         let mut motion_slots = BTreeMap::new();
+-        motion_slots.insert("walk".to_owned(), walk);
++        motion_slots.insert(motion_slot.as_str().to_owned(), walk);
++        let mut graph_player = AnimGraphPlayer::new(graph, motion_slots);
++        graph_player.set_debug_source(crate::anim_graph::AnimationGraphDebugSource {
++            graph_asset: AssetId::generate(),
++            graph_id: engine_authoring::GraphId::generate(),
++            animation_set_asset: animation_set.clone(),
++            transition_edges: Vec::new(),
++            motion_bindings: BTreeMap::new(),
++        });
+         world
+-            .add_component(target, AnimGraphPlayer::new(graph, motion_slots))
++            .add_component(target, graph_player)
+             .expect("graph player");
+ 
+-        let timeline =
+-            Arc::new(compile_timeline(&animation_document(&authoring)).expect("compile"));
++        let timeline = Arc::new(
++            compile_timeline(&animation_document(
++                &authoring,
++                &animation_set,
++                &motion_slot,
++            ))
++            .expect("compile"),
++        );
+         let player = world.spawn().expect("player");
+         let mut component = TimelinePlayerComponent::new(timeline);
+         component.autoplay = true;
+@@ -840,7 +886,45 @@ mod tests {
+                 .external_override_active()
+         );
+ 
+-        apply_timeline_control(&mut world, player, TimelineControl::Stop).expect("stop");
++        apply_timeline_control(
++            &mut world,
++            player,
++            TimelineControl::Seek {
++                tick: TimelineTick(36_000),
++            },
++        )
++        .expect("seek");
++        advance_timelines(
++            0.0,
++            &mut world,
++            &bindings,
++            &mut camera_override,
++            &mut events,
++            &mut diagnostics,
++        );
++
++        let animator = world.get_component::<Animator>(target).expect("seeked animator");
++        assert_eq!(animator.clip, walk);
++        assert!((animator.time - 1.5).abs() < 1.0e-6);
++        assert!(
++            world
++                .get_component::<AnimGraphPlayer>(target)
++                .expect("graph player")
++                .external_override_active()
++        );
++
++        advance_timelines(
++            0.25,
++            &mut world,
++            &bindings,
++            &mut camera_override,
++            &mut events,
++            &mut diagnostics,
++        );
++        assert_eq!(
++            timeline_view(&world, player).expect("timeline view").tick,
++            TimelineTick(48_000)
++        );
+         let animator = world.get_component::<Animator>(target).expect("restored animator");
+         assert_eq!(animator.clip, idle);
+         assert!((animator.time - 0.75).abs() < 1.0e-6);
+diff --git a/crates/timeline/src/evaluate.rs b/crates/timeline/src/evaluate.rs
+index 74571b2660853841d625b0c270f95dba30ebf0cb..e5e4d63f882f35d301229918baad8152f75eeb8f 100644
+--- a/crates/timeline/src/evaluate.rs
++++ b/crates/timeline/src/evaluate.rs
+@@ -7,8 +7,8 @@
+ 
+ use crate::{CompiledClip, CompiledClipPayload, CompiledTimeline, VfxAction};
+ use engine_authoring::{
+-    AssetId, EntityId, TimelineClipId, TimelineMarkerId, TimelineProperty, TimelineTick,
+-    TimelineTrackId,
++    AssetId, EntityId, MotionSlotId, TimelineClipId, TimelineMarkerId, TimelineProperty,
++    TimelineTick, TimelineTrackId,
+ };
+ 
+ /// One clip that contains the evaluated tick.
+@@ -66,8 +66,10 @@ pub enum TimelineTrackOutput {
+     Animation {
+         /// Bound authoring entity.
+         entity: Option<EntityId>,
+-        /// Motion slot name.
+-        motion_slot: String,
++        /// Bound Animation Set asset.
++        animation_set: Option<AssetId>,
++        /// Stable motion slot.
++        motion_slot: MotionSlotId,
+         /// Playback rate multiplier.
+         speed: f32,
+         /// Whether the motion loops inside the clip interval.
+@@ -153,7 +155,7 @@ pub(crate) fn evaluate_intervals(
+                         });
+                     }
+                 }
+-                if crosses(clip.end, *from, *to) {
++                if crosses_exit(clip.end, *from, *to) {
+                     evaluation.exited.push(ClipTransition {
+                         track: track.id.clone(),
+                         clip: clip.id.clone(),
+@@ -167,7 +169,12 @@ pub(crate) fn evaluate_intervals(
+                     clip: clip.id.clone(),
+                     offset,
+                     progress: (offset as f32 / clip.duration() as f32).clamp(0.0, 1.0),
+-                    output: track_output(track.entity.as_ref(), clip, offset),
++                    output: track_output(
++                        track.entity.as_ref(),
++                        track.asset.as_ref(),
++                        clip,
++                        offset,
++                    ),
+                 });
+             }
+         }
+@@ -191,8 +198,17 @@ fn crosses(boundary: TimelineTick, from: TimelineTick, to: TimelineTick) -> bool
+     boundary >= from && boundary < to
+ }
+ 
++/// Whether a forward traversal reaches an exclusive clip end.
++///
++/// Clip containment ends at `to`, so exits belong to the step that lands on
++/// the boundary instead of a later step that may never run.
++fn crosses_exit(boundary: TimelineTick, from: TimelineTick, to: TimelineTick) -> bool {
++    boundary > from && boundary <= to
++}
++
+ fn track_output(
+     entity: Option<&EntityId>,
++    asset: Option<&AssetId>,
+     clip: &CompiledClip,
+     offset: i64,
+ ) -> TimelineTrackOutput {
+@@ -208,6 +224,7 @@ fn track_output(
+             looping,
+         } => TimelineTrackOutput::Animation {
+             entity: entity.cloned(),
++            animation_set: asset.cloned(),
+             motion_slot: motion_slot.clone(),
+             speed: *speed,
+             looping: *looping,
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+index a24e67921cba65da373b1cf95b646e9ce869363b..da271c5b3d973c59825c2af3154a100340efbd21 100644
+--- a/crates/timeline/src/lib.rs
++++ b/crates/timeline/src/lib.rs
+@@ -13,9 +13,9 @@
+ #![deny(missing_docs)]
+ 
+ use engine_authoring::{
+-    AssetId, EntityId, TIMELINE_TICKS_PER_SECOND, TimelineClip, TimelineClipId,
+-    TimelineClipPayload, TimelineDocument, TimelineId, TimelineMarkerId, TimelineProperty,
+-    TimelineTick, TimelineTrackId, TimelineTrackKind,
++    AssetId, EntityId, MotionSlotId, StableId, TIMELINE_TICKS_PER_SECOND, TimelineClip,
++    TimelineClipId, TimelineClipPayload, TimelineDocument, TimelineId, TimelineMarkerId,
++    TimelineProperty, TimelineTick, TimelineTrackId, TimelineTrackKind,
+ };
+ use std::collections::BTreeMap;
+ use std::fmt;
+@@ -73,8 +73,8 @@ pub enum CompiledClipPayload {
+     },
+     /// Plays one Animation Set motion slot.
+     Animation {
+-        /// Motion slot name inside the bound Animation Set.
+-        motion_slot: String,
++        /// Stable motion slot inside the bound Animation Set.
++        motion_slot: MotionSlotId,
+         /// Playback rate multiplier.
+         speed: f32,
+         /// Whether the motion loops inside the clip interval.
+@@ -329,7 +329,8 @@ fn compile_clip(clip: &TimelineClip) -> CompiledClip {
+             speed,
+             looping,
+         } => CompiledClipPayload::Animation {
+-            motion_slot: motion_slot.clone(),
++            motion_slot: MotionSlotId::from_stable_id(StableId::new(motion_slot.trim()))
++                .expect("validated Timeline Animation motion slot must be a stable ID"),
+             speed: *speed,
+             looping: *looping,
+         },
+@@ -528,4 +529,23 @@ mod tests {
+         tokens.clear();
+         assert!(tokens.get("voice").is_none());
+     }
++
++    #[test]
++    fn clip_exit_is_reported_on_the_step_that_lands_at_its_end() {
++        let mut document = TimelineDocument::new(TimelineTick(48_000));
++        document.tracks.push(property_track(vec![property_clip(
++            0, 48_000, 0.0, 1.0,
++        )]));
++        let timeline = compile_timeline(&document).expect("compile");
++        let clip = timeline.tracks[0].clips[0].id.clone();
++        let mut player = TimelinePlayer::new();
++        player.play();
++
++        let evaluation = player.advance(&timeline, 1.0);
++
++        assert_eq!(evaluation.tick, TimelineTick(48_000));
++        assert_eq!(evaluation.exited.len(), 1);
++        assert_eq!(evaluation.exited[0].clip, clip);
++        assert!(evaluation.active.is_empty());
++    }
+ }
