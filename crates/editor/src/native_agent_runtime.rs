@@ -524,6 +524,39 @@ impl NativeAgentRuntime {
             NativeAgentAction::ReadyForValidation if !executing => {
                 return reject("validation requires execution/repair");
             }
+            NativeAgentAction::ReadyForValidation => {
+                let successful_code_write = self
+                    .exchanges
+                    .iter()
+                    .any(|exchange| exchange.success && exchange.tool.starts_with("code_write:"));
+                let successful_mcp_write = self
+                    .exchanges
+                    .iter()
+                    .any(|exchange| exchange.success && mcp_write(&exchange.tool));
+                let planned_code = !run.proposal_snapshot.planned_code_changes.is_empty();
+                let planned_authoring = !run.proposal_snapshot.planned_project_changes.is_empty()
+                    || !run.proposal_snapshot.planned_assets.is_empty();
+
+                if planned_code && !successful_code_write {
+                    return reject(
+                        "ready_for_validation requires a successful managed code write for planned code changes",
+                    );
+                }
+                if planned_authoring && !successful_mcp_write {
+                    return reject(
+                        "ready_for_validation requires a successful governed MCP mutation for planned project or asset changes",
+                    );
+                }
+                if !planned_code
+                    && !planned_authoring
+                    && run.proposal_snapshot.validation_plan.is_empty()
+                    && run.proposal_snapshot.playtest_plan.is_empty()
+                {
+                    return reject(
+                        "ready_for_validation requires an immutable proposal with planned implementation, validation, or playtest work",
+                    );
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -556,7 +589,7 @@ fn build_prompt(
     context: Option<&str>,
 ) -> String {
     let mut prompt = format!(
-        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?} streaming={:?} usage={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
+        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?} streaming={:?} usage={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation only after every planned implementation mutation has completed successfully; inspection or progress alone is not implementation evidence. If the immutable proposal has no implementation, validation, or playtest work, use await_user instead of ready_for_validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
         serde_json::to_string(&run.proposal_snapshot).unwrap_or_default(),
         run.state,
         serde_json::to_string(&run.working_state).unwrap_or_default(),
@@ -881,6 +914,9 @@ fn call_mcp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_host::{
+        AgentProposal, AgentRunAudit, AgentWorkingState, CompletionReport,
+    };
     use crate::native_agent::DEFAULT_LOCAL_MODEL_ENDPOINT;
     #[test]
     fn parser_requires_structured_action() {
@@ -998,5 +1034,94 @@ mod tests {
         assert!(!mcp_write("project.describe"));
         assert!(!mcp_write("authoring.inspect"));
         assert!(!mcp_write("authoring.preview"));
+    }
+
+    fn executing_run(proposal: AgentProposal) -> AgentRun {
+        AgentRun {
+            id: "run".to_owned(),
+            proposal_snapshot: proposal,
+            provider_label: "test".to_owned(),
+            state: AgentRunState::Executing,
+            work_claims: Default::default(),
+            events: Vec::new(),
+            completion: CompletionReport::default(),
+            confinement_profile: None,
+            working_state: AgentWorkingState::default(),
+            validation_attempts: Vec::new(),
+            code_checkpoints: Vec::new(),
+            audit: AgentRunAudit::default(),
+            started_unix_ms: 0,
+            finished_unix_ms: None,
+        }
+    }
+
+    fn validation_test_runtime() -> NativeAgentRuntime {
+        NativeAgentRuntime::configured(NativeModelConfig::Local(LocalModelConfig {
+            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+            model: "test".to_owned(),
+        }))
+    }
+
+    #[test]
+    fn ready_for_validation_requires_planned_mutation_evidence() {
+        let mut code_proposal = AgentProposal::default();
+        code_proposal.planned_code_changes = vec!["game/player.rs".to_owned()];
+        let code_run = executing_run(code_proposal);
+        let mut code_runtime = validation_test_runtime();
+        assert!(matches!(
+            code_runtime.validate_action(&code_run, &NativeAgentAction::ReadyForValidation),
+            Err(NativeAgentRuntimeError::Rejected(message))
+                if message.contains("successful managed code write")
+        ));
+        code_runtime
+            .record_tool_result("code_write:game/player.rs", true, "write completed")
+            .expect("record write");
+        assert!(
+            code_runtime
+                .validate_action(&code_run, &NativeAgentAction::ReadyForValidation)
+                .is_ok()
+        );
+
+        let mut authoring_proposal = AgentProposal::default();
+        authoring_proposal.planned_project_changes = vec!["scene player setup".to_owned()];
+        let authoring_run = executing_run(authoring_proposal);
+        let mut authoring_runtime = validation_test_runtime();
+        authoring_runtime
+            .record_tool_result("project.describe", true, "inspection completed")
+            .expect("record inspection");
+        assert!(matches!(
+            authoring_runtime
+                .validate_action(&authoring_run, &NativeAgentAction::ReadyForValidation),
+            Err(NativeAgentRuntimeError::Rejected(message))
+                if message.contains("successful governed MCP mutation")
+        ));
+        authoring_runtime
+            .record_tool_result("scene.set_transform", true, "mutation completed")
+            .expect("record mutation");
+        assert!(
+            authoring_runtime
+                .validate_action(&authoring_run, &NativeAgentAction::ReadyForValidation)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn ready_for_validation_rejects_an_empty_execution_proposal() {
+        let run = executing_run(AgentProposal::default());
+        let runtime = validation_test_runtime();
+        assert!(matches!(
+            runtime.validate_action(&run, &NativeAgentAction::ReadyForValidation),
+            Err(NativeAgentRuntimeError::Rejected(message))
+                if message.contains("immutable proposal")
+        ));
+
+        let mut validation_proposal = AgentProposal::default();
+        validation_proposal.validation_plan = vec!["cargo test".to_owned()];
+        let validation_run = executing_run(validation_proposal);
+        assert!(
+            runtime
+                .validate_action(&validation_run, &NativeAgentAction::ReadyForValidation)
+                .is_ok()
+        );
     }
 }
