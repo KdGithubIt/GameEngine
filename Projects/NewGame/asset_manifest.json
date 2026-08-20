@@ -1,0 +1,7175 @@
+{
+  "schema_version": 2,
+  "assets": {
+    "asset_01M0EDVAGARY1Y391T2FP1JSVY": {
+      "path": "meshes/YYB Hatsune Miku_NT_1.0ver.pmx",
+      "name": "yyb_hatsune_miku_nt_1_0ver",
+      "import_settings": {
+        "source_fingerprint": "fnv1a64:5b1c80f288f17138",
+        "source_stamp": {
+          "source": {
+            "modified_unix_seconds": 1786573990,
+            "modified_subsec_nanos": 613084100,
+            "length": 23361739
+          },
+          "dependencies": [
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 167019700,
+              "length": 33017
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 172524800,
+              "length": 120054
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 177526300,
+              "length": 120054
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 182526800,
+              "length": 120054
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 187529000,
+              "length": 120054
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 194531100,
+              "length": 160134
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 199560900,
+              "length": 163334
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 204560100,
+              "length": 120054
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 210560300,
+              "length": 120054
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 215560000,
+              "length": 120054
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 220067300,
+              "length": 72883
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 235070000,
+              "length": 214750
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 365842000,
+              "length": 121064
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 370922600,
+              "length": 70281
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 282600800,
+              "length": 1146131
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 293046400,
+              "length": 936255
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 340409700,
+              "length": 5051048
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 229069400,
+              "length": 229578
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 253083200,
+              "length": 2128381
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 259089200,
+              "length": 239600
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 264089300,
+              "length": 94203
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 270598300,
+              "length": 141257
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 300553000,
+              "length": 581228
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 308553300,
+              "length": 462393
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 360842600,
+              "length": 3154448
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 392981600,
+              "length": 2861509
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 400490500,
+              "length": 505926
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 443501300,
+              "length": 7367129
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 450482500,
+              "length": 3126
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 454481900,
+              "length": 3126
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 459482600,
+              "length": 3126
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 464482900,
+              "length": 3126
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 468990500,
+              "length": 3126
+            },
+            {
+              "modified_unix_seconds": 1786573990,
+              "modified_subsec_nanos": 472990200,
+              "length": 3126
+            }
+          ]
+        },
+        "source_dependencies": [
+          "meshes/spa/spa-0.png",
+          "meshes/spa/spa-1.bmp",
+          "meshes/spa/spa-2.bmp",
+          "meshes/spa/spa-3.bmp",
+          "meshes/spa/spa-4.bmp",
+          "meshes/spa/spa-4x.bmp",
+          "meshes/spa/spa-5.bmp",
+          "meshes/spa/spa-6.bmp",
+          "meshes/spa/spa-7.bmp",
+          "meshes/spa/spa-8.bmp",
+          "meshes/spa/spa-9.png",
+          "meshes/tex/Boots.png",
+          "meshes/tex/HO.png",
+          "meshes/tex/HS.png",
+          "meshes/tex/Hair01-ao.png",
+          "meshes/tex/Hair01.png",
+          "meshes/tex/Hair03-ao.png",
+          "meshes/tex/body.png",
+          "meshes/tex/clothes.png",
+          "meshes/tex/eye.png",
+          "meshes/tex/face.png",
+          "meshes/tex/face2.png",
+          "meshes/tex/hair02-ao.png",
+          "meshes/tex/hair02.png",
+          "meshes/tex/hair03.png",
+          "meshes/tex/skirt.png",
+          "meshes/tex/sleeve-l.png",
+          "meshes/tex/sleeve.png",
+          "meshes/toon/toon-1.bmp",
+          "meshes/toon/toon-2.bmp",
+          "meshes/toon/toon-3.bmp",
+          "meshes/toon/toon-4.bmp",
+          "meshes/toon/toon-5.bmp",
+          "meshes/toon/toon-6.bmp"
+        ],
+        "sub_assets": [
+          {
+            "id": "asset_065YVNWHZ2APKCPGYFZASAVY3Y",
+            "kind": "mesh",
+            "name": "body01",
+            "index": 0
+          },
+          {
+            "id": "asset_1TQJCFVZ0YX1AWPGYGZASAVYHH",
+            "kind": "mesh",
+            "name": "nail",
+            "index": 1
+          },
+          {
+            "id": "asset_2KHR9BGTSBDYYWPGYDZASAVX8R",
+            "kind": "mesh",
+            "name": "01",
+            "index": 2
+          },
+          {
+            "id": "asset_5D4Q5J2YM96KDWPGYEZASAVXPB",
+            "kind": "mesh",
+            "name": "pantsu",
+            "index": 3
+          },
+          {
+            "id": "asset_0PGGJAMSQSVGMWPGYKZASAVZTA",
+            "kind": "mesh",
+            "name": "face01",
+            "index": 4
+          },
+          {
+            "id": "asset_7VM6VG7RPMXPSCPGYMZASAW07X",
+            "kind": "mesh",
+            "name": "eyes",
+            "index": 5
+          },
+          {
+            "id": "asset_608NNV078BKPXWPGYHZASAVYZ4",
+            "kind": "mesh",
+            "name": "eyes+",
+            "index": 6
+          },
+          {
+            "id": "asset_3D1RKT11GPVHYCPGYJZASAVZCQ",
+            "kind": "mesh",
+            "name": "HL",
+            "index": 7
+          },
+          {
+            "id": "asset_50E9Z5JAARAV0CPGY7ZASAVTQ6",
+            "kind": "mesh",
+            "name": "face02",
+            "index": 8
+          },
+          {
+            "id": "asset_7G8AX8MD02EZNWPGY8ZASAVV4S",
+            "kind": "mesh",
+            "name": "face00",
+            "index": 9
+          },
+          {
+            "id": "asset_6D0TKA8RDDABS14DGTZPESZKXK",
+            "kind": "mesh",
+            "name": "face03",
+            "index": 10
+          },
+          {
+            "id": "asset_1MPH01GJWJ68G14DGSZPESZKG0",
+            "kind": "mesh",
+            "name": "face04",
+            "index": 11
+          },
+          {
+            "id": "asset_26K3ST17ZJQQT14DGWZPESZMRS",
+            "kind": "mesh",
+            "name": "B",
+            "index": 12
+          },
+          {
+            "id": "asset_6YEAXJC0WSCZSH4DGVZPESZMB6",
+            "kind": "mesh",
+            "name": "B-L",
+            "index": 13
+          },
+          {
+            "id": "asset_2XV06FV4KY7DYH4DGYZPESZNKZ",
+            "kind": "mesh",
+            "name": "glasses",
+            "index": 14
+          },
+          {
+            "id": "asset_2N17NZ3XZETMX14DGXZPESZN6C",
+            "kind": "mesh",
+            "name": "glasses02+",
+            "index": 15
+          },
+          {
+            "id": "asset_36KRRDR8BW0V314DH0ZPESZPF5",
+            "kind": "mesh",
+            "name": "glasses02",
+            "index": 16
+          },
+          {
+            "id": "asset_760QVYSQ5BAR014DGZZPESZP1J",
+            "kind": "mesh",
+            "name": "hair01",
+            "index": 17
+          },
+          {
+            "id": "asset_23S6YSBE0E3FY14DH2ZPESZQAB",
+            "kind": "mesh",
+            "name": "hair02",
+            "index": 18
+          },
+          {
+            "id": "asset_5Q0R40TSTEYGNH4DH1ZPESZPWR",
+            "kind": "mesh",
+            "name": "hair03",
+            "index": 19
+          },
+          {
+            "id": "asset_5F5E739A488J0H4B18ZPESF4QR",
+            "kind": "mesh",
+            "name": "hair01+",
+            "index": 20
+          },
+          {
+            "id": "asset_3ZRVGF48DAR6Y14B19ZPESF55B",
+            "kind": "mesh",
+            "name": "hair02+",
+            "index": 21
+          },
+          {
+            "id": "asset_1T3ZT5APZET8QH4B1AZPESF5JY",
+            "kind": "mesh",
+            "name": "hair03+",
+            "index": 22
+          },
+          {
+            "id": "asset_0WF181MYM1DYK14B1BZPESF60H",
+            "kind": "mesh",
+            "name": "hairshadow",
+            "index": 23
+          },
+          {
+            "id": "asset_7S7FAZHGV6VPM14B1CZPESF6E4",
+            "kind": "mesh",
+            "name": "clothes01",
+            "index": 24
+          },
+          {
+            "id": "asset_35ES0QYSM7VJ8H4B1DZPESF6VQ",
+            "kind": "mesh",
+            "name": "clothes02",
+            "index": 25
+          },
+          {
+            "id": "asset_13MMBHDQ9AD3514B1EZPESF79A",
+            "kind": "mesh",
+            "name": "sleeve01",
+            "index": 26
+          },
+          {
+            "id": "asset_7GH4BW8P5YE0A14B1FZPESF7PX",
+            "kind": "mesh",
+            "name": "sleeve02",
+            "index": 27
+          },
+          {
+            "id": "asset_383EFQ658X56W14B10ZPESF1B0",
+            "kind": "mesh",
+            "name": "sleeve03",
+            "index": 28
+          },
+          {
+            "id": "asset_2XYY5DJXVN0RMH4B11ZPESF1RK",
+            "kind": "mesh",
+            "name": "sleeve04",
+            "index": 29
+          },
+          {
+            "id": "asset_7KBFTHCTNZ05VH4BXEZPESNB41",
+            "kind": "mesh",
+            "name": "sleeve05",
+            "index": 30
+          },
+          {
+            "id": "asset_5T436E8SXPX9G14BXDZPESNAPE",
+            "kind": "mesh",
+            "name": "sleeve-L",
+            "index": 31
+          },
+          {
+            "id": "asset_46HQKHK9GPY5S14BXCZPESNA8V",
+            "kind": "mesh",
+            "name": "skirt01",
+            "index": 32
+          },
+          {
+            "id": "asset_0GN5QSFEG8PK6H4BXBZPESN9V8",
+            "kind": "mesh",
+            "name": "skirt-L",
+            "index": 33
+          },
+          {
+            "id": "asset_3H655ZJNV66N914BXJZPESNCTD",
+            "kind": "mesh",
+            "name": "skirt03",
+            "index": 34
+          },
+          {
+            "id": "asset_5017G5JGNP3NAH4BXHZPESNCCT",
+            "kind": "mesh",
+            "name": "skirt04",
+            "index": 35
+          },
+          {
+            "id": "asset_57PH2TQWQ2Y9E14BXGZPESNBZ7",
+            "kind": "mesh",
+            "name": "skirt05",
+            "index": 36
+          },
+          {
+            "id": "asset_6CAGDV5BXJ7S314BXFZPESNBHM",
+            "kind": "mesh",
+            "name": "headphone01",
+            "index": 37
+          },
+          {
+            "id": "asset_3SVKVB6KTFJ36H4BX6ZPESN7Q9",
+            "kind": "mesh",
+            "name": "headphone02-L",
+            "index": 38
+          },
+          {
+            "id": "asset_3CFJC7FK3RKSYH4BX5ZPESN79P",
+            "kind": "mesh",
+            "name": "headphone03",
+            "index": 39
+          },
+          {
+            "id": "asset_4DT34M8JASTGJH4G5CZPETJ72E",
+            "kind": "mesh",
+            "name": "headphone04",
+            "index": 40
+          },
+          {
+            "id": "asset_750RVAEBBTC0C14G5DZPETJ7G1",
+            "kind": "mesh",
+            "name": "Boots01",
+            "index": 41
+          },
+          {
+            "id": "asset_7AN90RG3F3147H4G5AZPETJ678",
+            "kind": "mesh",
+            "name": "Boots02",
+            "index": 42
+          },
+          {
+            "id": "asset_6A0J4HS2D7N3F14G5BZPETJ6MV",
+            "kind": "mesh",
+            "name": "Boots-L",
+            "index": 43
+          },
+          {
+            "id": "asset_7YJBW2PRZX3ZKGP83K165SZBP2",
+            "kind": "material",
+            "name": "body01",
+            "index": 0
+          },
+          {
+            "id": "asset_4T43CJF2C8J0J0P83M165SZC3N",
+            "kind": "material",
+            "name": "nail",
+            "index": 1
+          },
+          {
+            "id": "asset_17HPZ557FXWBM0P83H165SZATW",
+            "kind": "material",
+            "name": "01",
+            "index": 2
+          },
+          {
+            "id": "asset_2HP4MA1WYV31QGP83J165SZB8F",
+            "kind": "material",
+            "name": "pantsu",
+            "index": 3
+          },
+          {
+            "id": "asset_2PV19Q9AHDXFQ0P83F165SZ9ZP",
+            "kind": "material",
+            "name": "face01",
+            "index": 4
+          },
+          {
+            "id": "asset_7MKPVXN6RV7FMGP83G165SZAD9",
+            "kind": "material",
+            "name": "eyes",
+            "index": 5
+          },
+          {
+            "id": "asset_4VVX3D5DPXHTKGP83D165SZ94G",
+            "kind": "material",
+            "name": "eyes+",
+            "index": 6
+          },
+          {
+            "id": "asset_1T3D4G90GPF2Y0P83E165SZ9J3",
+            "kind": "material",
+            "name": "HL",
+            "index": 7
+          },
+          {
+            "id": "asset_11S2ZQ31WBAHRGP83V165SZF2T",
+            "kind": "material",
+            "name": "face02",
+            "index": 8
+          },
+          {
+            "id": "asset_2D1YQF6T7KFP10P83W165SZFGD",
+            "kind": "material",
+            "name": "face00",
+            "index": 9
+          },
+          {
+            "id": "asset_3CRHZ254WJ6XJ8FNBH7105H19Z",
+            "kind": "material",
+            "name": "face03",
+            "index": 10
+          },
+          {
+            "id": "asset_3GC67CF9Z4GJERFNBG7105H0WC",
+            "kind": "material",
+            "name": "face04",
+            "index": 11
+          },
+          {
+            "id": "asset_1BNJSB3RR2X70RFNBK7105H255",
+            "kind": "material",
+            "name": "B",
+            "index": 12
+          },
+          {
+            "id": "asset_0RSQ7KRNPDRP88FNBJ7105H1QJ",
+            "kind": "material",
+            "name": "B-L",
+            "index": 13
+          },
+          {
+            "id": "asset_1FPR7G5MVXKTYRFNBD7105GZKK",
+            "kind": "material",
+            "name": "glasses",
+            "index": 14
+          },
+          {
+            "id": "asset_209VGG286NRFG8FNBC7105GZ60",
+            "kind": "material",
+            "name": "glasses02+",
+            "index": 15
+          },
+          {
+            "id": "asset_3G9P6DRRQKAGX8FNBF7105H0ES",
+            "kind": "material",
+            "name": "glasses02",
+            "index": 16
+          },
+          {
+            "id": "asset_47XHMWWBJ9FS98FNBE7105H016",
+            "kind": "material",
+            "name": "hair01",
+            "index": 17
+          },
+          {
+            "id": "asset_01Q3GJ28BCBR2RFNBS7105H4PQ",
+            "kind": "material",
+            "name": "hair02",
+            "index": 18
+          },
+          {
+            "id": "asset_4YQGM2F3GGT5SRFNBR7105H494",
+            "kind": "material",
+            "name": "hair03",
+            "index": 19
+          },
+          {
+            "id": "asset_4005KC01T0S5QRFJVZ71050J44",
+            "kind": "material",
+            "name": "hair01+",
+            "index": 20
+          },
+          {
+            "id": "asset_7B52E2HD3XJBY8FJW071050JHQ",
+            "kind": "material",
+            "name": "hair02+",
+            "index": 21
+          },
+          {
+            "id": "asset_1VESZM29JMP2P8FJW171050JZA",
+            "kind": "material",
+            "name": "hair03+",
+            "index": 22
+          },
+          {
+            "id": "asset_7MD5TGH1JNQ6KRFJW271050KCX",
+            "kind": "material",
+            "name": "hairshadow",
+            "index": 23
+          },
+          {
+            "id": "asset_2GDSEYD6ZFN568FJVV71050GDR",
+            "kind": "material",
+            "name": "clothes01",
+            "index": 24
+          },
+          {
+            "id": "asset_250TWE073Y87QRFJVW71050GVB",
+            "kind": "material",
+            "name": "clothes02",
+            "index": 25
+          },
+          {
+            "id": "asset_0ATVTQS5B3VJ18FJVX71050H8Y",
+            "kind": "material",
+            "name": "sleeve01",
+            "index": 26
+          },
+          {
+            "id": "asset_4X0ZKEFHARXVX8FJVY71050HPH",
+            "kind": "material",
+            "name": "sleeve02",
+            "index": 27
+          },
+          {
+            "id": "asset_624AF181BAYE2RFJVQ71050EQC",
+            "kind": "material",
+            "name": "sleeve03",
+            "index": 28
+          },
+          {
+            "id": "asset_2QJ5JPYZ7CW0B8FJVR71050F4Z",
+            "kind": "material",
+            "name": "sleeve04",
+            "index": 29
+          },
+          {
+            "id": "asset_66VP2K796V3828FKR571056RGD",
+            "kind": "material",
+            "name": "sleeve05",
+            "index": 30
+          },
+          {
+            "id": "asset_6KSXRHRVWX5NARFKR471056R2T",
+            "kind": "material",
+            "name": "sleeve-L",
+            "index": 31
+          },
+          {
+            "id": "asset_2DF8WXFWFXF3Z8FKR371056QN7",
+            "kind": "material",
+            "name": "skirt01",
+            "index": 32
+          },
+          {
+            "id": "asset_3PWNCVSD8BYQ1RFKR271056Q7M",
+            "kind": "material",
+            "name": "skirt-L",
+            "index": 33
+          },
+          {
+            "id": "asset_6ZH6DWHYQ3CD5RFKR171056PT1",
+            "kind": "material",
+            "name": "skirt03",
+            "index": 34
+          },
+          {
+            "id": "asset_6X93KQF65YSDZ8FKR071056PCE",
+            "kind": "material",
+            "name": "skirt04",
+            "index": 35
+          },
+          {
+            "id": "asset_56NFTGR96DF6A8FKQZ71056NYV",
+            "kind": "material",
+            "name": "skirt05",
+            "index": 36
+          },
+          {
+            "id": "asset_6K4MNF3G4MC5G8FKQY71056NH8",
+            "kind": "material",
+            "name": "headphone01",
+            "index": 37
+          },
+          {
+            "id": "asset_38CPBEGRK20ADRFKQX71056N3N",
+            "kind": "material",
+            "name": "headphone02-L",
+            "index": 38
+          },
+          {
+            "id": "asset_5QHVSAG8S9STQ8FKQW71056MP2",
+            "kind": "material",
+            "name": "headphone03",
+            "index": 39
+          },
+          {
+            "id": "asset_5CKJ4J8XKMDDRRFH3K7104M5BJ",
+            "kind": "material",
+            "name": "headphone04",
+            "index": 40
+          },
+          {
+            "id": "asset_36MN9XT7APGEN8FH3M7104M5S5",
+            "kind": "material",
+            "name": "Boots01",
+            "index": 41
+          },
+          {
+            "id": "asset_7TEPEN2RH46Q98FH3H7104M4GC",
+            "kind": "material",
+            "name": "Boots02",
+            "index": 42
+          },
+          {
+            "id": "asset_1RBKA6JZWJNE68FH3J7104M4XZ",
+            "kind": "material",
+            "name": "Boots-L",
+            "index": 43
+          },
+          {
+            "id": "asset_0HCYTSK6QBK8HGM4M7FCZY5MM6",
+            "kind": "texture",
+            "name": "body",
+            "index": 0
+          },
+          {
+            "id": "asset_7PDFYRXYV78QT0M4M8FCZY5N1S",
+            "kind": "texture",
+            "name": "toon-1",
+            "index": 1
+          },
+          {
+            "id": "asset_16VB2F7GYYM730M4M5FCZY5KS0",
+            "kind": "texture",
+            "name": "spa-0",
+            "index": 2
+          },
+          {
+            "id": "asset_1CENCVHCVFHB30M4M6FCZY5M6K",
+            "kind": "texture",
+            "name": "spa-3",
+            "index": 3
+          },
+          {
+            "id": "asset_1568VCV4QEMZ90M4MBFCZY5PAJ",
+            "kind": "texture",
+            "name": "toon-6",
+            "index": 4
+          },
+          {
+            "id": "asset_4GT6X3ZK216X6GM4MCFCZY5PR5",
+            "kind": "texture",
+            "name": "eye",
+            "index": 5
+          },
+          {
+            "id": "asset_3SGB89RR4E2NA0M4M9FCZY5NFC",
+            "kind": "texture",
+            "name": "spa-1",
+            "index": 6
+          },
+          {
+            "id": "asset_6837ESHDSTZRNGM4MAFCZY5NWZ",
+            "kind": "texture",
+            "name": "spa-2",
+            "index": 7
+          },
+          {
+            "id": "asset_2NYSANG2NNMA8GM4MFFCZY5R0Y",
+            "kind": "texture",
+            "name": "face",
+            "index": 8
+          },
+          {
+            "id": "asset_6VKS1PHT23K51GM4MGFCZY5REH",
+            "kind": "texture",
+            "name": "face2",
+            "index": 9
+          },
+          {
+            "id": "asset_607VHC23FMYWDG0MFJDP76WJTB",
+            "kind": "texture",
+            "name": "face",
+            "index": 10
+          },
+          {
+            "id": "asset_43FBTR925ZPXW00MFHDP76WJCR",
+            "kind": "texture",
+            "name": "HO",
+            "index": 11
+          },
+          {
+            "id": "asset_406DZQ8N5K0J200MFMDP76WKNH",
+            "kind": "texture",
+            "name": "spa-8",
+            "index": 12
+          },
+          {
+            "id": "asset_4GH01ZBGXH9BHG0MFKDP76WK7Y",
+            "kind": "texture",
+            "name": "spa-5",
+            "index": 13
+          },
+          {
+            "id": "asset_5A4NEENKC1GRN00MFPDP76WMGQ",
+            "kind": "texture",
+            "name": "hair03",
+            "index": 14
+          },
+          {
+            "id": "asset_12FGDEH4MQY5EG0MFNDP76WM34",
+            "kind": "texture",
+            "name": "toon-2",
+            "index": 15
+          },
+          {
+            "id": "asset_740C5PPKGXSN3G0MFRDP76WNBX",
+            "kind": "texture",
+            "name": "spa-6",
+            "index": 16
+          },
+          {
+            "id": "asset_01TRJDJ22DRFY00MFQDP76WMYA",
+            "kind": "texture",
+            "name": "Hair01",
+            "index": 17
+          },
+          {
+            "id": "asset_6E6KM383TG150G0MFADP76WFDK",
+            "kind": "texture",
+            "name": "hair02",
+            "index": 18
+          },
+          {
+            "id": "asset_2NHHXNTJYBJNAG0MF9DP76WF00",
+            "kind": "texture",
+            "name": "spa-7",
+            "index": 19
+          },
+          {
+            "id": "asset_4DBWB2J5ZJYQZG0HZ0DP76BP1G",
+            "kind": "texture",
+            "name": "Hair03-ao",
+            "index": 20
+          },
+          {
+            "id": "asset_0KNVPZFXDVBAGG0HZ1DP76BPF3",
+            "kind": "texture",
+            "name": "toon-5",
+            "index": 21
+          },
+          {
+            "id": "asset_6S9F4AHMF7RB900HZ2DP76BPWP",
+            "kind": "texture",
+            "name": "Hair01-ao",
+            "index": 22
+          },
+          {
+            "id": "asset_1YB9CFG08A4FQG0HZ3DP76BQA9",
+            "kind": "texture",
+            "name": "hair02-ao",
+            "index": 23
+          },
+          {
+            "id": "asset_042YMADT6J1ZYG0HZ4DP76BQQW",
+            "kind": "texture",
+            "name": "HS",
+            "index": 24
+          },
+          {
+            "id": "asset_30A5SNSRJTEM800HZ5DP76BR5F",
+            "kind": "texture",
+            "name": "clothes",
+            "index": 25
+          },
+          {
+            "id": "asset_2DSKKHSNB1YRDG0HZ6DP76BRK2",
+            "kind": "texture",
+            "name": "toon-4",
+            "index": 26
+          },
+          {
+            "id": "asset_4HM4VHMCAK3AS00HZ7DP76BS0N",
+            "kind": "texture",
+            "name": "spa-9",
+            "index": 27
+          },
+          {
+            "id": "asset_119972YHH1A3S00HZ8DP76BSE8",
+            "kind": "texture",
+            "name": "spa-4",
+            "index": 28
+          },
+          {
+            "id": "asset_5DZE0CRGHEZNXG0HZ9DP76BSVV",
+            "kind": "texture",
+            "name": "sleeve",
+            "index": 29
+          },
+          {
+            "id": "asset_0H61EWPGXWCQ6G0JV6DP76HWDS",
+            "kind": "texture",
+            "name": "toon-3",
+            "index": 30
+          },
+          {
+            "id": "asset_3CA65MF6T4JTPG0JV5DP76HW06",
+            "kind": "texture",
+            "name": "spa-4x",
+            "index": 31
+          },
+          {
+            "id": "asset_0E28M25HQ0AFC00JV4DP76HVJK",
+            "kind": "texture",
+            "name": "sleeve-l",
+            "index": 32
+          },
+          {
+            "id": "asset_2SR7TQTGD0J5XG0JV3DP76HV50",
+            "kind": "texture",
+            "name": "skirt",
+            "index": 33
+          },
+          {
+            "id": "asset_78A1V3NGVDHE600JVADP76HY45",
+            "kind": "texture",
+            "name": "Boots",
+            "index": 34
+          },
+          {
+            "id": "asset_5F51HPFZBSFA68WXJBXYRNJK7W",
+            "kind": "skeleton",
+            "name": "body01 Skeleton",
+            "index": 0
+          },
+          {
+            "id": "asset_00N42RQ57AA3PWJSWN5RNXDQVA",
+            "kind": "skin",
+            "name": "body01",
+            "index": 0
+          },
+          {
+            "id": "asset_68201KW3KSYXNCJSWP5RNXDR8X",
+            "kind": "skin",
+            "name": "nail",
+            "index": 1
+          },
+          {
+            "id": "asset_08FV1MJBG23ZJCJSWK5RNXDQ04",
+            "kind": "skin",
+            "name": "01",
+            "index": 2
+          },
+          {
+            "id": "asset_1GGA9B2JVRQK8CJSWM5RNXDQDQ",
+            "kind": "skin",
+            "name": "pantsu",
+            "index": 3
+          },
+          {
+            "id": "asset_16S5D9JV8FB2VCJSWH5RNXDP4Y",
+            "kind": "skin",
+            "name": "face01",
+            "index": 4
+          },
+          {
+            "id": "asset_7QF0GV416VFZEWJSWJ5RNXDPJH",
+            "kind": "skin",
+            "name": "eyes",
+            "index": 5
+          },
+          {
+            "id": "asset_7WMFMZSPCGW0YWJSWF5RNXDN9R",
+            "kind": "skin",
+            "name": "eyes+",
+            "index": 6
+          },
+          {
+            "id": "asset_7KA3DJ6WBECP1WJSWG5RNXDNQB",
+            "kind": "skin",
+            "name": "HL",
+            "index": 7
+          },
+          {
+            "id": "asset_7B9MCM3CT8EV9WJSWD5RNXDMEJ",
+            "kind": "skin",
+            "name": "face02",
+            "index": 8
+          },
+          {
+            "id": "asset_6D3ZMZ64REJBPCJSWE5RNXDMW5",
+            "kind": "skin",
+            "name": "face00",
+            "index": 9
+          },
+          {
+            "id": "asset_05ATC9C8Y5AEH13SAXEHZ217VQ",
+            "kind": "skin",
+            "name": "face03",
+            "index": 10
+          },
+          {
+            "id": "asset_5AD4EM2XZ2EZ9H3SAWEHZ217E4",
+            "kind": "skin",
+            "name": "face04",
+            "index": 11
+          },
+          {
+            "id": "asset_74XCTRHP2FTG1H3SAZEHZ218PX",
+            "kind": "skin",
+            "name": "B",
+            "index": 12
+          },
+          {
+            "id": "asset_1FRMWKFE8W6YJH3SAYEHZ2189A",
+            "kind": "skin",
+            "name": "B-L",
+            "index": 13
+          },
+          {
+            "id": "asset_1K10CV0FKYD3DH3SASEHZ2165B",
+            "kind": "skin",
+            "name": "glasses",
+            "index": 14
+          },
+          {
+            "id": "asset_72WGC8DNTP4EK13SAREHZ215QR",
+            "kind": "skin",
+            "name": "glasses02+",
+            "index": 15
+          },
+          {
+            "id": "asset_22QHF71SKAYHTH3SAVEHZ2170H",
+            "kind": "skin",
+            "name": "glasses02",
+            "index": 16
+          },
+          {
+            "id": "asset_7TW5QVS890F3J13SATEHZ216JY",
+            "kind": "skin",
+            "name": "hair01",
+            "index": 17
+          },
+          {
+            "id": "asset_7R31NE4D11H6Y13SANEHZ214EZ",
+            "kind": "skin",
+            "name": "hair02",
+            "index": 18
+          },
+          {
+            "id": "asset_4566RJHM16SBP13SAMEHZ2141C",
+            "kind": "skin",
+            "name": "hair03",
+            "index": 19
+          },
+          {
+            "id": "asset_5W1N3Q7J6KZM3H3PTBEHZ1GB2W",
+            "kind": "skin",
+            "name": "hair01+",
+            "index": 20
+          },
+          {
+            "id": "asset_5QMYV00YC402613PTCEHZ1GBGF",
+            "kind": "skin",
+            "name": "hair02+",
+            "index": 21
+          },
+          {
+            "id": "asset_60ABVDW6GR2AA13PTDEHZ1GBY2",
+            "kind": "skin",
+            "name": "hair03+",
+            "index": 22
+          },
+          {
+            "id": "asset_4HR1P3B6QZBPVH3PTEEHZ1GCBN",
+            "kind": "skin",
+            "name": "hairshadow",
+            "index": 23
+          },
+          {
+            "id": "asset_5Q2SHX52V53X613PT7EHZ1G9CG",
+            "kind": "skin",
+            "name": "clothes01",
+            "index": 24
+          },
+          {
+            "id": "asset_1XSRXSGFV4MSQH3PT8EHZ1G9T3",
+            "kind": "skin",
+            "name": "clothes02",
+            "index": 25
+          },
+          {
+            "id": "asset_3JTHRS3Z1VRK4H3PT9EHZ1GA7P",
+            "kind": "skin",
+            "name": "sleeve01",
+            "index": 26
+          },
+          {
+            "id": "asset_68QM919XR26AN13PTAEHZ1GAN9",
+            "kind": "skin",
+            "name": "sleeve02",
+            "index": 27
+          },
+          {
+            "id": "asset_09YQJRV76B4K613PTKEHZ1GEFM",
+            "kind": "skin",
+            "name": "sleeve03",
+            "index": 28
+          },
+          {
+            "id": "asset_5GMM7RJABSJ8QH3PTMEHZ1GEX7",
+            "kind": "skin",
+            "name": "sleeve04",
+            "index": 29
+          },
+          {
+            "id": "asset_76SMEMNXVAD3913QJHEHZ1MV35",
+            "kind": "skin",
+            "name": "sleeve05",
+            "index": 30
+          },
+          {
+            "id": "asset_0E31YTBPY3B67H3QJGEHZ1MTNJ",
+            "kind": "skin",
+            "name": "sleeve-L",
+            "index": 31
+          },
+          {
+            "id": "asset_1ZXCW6FEMN5TE13QJFEHZ1MT7Z",
+            "kind": "skin",
+            "name": "skirt01",
+            "index": 32
+          },
+          {
+            "id": "asset_6K95JH2AWCASS13QJEEHZ1MSTC",
+            "kind": "skin",
+            "name": "skirt-L",
+            "index": 33
+          },
+          {
+            "id": "asset_7MDWD2Z9FP6FRH3QJDEHZ1MSCS",
+            "kind": "skin",
+            "name": "skirt03",
+            "index": 34
+          },
+          {
+            "id": "asset_7GBQB8XXYT1R413QJCEHZ1MRZ6",
+            "kind": "skin",
+            "name": "skirt04",
+            "index": 35
+          },
+          {
+            "id": "asset_7139T8665CPRZ13QJBEHZ1MRHK",
+            "kind": "skin",
+            "name": "skirt05",
+            "index": 36
+          },
+          {
+            "id": "asset_7WCTFTDPQGXA7H3QJAEHZ1MR40",
+            "kind": "skin",
+            "name": "headphone01",
+            "index": 37
+          },
+          {
+            "id": "asset_3FJTXWPVGB2MCH3QJSEHZ1MYFX",
+            "kind": "skin",
+            "name": "headphone02-L",
+            "index": 38
+          },
+          {
+            "id": "asset_4H90HXBPD0EP6H3QJREHZ1MY2A",
+            "kind": "skin",
+            "name": "headphone03",
+            "index": 39
+          },
+          {
+            "id": "asset_183T2WAZ0WYAFH3N2ZEHZ14BXA",
+            "kind": "skin",
+            "name": "headphone04",
+            "index": 40
+          },
+          {
+            "id": "asset_3E269RTMG699P13N30EHZ14CAX",
+            "kind": "skin",
+            "name": "Boots01",
+            "index": 41
+          },
+          {
+            "id": "asset_6HF75WZRE85N613N2XEHZ14B24",
+            "kind": "skin",
+            "name": "Boots02",
+            "index": 42
+          },
+          {
+            "id": "asset_12VQ3R2TATFG913N2YEHZ14BFQ",
+            "kind": "skin",
+            "name": "Boots-L",
+            "index": 43
+          },
+          {
+            "id": "asset_5S86JMK1FV7G62C6KMYEQD1MYP",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 74
+          },
+          {
+            "id": "asset_1HRMPEJJXW1T6JC6KNYEQD1NC9",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 75
+          },
+          {
+            "id": "asset_7VYJQ2WWRHQERJC6KJYEQD1M3G",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 76
+          },
+          {
+            "id": "asset_6GFAME3C3QP4W2C6KKYEQD1MH3",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 77
+          },
+          {
+            "id": "asset_3K9G25DZHK09KJC6M0YEQD1T1T",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 78
+          },
+          {
+            "id": "asset_6QDW8F0269W7AJC6M1YEQD1TFD",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 79
+          },
+          {
+            "id": "asset_743WT3MHF7CPHJCFZTYEQF1MY5",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 80
+          },
+          {
+            "id": "asset_4HTHJGWGJRXF3JCFZSYEQF1MGJ",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 81
+          },
+          {
+            "id": "asset_6NP96WNS88VN8Y4592CZV6STVF",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 65610
+          },
+          {
+            "id": "asset_218VBRJX3HKRKE4591CZV6STDW",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 65611
+          },
+          {
+            "id": "asset_05DPJKATRW0X0E4594CZV6SVPN",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 65612
+          },
+          {
+            "id": "asset_0AAW5SGX3S0ERE4593CZV6SV92",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 65613
+          },
+          {
+            "id": "asset_5NB6BXRBRYQ5RE458YCZV6SS53",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 65614
+          },
+          {
+            "id": "asset_5PZFQ14R99J43Y458XCZV6SRQG",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 65615
+          },
+          {
+            "id": "asset_6A2G3N088JWASE4590CZV6ST09",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 65616
+          },
+          {
+            "id": "asset_67C9V31ZQQ8NEY458ZCZV6SSJP",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 65617
+          },
+          {
+            "id": "asset_4ENG1EYZM2K57THHYS6AMC18X5",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 131146
+          },
+          {
+            "id": "asset_6PS042TSMFG3QAHHYR6AMC18FJ",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 131147
+          },
+          {
+            "id": "asset_5C4RDX45R07NGTHHYV6AMC19RB",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 131148
+          },
+          {
+            "id": "asset_053ZF32W3MR32AHHYT6AMC19AR",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 131149
+          },
+          {
+            "id": "asset_20GXFF36APFWHAHH3D6AMBVDJA",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 131150
+          },
+          {
+            "id": "asset_005KDRYAVFABHAHH3E6AMBVDZX",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 131151
+          },
+          {
+            "id": "asset_4E3PKBHG8Z17GAHH3B6AMBVCQ4",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 131152
+          },
+          {
+            "id": "asset_5G4PYD66CWEKXTHH3C6AMBVD4Q",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 131153
+          },
+          {
+            "id": "asset_1XWQVAJC9JH9A3TFMWC59T85BX",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 196682
+          },
+          {
+            "id": "asset_154E1JXGQMWDDKTFMVC59T84YA",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 196683
+          },
+          {
+            "id": "asset_2RFBJD1NJP18J3TFMPC59T82TB",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 196684
+          },
+          {
+            "id": "asset_3A8DTKP02HDHHKTFMNC59T82CR",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 196685
+          },
+          {
+            "id": "asset_74B105VM0SW01KTFMRC59T83NH",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 196686
+          },
+          {
+            "id": "asset_3XAGS1N05A7S83TFMQC59T837Y",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 196687
+          },
+          {
+            "id": "asset_01GYB5PPWN61DKTFMJC59T813Z",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 196688
+          },
+          {
+            "id": "asset_5X79EZVSYJXBM3TFMHC59T80PC",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 196689
+          },
+          {
+            "id": "asset_2EJHP3Z0ASVSQE52T2E9YD47VR",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 262157
+          },
+          {
+            "id": "asset_3EG08TVQWESGYY52T1E9YD47E5",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 262158
+          },
+          {
+            "id": "asset_7CRTC5ES1KMPBY52T0E9YD470J",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 262159
+          },
+          {
+            "id": "asset_68147DXDMVZXCE53NFE9YDA3M6",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 262160
+          },
+          {
+            "id": "asset_5PBF3THS4T3YDY53NGE9YDA41S",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 262161
+          },
+          {
+            "id": "asset_4DP1TPNQJSPJVY53NDE9YDA2S0",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 262162
+          },
+          {
+            "id": "asset_6XQ0MRF3FSZZAY53NEE9YDA36K",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 262163
+          },
+          {
+            "id": "asset_7PPF2HJVS7YRKY53NKE9YDA5AJ",
+            "kind": "morph",
+            "name": "ｷﾘｯ",
+            "index": 262164
+          },
+          {
+            "id": "asset_6B5ZYEH8RKKXWE53NME9YDA5R5",
+            "kind": "morph",
+            "name": "ｷﾘｯ２",
+            "index": 262165
+          },
+          {
+            "id": "asset_5567XSP3F8A2TY53NHE9YDA4FC",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 262166
+          },
+          {
+            "id": "asset_5HE0KWCRYP119E53NJE9YDA4WZ",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 262167
+          },
+          {
+            "id": "asset_1NZYKPVD9S9VZE53NQE9YDA70Y",
+            "kind": "morph",
+            "name": "びっくり",
+            "index": 262168
+          },
+          {
+            "id": "asset_6T8M8FHZH15ZVE53NRE9YDA7EH",
+            "kind": "morph",
+            "name": "じと目",
+            "index": 262169
+          },
+          {
+            "id": "asset_76PBBD44ADBB8Y54HNE9YDGA0F",
+            "kind": "morph",
+            "name": "瞳小",
+            "index": 262170
+          },
+          {
+            "id": "asset_1EY9Z0H436NC8E54HME9YDG9JW",
+            "kind": "morph",
+            "name": "たれ目",
+            "index": 262171
+          },
+          {
+            "id": "asset_58FPTSWWSZCS2E54HQE9YDGAVN",
+            "kind": "morph",
+            "name": "カメラ目",
+            "index": 262172
+          },
+          {
+            "id": "asset_55M8RB2K2A5VEY54HPE9YDGAE2",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 262173
+          },
+          {
+            "id": "asset_6HVJ9YFV06Q2AE54HHE9YDG8A3",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 262174
+          },
+          {
+            "id": "asset_2S23J7JME7K7CY54HGE9YDG7WG",
+            "kind": "morph",
+            "name": "笑い目",
+            "index": 262175
+          },
+          {
+            "id": "asset_51G52HQ1R0M4AZR1NEEA5HS60G",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 262218
+          },
+          {
+            "id": "asset_4ZKDA52VYMD4SZR1NFEA5HS6E3",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 262219
+          },
+          {
+            "id": "asset_6GK3M6TKD8414ZR458EA5J9RK3",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 262220
+          },
+          {
+            "id": "asset_2ZGD2MM26DEP5FR457EA5J9R5G",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 262221
+          },
+          {
+            "id": "asset_11VAD0CDS6EZMFR45AEA5J9SE9",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 262222
+          },
+          {
+            "id": "asset_2K4994DJG3REYFR459EA5J9S0P",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 262223
+          },
+          {
+            "id": "asset_015WBMMPYPVB7FR45CEA5J9T9F",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 262224
+          },
+          {
+            "id": "asset_5SKFGKXBF0KP4ZR45BEA5J9SVW",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 262225
+          },
+          {
+            "id": "asset_3MFPA4GYSK955MF5MG2YVYZAT9",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 327693
+          },
+          {
+            "id": "asset_7QT9PXH0AG9KDMF5MH2YVYZB7W",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 327694
+          },
+          {
+            "id": "asset_1ASM47DC4CHP64F5MJ2YVYZBNF",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 327695
+          },
+          {
+            "id": "asset_37SMFBDYDFF3TMF5MK2YVYZC32",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 327696
+          },
+          {
+            "id": "asset_4Z13FAPKW4JNH4F5MM2YVYZCGN",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 327697
+          },
+          {
+            "id": "asset_7DYZRZ3GBHTCR4F5MN2YVYZCY8",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 327698
+          },
+          {
+            "id": "asset_0PSZGXPWC2815MF5MP2YVYZDBV",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 327699
+          },
+          {
+            "id": "asset_5ZAK4KR4F04REKX7Q62YSCAEVG",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 327702
+          },
+          {
+            "id": "asset_5WJ17BC0JG65A3X7Q72YSCAF93",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 327703
+          },
+          {
+            "id": "asset_08DEFY020Q2QR3X7QA2YSCAGHW",
+            "kind": "morph",
+            "name": "瞳小",
+            "index": 327706
+          },
+          {
+            "id": "asset_15Y4PHCD5PK803X7QG2YSCAK3E",
+            "kind": "morph",
+            "name": "カメラ目",
+            "index": 327708
+          },
+          {
+            "id": "asset_34GVF640G0P60KX7QH2YSCAKH1",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 327709
+          },
+          {
+            "id": "asset_13XJ6MQB7BHF5KX8KE2YSCGP2Z",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 327710
+          },
+          {
+            "id": "asset_3FPSMHB1CCE9F3X57T2YSBT277",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 327754
+          },
+          {
+            "id": "asset_68E8SQYFPVPA43X57S2YSBT1SM",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 327755
+          },
+          {
+            "id": "asset_0AWD8KASCJBFW3X57W2YSBT32D",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 327756
+          },
+          {
+            "id": "asset_4FMJ8ZVM6H7ZNKX57V2YSBT2MT",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 327757
+          },
+          {
+            "id": "asset_75VVF11EVH9W6KX57E2YSBSX43",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 327758
+          },
+          {
+            "id": "asset_4FVCWCXT4TTEZ3X57D2YSBSWPG",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 327759
+          },
+          {
+            "id": "asset_6W7TBS8HASSC7KX2K42YSB7DC0",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 327760
+          },
+          {
+            "id": "asset_7ETZEP2SZ5S2N3X2K52YSB7DSK",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 327761
+          },
+          {
+            "id": "asset_2TNWQ7D27CEP2JKD9ZK5ENEHB9",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 393229
+          },
+          {
+            "id": "asset_7Z81GCRWKGJ3VJKE2CK5ENK4AQ",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 393230
+          },
+          {
+            "id": "asset_0PR8KM90EES802KE2BK5ENK3X4",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 393231
+          },
+          {
+            "id": "asset_517EXAY3YZN962KE2EK5ENK55X",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 393232
+          },
+          {
+            "id": "asset_27GXP4SF4AGWF2KE2DK5ENK4RA",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 393233
+          },
+          {
+            "id": "asset_39D97RD6631K42KE28K5ENK2MB",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 393234
+          },
+          {
+            "id": "asset_2E9KNM2JE9BY5JKE27K5ENK26R",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 393235
+          },
+          {
+            "id": "asset_5008A5D2XMN3JJKE24K5ENK0XZ",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 393238
+          },
+          {
+            "id": "asset_39816QHWFGMTCJKE23K5ENK0GC",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 393239
+          },
+          {
+            "id": "asset_2AFXM35MDRZHNJK864K5EMBJTY",
+            "kind": "morph",
+            "name": "瞳小",
+            "index": 393242
+          },
+          {
+            "id": "asset_4W57VFSPBM6YY2K866K5EMBKP4",
+            "kind": "morph",
+            "name": "カメラ目",
+            "index": 393244
+          },
+          {
+            "id": "asset_38ZRNXRJ7GSKYJK867K5EMBM3Q",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 393245
+          },
+          {
+            "id": "asset_2M6P28CDCE0YH2K868K5EMBMHA",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 393246
+          },
+          {
+            "id": "asset_4YCYZBRZC3QXZ2K5JGK5EKSCDX",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 393290
+          },
+          {
+            "id": "asset_6E49J5TABFEQF2K5JFK5EKSC0A",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 393291
+          },
+          {
+            "id": "asset_7DNA2T2ZVS27FJK5JEK5EKSBJQ",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 393292
+          },
+          {
+            "id": "asset_6MBF4Q0Y4B8FM2K5JDK5EKSB54",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 393293
+          },
+          {
+            "id": "asset_4CP3JKG1GVPZTJK5JCK5EKSAQH",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 393294
+          },
+          {
+            "id": "asset_742CWT3TWEGR3JK5JBK5EKSA9Y",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 393295
+          },
+          {
+            "id": "asset_11AHWETGPBXXB2K5JAK5EKS9WB",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 393296
+          },
+          {
+            "id": "asset_41ZS1B41S5H7EJK5J9K5EKS9ER",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 393297
+          },
+          {
+            "id": "asset_45663AKHCZ041C186WTNW9E14P",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 458765
+          },
+          {
+            "id": "asset_26HTWZBFJS03EW186VTNW9E0Q3",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 458766
+          },
+          {
+            "id": "asset_14WKG4HE97W0JW186TTNW9E09G",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 458767
+          },
+          {
+            "id": "asset_7HVDYJ37CSFZBW1879TNW9E6ND",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 458768
+          },
+          {
+            "id": "asset_3PHK7CNJSENQXC1878TNW9E67T",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 458769
+          },
+          {
+            "id": "asset_5GA3C48FNPQ00W17AVTNW97WWC",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 458770
+          },
+          {
+            "id": "asset_26JAC1TM6FAB3C17AWTNW97X9Z",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 458771
+          },
+          {
+            "id": "asset_763KXWXPA59GNC17AXTNW97XQJ",
+            "kind": "morph",
+            "name": "ｷﾘｯ",
+            "index": 458772
+          },
+          {
+            "id": "asset_4T07S1VMZA1SMW17AYTNW97Y55",
+            "kind": "morph",
+            "name": "ｷﾘｯ２",
+            "index": 458773
+          },
+          {
+            "id": "asset_4R81FMFH4HQ3KC17AQTNW97V60",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 458774
+          },
+          {
+            "id": "asset_0NH8MXNPGWVHAW17ARTNW97VKK",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 458775
+          },
+          {
+            "id": "asset_7GWEZJEQ87YHCC17ATTNW97WES",
+            "kind": "morph",
+            "name": "じと目",
+            "index": 458777
+          },
+          {
+            "id": "asset_3YYGE5081CB01C17B3TNW98094",
+            "kind": "morph",
+            "name": "瞳小",
+            "index": 458778
+          },
+          {
+            "id": "asset_4R89WK4TXCCQ6W0ZQ5TNW7MBBV",
+            "kind": "morph",
+            "name": "カメラ目",
+            "index": 458780
+          },
+          {
+            "id": "asset_2TEBN8EFMEPWRC0ZQ4TNW7MAY8",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 458781
+          },
+          {
+            "id": "asset_726X5R904VGV5C0ZQ7TNW7MC71",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 458782
+          },
+          {
+            "id": "asset_1TVFMM7S8ZHBFAAM6YTNMBXK02",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 458826
+          },
+          {
+            "id": "asset_6ZQMYAEPEZZPEAAM6ZTNMBXKDN",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 458827
+          },
+          {
+            "id": "asset_7T5PREWCM8ZXXTAM70TNMBXKV8",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 458828
+          },
+          {
+            "id": "asset_259T15VGJEPKZAAM71TNMBXM8V",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 458829
+          },
+          {
+            "id": "asset_1Q9PC92DVPFHRTAMYYTNMC20ES",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 458830
+          },
+          {
+            "id": "asset_7T1Q406H81XWWTAMYXTNMC2016",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 458831
+          },
+          {
+            "id": "asset_0MD3TFHAN823XTAMYWTNMC1ZKK",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 458832
+          },
+          {
+            "id": "asset_7GD3FTBH6WGFWAAMYVTNMC1Z60",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 458833
+          },
+          {
+            "id": "asset_3Y7NR5D0FBQ8GAAMZ2TNMC2255",
+            "kind": "morph",
+            "name": "HL消",
+            "index": 458834
+          },
+          {
+            "id": "asset_7DBYRGFBEMAH1TAMZ1TNMC21QJ",
+            "kind": "morph",
+            "name": "HLchange",
+            "index": 458835
+          },
+          {
+            "id": "asset_3BFQAWJ7AHH3XTAMZ0TNMC219Z",
+            "kind": "morph",
+            "name": "光方向change",
+            "index": 458836
+          },
+          {
+            "id": "asset_4AF4EPBSY9K3X4DX470ENHY32W",
+            "kind": "morph",
+            "name": "真面目",
+            "index": 524288
+          },
+          {
+            "id": "asset_5R1X2QKSR011PMDX480ENHY3GF",
+            "kind": "morph",
+            "name": "困る",
+            "index": 524289
+          },
+          {
+            "id": "asset_306BA9R3G3YY4MDXWK0ENJ2NMQ",
+            "kind": "morph",
+            "name": "怒り",
+            "index": 524292
+          },
+          {
+            "id": "asset_2MWK4P3ZVTYQP4DXWJ0ENJ2N74",
+            "kind": "morph",
+            "name": "平行",
+            "index": 524293
+          },
+          {
+            "id": "asset_4RT6HRA3JR3E94DXWH0ENJ2MSH",
+            "kind": "morph",
+            "name": "上",
+            "index": 524294
+          },
+          {
+            "id": "asset_1Q5N3WDT2BFPFMDXWG0ENJ2MBY",
+            "kind": "morph",
+            "name": "左上",
+            "index": 524295
+          },
+          {
+            "id": "asset_1AT4HWF4E3CDA4DXWF0ENJ2KYB",
+            "kind": "morph",
+            "name": "右上",
+            "index": 524296
+          },
+          {
+            "id": "asset_6EF7FS27FCBQZ4DXWE0ENJ2KGR",
+            "kind": "morph",
+            "name": "下",
+            "index": 524297
+          },
+          {
+            "id": "asset_5X6F36ZFM94SAMDXWD0ENJ2K35",
+            "kind": "morph",
+            "name": "左下",
+            "index": 524298
+          },
+          {
+            "id": "asset_0VFYCXETZ837J4DXWC0ENJ2JNJ",
+            "kind": "morph",
+            "name": "右下",
+            "index": 524299
+          },
+          {
+            "id": "asset_6XS4TNCPVES2TN09DS0ER7MA4M",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 524301
+          },
+          {
+            "id": "asset_5Y3N3QPBN5VFVN09DW0ER7MBDD",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 524302
+          },
+          {
+            "id": "asset_6ZM4VPCVDJTEG509DV0ER7MAZT",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 524303
+          },
+          {
+            "id": "asset_1C2GFBXH467PFN09DP0ER7M8VV",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 524304
+          },
+          {
+            "id": "asset_6DAYNB816GGJ4509DN0ER7M8E8",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 524305
+          },
+          {
+            "id": "asset_5C849NC3BCWGC509DR0ER7M9Q1",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 524306
+          },
+          {
+            "id": "asset_632VXBGMMV6MF509DQ0ER7M99E",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 524307
+          },
+          {
+            "id": "asset_5XS9Q364VJSYR509DJ0ER7M75F",
+            "kind": "morph",
+            "name": "ｷﾘｯ",
+            "index": 524308
+          },
+          {
+            "id": "asset_3HP02SDA5DBKSN09DH0ER7M6QW",
+            "kind": "morph",
+            "name": "ｷﾘｯ２",
+            "index": 524309
+          },
+          {
+            "id": "asset_60KNYM5R84H31508HM0ER7E45Y",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 524310
+          },
+          {
+            "id": "asset_5AATV0RF0855SN08HN0ER7E4KH",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 524311
+          },
+          {
+            "id": "asset_21DXVTPG2ZJCWN08HJ0ER7E3AR",
+            "kind": "morph",
+            "name": "びっくり",
+            "index": 524312
+          },
+          {
+            "id": "asset_7CJETJAP0CGP4508HK0ER7E3RB",
+            "kind": "morph",
+            "name": "じと目",
+            "index": 524313
+          },
+          {
+            "id": "asset_7SEJC2MHBRJ4T508HS0ER7E69X",
+            "kind": "morph",
+            "name": "たれ目",
+            "index": 524315
+          },
+          {
+            "id": "asset_0SWWAMCYREADS508HQ0ER7E5EQ",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 524317
+          },
+          {
+            "id": "asset_71NC98E82TDFCN08HC0ER7E0S6",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 524318
+          },
+          {
+            "id": "asset_09QAY47KRJRDRN08HD0ER7E16S",
+            "kind": "morph",
+            "name": "笑い目",
+            "index": 524319
+          },
+          {
+            "id": "asset_09FDEEGTQ2SJM507SE0ER79M5N",
+            "kind": "morph",
+            "name": "あ",
+            "index": 524320
+          },
+          {
+            "id": "asset_0HMFNGS3HW6HV507SD0ER79KR2",
+            "kind": "morph",
+            "name": "あ２",
+            "index": 524321
+          },
+          {
+            "id": "asset_62YCRGXK4C6HFN07SC0ER79KAF",
+            "kind": "morph",
+            "name": "あ３",
+            "index": 524322
+          },
+          {
+            "id": "asset_1H2ZK9HKV1M9J507SB0ER79JWW",
+            "kind": "morph",
+            "name": "あ４",
+            "index": 524323
+          },
+          {
+            "id": "asset_01SDTYPNVREVMN07SA0ER79JF9",
+            "kind": "morph",
+            "name": "い",
+            "index": 524324
+          },
+          {
+            "id": "asset_33NNPRWQ1A9TRN07S90ER79J1P",
+            "kind": "morph",
+            "name": "い２",
+            "index": 524325
+          },
+          {
+            "id": "asset_4GDBV6SGCQX54507S80ER79HM3",
+            "kind": "morph",
+            "name": "い３",
+            "index": 524326
+          },
+          {
+            "id": "asset_01PQQSPQTSK5QN07S70ER79H6G",
+            "kind": "morph",
+            "name": "い４",
+            "index": 524327
+          },
+          {
+            "id": "asset_4SGQ5BY1VTK97507SP0ER79QJD",
+            "kind": "morph",
+            "name": "う",
+            "index": 524328
+          },
+          {
+            "id": "asset_47TGR3XVC44AWN07SN0ER79Q4T",
+            "kind": "morph",
+            "name": "え",
+            "index": 524329
+          },
+          {
+            "id": "asset_37279PTF2C6T4506X80ER73DSC",
+            "kind": "morph",
+            "name": "お",
+            "index": 524330
+          },
+          {
+            "id": "asset_4ANA993EK2YDE506X90ER73E6Z",
+            "kind": "morph",
+            "name": "ん",
+            "index": 524331
+          },
+          {
+            "id": "asset_54SQSYXJ5K01KN06XA0ER73EMJ",
+            "kind": "morph",
+            "name": "∧",
+            "index": 524332
+          },
+          {
+            "id": "asset_7SB4G4MXJNK53506XB0ER73F25",
+            "kind": "morph",
+            "name": "□",
+            "index": 524333
+          },
+          {
+            "id": "asset_2DY4JTNNQE8YQN06X40ER73C30",
+            "kind": "morph",
+            "name": "ω",
+            "index": 524334
+          },
+          {
+            "id": "asset_400CEPKD03A8H506X50ER73CGK",
+            "kind": "morph",
+            "name": "ω□",
+            "index": 524335
+          },
+          {
+            "id": "asset_1DPKE9SVY6EWK506X60ER73CY6",
+            "kind": "morph",
+            "name": "にやり",
+            "index": 524336
+          },
+          {
+            "id": "asset_2KP5K3Y10Q2PDN06X70ER73DBS",
+            "kind": "morph",
+            "name": "ぺろっ",
+            "index": 524337
+          },
+          {
+            "id": "asset_4WKQ9X45EZD2ZN06XG0ER73H64",
+            "kind": "morph",
+            "name": "ぺろっ２",
+            "index": 524338
+          },
+          {
+            "id": "asset_74XN925N8E3ZN506XH0ER73HKQ",
+            "kind": "morph",
+            "name": "口角上げ",
+            "index": 524339
+          },
+          {
+            "id": "asset_7FYGSBXNXEXV9506120ER6X7D3",
+            "kind": "morph",
+            "name": "口角上げ　左",
+            "index": 524340
+          },
+          {
+            "id": "asset_20TY7SYM6WDNJN06110ER6X6ZG",
+            "kind": "morph",
+            "name": "口角上げ　右",
+            "index": 524341
+          },
+          {
+            "id": "asset_1GBEXR8CDC73R506140ER6X889",
+            "kind": "morph",
+            "name": "口角下げ",
+            "index": 524342
+          },
+          {
+            "id": "asset_1XARHH7NG84QBN06130ER6X7TP",
+            "kind": "morph",
+            "name": "口角下げ　左",
+            "index": 524343
+          },
+          {
+            "id": "asset_411A2PJGC6T87N06160ER6X93F",
+            "kind": "morph",
+            "name": "口角下げ　右",
+            "index": 524344
+          },
+          {
+            "id": "asset_2C2N1MBTJSVBE506150ER6X8NW",
+            "kind": "morph",
+            "name": "口横広げ",
+            "index": 524345
+          },
+          {
+            "id": "asset_77WSNCWMSYXY7506180ER6X9YN",
+            "kind": "morph",
+            "name": "口横広げ　左",
+            "index": 524346
+          },
+          {
+            "id": "asset_7MENDMT52ZWR5506170ER6X9H2",
+            "kind": "morph",
+            "name": "口横広げ　右",
+            "index": 524347
+          },
+          {
+            "id": "asset_7QCK0CV1EQC1M5061A0ER6XASV",
+            "kind": "morph",
+            "name": "口横縮小",
+            "index": 524348
+          },
+          {
+            "id": "asset_7PYZGJKV1RZVFN06190ER6XAC8",
+            "kind": "morph",
+            "name": "口横縮小　左",
+            "index": 524349
+          },
+          {
+            "id": "asset_584N9A1JX3H8H5055W0ER6QEKT",
+            "kind": "morph",
+            "name": "口横縮小　右",
+            "index": 524350
+          },
+          {
+            "id": "asset_73S4KPA10GG6YN049M0ER6H7CB",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 524362
+          },
+          {
+            "id": "asset_00ENA0YB6PDDH5049K0ER6H6YR",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 524363
+          },
+          {
+            "id": "asset_6GVCSV431SHSJN049T0ER6H9XX",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 524364
+          },
+          {
+            "id": "asset_7PPDKJPQ9NJ5MN049S0ER6H9GA",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 524365
+          },
+          {
+            "id": "asset_00G2CW1F50MBT5049R0ER6H92Q",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 524366
+          },
+          {
+            "id": "asset_5F8A6BDJQXMH7N049Q0ER6H8N4",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 524367
+          },
+          {
+            "id": "asset_1FQ56FS068Z6TN049E0ER6H4TS",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 524368
+          },
+          {
+            "id": "asset_0Z3GGDDEH2BE55049D0ER6H4D6",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 524369
+          },
+          {
+            "id": "asset_6PY5C4PNR8QZH503HK0ER6CSG1",
+            "kind": "morph",
+            "name": "xあ",
+            "index": 524373
+          },
+          {
+            "id": "asset_3C94JKW57R0EQ503HM0ER6CSXM",
+            "kind": "morph",
+            "name": "xあ２",
+            "index": 524374
+          },
+          {
+            "id": "asset_4TB55V2ZVT8CXN03HN0ER6CTB7",
+            "kind": "morph",
+            "name": "xあ３",
+            "index": 524375
+          },
+          {
+            "id": "asset_4VZ94V9AG6FJR503HP0ER6CTRT",
+            "kind": "morph",
+            "name": "xあ４",
+            "index": 524376
+          },
+          {
+            "id": "asset_20AZ1Z06YASZT503HQ0ER6CV6D",
+            "kind": "morph",
+            "name": "xい",
+            "index": 524377
+          },
+          {
+            "id": "asset_2D70F2VF38DZB503H80ER6CMTG",
+            "kind": "morph",
+            "name": "xい２",
+            "index": 524378
+          },
+          {
+            "id": "asset_6KC11J9FFQDE9N03H90ER6CN83",
+            "kind": "morph",
+            "name": "xい３",
+            "index": 524379
+          },
+          {
+            "id": "asset_5M36KPTX3MN66N02NA0ER66HTZ",
+            "kind": "morph",
+            "name": "xい４",
+            "index": 524380
+          },
+          {
+            "id": "asset_7MAQYT9D5E84K502N90ER66HDC",
+            "kind": "morph",
+            "name": "xい５",
+            "index": 524381
+          },
+          {
+            "id": "asset_7M0YWZD2Z7W2H502NC0ER66JP5",
+            "kind": "morph",
+            "name": "xう",
+            "index": 524382
+          },
+          {
+            "id": "asset_4NDEVYGT3GZST502NB0ER66J8J",
+            "kind": "morph",
+            "name": "xえ",
+            "index": 524383
+          },
+          {
+            "id": "asset_2J7QB2X51X9GB502N60ER66G4K",
+            "kind": "morph",
+            "name": "xお",
+            "index": 524384
+          },
+          {
+            "id": "asset_33V83Y269611SGK7AXYJ89G2GK",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 589837
+          },
+          {
+            "id": "asset_1RQFC0T83DWCW0K7BAYJ89G81A",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 589838
+          },
+          {
+            "id": "asset_75RYZ5J190QB10K7BBYJ89G8EX",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 589839
+          },
+          {
+            "id": "asset_4KN3AZWHZDJSVGK9VMYJ8A11DD",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 589840
+          },
+          {
+            "id": "asset_74N36DMEKPM8C0K9VKYJ8A10ZT",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 589841
+          },
+          {
+            "id": "asset_00MW1539G9AD50K9VJYJ8A10J7",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 589842
+          },
+          {
+            "id": "asset_7T9Q3TR5C0HWCGK9VHYJ8A104M",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 589843
+          },
+          {
+            "id": "asset_0K18KPYR82H440K9VGYJ8A0ZQ1",
+            "kind": "morph",
+            "name": "ｷﾘｯ",
+            "index": 589844
+          },
+          {
+            "id": "asset_05V924JBQ4J9B0K9VFYJ8A0Z9E",
+            "kind": "morph",
+            "name": "ｷﾘｯ２",
+            "index": 589845
+          },
+          {
+            "id": "asset_5AWSMHTFNMPR5GK9VEYJ8A0YVV",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 589846
+          },
+          {
+            "id": "asset_0ZCZY1EEN4RNJ0K9VDYJ8A0YE8",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 589847
+          },
+          {
+            "id": "asset_7KC6MFVASBGYD0K9VCYJ8A0Y0N",
+            "kind": "morph",
+            "name": "びっくり",
+            "index": 589848
+          },
+          {
+            "id": "asset_5XXJ44MMYVJ2WGK9VBYJ8A0XK2",
+            "kind": "morph",
+            "name": "じと目",
+            "index": 589849
+          },
+          {
+            "id": "asset_1ENF2PV30PPYKGK8ZFYJ89TVEQ",
+            "kind": "morph",
+            "name": "たれ目",
+            "index": 589851
+          },
+          {
+            "id": "asset_7TXEGQENSQ77GGK8ZHYJ89TW9X",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 589853
+          },
+          {
+            "id": "asset_28RWN1C2A3T5J0K8ZAYJ89TSAR",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 589854
+          },
+          {
+            "id": "asset_3W8ZZ4J8VK73RGK8ZBYJ89TSRB",
+            "kind": "morph",
+            "name": "笑い目",
+            "index": 589855
+          },
+          {
+            "id": "asset_5FT3GQ5DPZ32ZGK8ZCYJ89TT5Y",
+            "kind": "morph",
+            "name": "あ",
+            "index": 589856
+          },
+          {
+            "id": "asset_78T2DEZ5FSCH50K8ZDYJ89TTKH",
+            "kind": "morph",
+            "name": "あ２",
+            "index": 589857
+          },
+          {
+            "id": "asset_50KTMC0FB4V35GK8Z6YJ89TQMC",
+            "kind": "morph",
+            "name": "あ３",
+            "index": 589858
+          },
+          {
+            "id": "asset_6E9N3XWQWHFG90K8Z7YJ89TR1Z",
+            "kind": "morph",
+            "name": "あ４",
+            "index": 589859
+          },
+          {
+            "id": "asset_5Q9Q4EA7X1CJ0GKBK0YJ8AD0JZ",
+            "kind": "morph",
+            "name": "い",
+            "index": 589860
+          },
+          {
+            "id": "asset_0Q3HTW8CVY9DN0KBJZYJ8AD05C",
+            "kind": "morph",
+            "name": "い２",
+            "index": 589861
+          },
+          {
+            "id": "asset_5KQ9NT0A2RCZE0KBK2YJ8AD1E5",
+            "kind": "morph",
+            "name": "い３",
+            "index": 589862
+          },
+          {
+            "id": "asset_5MFPZVJN1ZWE20KBK1YJ8AD10J",
+            "kind": "morph",
+            "name": "い４",
+            "index": 589863
+          },
+          {
+            "id": "asset_7GT704FPVH4GP0KBJWYJ8ACYWK",
+            "kind": "morph",
+            "name": "う",
+            "index": 589864
+          },
+          {
+            "id": "asset_1NYNVAEET2Y41GKBJVYJ8ACYF0",
+            "kind": "morph",
+            "name": "え",
+            "index": 589865
+          },
+          {
+            "id": "asset_4HHN6EYFJV2R1GKBJYYJ8ACZQS",
+            "kind": "morph",
+            "name": "お",
+            "index": 589866
+          },
+          {
+            "id": "asset_0WW45PP2HG07MGKBJXYJ8ACZA6",
+            "kind": "morph",
+            "name": "ん",
+            "index": 589867
+          },
+          {
+            "id": "asset_44RN2K34MNQE20KBK8YJ8AD3ZQ",
+            "kind": "morph",
+            "name": "∧",
+            "index": 589868
+          },
+          {
+            "id": "asset_0DSHWW7AKSVXY0KBK7YJ8AD3J4",
+            "kind": "morph",
+            "name": "□",
+            "index": 589869
+          },
+          {
+            "id": "asset_7H07MXMHMSXJM0KAPTYJ8A6T6P",
+            "kind": "morph",
+            "name": "ω",
+            "index": 589870
+          },
+          {
+            "id": "asset_3PFH4WYJY98DTGKAPVYJ8A6TM9",
+            "kind": "morph",
+            "name": "ω□",
+            "index": 589871
+          },
+          {
+            "id": "asset_04VGSHC902W7VGKAPRYJ8A6SBG",
+            "kind": "morph",
+            "name": "にやり",
+            "index": 589872
+          },
+          {
+            "id": "asset_3AHBCMWHYZ8E50KAPSYJ8A6SS3",
+            "kind": "morph",
+            "name": "ぺろっ",
+            "index": 589873
+          },
+          {
+            "id": "asset_50S8NRV57Y4V7GKAPYYJ8A6VX2",
+            "kind": "morph",
+            "name": "ぺろっ２",
+            "index": 589874
+          },
+          {
+            "id": "asset_7BDNV6NEAV96B0KAPZYJ8A6WAN",
+            "kind": "morph",
+            "name": "口角上げ",
+            "index": 589875
+          },
+          {
+            "id": "asset_0424HSHMBN2R50KAPWYJ8A6V1W",
+            "kind": "morph",
+            "name": "口角上げ　左",
+            "index": 589876
+          },
+          {
+            "id": "asset_1MFV84FZHBJPG0KAPXYJ8A6VFF",
+            "kind": "morph",
+            "name": "口角上げ　右",
+            "index": 589877
+          },
+          {
+            "id": "asset_7ZC8VCB7SE28V0KAQ2YJ8A6XKE",
+            "kind": "morph",
+            "name": "口角下げ",
+            "index": 589878
+          },
+          {
+            "id": "asset_27D29DMR0CWWSGKAQ3YJ8A6Y11",
+            "kind": "morph",
+            "name": "口角下げ　左",
+            "index": 589879
+          },
+          {
+            "id": "asset_4F3EW9F1A9BSRGKD7CYJ8AQPZH",
+            "kind": "morph",
+            "name": "口角下げ　右",
+            "index": 589880
+          },
+          {
+            "id": "asset_452YZQ2YJNSDRGKD7BYJ8AQPHY",
+            "kind": "morph",
+            "name": "口横広げ",
+            "index": 589881
+          },
+          {
+            "id": "asset_5PCPSR6D5RP5Y0KD7AYJ8AQP4B",
+            "kind": "morph",
+            "name": "口横広げ　左",
+            "index": 589882
+          },
+          {
+            "id": "asset_6DECXW511KBN5GKD79YJ8AQNPR",
+            "kind": "morph",
+            "name": "口横広げ　右",
+            "index": 589883
+          },
+          {
+            "id": "asset_6FEQPRN6BNAT20KD7GYJ8AQRNX",
+            "kind": "morph",
+            "name": "口横縮小",
+            "index": 589884
+          },
+          {
+            "id": "asset_427HT5XXBBSR70KD7FYJ8AQR8A",
+            "kind": "morph",
+            "name": "口横縮小　左",
+            "index": 589885
+          },
+          {
+            "id": "asset_038FKNDKFCT5NGKD7EYJ8AQQTQ",
+            "kind": "morph",
+            "name": "口横縮小　右",
+            "index": 589886
+          },
+          {
+            "id": "asset_5GXJCRAAY9P380KD7DYJ8AQQD4",
+            "kind": "morph",
+            "name": "照れ",
+            "index": 589887
+          },
+          {
+            "id": "asset_3TB2RHSZPHHMRGKCEYYJ8AK3JG",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 589898
+          },
+          {
+            "id": "asset_1VY9J3SM4WZR20KCEZYJ8AK403",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 589899
+          },
+          {
+            "id": "asset_2FJ5CQQBCNTSRG1W21YJ5TSGZY",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 589900
+          },
+          {
+            "id": "asset_764YG18VNQ7D701W22YJ5TSHDH",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 589901
+          },
+          {
+            "id": "asset_4ANG6Z3EKS9YE01W1ZYJ5TSG4R",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 589902
+          },
+          {
+            "id": "asset_0VK3R7H4HS4AQG1W20YJ5TSGJB",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 589903
+          },
+          {
+            "id": "asset_5HYGK70S2R2NW01W25YJ5TSJPA",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 589904
+          },
+          {
+            "id": "asset_7Q2XBFXJG0F95G1W26YJ5TSK3X",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 589905
+          },
+          {
+            "id": "asset_6GGTF1X4TAMHDG1W1TYJ5TSE0S",
+            "kind": "morph",
+            "name": "xあ",
+            "index": 589909
+          },
+          {
+            "id": "asset_0V4SXH8X4WX13G1WY7YJ5TZQC7",
+            "kind": "morph",
+            "name": "xあ２",
+            "index": 589910
+          },
+          {
+            "id": "asset_0M7WF60GFHDPB01WY6YJ5TZPYM",
+            "kind": "morph",
+            "name": "xあ３",
+            "index": 589911
+          },
+          {
+            "id": "asset_4KPJWM33SQC6W01WY9YJ5TZR7D",
+            "kind": "morph",
+            "name": "xあ４",
+            "index": 589912
+          },
+          {
+            "id": "asset_7HD8K212X0QMJ01WY8YJ5TZQST",
+            "kind": "morph",
+            "name": "xい",
+            "index": 589913
+          },
+          {
+            "id": "asset_0SW69XQJS25VP01WY3YJ5TZNNV",
+            "kind": "morph",
+            "name": "xい２",
+            "index": 589914
+          },
+          {
+            "id": "asset_24CNKS4G5V60401WY2YJ5TZN88",
+            "kind": "morph",
+            "name": "xい３",
+            "index": 589915
+          },
+          {
+            "id": "asset_4B00T19N7W8FF01WY5YJ5TZPH1",
+            "kind": "morph",
+            "name": "xい４",
+            "index": 589916
+          },
+          {
+            "id": "asset_5XJ4YP4JE9W73G1WY4YJ5TZP3E",
+            "kind": "morph",
+            "name": "xい５",
+            "index": 589917
+          },
+          {
+            "id": "asset_23XN9EXRN63RTG1WXZYJ5TZKZF",
+            "kind": "morph",
+            "name": "xう",
+            "index": 589918
+          },
+          {
+            "id": "asset_28D5ZK4YEKK39G1WXYYJ5TZKHW",
+            "kind": "morph",
+            "name": "xえ",
+            "index": 589919
+          },
+          {
+            "id": "asset_0W2ZRFJMD3N0F01TDNYJ5TETKC",
+            "kind": "morph",
+            "name": "xお",
+            "index": 589920
+          },
+          {
+            "id": "asset_4F9ADF484ZAD9H8GX1M4MAQAE6",
+            "kind": "morph",
+            "name": "真面目",
+            "index": 655360
+          },
+          {
+            "id": "asset_6CR1KKQ6ZF3HR18GX2M4MAQAVS",
+            "kind": "morph",
+            "name": "困る",
+            "index": 655361
+          },
+          {
+            "id": "asset_6EE9XE3SKMC2Z18GWZM4MAQ9K0",
+            "kind": "morph",
+            "name": "困る2",
+            "index": 655362
+          },
+          {
+            "id": "asset_2A9AFT9MC1240H8GX0M4MAQA0K",
+            "kind": "morph",
+            "name": "にこり",
+            "index": 655363
+          },
+          {
+            "id": "asset_2Z9QSPGPSN58318GX5M4MAQC4J",
+            "kind": "morph",
+            "name": "怒り",
+            "index": 655364
+          },
+          {
+            "id": "asset_155WFRAPXCNBGH8GX6M4MAQCJ5",
+            "kind": "morph",
+            "name": "平行",
+            "index": 655365
+          },
+          {
+            "id": "asset_01NPN238XB7S6H8GX3M4MAQB9C",
+            "kind": "morph",
+            "name": "上",
+            "index": 655366
+          },
+          {
+            "id": "asset_4TBJ68P19D5B7H8GX4M4MAQBPZ",
+            "kind": "morph",
+            "name": "左上",
+            "index": 655367
+          },
+          {
+            "id": "asset_5GCZH9N5QWY5YH8GX9M4MAQDTY",
+            "kind": "morph",
+            "name": "右上",
+            "index": 655368
+          },
+          {
+            "id": "asset_7GM7TXS9ZS90718GXAM4MAQE8H",
+            "kind": "morph",
+            "name": "下",
+            "index": 655369
+          },
+          {
+            "id": "asset_1BYHST7E62JV718HS7M4MAXGTF",
+            "kind": "morph",
+            "name": "左下",
+            "index": 655370
+          },
+          {
+            "id": "asset_68VGQS0BYWBGNH8HS6M4MAXGCW",
+            "kind": "morph",
+            "name": "右下",
+            "index": 655371
+          },
+          {
+            "id": "asset_1WPK8RFFCBPVJH8HS9M4MAXHNN",
+            "kind": "morph",
+            "name": "眉頭",
+            "index": 655372
+          },
+          {
+            "id": "asset_68M4R431XQVW2H8HS8M4MAXH82",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 655373
+          },
+          {
+            "id": "asset_2G73DE1CE14ZAH8HS3M4MAXF43",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 655374
+          },
+          {
+            "id": "asset_6G9GCDNGQ3PKT18HS2M4MAXEPG",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 655375
+          },
+          {
+            "id": "asset_528J4N8PFRR1W18HS5M4MAXFZ9",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 655376
+          },
+          {
+            "id": "asset_7CRNGA0RYS9JQ18HS4M4MAXFHP",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 655377
+          },
+          {
+            "id": "asset_0B3T0SW0CQ3ATH8HSFM4MAXM77",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 655378
+          },
+          {
+            "id": "asset_72ZJ04GDT55JPH8HSEM4MAXKSM",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 655379
+          },
+          {
+            "id": "asset_40HV2HXG6W95618JHDM4MB20TR",
+            "kind": "morph",
+            "name": "ｷﾘｯ",
+            "index": 655380
+          },
+          {
+            "id": "asset_3TA7Q034T3BN3H8JHEM4MB218B",
+            "kind": "morph",
+            "name": "ｷﾘｯ２",
+            "index": 655381
+          },
+          {
+            "id": "asset_0TBE2BJGJBH0SH8JHFM4MB21NY",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 655382
+          },
+          {
+            "id": "asset_3R0Y6PDJPAQ4A18JHGM4MB223H",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 655383
+          },
+          {
+            "id": "asset_78QRW2189JXECH8JHHM4MB22H4",
+            "kind": "morph",
+            "name": "びっくり",
+            "index": 655384
+          },
+          {
+            "id": "asset_3G2X5BANW8WXYH8JHJM4MB22YQ",
+            "kind": "morph",
+            "name": "じと目",
+            "index": 655385
+          },
+          {
+            "id": "asset_03M86A0HMP557H8JHMM4MB23SX",
+            "kind": "morph",
+            "name": "たれ目",
+            "index": 655387
+          },
+          {
+            "id": "asset_27ZY0J2XBG17H18JH6M4MB1XVK",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 655389
+          },
+          {
+            "id": "asset_0DW93Y5QD1R3GH8KDKM4MB8771",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 655390
+          },
+          {
+            "id": "asset_4RH1WVFK1R6WJH8KDJM4MB86SE",
+            "kind": "morph",
+            "name": "笑い目",
+            "index": 655391
+          },
+          {
+            "id": "asset_2ZDJ9CANXGRHX18KDHM4MB86BV",
+            "kind": "morph",
+            "name": "あ",
+            "index": 655392
+          },
+          {
+            "id": "asset_2V745SHB69NYQH8KDGM4MB85Y8",
+            "kind": "morph",
+            "name": "あ２",
+            "index": 655393
+          },
+          {
+            "id": "asset_56SXH7Y8XXX2X18KDQM4MB88XD",
+            "kind": "morph",
+            "name": "あ３",
+            "index": 655394
+          },
+          {
+            "id": "asset_2160N5YPJENQSH8KDPM4MB88FT",
+            "kind": "morph",
+            "name": "あ４",
+            "index": 655395
+          },
+          {
+            "id": "asset_24EGTD8QG68NBH8KDNM4MB8827",
+            "kind": "morph",
+            "name": "い",
+            "index": 655396
+          },
+          {
+            "id": "asset_4MRTYZ4C765EB18KDMM4MB87MM",
+            "kind": "morph",
+            "name": "い２",
+            "index": 655397
+          },
+          {
+            "id": "asset_4JKHZ0VY3ZH4H18KDBM4MB83T9",
+            "kind": "morph",
+            "name": "い３",
+            "index": 655398
+          },
+          {
+            "id": "asset_3SS6AKXYZX9E1H8KDAM4MB83CP",
+            "kind": "morph",
+            "name": "い４",
+            "index": 655399
+          },
+          {
+            "id": "asset_3M8D4Y5A50SC54ZXYTM553J5KX",
+            "kind": "morph",
+            "name": "う",
+            "index": 655400
+          },
+          {
+            "id": "asset_1MZW3PWMF7ZSRMZXYSM553J56A",
+            "kind": "morph",
+            "name": "え",
+            "index": 655401
+          },
+          {
+            "id": "asset_1JE2C1DQYT76RMZXYRM553J4RQ",
+            "kind": "morph",
+            "name": "お",
+            "index": 655402
+          },
+          {
+            "id": "asset_3GNQ3KSEX1FHQ4ZXYQM553J4B4",
+            "kind": "morph",
+            "name": "ん",
+            "index": 655403
+          },
+          {
+            "id": "asset_4KRTQB7AYH5XHMZXYPM553J3XH",
+            "kind": "morph",
+            "name": "∧",
+            "index": 655404
+          },
+          {
+            "id": "asset_3W0D70H54CD2P4ZXYNM553J3FY",
+            "kind": "morph",
+            "name": "□",
+            "index": 655405
+          },
+          {
+            "id": "asset_1FJBXS2GT6T8Z4ZXYMM553J32B",
+            "kind": "morph",
+            "name": "ω",
+            "index": 655406
+          },
+          {
+            "id": "asset_2RMG943TAAZPJMZXYKM553J2MR",
+            "kind": "morph",
+            "name": "ω□",
+            "index": 655407
+          },
+          {
+            "id": "asset_4NERF9RVCTTR04ZXYJM553J275",
+            "kind": "morph",
+            "name": "にやり",
+            "index": 655408
+          },
+          {
+            "id": "asset_551R4307NDFFD4ZXYHM553J1SJ",
+            "kind": "morph",
+            "name": "ぺろっ",
+            "index": 655409
+          },
+          {
+            "id": "asset_54FV20YR1Y65K4ZX6MM553DNKM",
+            "kind": "morph",
+            "name": "ぺろっ２",
+            "index": 655410
+          },
+          {
+            "id": "asset_6PGKVHKEMGWYFMZX6NM553DP17",
+            "kind": "morph",
+            "name": "口角上げ",
+            "index": 655411
+          },
+          {
+            "id": "asset_1D0XSW2N86F5QMZX6PM553DPET",
+            "kind": "morph",
+            "name": "口角上げ　左",
+            "index": 655412
+          },
+          {
+            "id": "asset_4ZFANA96Q849K4ZX6QM553DPWD",
+            "kind": "morph",
+            "name": "口角上げ　右",
+            "index": 655413
+          },
+          {
+            "id": "asset_3ST8ZN1XMQMRFMZX6GM553DKX8",
+            "kind": "morph",
+            "name": "口角下げ",
+            "index": 655414
+          },
+          {
+            "id": "asset_6WDBBE1VDMCR54ZX6HM553DMAV",
+            "kind": "morph",
+            "name": "口角下げ　左",
+            "index": 655415
+          },
+          {
+            "id": "asset_66XKDDZ99R17YMZX6JM553DMRE",
+            "kind": "morph",
+            "name": "口角下げ　右",
+            "index": 655416
+          },
+          {
+            "id": "asset_69W1CA41DDFNWMZX6KM553DN61",
+            "kind": "morph",
+            "name": "口横広げ",
+            "index": 655417
+          },
+          {
+            "id": "asset_58G94VEM55QWY4ZX6CM553DJ6W",
+            "kind": "morph",
+            "name": "口横広げ　左",
+            "index": 655418
+          },
+          {
+            "id": "asset_1AJAFGR19DJJAMZX6DM553DJMF",
+            "kind": "morph",
+            "name": "口横広げ　右",
+            "index": 655419
+          },
+          {
+            "id": "asset_3HWXD89TE7AT54ZZP6M553Y4SF",
+            "kind": "morph",
+            "name": "口横縮小",
+            "index": 655420
+          },
+          {
+            "id": "asset_27WV82Q0J379AMZZP5M553Y4BW",
+            "kind": "morph",
+            "name": "口横縮小　左",
+            "index": 655421
+          },
+          {
+            "id": "asset_774GRG7WAGTVJMZZP8M553Y5MN",
+            "kind": "morph",
+            "name": "口横縮小　右",
+            "index": 655422
+          },
+          {
+            "id": "asset_3WY4SKB8WC00NMZYT4M553R03J",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 655434
+          },
+          {
+            "id": "asset_17TDJTEQNZGZD4ZYT5M553R0H5",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 655435
+          },
+          {
+            "id": "asset_1JKW47YDS6JNWMZYT2M553QZ8C",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 655436
+          },
+          {
+            "id": "asset_5KVEBQD7ET75GMZYT3M553QZNZ",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 655437
+          },
+          {
+            "id": "asset_17XDY3FTC81E44ZYT8M553R1SY",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 655438
+          },
+          {
+            "id": "asset_15J4TJ0SMDXTM4ZYT9M553R27H",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 655439
+          },
+          {
+            "id": "asset_44X7CH92JF3B34ZTJ2M552V2ES",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 655440
+          },
+          {
+            "id": "asset_02Q7QRXJNKD0F4ZTJ1M552V216",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 655441
+          },
+          {
+            "id": "asset_63XF28X3HPF044ZTJ5M552V3QJ",
+            "kind": "morph",
+            "name": "xあ",
+            "index": 655445
+          },
+          {
+            "id": "asset_6H9TRAN19686W4ZTJ4M552V39Z",
+            "kind": "morph",
+            "name": "xあ２",
+            "index": 655446
+          },
+          {
+            "id": "asset_2R4D479BCP2G7MZTJ3M552V2WC",
+            "kind": "morph",
+            "name": "xあ３",
+            "index": 655447
+          },
+          {
+            "id": "asset_46RG2V1K00WD44ZTJAM552V5VH",
+            "kind": "morph",
+            "name": "xあ４",
+            "index": 655448
+          },
+          {
+            "id": "asset_05905MCX7G2SVMZTJ9M552V5DY",
+            "kind": "morph",
+            "name": "xい",
+            "index": 655449
+          },
+          {
+            "id": "asset_6XVMM62E9ZPF1MZSSWM552PJEG",
+            "kind": "morph",
+            "name": "xい２",
+            "index": 655450
+          },
+          {
+            "id": "asset_30AZM7D0HN02Q4ZSSXM552PJW3",
+            "kind": "morph",
+            "name": "xい３",
+            "index": 655451
+          },
+          {
+            "id": "asset_09YB06DG3DND6MZSSYM552PK9P",
+            "kind": "morph",
+            "name": "xい４",
+            "index": 655452
+          },
+          {
+            "id": "asset_2ZP9T0Q66A1D6MZSSZM552PKQ9",
+            "kind": "morph",
+            "name": "xい５",
+            "index": 655453
+          },
+          {
+            "id": "asset_2HM4CBA21Y2PB4ZST0M552PM4W",
+            "kind": "morph",
+            "name": "xう",
+            "index": 655454
+          },
+          {
+            "id": "asset_5KTNPH3MC2NNFMZST1M552PMJF",
+            "kind": "morph",
+            "name": "xえ",
+            "index": 655455
+          },
+          {
+            "id": "asset_5D6XSGNEPYP6J4ZST2M552PN02",
+            "kind": "morph",
+            "name": "xお",
+            "index": 655456
+          },
+          {
+            "id": "asset_61KDZPMJC8MSS84G8G876Y9Y94",
+            "kind": "morph",
+            "name": "まばたき",
+            "index": 720909
+          },
+          {
+            "id": "asset_1X9DVDVX3WR5584FG3876Y5B9P",
+            "kind": "morph",
+            "name": "笑い",
+            "index": 720910
+          },
+          {
+            "id": "asset_7Q8V2RREGFTAM84FG4876Y5BQ9",
+            "kind": "morph",
+            "name": "ウィンク",
+            "index": 720911
+          },
+          {
+            "id": "asset_59VJG88W2KP2P84FG1876Y5AEG",
+            "kind": "morph",
+            "name": "ウィンク右",
+            "index": 720912
+          },
+          {
+            "id": "asset_0P5ZMFCTJAWFVR4FG2876Y5AW3",
+            "kind": "morph",
+            "name": "ウィンク２",
+            "index": 720913
+          },
+          {
+            "id": "asset_3T5NPJASVPBV5R4FG7876Y5D02",
+            "kind": "morph",
+            "name": "ｳｨﾝｸ２右",
+            "index": 720914
+          },
+          {
+            "id": "asset_1Y4YXCXPN6MX7R4FG8876Y5DDN",
+            "kind": "morph",
+            "name": "笑い2",
+            "index": 720915
+          },
+          {
+            "id": "asset_39ECAWMV8SWBWR4FG5876Y5C4W",
+            "kind": "morph",
+            "name": "ｷﾘｯ",
+            "index": 720916
+          },
+          {
+            "id": "asset_7033D3M9FJ16Z84FG6876Y5CJF",
+            "kind": "morph",
+            "name": "ｷﾘｯ２",
+            "index": 720917
+          },
+          {
+            "id": "asset_59RD9WHFW60XYR4FGB876Y5EPE",
+            "kind": "morph",
+            "name": "なごみ",
+            "index": 720918
+          },
+          {
+            "id": "asset_4YQK3WKR54WM984FGC876Y5F41",
+            "kind": "morph",
+            "name": "はぅ",
+            "index": 720919
+          },
+          {
+            "id": "asset_60K807Q4PFCNN84EMX876XZJGD",
+            "kind": "morph",
+            "name": "びっくり",
+            "index": 720920
+          },
+          {
+            "id": "asset_4J1156Z6YK9XQR4EMW876XZJ2T",
+            "kind": "morph",
+            "name": "じと目",
+            "index": 720921
+          },
+          {
+            "id": "asset_26STZT9YBTKDER4EMT876XZH7M",
+            "kind": "morph",
+            "name": "たれ目",
+            "index": 720923
+          },
+          {
+            "id": "asset_03P9QB13GGJ5384EMR876XZGCE",
+            "kind": "morph",
+            "name": "はちゅ目",
+            "index": 720925
+          },
+          {
+            "id": "asset_529K7B3TT9GCPR4EMQ876XZFYV",
+            "kind": "morph",
+            "name": "はちゅ目２",
+            "index": 720926
+          },
+          {
+            "id": "asset_44HENXH40P1M484B83876X8EG3",
+            "kind": "morph",
+            "name": "K",
+            "index": 720962
+          },
+          {
+            "id": "asset_6QHCGJH70BT5084ABZ876X28Z0",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 720970
+          },
+          {
+            "id": "asset_0S5RE0AHZJ51KR4AC0876X29CK",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 720971
+          },
+          {
+            "id": "asset_5SKMA81C6ACHV84AC1876X29T6",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 720972
+          },
+          {
+            "id": "asset_6ZXH3Z7S9NAMT84AC2876X2A7S",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 720973
+          },
+          {
+            "id": "asset_1A0T35SCF9A6CR4AC3876X2ANC",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 720974
+          },
+          {
+            "id": "asset_6EJHJDMBK6A5H84AC4876X2B2Z",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 720975
+          },
+          {
+            "id": "asset_515SP3CSHYX59R4AC5876X2BGJ",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 720976
+          },
+          {
+            "id": "asset_3B0KJZST3X4XDR4AC6876X2BY5",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 720977
+          },
+          {
+            "id": "asset_69MYKBSV6MPT0CYJ5SZCFAG4S7",
+            "kind": "morph",
+            "name": "NS C",
+            "index": 786496
+          },
+          {
+            "id": "asset_742A74WDJA2DXCYJ5EZCFAG03P",
+            "kind": "morph",
+            "name": "WNS",
+            "index": 786499
+          },
+          {
+            "id": "asset_508X99N167TM2XGG32ZCHX50AD",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 786506
+          },
+          {
+            "id": "asset_7ZS2MD9KKPA6HDGG31ZCHX4ZWT",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 786507
+          },
+          {
+            "id": "asset_0MT28RNMCFDB7XGG2MZCHX4TC3",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 786508
+          },
+          {
+            "id": "asset_2P77JVJBX1YMCDGG2KZCHX4SYG",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 786509
+          },
+          {
+            "id": "asset_6R95GJW0A5TRTDGF6PZCHWYQCJ",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 786510
+          },
+          {
+            "id": "asset_7MDSY20YFHBV8XGF6QZCHWYQT5",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 786511
+          },
+          {
+            "id": "asset_5GFVEWEWF6TMJXGF6MZCHWYPHC",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 786512
+          },
+          {
+            "id": "asset_6BH2177QNTR2QXGF6NZCHWYPYZ",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 786513
+          },
+          {
+            "id": "asset_1588EXBB8QVY0DGF6GZCHWYMV0",
+            "kind": "morph",
+            "name": "光方向change",
+            "index": 786516
+          },
+          {
+            "id": "asset_6ED9FDSAGX7B2XGEAQZCHWRKZE",
+            "kind": "morph",
+            "name": "B消",
+            "index": 786529
+          },
+          {
+            "id": "asset_13F8G18A8JS5BZ3NKYA98Y6J5J",
+            "kind": "morph",
+            "name": "WNS C",
+            "index": 852033
+          },
+          {
+            "id": "asset_5XXK70JP674BNZ3NKRA98Y6FM0",
+            "kind": "morph",
+            "name": "WNS",
+            "index": 852035
+          },
+          {
+            "id": "asset_7087FWNE4AWSGZ3FQNA98WZ086",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 852042
+          },
+          {
+            "id": "asset_68JFFTZNF939QZ3FQPA98WZ0NS",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 852043
+          },
+          {
+            "id": "asset_3MHBPD1XT1F1QF3FQQA98WZ13C",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 852044
+          },
+          {
+            "id": "asset_25056G8N799ZMZ3FQRA98WZ1GZ",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 852045
+          },
+          {
+            "id": "asset_42BN7YS65A01ZZ3FQSA98WZ1YJ",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 852046
+          },
+          {
+            "id": "asset_2DXEQC8D74SNJF3FQTA98WZ2C5",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 852047
+          },
+          {
+            "id": "asset_75CRH4WQ4NRKYZ3FQVA98WZ2SR",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 852048
+          },
+          {
+            "id": "asset_28SH4BYPQCW0FZ3FQWA98WZ37B",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 852049
+          },
+          {
+            "id": "asset_4N69EHM24H8WTF3GKQA98X54Y3",
+            "kind": "morph",
+            "name": "光方向change",
+            "index": 852052
+          },
+          {
+            "id": "asset_099QAG7DP6MPYZ3HBWA98X9MGS",
+            "kind": "morph",
+            "name": "B消",
+            "index": 852065
+          },
+          {
+            "id": "asset_7Q9W7MQJT7WQVYRVZVJ0H1E4GR",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 917578
+          },
+          {
+            "id": "asset_4SC0X00VA9QTFYRVZWJ0H1E4YB",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 917579
+          },
+          {
+            "id": "asset_45AJJF3PCAYACES8RDJ0H452J7",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 917580
+          },
+          {
+            "id": "asset_64APYVTCF2N54YS8RCJ0H4524M",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 917581
+          },
+          {
+            "id": "asset_3AVMK788XSYD0YS8RFJ0H453DD",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 917582
+          },
+          {
+            "id": "asset_6ZZXBZ9E3J1GWES8REJ0H452ZT",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 917583
+          },
+          {
+            "id": "asset_68QF9F6WGWJ7WYS8R9J0H450VV",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 917584
+          },
+          {
+            "id": "asset_4SXT6EW1TQHAEES8R8J0H450E8",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 917585
+          },
+          {
+            "id": "asset_0Q9B3Y8THP3N6ZB7HPJ0KQ01Y4",
+            "kind": "morph",
+            "name": "glasses on",
+            "index": 917602
+          },
+          {
+            "id": "asset_4F49VTT0Z3EEAN1SVD2YBHEQ4S",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 983114
+          },
+          {
+            "id": "asset_1305A3N4GWA7A51SVC2YBHEPQ6",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 983115
+          },
+          {
+            "id": "asset_48X083R94383V51SVB2YBHEP9K",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 983116
+          },
+          {
+            "id": "asset_1MQ5F4AMJHE5FN1SVA2YBHENW0",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 983117
+          },
+          {
+            "id": "asset_6GZR5VP8ZP03YN1SVS2YBHEW7X",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 983118
+          },
+          {
+            "id": "asset_4BHGFVCJAJHS2N1SVR2YBHEVTA",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 983119
+          },
+          {
+            "id": "asset_2733PNX355ZG8N1TQQ2YBHMZ7E",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 983120
+          },
+          {
+            "id": "asset_0RSNCJGRSJD5Q51TQR2YBHMZN1",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 983121
+          },
+          {
+            "id": "asset_6FDNE19CX1DHG51VKN2YBHV26Z",
+            "kind": "morph",
+            "name": "glasses on",
+            "index": 983138
+          },
+          {
+            "id": "asset_757NPE7WA70R3DGYKZD3YQC30Q",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1048650
+          },
+          {
+            "id": "asset_6YVAGAXNCWRF9XGYKYD3YQC2K4",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1048651
+          },
+          {
+            "id": "asset_0M4EDZP7K8YG4XGYM1D3YQC3VX",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1048652
+          },
+          {
+            "id": "asset_065ZD0BTF7RBADGYM0D3YQC3EA",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1048653
+          },
+          {
+            "id": "asset_3Z8Q4K610YNTGXGYKVD3YQC1AB",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1048654
+          },
+          {
+            "id": "asset_38Z11ZQAF5JE0DGYKTD3YQC0WR",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1048655
+          },
+          {
+            "id": "asset_0TE5DA26CFH16DGYKXD3YQC25H",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1048656
+          },
+          {
+            "id": "asset_06T6BHC47371JXGYKWD3YQC1QY",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1048657
+          },
+          {
+            "id": "asset_6E908JM7SRNNADGWZFD3YQ1AXS",
+            "kind": "morph",
+            "name": "glasses on",
+            "index": 1048674
+          },
+          {
+            "id": "asset_6AAB0T2AECS4BCGBTD6G7PB6PF",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1114186
+          },
+          {
+            "id": "asset_28K67WF50Y7CJCGBTC6G7PB68W",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1114187
+          },
+          {
+            "id": "asset_0758PR93FDE0YWGBTK6G7PB981",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1114188
+          },
+          {
+            "id": "asset_5XQZV43DBJAMECGBTJ6G7PB8TE",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1114189
+          },
+          {
+            "id": "asset_371GQX924WEHGCGAY56G7P4ZF0",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1114190
+          },
+          {
+            "id": "asset_72P61CB4KWHHHWGAY66G7P4ZWK",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1114191
+          },
+          {
+            "id": "asset_26GTQ3VXACSKNCGAY76G7P50A6",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1114192
+          },
+          {
+            "id": "asset_55PV18A43XX7DCGAY86G7P50QS",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1114193
+          },
+          {
+            "id": "asset_53WZPHWTSQKK0CBQZDAN0E9TJ0",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1179722
+          },
+          {
+            "id": "asset_0TJ5JNX8KB8SFCBQZEAN0E9TZK",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1179723
+          },
+          {
+            "id": "asset_1MHJ3CR9H0FG4CBQZKAN0E9X3J",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1179724
+          },
+          {
+            "id": "asset_476FXDZNDNTYSWBQZMAN0E9XH5",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1179725
+          },
+          {
+            "id": "asset_23B5F3VHE6PNWWBQZHAN0E9W8C",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1179726
+          },
+          {
+            "id": "asset_5JECGX3CV9902WBQZJAN0E9WNZ",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1179727
+          },
+          {
+            "id": "asset_2YWZFYQ3YEYJJWBQZQAN0E9YSY",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1179728
+          },
+          {
+            "id": "asset_1C6BBNNJ3A6Q4WBQZRAN0E9Z7H",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1179729
+          },
+          {
+            "id": "asset_1VRE6DCJJE8G9J3RANJDT3YJPG",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1245258
+          },
+          {
+            "id": "asset_4WGD8AAA5NKA423RAPJDT3YK43",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1245259
+          },
+          {
+            "id": "asset_0EB0VEMB2VHGX23TTFJDT4F593",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1245260
+          },
+          {
+            "id": "asset_2V3H1Y3D7M797J3TTEJDT4F4VG",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1245261
+          },
+          {
+            "id": "asset_5G4C1ZFNFB99DJ3TTHJDT4F649",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1245262
+          },
+          {
+            "id": "asset_1DFAER05QXK3V23TTGJDT4F5PP",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1245263
+          },
+          {
+            "id": "asset_19D47H0A8YVZ823TTKJDT4F6ZF",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1245264
+          },
+          {
+            "id": "asset_1MQKFWNNF31S223TTJJDT4F6HW",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1245265
+          },
+          {
+            "id": "asset_611H2YRPME4644E4SN1S7YZKRM",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1310794
+          },
+          {
+            "id": "asset_1TAEFW5VDHPDW4E4SP1S7YZM67",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1310795
+          },
+          {
+            "id": "asset_3AK90CRVK9YBGME4SQ1S7YZMKT",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1310796
+          },
+          {
+            "id": "asset_3K9Q2KAA790AX4E4SR1S7YZN1D",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1310797
+          },
+          {
+            "id": "asset_3Z566PER5JMRDME4S91S7YZENG",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1310798
+          },
+          {
+            "id": "asset_3BX7N59VK1XDR4E4SA1S7YZF33",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1310799
+          },
+          {
+            "id": "asset_65B3STBQ9GC950KV4A1RPJF8RW",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1310800
+          },
+          {
+            "id": "asset_4AJN8GT4YCPZE0KV4B1RPJF96F",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1310801
+          },
+          {
+            "id": "asset_5MJBXCQS52FND66BTDMSYGQ9WJ",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1376330
+          },
+          {
+            "id": "asset_0E31YJQ796Q22P6BTEMSYGQAA5",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1376331
+          },
+          {
+            "id": "asset_52TKD955R946WP6BTBMSYGQ91C",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1376332
+          },
+          {
+            "id": "asset_1X8H4VFF6A7HKP6BTCMSYGQ9EZ",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1376333
+          },
+          {
+            "id": "asset_2V3F13PB9GDZDP6BT9MSYGQ866",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1376334
+          },
+          {
+            "id": "asset_69XE84JWVA4PJ66BTAMSYGQ8KS",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1376335
+          },
+          {
+            "id": "asset_0AGQC7007VXTN66BT7MSYGQ7B0",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1376336
+          },
+          {
+            "id": "asset_1XQCVNGWE33CAP6BT8MSYGQ7RK",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1376337
+          },
+          {
+            "id": "asset_1209YG5F9QGN79YQBSZG8KHYKD",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1441866
+          },
+          {
+            "id": "asset_2JWSZFTGVXFZBSYQBRZG8KHY5T",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1441867
+          },
+          {
+            "id": "asset_3RAZ353S8XZ209YQBBZG8KHRN3",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1441868
+          },
+          {
+            "id": "asset_5V4BRFAWZZG3ESYQBAZG8KHR7G",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1441869
+          },
+          {
+            "id": "asset_5QCANMPMVXX1QSYPFDZG8KBNNJ",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1441870
+          },
+          {
+            "id": "asset_15R6TSHE6DFPY9YPFEZG8KBP35",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1441871
+          },
+          {
+            "id": "asset_52HME611A1FN99YPFBZG8KBMTC",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1441872
+          },
+          {
+            "id": "asset_0760MK193DDYX9YPFCZG8KBN7Z",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1441873
+          },
+          {
+            "id": "asset_00444ZY9F7P2JWD2VEYS3KP1GW",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1507402
+          },
+          {
+            "id": "asset_5MBA9BTF2TBBGWD2VFYS3KP1YF",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1507403
+          },
+          {
+            "id": "asset_2GSDX7Q68M8XBWD2VCYS3KP0NP",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1507404
+          },
+          {
+            "id": "asset_5DGEG6Y1TC4BKCD2VDYS3KP139",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1507405
+          },
+          {
+            "id": "asset_4NBPKM6SDFE6DWD2VAYS3KNZTG",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1507406
+          },
+          {
+            "id": "asset_5E2T1S4C5MRWFWD2VBYS3KP083",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1507407
+          },
+          {
+            "id": "asset_5WD9K0SFQRN6ACD2VRYS3KP5RT",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1507408
+          },
+          {
+            "id": "asset_621A12996HK2ZCD2VSYS3KP66D",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1507409
+          },
+          {
+            "id": "asset_098RW8KSPEW26373K62CZ8EMEA",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1572938
+          },
+          {
+            "id": "asset_7C8GPYPKQZWMCK73K72CZ8EMVX",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1572939
+          },
+          {
+            "id": "asset_6R0NCBADJ33SP3767G2CZ9146D",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1572940
+          },
+          {
+            "id": "asset_6DGFVDBPXWBEE3767F2CZ913RT",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1572941
+          },
+          {
+            "id": "asset_0NRGV2V706PSWK767E2CZ913B7",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1572942
+          },
+          {
+            "id": "asset_1CZXVHZ872WD93767D2CZ912XM",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1572943
+          },
+          {
+            "id": "asset_72135TYZD8XSD3767C2CZ912G1",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1572944
+          },
+          {
+            "id": "asset_3ZF5ANKPK29GGK767B2CZ9122E",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1572945
+          },
+          {
+            "id": "asset_0V7Q3ZXPGR83VV3624BFCBWBZG",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1638474
+          },
+          {
+            "id": "asset_67ZHWSZ35TXTKB3625BFCBWCD3",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1638475
+          },
+          {
+            "id": "asset_5G08H61QGPJ2PV3626BFCBWCTP",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1638476
+          },
+          {
+            "id": "asset_6A5E9RBMVN8RCB3627BFCBWD89",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1638477
+          },
+          {
+            "id": "asset_1126G89BTPT39B362GBFCBWH2M",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1638478
+          },
+          {
+            "id": "asset_40Z95AC6FB81FV362HBFCBWHG7",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1638479
+          },
+          {
+            "id": "asset_2RX38BRBWMW67V2YEJBFCA8W5B",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1638480
+          },
+          {
+            "id": "asset_4FAY4C66HQPECB2YEHBFCA8VQR",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1638481
+          },
+          {
+            "id": "asset_0Q3HD6Z3SHWVVJE3F1NKQK4S8E",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1704010
+          },
+          {
+            "id": "asset_5JZV6B3ENCWF5JE3F2NKQK4SP1",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1704011
+          },
+          {
+            "id": "asset_5EA4W4NDY9YCAJE3EZNKQK4RD8",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1704012
+          },
+          {
+            "id": "asset_2CP52VZ68HXYK2E3F0NKQK4RTV",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1704013
+          },
+          {
+            "id": "asset_5G42W479B1MHYJE3F5NKQK4TYT",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1704014
+          },
+          {
+            "id": "asset_3JEZJYE995AQB2E3F6NKQK4VCD",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1704015
+          },
+          {
+            "id": "asset_3MCWTJE70K83D2E3F3NKQK4T3M",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1704016
+          },
+          {
+            "id": "asset_2047P02492R50JE3F4NKQK4TH7",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1704017
+          },
+          {
+            "id": "asset_48QKT4D8F5NV651HT0MME3QNSS",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1769546
+          },
+          {
+            "id": "asset_2BF2SY6M2S6H9N1HSZMME3QNC6",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1769547
+          },
+          {
+            "id": "asset_2Z6FGGZNAR1Q5N1HTAMME3QT1Q",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1769548
+          },
+          {
+            "id": "asset_322APHQTQ3VZ651HT9MME3QSM4",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1769549
+          },
+          {
+            "id": "asset_3BMECMV868K62N1GXWMME3HG8P",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1769550
+          },
+          {
+            "id": "asset_2YJ070FBK6Q9KN1GXXMME3HGP9",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1769551
+          },
+          {
+            "id": "asset_3171P9XW83S55N1GXTMME3HFDG",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1769552
+          },
+          {
+            "id": "asset_07JWBCEN5JMSH51GXVMME3HFV3",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1769553
+          },
+          {
+            "id": "asset_2TAGKEFW30SEQH1FAK49PSZRYP",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1835082
+          },
+          {
+            "id": "asset_57C6R9K53DSGC11FAM49PSZSC9",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1835083
+          },
+          {
+            "id": "asset_386WZ4RMV000MH1FAN49PSZSSW",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1835084
+          },
+          {
+            "id": "asset_10SSBXDZ2358AH1FAP49PSZT7F",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1835085
+          },
+          {
+            "id": "asset_1A2ZVD8Z5V2A211FAQ49PSZTN2",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1835086
+          },
+          {
+            "id": "asset_4Y9Y73NMH54NHH1FAR49PSZV2N",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1835087
+          },
+          {
+            "id": "asset_6331RHYQZ3XP311FAS49PSZVG8",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1835088
+          },
+          {
+            "id": "asset_4YPTM6VBY4G2G11FAT49PSZVXV",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1835089
+          },
+          {
+            "id": "asset_27P0DQCF015K3NTFZYBA19SSSA",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1900618
+          },
+          {
+            "id": "asset_3DXHD9FA99ZFCNTFZZBA19ST6X",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1900619
+          },
+          {
+            "id": "asset_17HQ0XS55ZTAB5TF3GBA19KG09",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1900620
+          },
+          {
+            "id": "asset_67QCED8SA43VRNTF3FBA19KFJP",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1900621
+          },
+          {
+            "id": "asset_19KPY9A0VRGBE5TF3EBA19KF53",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1900622
+          },
+          {
+            "id": "asset_4B3ACNX82Y1B5NTF3DBA19KEQG",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1900623
+          },
+          {
+            "id": "asset_3QTGWQV3VP3VA5TF3MBA19KHPN",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1900624
+          },
+          {
+            "id": "asset_43R7RPE72W49M5TF3KBA19KH92",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1900625
+          },
+          {
+            "id": "asset_6RQP1EA2TR1H76F3G1C3SV25Q3",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 1966154
+          },
+          {
+            "id": "asset_5FP72RSRRG0CR6F3G0C3SV259G",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 1966155
+          },
+          {
+            "id": "asset_40KM7N9MGSYZW6F3G3C3SV26J9",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 1966156
+          },
+          {
+            "id": "asset_5FDSJ1QKHXXCTPF3G2C3SV264P",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 1966157
+          },
+          {
+            "id": "asset_7M2Z12B06FE26PF3GDC3SV2AT7",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 1966158
+          },
+          {
+            "id": "asset_71MR67EZWJPDM6F3GCC3SV2ACM",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 1966159
+          },
+          {
+            "id": "asset_7FFVK1T3VCW5JPF10KC3STHR7M",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 1966160
+          },
+          {
+            "id": "asset_78777K61ACBWX6F10MC3STHRN7",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 1966161
+          },
+          {
+            "id": "asset_7C032TKFV7TTBZ7BR0G7EY2FGJ",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2031690
+          },
+          {
+            "id": "asset_4BETFBP9TS4FFZ7BR1G7EY2FY5",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2031691
+          },
+          {
+            "id": "asset_152BTZ95TQ1STF7BQYG7EY2ENC",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2031692
+          },
+          {
+            "id": "asset_0P7B6AN89RW8PZ7BQZG7EY2F2Z",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2031693
+          },
+          {
+            "id": "asset_4YXXGGENQ8XGAZ7BQWG7EY2DT6",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2031694
+          },
+          {
+            "id": "asset_7HZP9MZHCJY8NZ7BQXG7EY2E7S",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2031695
+          },
+          {
+            "id": "asset_6939GNCVC35B3Z7BQTG7EY2CZ0",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2031696
+          },
+          {
+            "id": "asset_2DKJWF44ECNFSF7BQVG7EY2DCK",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2031697
+          },
+          {
+            "id": "asset_21QV6M6MQFT9QZD7BMH15JBY4V",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2097226
+          },
+          {
+            "id": "asset_2AKDVSP5H5W7WFD7BKH15JBXQ8",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2097227
+          },
+          {
+            "id": "asset_09RZ4TG64TVENFD7BJH15JBX9N",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2097228
+          },
+          {
+            "id": "asset_00X255VR0QN1EZD7BHH15JBWW2",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2097229
+          },
+          {
+            "id": "asset_7N0QK1Z0NQTM5ZD6FMH15J5TA4",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2097230
+          },
+          {
+            "id": "asset_1TRBYBGH2SF9AZD6FNH15J5TQQ",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2097231
+          },
+          {
+            "id": "asset_7YPTXR7KHKZ5NFD6FPH15J5V5A",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2097232
+          },
+          {
+            "id": "asset_7TEV0GF6MJVMXZD6FQH15J5VJX",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2097233
+          },
+          {
+            "id": "asset_1GSCSHY5XER37WCZ5PZAQTVCTD",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2162762
+          },
+          {
+            "id": "asset_4G4KVYSHQB4NYCCZ5NZAQTVCCT",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2162763
+          },
+          {
+            "id": "asset_3CVB11QCHNFFDWCZ5GZAQTVA8V",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2162764
+          },
+          {
+            "id": "asset_1800CTEBB6XFCCCZ5FZAQTV9V8",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2162765
+          },
+          {
+            "id": "asset_5W76ZGE94DKSSCCZ5JZAQTVB41",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2162766
+          },
+          {
+            "id": "asset_4R05CRE7B3DY0WCZ5HZAQTVAPE",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2162767
+          },
+          {
+            "id": "asset_2CC2XG8176829CCZ5CZAQTV8JF",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2162768
+          },
+          {
+            "id": "asset_7XBN5GKRE9DNCWCZ5BZAQTV84W",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2162769
+          },
+          {
+            "id": "asset_30FA3NHYW5NFFEXJA7A1QGXRBE",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2228298
+          },
+          {
+            "id": "asset_16J6ZZEA21SG6YXJA8A1QGXRS1",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2228299
+          },
+          {
+            "id": "asset_7H4QQCDGDDWVNYBMCTA1MY8V3W",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2228300
+          },
+          {
+            "id": "asset_70XQ3BWHVMPEFEBMCVA1MY8VHF",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2228301
+          },
+          {
+            "id": "asset_776TMN3CXCH42EBMCWA1MY8VZ2",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2228302
+          },
+          {
+            "id": "asset_3D4HDPNB37QWCYBMCXA1MY8WCN",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2228303
+          },
+          {
+            "id": "asset_78EAR6BAAHFMJEBMCPA1MY8SDG",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2228304
+          },
+          {
+            "id": "asset_73KPNR7H94HBJYBMCQA1MY8SV3",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2228305
+          },
+          {
+            "id": "asset_30TH2GAB278XAN0FQ0ZB3GT1W8",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2293834
+          },
+          {
+            "id": "asset_1ZG441CWMKJJR50FQ1ZB3GT29V",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2293835
+          },
+          {
+            "id": "asset_62E90TSMKXANA50FQ2ZB3GT2QE",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2293836
+          },
+          {
+            "id": "asset_3DA2MA0QGV1GMN0FQ3ZB3GT351",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2293837
+          },
+          {
+            "id": "asset_5X3MBXDP1QJ3250FPWZB3GT05W",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2293838
+          },
+          {
+            "id": "asset_0QPVD3GQC3HWYN0FPXZB3GT0KF",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2293839
+          },
+          {
+            "id": "asset_0F3VSPSQ3BVTHN0ETYZB3GKX6B",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2293840
+          },
+          {
+            "id": "asset_1R7PMC14FBVTNN0ETXZB3GKWRR",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2293841
+          },
+          {
+            "id": "asset_677YWNQA791TC5GT5X7E26TGX2",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2359370
+          },
+          {
+            "id": "asset_1WB50WP15JRA3NGT5Y7E26THAN",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2359371
+          },
+          {
+            "id": "asset_58AEZZCYKXJEBNGT5V7E26TG1W",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2359372
+          },
+          {
+            "id": "asset_1SKKZQABRVX9WNGT5W7E26TGFF",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2359373
+          },
+          {
+            "id": "asset_1P6VKK8XGNAZWNGT5S7E26TF6P",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2359374
+          },
+          {
+            "id": "asset_5DVHH97525BBV5GT5T7E26TFM9",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2359375
+          },
+          {
+            "id": "asset_1E2X6VW9W9CS45GT5Q7E26TEBG",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2359376
+          },
+          {
+            "id": "asset_317SQVKTFS6NQNGT5R7E26TES3",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2359377
+          },
+          {
+            "id": "asset_13RGMCRWNMS7QE0CH8XWFYVS8Y",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2424906
+          },
+          {
+            "id": "asset_1X1FXPN4VR1D4E0CH9XWFYVSPH",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2424907
+          },
+          {
+            "id": "asset_7PX3HQT53370RY0CH2XWFYVPQC",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2424908
+          },
+          {
+            "id": "asset_110AB54PZ9DS2E0CH3XWFYVQ4Z",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2424909
+          },
+          {
+            "id": "asset_76A85FAJ00DGGE0DDGXWFZ20GD",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2424910
+          },
+          {
+            "id": "asset_65JGN83G2X9S3Y0DDFXWFZ202T",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2424911
+          },
+          {
+            "id": "asset_206M5J2KM5MSFY0DDEXWFZ1ZN7",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2424912
+          },
+          {
+            "id": "asset_7YSJPER7Z7NGYE0DDDXWFZ1Z7M",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2424913
+          },
+          {
+            "id": "asset_5RY21XCHH973H8W7YW9BK3B5HR",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2490442
+          },
+          {
+            "id": "asset_5ZDR41KEWRW918W7YX9BK3B5ZB",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2490443
+          },
+          {
+            "id": "asset_2FG5MQC9TQF218W7Z29BK3B83A",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2490444
+          },
+          {
+            "id": "asset_3MB6GQDHW4WWNRW7Z39BK3B8GX",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2490445
+          },
+          {
+            "id": "asset_3T9G04QSX35XBRW7Z09BK3B784",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2490446
+          },
+          {
+            "id": "asset_1XATK5NFY7MCGRW7Z19BK3B7NQ",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2490447
+          },
+          {
+            "id": "asset_40BBQZ9PA9H558W7YP9BK3B306",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2490448
+          },
+          {
+            "id": "asset_00051BQ21G3398W7YQ9BK3B3DS",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2490449
+          },
+          {
+            "id": "asset_2EG402GP3NVM085PQ67TKJX39A",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2555978
+          },
+          {
+            "id": "asset_6CP7VRAW7B3G185PQ77TKJX3PX",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2555979
+          },
+          {
+            "id": "asset_57F9F88TEM4R2860307TKMWY5N",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2555980
+          },
+          {
+            "id": "asset_76BB0PWRQK2BG8602Z7TKMWXR2",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2555981
+          },
+          {
+            "id": "asset_68NW09BHXQ2PAR602Y7TKMWXAF",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2555982
+          },
+          {
+            "id": "asset_45NNWK1XQXCVN8602X7TKMWWWW",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2555983
+          },
+          {
+            "id": "asset_4PYJ9JKYDPSJNR602W7TKMWWF9",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2555984
+          },
+          {
+            "id": "asset_2X42WV0ZJVH1TR602V7TKMWW1P",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2555985
+          },
+          {
+            "id": "asset_7PGJNTDTES4R8W9NDRH8CHSDVT",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2621514
+          },
+          {
+            "id": "asset_65GTQVY8S8R0CC9NDSH8CHSE9D",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2621515
+          },
+          {
+            "id": "asset_1V32WDGWR6C13C9NDPH8CHSD0M",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2621516
+          },
+          {
+            "id": "asset_62HGHBRSZHQZ3C9NDQH8CHSDE7",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2621517
+          },
+          {
+            "id": "asset_4HRZAEYAFTTW0W9NDCH8CHS8RP",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2621518
+          },
+          {
+            "id": "asset_2EH2ZNWP3V59KW9NDDH8CHS969",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2621519
+          },
+          {
+            "id": "asset_21ZEA922XFM32W9MHEH8CHK5S5",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2621520
+          },
+          {
+            "id": "asset_7HGFF0A1QE1AXC9MHDH8CHK5BJ",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2621521
+          },
+          {
+            "id": "asset_3JCTYGW72GZTQ5P37SY743T519",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2687050
+          },
+          {
+            "id": "asset_6WKGF0Z5VV909NP37RY743T4KP",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2687051
+          },
+          {
+            "id": "asset_0YWY5RR7YRZF85P37QY743T463",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2687052
+          },
+          {
+            "id": "asset_5Q2S8HM2Y7J3K5P37PY743T3RG",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2687053
+          },
+          {
+            "id": "asset_6K3AHNV21HKV25P37XY743T6QN",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2687054
+          },
+          {
+            "id": "asset_603Q7J8JHTSWV5P37WY743T6A2",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2687055
+          },
+          {
+            "id": "asset_0TZ7KN3ZN5VHANP37VY743T5WF",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2687056
+          },
+          {
+            "id": "asset_733VDBESGV8985P37TY743T5EW",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2687057
+          },
+          {
+            "id": "asset_5DM5JN2AKWKAMVK2TT59WT7GTY",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2752586
+          },
+          {
+            "id": "asset_67QDQ4XJR3GS8BK2TV59WT7H8H",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2752587
+          },
+          {
+            "id": "asset_1YKZEK216XAW4VK2TM59WT7E9C",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2752588
+          },
+          {
+            "id": "asset_55ZRRDJHPD6FFVK2TN59WT7EPZ",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2752589
+          },
+          {
+            "id": "asset_50E5B037N663PBK3Q259WTDR2D",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2752590
+          },
+          {
+            "id": "asset_0FE7FS5T2BFN3VK3Q159WTDQMT",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2752591
+          },
+          {
+            "id": "asset_1QZF789NGJW0VBK3Q059WTDQ77",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2752592
+          },
+          {
+            "id": "asset_2XMHPN29YN82KBK3PZ59WTDPSM",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2752593
+          },
+          {
+            "id": "asset_10C9T6H6GF1XCWYYD9ADZ4JAJD",
+            "kind": "morph",
+            "name": "輪郭線が消えて",
+            "index": 2818122
+          },
+          {
+            "id": "asset_75KWHHFWT8S96CYYD8ADZ4JA4T",
+            "kind": "morph",
+            "name": "toon白くなる",
+            "index": 2818123
+          },
+          {
+            "id": "asset_3ZDEV23GJNTWWWYYD3ADZ4J80V",
+            "kind": "morph",
+            "name": "toon深まる",
+            "index": 2818124
+          },
+          {
+            "id": "asset_4TEDGQBHQW7XMCYYD2ADZ4J7K8",
+            "kind": "morph",
+            "name": "spa消える",
+            "index": 2818125
+          },
+          {
+            "id": "asset_261F50AJTBG7ZCYYD5ADZ4J8W1",
+            "kind": "morph",
+            "name": "消えて",
+            "index": 2818126
+          },
+          {
+            "id": "asset_4X2WV7BVGYRV3WYYD4ADZ4J8EE",
+            "kind": "morph",
+            "name": "全黒モード",
+            "index": 2818127
+          },
+          {
+            "id": "asset_1K33YC6SXQCWZCYYCZADZ4J6AF",
+            "kind": "morph",
+            "name": "全灰モード",
+            "index": 2818128
+          },
+          {
+            "id": "asset_4J9BR6BA8NF95WYYCYADZ4J5WW",
+            "kind": "morph",
+            "name": "全白モード",
+            "index": 2818129
+          },
+          {
+            "id": "asset_30MBH0JHTZA579ZWB871G0FRFS",
+            "kind": "secondary_motion_rig",
+            "name": "Secondary Motion Rig",
+            "index": 0
+          }
+        ],
+        "generated_prefab": ".engine\\imported\\asset_01M0EDVAGARY1Y391T2FP1JSVY.prefab.json",
+        "skeleton_records": [
+          {
+            "id": "asset_5F51HPFZBSFA68WXJBXYRNJK7W",
+            "identity": 7707685570537919528,
+            "next_bone_id": 460,
+            "bones": [
+              {
+                "bone_id": 0,
+                "name": "操作中心"
+              },
+              {
+                "bone_id": 1,
+                "name": "全ての親"
+              },
+              {
+                "bone_id": 2,
+                "name": "センター"
+              },
+              {
+                "bone_id": 3,
+                "name": "グルーブ"
+              },
+              {
+                "bone_id": 4,
+                "name": "腰"
+              },
+              {
+                "bone_id": 5,
+                "name": "右足IK親"
+              },
+              {
+                "bone_id": 6,
+                "name": "右足ＩＫ"
+              },
+              {
+                "bone_id": 7,
+                "name": "右つま先ＩＫ"
+              },
+              {
+                "bone_id": 8,
+                "name": "左足IK親"
+              },
+              {
+                "bone_id": 9,
+                "name": "左足ＩＫ"
+              },
+              {
+                "bone_id": 10,
+                "name": "左つま先ＩＫ"
+              },
+              {
+                "bone_id": 11,
+                "name": "上半身"
+              },
+              {
+                "bone_id": 12,
+                "name": "上半身2"
+              },
+              {
+                "bone_id": 13,
+                "name": "下半身"
+              },
+              {
+                "bone_id": 14,
+                "name": "首"
+              },
+              {
+                "bone_id": 15,
+                "name": "頭"
+              },
+              {
+                "bone_id": 16,
+                "name": "右目"
+              },
+              {
+                "bone_id": 17,
+                "name": "左目"
+              },
+              {
+                "bone_id": 18,
+                "name": "両目"
+              },
+              {
+                "bone_id": 19,
+                "name": "右胸"
+              },
+              {
+                "bone_id": 20,
+                "name": "左胸"
+              },
+              {
+                "bone_id": 21,
+                "name": "右肩P"
+              },
+              {
+                "bone_id": 22,
+                "name": "右肩"
+              },
+              {
+                "bone_id": 23,
+                "name": "右肩C"
+              },
+              {
+                "bone_id": 24,
+                "name": "右腕"
+              },
+              {
+                "bone_id": 25,
+                "name": "右腕捩"
+              },
+              {
+                "bone_id": 26,
+                "name": "右ひじ補助"
+              },
+              {
+                "bone_id": 27,
+                "name": "右ひじ補助+"
+              },
+              {
+                "bone_id": 28,
+                "name": "右ひじ"
+              },
+              {
+                "bone_id": 29,
+                "name": "右腕M"
+              },
+              {
+                "bone_id": 30,
+                "name": "右腕W先"
+              },
+              {
+                "bone_id": 31,
+                "name": "右腕WIK"
+              },
+              {
+                "bone_id": 32,
+                "name": "右手捩"
+              },
+              {
+                "bone_id": 33,
+                "name": "右手捩1"
+              },
+              {
+                "bone_id": 34,
+                "name": "右手捩2"
+              },
+              {
+                "bone_id": 35,
+                "name": "右手捩3"
+              },
+              {
+                "bone_id": 36,
+                "name": "右手首"
+              },
+              {
+                "bone_id": 37,
+                "name": "右ダミー"
+              },
+              {
+                "bone_id": 38,
+                "name": "右手先"
+              },
+              {
+                "bone_id": 39,
+                "name": "右親指０"
+              },
+              {
+                "bone_id": 40,
+                "name": "右親指１"
+              },
+              {
+                "bone_id": 41,
+                "name": "右親指２"
+              },
+              {
+                "bone_id": 42,
+                "name": "右親指先"
+              },
+              {
+                "bone_id": 43,
+                "name": "右小指０"
+              },
+              {
+                "bone_id": 44,
+                "name": "右小指１"
+              },
+              {
+                "bone_id": 45,
+                "name": "右小指２"
+              },
+              {
+                "bone_id": 46,
+                "name": "右小指３"
+              },
+              {
+                "bone_id": 47,
+                "name": "右小指先"
+              },
+              {
+                "bone_id": 48,
+                "name": "右薬指０"
+              },
+              {
+                "bone_id": 49,
+                "name": "右薬指１"
+              },
+              {
+                "bone_id": 50,
+                "name": "右薬指２"
+              },
+              {
+                "bone_id": 51,
+                "name": "右薬指３"
+              },
+              {
+                "bone_id": 52,
+                "name": "右薬指先"
+              },
+              {
+                "bone_id": 53,
+                "name": "右中指０"
+              },
+              {
+                "bone_id": 54,
+                "name": "右中指１"
+              },
+              {
+                "bone_id": 55,
+                "name": "右中指２"
+              },
+              {
+                "bone_id": 56,
+                "name": "右中指３"
+              },
+              {
+                "bone_id": 57,
+                "name": "右中指先"
+              },
+              {
+                "bone_id": 58,
+                "name": "右人指０"
+              },
+              {
+                "bone_id": 59,
+                "name": "右人指１"
+              },
+              {
+                "bone_id": 60,
+                "name": "右人指２"
+              },
+              {
+                "bone_id": 61,
+                "name": "右人指３"
+              },
+              {
+                "bone_id": 62,
+                "name": "右人指先"
+              },
+              {
+                "bone_id": 63,
+                "name": "左肩P"
+              },
+              {
+                "bone_id": 64,
+                "name": "左肩"
+              },
+              {
+                "bone_id": 65,
+                "name": "左肩C"
+              },
+              {
+                "bone_id": 66,
+                "name": "左腕"
+              },
+              {
+                "bone_id": 67,
+                "name": "左腕捩"
+              },
+              {
+                "bone_id": 68,
+                "name": "左ひじ補助"
+              },
+              {
+                "bone_id": 69,
+                "name": "左ひじ補助+"
+              },
+              {
+                "bone_id": 70,
+                "name": "左ひじ"
+              },
+              {
+                "bone_id": 71,
+                "name": "左腕M"
+              },
+              {
+                "bone_id": 72,
+                "name": "左腕W先"
+              },
+              {
+                "bone_id": 73,
+                "name": "左腕WIK"
+              },
+              {
+                "bone_id": 74,
+                "name": "左手捩"
+              },
+              {
+                "bone_id": 75,
+                "name": "左手捩1"
+              },
+              {
+                "bone_id": 76,
+                "name": "左手捩2"
+              },
+              {
+                "bone_id": 77,
+                "name": "左手捩3"
+              },
+              {
+                "bone_id": 78,
+                "name": "左手首"
+              },
+              {
+                "bone_id": 79,
+                "name": "左ダミー"
+              },
+              {
+                "bone_id": 80,
+                "name": "左手先"
+              },
+              {
+                "bone_id": 81,
+                "name": "左親指０"
+              },
+              {
+                "bone_id": 82,
+                "name": "左親指１"
+              },
+              {
+                "bone_id": 83,
+                "name": "左親指２"
+              },
+              {
+                "bone_id": 84,
+                "name": "左親指先"
+              },
+              {
+                "bone_id": 85,
+                "name": "左小指０"
+              },
+              {
+                "bone_id": 86,
+                "name": "左小指１"
+              },
+              {
+                "bone_id": 87,
+                "name": "左小指２"
+              },
+              {
+                "bone_id": 88,
+                "name": "左小指３"
+              },
+              {
+                "bone_id": 89,
+                "name": "左小指先"
+              },
+              {
+                "bone_id": 90,
+                "name": "左薬指０"
+              },
+              {
+                "bone_id": 91,
+                "name": "左薬指１"
+              },
+              {
+                "bone_id": 92,
+                "name": "左薬指２"
+              },
+              {
+                "bone_id": 93,
+                "name": "左薬指３"
+              },
+              {
+                "bone_id": 94,
+                "name": "左薬指先"
+              },
+              {
+                "bone_id": 95,
+                "name": "左中指０"
+              },
+              {
+                "bone_id": 96,
+                "name": "左中指１"
+              },
+              {
+                "bone_id": 97,
+                "name": "左中指２"
+              },
+              {
+                "bone_id": 98,
+                "name": "左中指３"
+              },
+              {
+                "bone_id": 99,
+                "name": "左中指先"
+              },
+              {
+                "bone_id": 100,
+                "name": "左人指０"
+              },
+              {
+                "bone_id": 101,
+                "name": "左人指１"
+              },
+              {
+                "bone_id": 102,
+                "name": "左人指２"
+              },
+              {
+                "bone_id": 103,
+                "name": "左人指３"
+              },
+              {
+                "bone_id": 104,
+                "name": "左人指先"
+              },
+              {
+                "bone_id": 105,
+                "name": "腰キャンセル右"
+              },
+              {
+                "bone_id": 106,
+                "name": "右足"
+              },
+              {
+                "bone_id": 107,
+                "name": "右ひざ"
+              },
+              {
+                "bone_id": 108,
+                "name": "右足首"
+              },
+              {
+                "bone_id": 109,
+                "name": "腰キャンセル左"
+              },
+              {
+                "bone_id": 110,
+                "name": "左足"
+              },
+              {
+                "bone_id": 111,
+                "name": "左ひざ"
+              },
+              {
+                "bone_id": 112,
+                "name": "左足首"
+              },
+              {
+                "bone_id": 113,
+                "name": "右つま先"
+              },
+              {
+                "bone_id": 114,
+                "name": "左つま先"
+              },
+              {
+                "bone_id": 115,
+                "name": "右足D"
+              },
+              {
+                "bone_id": 116,
+                "name": "右ひざD"
+              },
+              {
+                "bone_id": 117,
+                "name": "右足首D"
+              },
+              {
+                "bone_id": 118,
+                "name": "左足D"
+              },
+              {
+                "bone_id": 119,
+                "name": "左ひざD"
+              },
+              {
+                "bone_id": 120,
+                "name": "左足首D"
+              },
+              {
+                "bone_id": 121,
+                "name": "右足先EX"
+              },
+              {
+                "bone_id": 122,
+                "name": "左足先EX"
+              },
+              {
+                "bone_id": 123,
+                "name": "舌１"
+              },
+              {
+                "bone_id": 124,
+                "name": "舌２"
+              },
+              {
+                "bone_id": 125,
+                "name": "舌３"
+              },
+              {
+                "bone_id": 126,
+                "name": "鼻"
+              },
+              {
+                "bone_id": 127,
+                "name": "あご"
+              },
+              {
+                "bone_id": 128,
+                "name": "上歯"
+              },
+              {
+                "bone_id": 129,
+                "name": "下歯"
+              },
+              {
+                "bone_id": 130,
+                "name": "上口"
+              },
+              {
+                "bone_id": 131,
+                "name": "下口"
+              },
+              {
+                "bone_id": 132,
+                "name": "右上まつげ"
+              },
+              {
+                "bone_id": 133,
+                "name": "右上まつげ1"
+              },
+              {
+                "bone_id": 134,
+                "name": "右上まつげ2"
+              },
+              {
+                "bone_id": 135,
+                "name": "右上まつげ3"
+              },
+              {
+                "bone_id": 136,
+                "name": "右上まつげ4"
+              },
+              {
+                "bone_id": 137,
+                "name": "右上まつげ5"
+              },
+              {
+                "bone_id": 138,
+                "name": "右上まつげ6"
+              },
+              {
+                "bone_id": 139,
+                "name": "右上まつげ7"
+              },
+              {
+                "bone_id": 140,
+                "name": "右上まつげ8"
+              },
+              {
+                "bone_id": 141,
+                "name": "右下まつげ"
+              },
+              {
+                "bone_id": 142,
+                "name": "右下まつげ1"
+              },
+              {
+                "bone_id": 143,
+                "name": "右下まつげ2"
+              },
+              {
+                "bone_id": 144,
+                "name": "右下まつげ3"
+              },
+              {
+                "bone_id": 145,
+                "name": "右下まつげ4"
+              },
+              {
+                "bone_id": 146,
+                "name": "右下まつげ5"
+              },
+              {
+                "bone_id": 147,
+                "name": "右下まつげ6"
+              },
+              {
+                "bone_id": 148,
+                "name": "右下まつげ7"
+              },
+              {
+                "bone_id": 149,
+                "name": "右頬"
+              },
+              {
+                "bone_id": 150,
+                "name": "右眉"
+              },
+              {
+                "bone_id": 151,
+                "name": "右眉毛1"
+              },
+              {
+                "bone_id": 152,
+                "name": "右眉毛2"
+              },
+              {
+                "bone_id": 153,
+                "name": "右眉毛3"
+              },
+              {
+                "bone_id": 154,
+                "name": "右眉毛4"
+              },
+              {
+                "bone_id": 155,
+                "name": "右眉毛5"
+              },
+              {
+                "bone_id": 156,
+                "name": "右口角"
+              },
+              {
+                "bone_id": 157,
+                "name": "右口1"
+              },
+              {
+                "bone_id": 158,
+                "name": "右口2"
+              },
+              {
+                "bone_id": 159,
+                "name": "右口3"
+              },
+              {
+                "bone_id": 160,
+                "name": "右口5"
+              },
+              {
+                "bone_id": 161,
+                "name": "右口6"
+              },
+              {
+                "bone_id": 162,
+                "name": "右口7"
+              },
+              {
+                "bone_id": 163,
+                "name": "左上まつげ"
+              },
+              {
+                "bone_id": 164,
+                "name": "左上まつげ1"
+              },
+              {
+                "bone_id": 165,
+                "name": "左上まつげ2"
+              },
+              {
+                "bone_id": 166,
+                "name": "左上まつげ3"
+              },
+              {
+                "bone_id": 167,
+                "name": "左上まつげ4"
+              },
+              {
+                "bone_id": 168,
+                "name": "左上まつげ5"
+              },
+              {
+                "bone_id": 169,
+                "name": "左上まつげ6"
+              },
+              {
+                "bone_id": 170,
+                "name": "左上まつげ7"
+              },
+              {
+                "bone_id": 171,
+                "name": "左上まつげ8"
+              },
+              {
+                "bone_id": 172,
+                "name": "左下まつげ"
+              },
+              {
+                "bone_id": 173,
+                "name": "左下まつげ1"
+              },
+              {
+                "bone_id": 174,
+                "name": "左下まつげ2"
+              },
+              {
+                "bone_id": 175,
+                "name": "左下まつげ3"
+              },
+              {
+                "bone_id": 176,
+                "name": "左下まつげ4"
+              },
+              {
+                "bone_id": 177,
+                "name": "左下まつげ5"
+              },
+              {
+                "bone_id": 178,
+                "name": "左下まつげ6"
+              },
+              {
+                "bone_id": 179,
+                "name": "左下まつげ7"
+              },
+              {
+                "bone_id": 180,
+                "name": "左頬"
+              },
+              {
+                "bone_id": 181,
+                "name": "左眉"
+              },
+              {
+                "bone_id": 182,
+                "name": "左眉毛1"
+              },
+              {
+                "bone_id": 183,
+                "name": "左眉毛2"
+              },
+              {
+                "bone_id": 184,
+                "name": "左眉毛3"
+              },
+              {
+                "bone_id": 185,
+                "name": "左眉毛4"
+              },
+              {
+                "bone_id": 186,
+                "name": "左眉毛5"
+              },
+              {
+                "bone_id": 187,
+                "name": "左口角"
+              },
+              {
+                "bone_id": 188,
+                "name": "左口1"
+              },
+              {
+                "bone_id": 189,
+                "name": "左口2"
+              },
+              {
+                "bone_id": 190,
+                "name": "左口3"
+              },
+              {
+                "bone_id": 191,
+                "name": "左口5"
+              },
+              {
+                "bone_id": 192,
+                "name": "左口6"
+              },
+              {
+                "bone_id": 193,
+                "name": "左口7"
+              },
+              {
+                "bone_id": 194,
+                "name": "右足M2"
+              },
+              {
+                "bone_id": 195,
+                "name": "左足M2"
+              },
+              {
+                "bone_id": 196,
+                "name": "HA1"
+              },
+              {
+                "bone_id": 197,
+                "name": "HA2"
+              },
+              {
+                "bone_id": 198,
+                "name": "HA3"
+              },
+              {
+                "bone_id": 199,
+                "name": "HB1"
+              },
+              {
+                "bone_id": 200,
+                "name": "HB2"
+              },
+              {
+                "bone_id": 201,
+                "name": "HB3"
+              },
+              {
+                "bone_id": 202,
+                "name": "HC1"
+              },
+              {
+                "bone_id": 203,
+                "name": "HC2"
+              },
+              {
+                "bone_id": 204,
+                "name": "HD1"
+              },
+              {
+                "bone_id": 205,
+                "name": "HD2"
+              },
+              {
+                "bone_id": 206,
+                "name": "HD3"
+              },
+              {
+                "bone_id": 207,
+                "name": "HD4"
+              },
+              {
+                "bone_id": 208,
+                "name": "HF1"
+              },
+              {
+                "bone_id": 209,
+                "name": "HF2"
+              },
+              {
+                "bone_id": 210,
+                "name": "HF3"
+              },
+              {
+                "bone_id": 211,
+                "name": "HG1"
+              },
+              {
+                "bone_id": 212,
+                "name": "HG2"
+              },
+              {
+                "bone_id": 213,
+                "name": "HG3"
+              },
+              {
+                "bone_id": 214,
+                "name": "HG4"
+              },
+              {
+                "bone_id": 215,
+                "name": "HI1"
+              },
+              {
+                "bone_id": 216,
+                "name": "HI2"
+              },
+              {
+                "bone_id": 217,
+                "name": "HI3"
+              },
+              {
+                "bone_id": 218,
+                "name": "HI4"
+              },
+              {
+                "bone_id": 219,
+                "name": "HJ1"
+              },
+              {
+                "bone_id": 220,
+                "name": "HJ2"
+              },
+              {
+                "bone_id": 221,
+                "name": "HJ3"
+              },
+              {
+                "bone_id": 222,
+                "name": "HK1"
+              },
+              {
+                "bone_id": 223,
+                "name": "HK2"
+              },
+              {
+                "bone_id": 224,
+                "name": "HE1"
+              },
+              {
+                "bone_id": 225,
+                "name": "HE2"
+              },
+              {
+                "bone_id": 226,
+                "name": "HE3"
+              },
+              {
+                "bone_id": 227,
+                "name": "TIE1"
+              },
+              {
+                "bone_id": 228,
+                "name": "TIE2"
+              },
+              {
+                "bone_id": 229,
+                "name": "TIE3"
+              },
+              {
+                "bone_id": 230,
+                "name": "TIE4"
+              },
+              {
+                "bone_id": 231,
+                "name": "TIE5"
+              },
+              {
+                "bone_id": 232,
+                "name": "TIE6"
+              },
+              {
+                "bone_id": 233,
+                "name": "TIE7"
+              },
+              {
+                "bone_id": 234,
+                "name": "TIE8"
+              },
+              {
+                "bone_id": 235,
+                "name": "TIE9"
+              },
+              {
+                "bone_id": 236,
+                "name": "TIE10"
+              },
+              {
+                "bone_id": 237,
+                "name": "TIE11"
+              },
+              {
+                "bone_id": 238,
+                "name": "スカート_0_0"
+              },
+              {
+                "bone_id": 239,
+                "name": "スカート_0_1"
+              },
+              {
+                "bone_id": 240,
+                "name": "スカート_0_2"
+              },
+              {
+                "bone_id": 241,
+                "name": "スカート_0_3"
+              },
+              {
+                "bone_id": 242,
+                "name": "スカート_0_4"
+              },
+              {
+                "bone_id": 243,
+                "name": "スカート_0_5"
+              },
+              {
+                "bone_id": 244,
+                "name": "スカート_0_6"
+              },
+              {
+                "bone_id": 245,
+                "name": "スカート_0_7"
+              },
+              {
+                "bone_id": 246,
+                "name": "スカート_0_8"
+              },
+              {
+                "bone_id": 247,
+                "name": "スカート_0_9"
+              },
+              {
+                "bone_id": 248,
+                "name": "スカート_0_10"
+              },
+              {
+                "bone_id": 249,
+                "name": "スカート_0_11"
+              },
+              {
+                "bone_id": 250,
+                "name": "スカート_0_12"
+              },
+              {
+                "bone_id": 251,
+                "name": "スカート_0_13"
+              },
+              {
+                "bone_id": 252,
+                "name": "スカート_0_14"
+              },
+              {
+                "bone_id": 253,
+                "name": "スカート_0_15"
+              },
+              {
+                "bone_id": 254,
+                "name": "スカート_0_16"
+              },
+              {
+                "bone_id": 255,
+                "name": "スカート_0_17"
+              },
+              {
+                "bone_id": 256,
+                "name": "スカート_1_0"
+              },
+              {
+                "bone_id": 257,
+                "name": "スカート_1_1"
+              },
+              {
+                "bone_id": 258,
+                "name": "スカート_1_2"
+              },
+              {
+                "bone_id": 259,
+                "name": "スカート_1_3"
+              },
+              {
+                "bone_id": 260,
+                "name": "スカート_1_4"
+              },
+              {
+                "bone_id": 261,
+                "name": "スカート_1_5"
+              },
+              {
+                "bone_id": 262,
+                "name": "スカート_1_6"
+              },
+              {
+                "bone_id": 263,
+                "name": "スカート_1_7"
+              },
+              {
+                "bone_id": 264,
+                "name": "スカート_1_8"
+              },
+              {
+                "bone_id": 265,
+                "name": "スカート_1_9"
+              },
+              {
+                "bone_id": 266,
+                "name": "スカート_1_10"
+              },
+              {
+                "bone_id": 267,
+                "name": "スカート_1_11"
+              },
+              {
+                "bone_id": 268,
+                "name": "スカート_1_12"
+              },
+              {
+                "bone_id": 269,
+                "name": "スカート_1_13"
+              },
+              {
+                "bone_id": 270,
+                "name": "スカート_1_14"
+              },
+              {
+                "bone_id": 271,
+                "name": "スカート_1_15"
+              },
+              {
+                "bone_id": 272,
+                "name": "スカート_1_16"
+              },
+              {
+                "bone_id": 273,
+                "name": "スカート_1_17"
+              },
+              {
+                "bone_id": 274,
+                "name": "スカート_2_0"
+              },
+              {
+                "bone_id": 275,
+                "name": "スカート_2_1"
+              },
+              {
+                "bone_id": 276,
+                "name": "スカート_2_2"
+              },
+              {
+                "bone_id": 277,
+                "name": "スカート_2_3"
+              },
+              {
+                "bone_id": 278,
+                "name": "スカート_2_4"
+              },
+              {
+                "bone_id": 279,
+                "name": "スカート_2_5"
+              },
+              {
+                "bone_id": 280,
+                "name": "スカート_2_6"
+              },
+              {
+                "bone_id": 281,
+                "name": "スカート_2_7"
+              },
+              {
+                "bone_id": 282,
+                "name": "スカート_2_8"
+              },
+              {
+                "bone_id": 283,
+                "name": "スカート_2_9"
+              },
+              {
+                "bone_id": 284,
+                "name": "スカート_2_10"
+              },
+              {
+                "bone_id": 285,
+                "name": "スカート_2_11"
+              },
+              {
+                "bone_id": 286,
+                "name": "スカート_2_12"
+              },
+              {
+                "bone_id": 287,
+                "name": "スカート_2_13"
+              },
+              {
+                "bone_id": 288,
+                "name": "スカート_2_14"
+              },
+              {
+                "bone_id": 289,
+                "name": "スカート_2_15"
+              },
+              {
+                "bone_id": 290,
+                "name": "スカート_2_16"
+              },
+              {
+                "bone_id": 291,
+                "name": "スカート_2_17"
+              },
+              {
+                "bone_id": 292,
+                "name": "スカート_3_0"
+              },
+              {
+                "bone_id": 293,
+                "name": "スカート_3_1"
+              },
+              {
+                "bone_id": 294,
+                "name": "スカート_3_2"
+              },
+              {
+                "bone_id": 295,
+                "name": "スカート_3_3"
+              },
+              {
+                "bone_id": 296,
+                "name": "スカート_3_4"
+              },
+              {
+                "bone_id": 297,
+                "name": "スカート_3_5"
+              },
+              {
+                "bone_id": 298,
+                "name": "スカート_3_6"
+              },
+              {
+                "bone_id": 299,
+                "name": "スカート_3_7"
+              },
+              {
+                "bone_id": 300,
+                "name": "スカート_3_8"
+              },
+              {
+                "bone_id": 301,
+                "name": "スカート_3_9"
+              },
+              {
+                "bone_id": 302,
+                "name": "スカート_3_10"
+              },
+              {
+                "bone_id": 303,
+                "name": "スカート_3_11"
+              },
+              {
+                "bone_id": 304,
+                "name": "スカート_3_12"
+              },
+              {
+                "bone_id": 305,
+                "name": "スカート_3_13"
+              },
+              {
+                "bone_id": 306,
+                "name": "スカート_3_14"
+              },
+              {
+                "bone_id": 307,
+                "name": "スカート_3_15"
+              },
+              {
+                "bone_id": 308,
+                "name": "スカート_3_16"
+              },
+              {
+                "bone_id": 309,
+                "name": "スカート_3_17"
+              },
+              {
+                "bone_id": 310,
+                "name": "スカート_4_0"
+              },
+              {
+                "bone_id": 311,
+                "name": "スカート_4_1"
+              },
+              {
+                "bone_id": 312,
+                "name": "スカート_4_2"
+              },
+              {
+                "bone_id": 313,
+                "name": "スカート_4_3"
+              },
+              {
+                "bone_id": 314,
+                "name": "スカート_4_4"
+              },
+              {
+                "bone_id": 315,
+                "name": "スカート_4_5"
+              },
+              {
+                "bone_id": 316,
+                "name": "スカート_4_6"
+              },
+              {
+                "bone_id": 317,
+                "name": "スカート_4_7"
+              },
+              {
+                "bone_id": 318,
+                "name": "スカート_4_8"
+              },
+              {
+                "bone_id": 319,
+                "name": "スカート_4_9"
+              },
+              {
+                "bone_id": 320,
+                "name": "スカート_4_10"
+              },
+              {
+                "bone_id": 321,
+                "name": "スカート_4_11"
+              },
+              {
+                "bone_id": 322,
+                "name": "スカート_4_12"
+              },
+              {
+                "bone_id": 323,
+                "name": "スカート_4_13"
+              },
+              {
+                "bone_id": 324,
+                "name": "スカート_4_14"
+              },
+              {
+                "bone_id": 325,
+                "name": "スカート_4_15"
+              },
+              {
+                "bone_id": 326,
+                "name": "スカート_4_16"
+              },
+              {
+                "bone_id": 327,
+                "name": "スカート_4_17"
+              },
+              {
+                "bone_id": 328,
+                "name": "スカート_5_0"
+              },
+              {
+                "bone_id": 329,
+                "name": "スカート_5_1"
+              },
+              {
+                "bone_id": 330,
+                "name": "スカート_5_2"
+              },
+              {
+                "bone_id": 331,
+                "name": "スカート_5_3"
+              },
+              {
+                "bone_id": 332,
+                "name": "スカート_5_4"
+              },
+              {
+                "bone_id": 333,
+                "name": "スカート_5_5"
+              },
+              {
+                "bone_id": 334,
+                "name": "スカート_5_6"
+              },
+              {
+                "bone_id": 335,
+                "name": "スカート_5_7"
+              },
+              {
+                "bone_id": 336,
+                "name": "スカート_5_8"
+              },
+              {
+                "bone_id": 337,
+                "name": "スカート_5_9"
+              },
+              {
+                "bone_id": 338,
+                "name": "スカート_5_10"
+              },
+              {
+                "bone_id": 339,
+                "name": "スカート_5_11"
+              },
+              {
+                "bone_id": 340,
+                "name": "スカート_5_12"
+              },
+              {
+                "bone_id": 341,
+                "name": "スカート_5_13"
+              },
+              {
+                "bone_id": 342,
+                "name": "スカート_5_14"
+              },
+              {
+                "bone_id": 343,
+                "name": "スカート_5_15"
+              },
+              {
+                "bone_id": 344,
+                "name": "スカート_5_16"
+              },
+              {
+                "bone_id": 345,
+                "name": "スカート_5_17"
+              },
+              {
+                "bone_id": 346,
+                "name": "右スリーブ1"
+              },
+              {
+                "bone_id": 347,
+                "name": "右スリーブ2"
+              },
+              {
+                "bone_id": 348,
+                "name": "右スリーブ3"
+              },
+              {
+                "bone_id": 349,
+                "name": "右スリーブ4"
+              },
+              {
+                "bone_id": 350,
+                "name": "右スリーブ5"
+              },
+              {
+                "bone_id": 351,
+                "name": "左スリーブ1"
+              },
+              {
+                "bone_id": 352,
+                "name": "左スリーブ2"
+              },
+              {
+                "bone_id": 353,
+                "name": "左スリーブ3"
+              },
+              {
+                "bone_id": 354,
+                "name": "左スリーブ4"
+              },
+              {
+                "bone_id": 355,
+                "name": "左スリーブ5"
+              },
+              {
+                "bone_id": 356,
+                "name": "右スリーブ先1"
+              },
+              {
+                "bone_id": 357,
+                "name": "右スリーブ先2"
+              },
+              {
+                "bone_id": 358,
+                "name": "右スリーブ先3"
+              },
+              {
+                "bone_id": 359,
+                "name": "右スリーブ先4"
+              },
+              {
+                "bone_id": 360,
+                "name": "右スリーブ先5"
+              },
+              {
+                "bone_id": 361,
+                "name": "左スリーブ先1"
+              },
+              {
+                "bone_id": 362,
+                "name": "左スリーブ先2"
+              },
+              {
+                "bone_id": 363,
+                "name": "左スリーブ先3"
+              },
+              {
+                "bone_id": 364,
+                "name": "左スリーブ先4"
+              },
+              {
+                "bone_id": 365,
+                "name": "左スリーブ先5"
+              },
+              {
+                "bone_id": 366,
+                "name": "右Hair-A1"
+              },
+              {
+                "bone_id": 367,
+                "name": "右Hair-A2"
+              },
+              {
+                "bone_id": 368,
+                "name": "右Hair-A3"
+              },
+              {
+                "bone_id": 369,
+                "name": "右Hair-A4"
+              },
+              {
+                "bone_id": 370,
+                "name": "右Hair-A5"
+              },
+              {
+                "bone_id": 371,
+                "name": "右Hair-A6"
+              },
+              {
+                "bone_id": 372,
+                "name": "右Hair-A7"
+              },
+              {
+                "bone_id": 373,
+                "name": "右Hair-A8"
+              },
+              {
+                "bone_id": 374,
+                "name": "右Hair-A9"
+              },
+              {
+                "bone_id": 375,
+                "name": "右Hair-A10"
+              },
+              {
+                "bone_id": 376,
+                "name": "右Hair-A11"
+              },
+              {
+                "bone_id": 377,
+                "name": "右Hair-A12"
+              },
+              {
+                "bone_id": 378,
+                "name": "右Hair-A13"
+              },
+              {
+                "bone_id": 379,
+                "name": "右Hair-A14"
+              },
+              {
+                "bone_id": 380,
+                "name": "右Hair-A15"
+              },
+              {
+                "bone_id": 381,
+                "name": "右Hair-a1"
+              },
+              {
+                "bone_id": 382,
+                "name": "右Hair-a2"
+              },
+              {
+                "bone_id": 383,
+                "name": "右Hair-a3"
+              },
+              {
+                "bone_id": 384,
+                "name": "右Hair-a4"
+              },
+              {
+                "bone_id": 385,
+                "name": "右Hair-a5"
+              },
+              {
+                "bone_id": 386,
+                "name": "右Hair-a6"
+              },
+              {
+                "bone_id": 387,
+                "name": "右Hair-a7"
+              },
+              {
+                "bone_id": 388,
+                "name": "右Hair-b1"
+              },
+              {
+                "bone_id": 389,
+                "name": "右Hair-b2"
+              },
+              {
+                "bone_id": 390,
+                "name": "右Hair-b3"
+              },
+              {
+                "bone_id": 391,
+                "name": "右Hair-b4"
+              },
+              {
+                "bone_id": 392,
+                "name": "右Hair-b5"
+              },
+              {
+                "bone_id": 393,
+                "name": "右Hair-b6"
+              },
+              {
+                "bone_id": 394,
+                "name": "右Hair-b7"
+              },
+              {
+                "bone_id": 395,
+                "name": "右Hair-b8"
+              },
+              {
+                "bone_id": 396,
+                "name": "右Hair-b9"
+              },
+              {
+                "bone_id": 397,
+                "name": "右Hair-b10"
+              },
+              {
+                "bone_id": 398,
+                "name": "右Hair-b11"
+              },
+              {
+                "bone_id": 399,
+                "name": "右Hair-b12"
+              },
+              {
+                "bone_id": 400,
+                "name": "右Hair-b13"
+              },
+              {
+                "bone_id": 401,
+                "name": "右Hair-b14"
+              },
+              {
+                "bone_id": 402,
+                "name": "右Hair-b15"
+              },
+              {
+                "bone_id": 403,
+                "name": "右Hair-b16"
+              },
+              {
+                "bone_id": 404,
+                "name": "右Hair-b17"
+              },
+              {
+                "bone_id": 405,
+                "name": "右Hair-c1"
+              },
+              {
+                "bone_id": 406,
+                "name": "右Hair-c2"
+              },
+              {
+                "bone_id": 407,
+                "name": "右Hair-c3"
+              },
+              {
+                "bone_id": 408,
+                "name": "右Hair-c4"
+              },
+              {
+                "bone_id": 409,
+                "name": "右Hair-c5"
+              },
+              {
+                "bone_id": 410,
+                "name": "右Hair-c6"
+              },
+              {
+                "bone_id": 411,
+                "name": "右Hair-c7"
+              },
+              {
+                "bone_id": 412,
+                "name": "右Hair-c8"
+              },
+              {
+                "bone_id": 413,
+                "name": "左Hair-A1"
+              },
+              {
+                "bone_id": 414,
+                "name": "左Hair-A2"
+              },
+              {
+                "bone_id": 415,
+                "name": "左Hair-A3"
+              },
+              {
+                "bone_id": 416,
+                "name": "左Hair-A4"
+              },
+              {
+                "bone_id": 417,
+                "name": "左Hair-A5"
+              },
+              {
+                "bone_id": 418,
+                "name": "左Hair-A6"
+              },
+              {
+                "bone_id": 419,
+                "name": "左Hair-A7"
+              },
+              {
+                "bone_id": 420,
+                "name": "左Hair-A8"
+              },
+              {
+                "bone_id": 421,
+                "name": "左Hair-A9"
+              },
+              {
+                "bone_id": 422,
+                "name": "左Hair-A10"
+              },
+              {
+                "bone_id": 423,
+                "name": "左Hair-A11"
+              },
+              {
+                "bone_id": 424,
+                "name": "左Hair-A12"
+              },
+              {
+                "bone_id": 425,
+                "name": "左Hair-A13"
+              },
+              {
+                "bone_id": 426,
+                "name": "左Hair-A14"
+              },
+              {
+                "bone_id": 427,
+                "name": "左Hair-A15"
+              },
+              {
+                "bone_id": 428,
+                "name": "左Hair-a1"
+              },
+              {
+                "bone_id": 429,
+                "name": "左Hair-a2"
+              },
+              {
+                "bone_id": 430,
+                "name": "左Hair-a3"
+              },
+              {
+                "bone_id": 431,
+                "name": "左Hair-a4"
+              },
+              {
+                "bone_id": 432,
+                "name": "左Hair-a5"
+              },
+              {
+                "bone_id": 433,
+                "name": "左Hair-a6"
+              },
+              {
+                "bone_id": 434,
+                "name": "左Hair-a7"
+              },
+              {
+                "bone_id": 435,
+                "name": "左Hair-b1"
+              },
+              {
+                "bone_id": 436,
+                "name": "左Hair-b2"
+              },
+              {
+                "bone_id": 437,
+                "name": "左Hair-b3"
+              },
+              {
+                "bone_id": 438,
+                "name": "左Hair-b4"
+              },
+              {
+                "bone_id": 439,
+                "name": "左Hair-b5"
+              },
+              {
+                "bone_id": 440,
+                "name": "左Hair-b6"
+              },
+              {
+                "bone_id": 441,
+                "name": "左Hair-b7"
+              },
+              {
+                "bone_id": 442,
+                "name": "左Hair-b8"
+              },
+              {
+                "bone_id": 443,
+                "name": "左Hair-b9"
+              },
+              {
+                "bone_id": 444,
+                "name": "左Hair-b10"
+              },
+              {
+                "bone_id": 445,
+                "name": "左Hair-b11"
+              },
+              {
+                "bone_id": 446,
+                "name": "左Hair-b12"
+              },
+              {
+                "bone_id": 447,
+                "name": "左Hair-b13"
+              },
+              {
+                "bone_id": 448,
+                "name": "左Hair-b14"
+              },
+              {
+                "bone_id": 449,
+                "name": "左Hair-b15"
+              },
+              {
+                "bone_id": 450,
+                "name": "左Hair-b16"
+              },
+              {
+                "bone_id": 451,
+                "name": "左Hair-b17"
+              },
+              {
+                "bone_id": 452,
+                "name": "左Hair-c1"
+              },
+              {
+                "bone_id": 453,
+                "name": "左Hair-c2"
+              },
+              {
+                "bone_id": 454,
+                "name": "左Hair-c3"
+              },
+              {
+                "bone_id": 455,
+                "name": "左Hair-c4"
+              },
+              {
+                "bone_id": 456,
+                "name": "左Hair-c5"
+              },
+              {
+                "bone_id": 457,
+                "name": "左Hair-c6"
+              },
+              {
+                "bone_id": 458,
+                "name": "左Hair-c7"
+              },
+              {
+                "bone_id": 459,
+                "name": "左Hair-c8"
+              }
+            ]
+          }
+        ],
+        "humanoid_profiles": [
+          {
+            "skeleton": "asset_5F51HPFZBSFA68WXJBXYRNJK7W",
+            "skeleton_identity": 7707685570537919528,
+            "bones": {
+              "hips": 4,
+              "spine": 11,
+              "chest": 12,
+              "neck": 14,
+              "head": 15,
+              "left_shoulder": 64,
+              "left_upper_arm": 66,
+              "left_lower_arm": 70,
+              "left_hand": 78,
+              "right_shoulder": 22,
+              "right_upper_arm": 24,
+              "right_lower_arm": 28,
+              "right_hand": 36,
+              "left_upper_leg": 110,
+              "left_lower_leg": 111,
+              "left_foot": 112,
+              "left_toes": 114,
+              "right_upper_leg": 106,
+              "right_lower_leg": 107,
+              "right_foot": 108,
+              "right_toes": 113,
+              "left_eye": 17,
+              "right_eye": 16,
+              "jaw": 127
+            },
+            "motion_root": 1,
+            "origin": "automatic"
+          }
+        ]
+      }
+    },
+    "asset_01M0EDVAGCCJTPQKVNB42NFCSB": {
+      "path": "meshes/fx/ALL.png",
+      "name": "all"
+    },
+    "asset_01M0EDVAGKP1KR0HJDY5BMVRQE": {
+      "path": "meshes/fx/clothes.png",
+      "name": "clothes"
+    },
+    "asset_01M0EDVAGMDE3X83ED6RSDB0JP": {
+      "path": "meshes/fx/shading_hint.png",
+      "name": "shading_hint"
+    },
+    "asset_01M0EDVAGQJQKJASGXP8NXC916": {
+      "path": "meshes/fx/shading_hint2.png",
+      "name": "shading_hint2"
+    },
+    "asset_01M0EDVAH4W157306ZJKE6Z808": {
+      "path": "meshes/fx/skirt.png",
+      "name": "skirt"
+    },
+    "asset_01M0EDVAHNEC2995098S4JGFTR": {
+      "path": "meshes/fx/sleeve.png",
+      "name": "sleeve"
+    },
+    "asset_01M0EDVAHPZWA4609TX8KCPJ3X": {
+      "path": "meshes/spa/spa-0.png",
+      "name": "spa_0"
+    },
+    "asset_01M0EDVAHRYDJ7PHWBMZ3CQRMY": {
+      "path": "meshes/spa/spa-1.bmp",
+      "name": "spa_1"
+    },
+    "asset_01M0EDVAHTWCSF9CGGZQZQMPPF": {
+      "path": "meshes/spa/spa-2.bmp",
+      "name": "spa_2"
+    },
+    "asset_01M0EDVAHWZRPXBN4ANSQKFN24": {
+      "path": "meshes/spa/spa-3.bmp",
+      "name": "spa_3"
+    },
+    "asset_01M0EDVAHYTNYMCXKMH3E69C7Z": {
+      "path": "meshes/spa/spa-4.bmp",
+      "name": "spa_4"
+    },
+    "asset_01M0EDVAHZHHSX09Z654K16T5B": {
+      "path": "meshes/spa/spa-4x.bmp",
+      "name": "spa_4x"
+    },
+    "asset_01M0EDVAJ1G81XAPF904GWP61C": {
+      "path": "meshes/spa/spa-5.bmp",
+      "name": "spa_5"
+    },
+    "asset_01M0EDVAJ3B887P75VRNJZDQ4B": {
+      "path": "meshes/spa/spa-6.bmp",
+      "name": "spa_6"
+    },
+    "asset_01M0EDVAJ5YDGSDPRQYP8YSRNB": {
+      "path": "meshes/spa/spa-7.bmp",
+      "name": "spa_7"
+    },
+    "asset_01M0EDVAJ7G7Z64GA91ZCP51JC": {
+      "path": "meshes/spa/spa-8.bmp",
+      "name": "spa_8"
+    },
+    "asset_01M0EDVAJ9E02RG98MEW1BTJ9M": {
+      "path": "meshes/spa/spa-9.png",
+      "name": "spa_9"
+    },
+    "asset_01M0EDVAJBM6179YG1JVBMEBBB": {
+      "path": "meshes/tex/Boots.png",
+      "name": "boots"
+    },
+    "asset_01M0EDVAJDX2MKA8DRD9CWGC8B": {
+      "path": "meshes/tex/HO.png",
+      "name": "ho"
+    },
+    "asset_01M0EDVAJFNW25YTP276V7FF7A": {
+      "path": "meshes/tex/HS.png",
+      "name": "hs"
+    },
+    "asset_01M0EDVAJJC1BKWTY7HMWV6YJ7": {
+      "path": "meshes/tex/Hair01-ao.png",
+      "name": "hair01_ao"
+    },
+    "asset_01M0EDVAJPBXHWE0VXRGFE510A": {
+      "path": "meshes/tex/Hair01.png",
+      "name": "hair01"
+    },
+    "asset_01M0EDVAJSEY395MHW14MVX8KV": {
+      "path": "meshes/tex/Hair02-ao.png",
+      "name": "hair02_ao"
+    },
+    "asset_01M0EDVAJV1WEA16YET11JRMGB": {
+      "path": "meshes/tex/Hair02.png",
+      "name": "hair02"
+    },
+    "asset_01M0EDVAK3B16QHR5XDTCJAAAM": {
+      "path": "meshes/tex/Hair03-ao.png",
+      "name": "hair03_ao"
+    },
+    "asset_01M0EDVAK97SHF69G5PPFZ1J9C": {
+      "path": "meshes/tex/Hair03.png",
+      "name": "hair03"
+    },
+    "asset_01M0EDVAKBTVSTMZZ0QFQX92QR": {
+      "path": "meshes/tex/body.png",
+      "name": "body"
+    },
+    "asset_01M0EDVAKGTKPR3CD0NFG8BCQH": {
+      "path": "meshes/tex/clothes.png",
+      "name": "clothes_2"
+    },
+    "asset_01M0EDVAKJG70QCDK1K5GXPP6J": {
+      "path": "meshes/tex/eye.png",
+      "name": "eye"
+    },
+    "asset_01M0EDVAKM37E21KXG4ZYKPMPE": {
+      "path": "meshes/tex/face.png",
+      "name": "face"
+    },
+    "asset_01M0EDVAKP8TF3M03CPXJXZBR7": {
+      "path": "meshes/tex/face2.png",
+      "name": "face2"
+    },
+    "asset_01M0EDVAKVH7W97VAHABZ4JK0J": {
+      "path": "meshes/tex/skirt.png",
+      "name": "skirt_2"
+    },
+    "asset_01M0EDVAKXM882ZJNCBRW2ACAX": {
+      "path": "meshes/tex/sleeve-l.png",
+      "name": "sleeve_l"
+    },
+    "asset_01M0EDVAM6XZNP4W7RSNSWH3XQ": {
+      "path": "meshes/tex/sleeve.png",
+      "name": "sleeve_2"
+    },
+    "asset_01M0EDVAM842G1BMTHB524TK4S": {
+      "path": "meshes/toon/toon-1.bmp",
+      "name": "toon_1"
+    },
+    "asset_01M0EDVAM9PPHK2P8SS835MAQE": {
+      "path": "meshes/toon/toon-2.bmp",
+      "name": "toon_2"
+    },
+    "asset_01M0EDVAMBH30GZVCRYB2KEB9W": {
+      "path": "meshes/toon/toon-3.bmp",
+      "name": "toon_3"
+    },
+    "asset_01M0EDVAMDYD7MPW71REDQ53CH": {
+      "path": "meshes/toon/toon-4.bmp",
+      "name": "toon_4"
+    },
+    "asset_01M0EDVAMEH3BPB64KNS1BGSRY": {
+      "path": "meshes/toon/toon-5.bmp",
+      "name": "toon_5"
+    },
+    "asset_01M0EDVAMGN35J9D4BNQ7AD5A9": {
+      "path": "meshes/toon/toon-6.bmp",
+      "name": "toon_6"
+    }
+  }
+}

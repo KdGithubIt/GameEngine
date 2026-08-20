@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub(crate) const GAMEENGINE_AGENT_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
 const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
@@ -98,6 +103,20 @@ impl ExternalAgentProviderKind {
             Self::Codex => Some(OsStr::new("codex")),
             Self::Generic => None,
         }
+    }
+
+    /// Whether this provider can answer an Ask turn under a read-only launch.
+    ///
+    /// Only a first-class adapter qualifies: GameEngine knows the exact
+    /// argument vector that keeps that provider from writing, while a generic
+    /// command is user-defined and carries no such guarantee.
+    pub(crate) const fn can_answer_questions(self) -> bool {
+        matches!(self, Self::ClaudeCode | Self::Codex)
+    }
+
+    /// Whether this provider owns an interactive sign-in the Editor can start.
+    pub(crate) const fn can_sign_in(self) -> bool {
+        matches!(self, Self::ClaudeCode | Self::Codex)
     }
 
     pub(crate) fn capabilities(self) -> ExternalAgentProviderCapabilities {
@@ -752,6 +771,922 @@ pub(crate) struct ExternalAgentFailureClassification {
     pub(crate) retryable: bool,
 }
 
+/// Role of one recorded turn handed to a provider-served answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExternalAgentQuestionRole {
+    User,
+    Assistant,
+    System,
+}
+
+impl ExternalAgentQuestionRole {
+    /// Returns the label this role carries inside a rendered transcript.
+    const fn transcript_label(self) -> &'static str {
+        match self {
+            Self::User => "User",
+            Self::Assistant => "Assistant",
+            Self::System => "System",
+        }
+    }
+}
+
+/// One recorded conversation turn handed to a provider-served answer.
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalAgentQuestionTurn {
+    pub(crate) role: ExternalAgentQuestionRole,
+    pub(crate) text: String,
+}
+
+/// Instruction that keeps a provider-served answer inside Ask semantics.
+///
+/// The read-only launch arguments are the enforcement; this preamble exists so
+/// the provider reports an answer instead of proposing edits it cannot apply.
+const QUESTION_PREAMBLE: &str = "You are answering inside the GameEngine editor's AI Studio in Ask mode. \
+Read whatever project evidence you need, then answer the last user turn. \
+Do not create, modify, or delete files, do not run state-changing commands, and do not start a build. \
+Reply with the answer only.";
+
+/// Longest provider output line retained for diagnostics.
+const MAX_CAPTURED_LINE: usize = 4000;
+
+/// Number of recent provider output lines retained for a failure message.
+const MAX_RETAINED_DIAGNOSTIC_LINES: usize = 8;
+
+/// Renders a recorded conversation as the single prompt a provider receives.
+pub(crate) fn build_question_prompt(turns: &[ExternalAgentQuestionTurn]) -> String {
+    let mut prompt = String::from(QUESTION_PREAMBLE);
+    prompt.push_str("\n\nConversation so far:\n");
+    for turn in turns {
+        let text = turn.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        prompt.push('\n');
+        prompt.push_str(turn.role.transcript_label());
+        prompt.push_str(": ");
+        prompt.push_str(text);
+        prompt.push('\n');
+    }
+    prompt
+}
+
+/// Builds the read-only launch plan that answers one Ask turn.
+///
+/// The plan carries no Editor MCP connection material. An answer needs no
+/// authoring authority, so the process is given the narrowest provider surface
+/// that can still read the project.
+///
+/// # Errors
+///
+/// Returns an error when the provider has no launch shape GameEngine can prove
+/// is read-only.
+pub(crate) fn build_question_launch_plan(
+    kind: ExternalAgentProviderKind,
+    placement: &ExternalAgentExecutionPlacement,
+    prompt: &str,
+) -> Result<ExternalAgentLaunchPlan, String> {
+    let plan = match kind {
+        ExternalAgentProviderKind::ClaudeCode => ExternalAgentLaunchPlan {
+            program: OsString::from("claude"),
+            args: vec![
+                OsString::from("-p"),
+                OsString::from(prompt),
+                OsString::from("--output-format"),
+                OsString::from("stream-json"),
+                OsString::from("--verbose"),
+                // An empty strict MCP configuration keeps unrelated user MCP
+                // servers out of an answer that only has to read this project.
+                OsString::from("--mcp-config"),
+                OsString::from(r#"{"mcpServers":{}}"#),
+                OsString::from("--strict-mcp-config"),
+                OsString::from("--allowedTools"),
+                OsString::from("Read"),
+                OsString::from("Glob"),
+                OsString::from("Grep"),
+                // An allow list only decides what may run without a prompt, and
+                // a project's own provider settings can widen it. A deny list is
+                // the rule the provider cannot be configured around, so the
+                // write-capable tools are named here explicitly.
+                OsString::from("--disallowedTools"),
+                OsString::from("Write"),
+                OsString::from("Edit"),
+                OsString::from("NotebookEdit"),
+                OsString::from("Bash"),
+                OsString::from("Task"),
+            ],
+        },
+        ExternalAgentProviderKind::Codex => ExternalAgentLaunchPlan {
+            program: OsString::from("codex"),
+            args: vec![
+                OsString::from("exec"),
+                OsString::from("--json"),
+                OsString::from("--skip-git-repo-check"),
+                OsString::from("--sandbox"),
+                OsString::from("read-only"),
+                // Codex has no strict-configuration switch, so the user's own
+                // MCP servers are overridden away for the same reason Claude
+                // Code is launched with an empty strict configuration.
+                OsString::from("-c"),
+                OsString::from("mcp_servers={}"),
+                OsString::from(prompt),
+            ],
+        },
+        ExternalAgentProviderKind::Generic => {
+            return Err(
+                "The Generic command provider cannot answer Ask, because GameEngine cannot prove a user-defined command stays read-only. Select Claude Code or Codex, or answer with the selected ModelBackend."
+                    .to_owned(),
+            );
+        }
+    };
+    let (program, args) = placed_command(placement, plan.program, plan.args);
+    Ok(ExternalAgentLaunchPlan { program, args })
+}
+
+/// Extracts assistant answer text from one provider output line.
+///
+/// Provider streams carry progress, tool activity, and final text on the same
+/// channel. Only text a provider states as assistant output is returned, so a
+/// diagnostic line never becomes an answer.
+fn extract_answer_text(kind: ExternalAgentProviderKind, line: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    match kind {
+        ExternalAgentProviderKind::ClaudeCode => match value.get("type").and_then(Value::as_str) {
+            Some("result") => {
+                if value.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    return None;
+                }
+                non_empty(value.get("result").and_then(Value::as_str)?)
+            }
+            Some("assistant") => {
+                let content = value
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(Value::as_array)?;
+                let text = content
+                    .iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|item| item.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                non_empty(&text)
+            }
+            _ => None,
+        },
+        ExternalAgentProviderKind::Codex => {
+            if value.get("type").and_then(Value::as_str) != Some("item.completed") {
+                return None;
+            }
+            let item = value.get("item")?;
+            if item.get("type").and_then(Value::as_str) != Some("agent_message") {
+                return None;
+            }
+            let text = item
+                .get("text")
+                .or_else(|| item.get("message"))
+                .and_then(Value::as_str)?;
+            non_empty(text)
+        }
+        ExternalAgentProviderKind::Generic => None,
+    }
+}
+
+/// Extracts a failure a provider stated on its own stream.
+///
+/// A provider can report a failed turn and still exit successfully, and its
+/// message explains the failure better than an exit code does.
+fn extract_error_text(kind: ExternalAgentProviderKind, line: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    match kind {
+        ExternalAgentProviderKind::ClaudeCode => {
+            if value.get("type").and_then(Value::as_str) != Some("result") {
+                return None;
+            }
+            if value.get("is_error").and_then(Value::as_bool) != Some(true) {
+                return None;
+            }
+            non_empty(value.get("result").and_then(Value::as_str)?)
+        }
+        ExternalAgentProviderKind::Codex => match value.get("type").and_then(Value::as_str) {
+            Some("error") => non_empty(value.get("message").and_then(Value::as_str)?),
+            Some("turn.failed") => non_empty(
+                value
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)?,
+            ),
+            _ => None,
+        },
+        ExternalAgentProviderKind::Generic => None,
+    }
+}
+
+/// Returns the trimmed text unless it is empty.
+fn non_empty(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+/// Shortens one captured provider line so diagnostics stay bounded.
+fn truncate_captured_line(mut line: String) -> String {
+    if line.len() > MAX_CAPTURED_LINE {
+        line.truncate(MAX_CAPTURED_LINE);
+        line.push('…');
+    }
+    line
+}
+
+/// An answer a provider produced for one Ask turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalAgentAnswer {
+    pub(crate) provider: ExternalAgentProviderKind,
+    pub(crate) text: String,
+    pub(crate) elapsed_ms: u128,
+}
+
+/// A running provider process that answers one Ask turn and then exits.
+///
+/// This is deliberately not an Agent Host run: an answer acquires no work
+/// claim, prepares no code workspace, and receives no Editor MCP connection
+/// material, so a question never enters the run lifecycle.
+pub(crate) struct ExternalAgentQuestionTask {
+    kind: ExternalAgentProviderKind,
+    result: Receiver<Result<ExternalAgentAnswer, String>>,
+    child: Arc<Mutex<Option<Child>>>,
+}
+
+impl ExternalAgentQuestionTask {
+    /// Starts the provider process that answers one Ask turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker thread cannot be created.
+    pub(crate) fn spawn(
+        kind: ExternalAgentProviderKind,
+        plan: ExternalAgentLaunchPlan,
+        working_directory: PathBuf,
+    ) -> Result<Self, String> {
+        let (sender, result) = mpsc::channel();
+        let child = Arc::new(Mutex::new(None));
+        let worker_child = Arc::clone(&child);
+        std::thread::Builder::new()
+            .name("ai-external-question".to_owned())
+            .spawn(move || {
+                let answer = answer_with_provider(kind, &plan, &working_directory, &worker_child);
+                let _ = sender.send(answer);
+            })
+            .map_err(|error| format!("Could not start the provider answer worker: {error}"))?;
+        Ok(Self {
+            kind,
+            result,
+            child,
+        })
+    }
+
+    /// Which provider is answering.
+    pub(crate) const fn kind(&self) -> ExternalAgentProviderKind {
+        self.kind
+    }
+
+    /// Returns the answer once the provider process has finished.
+    pub(crate) fn poll(&self) -> Option<Result<ExternalAgentAnswer, String>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(
+                "The provider answer worker stopped unexpectedly.".to_owned(),
+            )),
+        }
+    }
+
+    /// Terminates the provider process without recording an answer.
+    pub(crate) fn cancel(&self) {
+        if let Ok(mut guard) = self.child.lock()
+            && let Some(child) = guard.as_mut()
+        {
+            let _ = child.kill();
+        }
+    }
+}
+
+/// Runs one provider answer process to completion on the worker thread.
+fn answer_with_provider(
+    kind: ExternalAgentProviderKind,
+    plan: &ExternalAgentLaunchPlan,
+    working_directory: &Path,
+    child_slot: &Arc<Mutex<Option<Child>>>,
+) -> Result<ExternalAgentAnswer, String> {
+    let started = Instant::now();
+    let mut child = Command::new(&plan.program)
+        .args(&plan.args)
+        .current_dir(working_directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start {}: {error}", kind.label()))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (line_sender, lines) = mpsc::channel::<(ProcessStreamKind, String)>();
+    for pipe in [
+        stdout.map(PipeReader::Stdout),
+        stderr.map(PipeReader::Stderr),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let sender = line_sender.clone();
+        let stream = pipe.stream_kind();
+        if let Err(error) = std::thread::Builder::new()
+            .name("ai-external-question-output".to_owned())
+            .spawn(move || {
+                for line in pipe.lines() {
+                    let _ = sender.send((stream, line));
+                }
+            })
+        {
+            let _ = child.kill();
+            return Err(format!("Could not read {} output: {error}", kind.label()));
+        }
+    }
+    drop(line_sender);
+    let Ok(mut guard) = child_slot.lock() else {
+        // The slot exists only for cancellation, but a poisoned lock must not
+        // leave a provider process running with nothing able to stop it.
+        let _ = child.kill();
+        return Err(format!(
+            "Could not track the {} process for cancellation.",
+            kind.label()
+        ));
+    };
+    *guard = Some(child);
+    drop(guard);
+    let mut answer: Option<String> = None;
+    let mut diagnostics = ExternalAgentDiagnostics::default();
+    let mut recent = Vec::new();
+    let mut stated_error: Option<String> = None;
+    for (stream, line) in lines {
+        diagnostics.observe(kind, &line);
+        if stream == ProcessStreamKind::Stdout {
+            if let Some(text) = extract_answer_text(kind, &line) {
+                answer = Some(text);
+            }
+            if let Some(text) = extract_error_text(kind, &line) {
+                stated_error = Some(text);
+            }
+        }
+        recent.push(line);
+        if recent.len() > MAX_RETAINED_DIAGNOSTIC_LINES {
+            recent.remove(0);
+        }
+    }
+    let status = {
+        let Ok(mut guard) = child_slot.lock() else {
+            return Err(format!(
+                "Could not wait for the {} process to exit.",
+                kind.label()
+            ));
+        };
+        let Some(child) = guard.as_mut() else {
+            return Err(format!(
+                "The {} process is no longer tracked.",
+                kind.label()
+            ));
+        };
+        child
+            .wait()
+            .map_err(|error| format!("Could not wait for {}: {error}", kind.label()))?
+    };
+    if let Ok(mut guard) = child_slot.lock() {
+        *guard = None;
+    }
+    // A provider can report a failed turn and still exit successfully, so the
+    // failure it stated decides the outcome before the exit code does.
+    if !status.success() || stated_error.is_some() {
+        return Err(question_failure_message(
+            kind,
+            diagnostics,
+            status.code(),
+            stated_error.as_deref(),
+            &recent,
+        ));
+    }
+    let Some(text) = answer else {
+        return Err(format!(
+            "{} finished without returning an answer. Recent provider output: {}",
+            kind.label(),
+            join_recent(&recent)
+        ));
+    };
+    Ok(ExternalAgentAnswer {
+        provider: kind,
+        text,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+/// Which pipe one captured provider line arrived on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessStreamKind {
+    Stdout,
+    Stderr,
+}
+
+/// Builds the message an unsuccessful provider answer reports.
+///
+/// A failure the provider stated is reported as the provider stated it. The
+/// classified exit remains the fallback for a process that failed without
+/// explaining itself.
+fn question_failure_message(
+    kind: ExternalAgentProviderKind,
+    diagnostics: ExternalAgentDiagnostics,
+    exit_code: Option<i32>,
+    stated_error: Option<&str>,
+    recent: &[String],
+) -> String {
+    if let Some(stated) = stated_error {
+        return format!("{} reported: {stated}", kind.label());
+    }
+    let classification = diagnostics.classify_exit(kind, exit_code);
+    format!(
+        "{} Recent provider output: {}",
+        classification.message,
+        join_recent(recent)
+    )
+}
+
+/// Renders retained provider output for a diagnostic message.
+fn join_recent(recent: &[String]) -> String {
+    if recent.is_empty() {
+        return "none".to_owned();
+    }
+    recent.join(" | ")
+}
+
+/// A setup step the Editor can run for a provider on the user's behalf.
+///
+/// Both steps are provider-owned work: the provider's own installer package and
+/// the provider's own login flow. GameEngine starts them so the setup path does
+/// not leave the Editor, and owns neither the artifact nor the credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExternalAgentSetupAction {
+    Install,
+    SignIn,
+}
+
+impl ExternalAgentSetupAction {
+    /// Returns the label a control for this step carries.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Install => "Install or update",
+            Self::SignIn => "Sign in",
+        }
+    }
+
+    /// Returns what this step is doing, for a progress line.
+    pub(crate) const fn progress_label(self) -> &'static str {
+        match self {
+            Self::Install => "Installing or updating the provider",
+            Self::SignIn => "Provider sign-in is running",
+        }
+    }
+
+    /// Builds the command this step runs for one provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a provider GameEngine cannot perform this step for.
+    fn plan(
+        self,
+        kind: ExternalAgentProviderKind,
+        placement: &ExternalAgentExecutionPlacement,
+    ) -> Result<ExternalAgentLaunchPlan, String> {
+        match self {
+            Self::Install => build_install_plan(kind, placement),
+            Self::SignIn => build_sign_in_plan(kind, placement),
+        }
+    }
+}
+
+/// The npm package that publishes each first-class provider CLI.
+const fn install_package(kind: ExternalAgentProviderKind) -> Option<&'static str> {
+    match kind {
+        ExternalAgentProviderKind::ClaudeCode => Some("@anthropic-ai/claude-code@latest"),
+        ExternalAgentProviderKind::Codex => Some("@openai/codex@latest"),
+        ExternalAgentProviderKind::Generic => None,
+    }
+}
+
+/// Returns the npm executable name for one execution environment.
+///
+/// On Windows the launcher is `npm.cmd`; process creation appends only `.exe`
+/// to a bare name, so the extension has to be explicit or the launch fails with
+/// a misleading "program not found".
+const fn npm_program(placement: &ExternalAgentExecutionPlacement) -> &'static str {
+    match placement.environment {
+        ExternalAgentExecutionEnvironment::WindowsNative => "npm.cmd",
+        ExternalAgentExecutionEnvironment::Wsl2Linux => "npm",
+    }
+}
+
+/// Builds the command that installs or updates a provider CLI.
+///
+/// The version is deliberately `latest` rather than pinned. A provider CLI is a
+/// client of a service that moves independently of GameEngine, and an outdated
+/// client fails against the provider's current models; pinning would convert a
+/// one-click update into a support problem GameEngine cannot fix.
+///
+/// # Errors
+///
+/// Returns an error for a provider GameEngine does not publish an install
+/// command for.
+pub(crate) fn build_install_plan(
+    kind: ExternalAgentProviderKind,
+    placement: &ExternalAgentExecutionPlacement,
+) -> Result<ExternalAgentLaunchPlan, String> {
+    let Some(package) = install_package(kind) else {
+        return Err(
+            "A generic external command is installed by whoever provides it. GameEngine cannot install it."
+                .to_owned(),
+        );
+    };
+    let (program, args) = placed_command(
+        placement,
+        OsString::from(npm_program(placement)),
+        [
+            OsString::from("install"),
+            OsString::from("-g"),
+            OsString::from(package),
+        ],
+    );
+    Ok(ExternalAgentLaunchPlan { program, args })
+}
+
+/// Renders the command a setup step will run, for display before it runs.
+///
+/// The user is agreeing to run a specific command on their machine, so the
+/// command is shown rather than described.
+pub(crate) fn setup_command_text(
+    action: ExternalAgentSetupAction,
+    kind: ExternalAgentProviderKind,
+    placement: &ExternalAgentExecutionPlacement,
+) -> Option<String> {
+    let plan = action.plan(kind, placement).ok()?;
+    let mut text = plan.program.to_string_lossy().into_owned();
+    for argument in &plan.args {
+        text.push(' ');
+        text.push_str(&argument.to_string_lossy());
+    }
+    Some(text)
+}
+
+/// Builds the command that starts a provider's own sign-in flow.
+///
+/// # Errors
+///
+/// Returns an error for a provider whose authentication GameEngine does not
+/// own and cannot start.
+pub(crate) fn build_sign_in_plan(
+    kind: ExternalAgentProviderKind,
+    placement: &ExternalAgentExecutionPlacement,
+) -> Result<ExternalAgentLaunchPlan, String> {
+    let plan = match kind {
+        ExternalAgentProviderKind::ClaudeCode => ExternalAgentLaunchPlan {
+            program: OsString::from("claude"),
+            args: vec![
+                OsString::from("auth"),
+                OsString::from("login"),
+                // The subscription flow is the one AI Studio advertises; an
+                // API-billed console login stays a provider-side choice.
+                OsString::from("--claudeai"),
+            ],
+        },
+        ExternalAgentProviderKind::Codex => ExternalAgentLaunchPlan {
+            program: OsString::from("codex"),
+            args: vec![OsString::from("login")],
+        },
+        ExternalAgentProviderKind::Generic => {
+            return Err(
+                "A generic external command owns its own authentication. GameEngine cannot start a sign-in for it."
+                    .to_owned(),
+            );
+        }
+    };
+    let (program, args) = placed_command(placement, plan.program, plan.args);
+    Ok(ExternalAgentLaunchPlan { program, args })
+}
+
+/// A provider setup step the Editor started on the user's behalf.
+///
+/// GameEngine owns neither side of what these steps produce: an install is the
+/// provider's own published package, and a sign-in stores the credential where
+/// the provider keeps it. The Editor starts the process, relays its output, and
+/// allows cancellation, so setup does not require opening a terminal.
+pub(crate) struct ExternalAgentSetupTask {
+    kind: ExternalAgentProviderKind,
+    action: ExternalAgentSetupAction,
+    child: Child,
+    output: Receiver<String>,
+    exit_status: Option<ExitStatus>,
+}
+
+impl ExternalAgentSetupTask {
+    /// Starts one provider setup step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the step does not apply to this provider, the
+    /// command cannot be launched, or its output readers cannot be created.
+    pub(crate) fn spawn(
+        kind: ExternalAgentProviderKind,
+        action: ExternalAgentSetupAction,
+        placement: &ExternalAgentExecutionPlacement,
+        working_directory: &Path,
+    ) -> Result<Self, String> {
+        let plan = action.plan(kind, placement)?;
+        let mut child = Command::new(&plan.program)
+            .args(&plan.args)
+            .current_dir(working_directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                format!(
+                    "Could not start {} for {}: {error}",
+                    plan.program.to_string_lossy(),
+                    kind.label()
+                )
+            })?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let (sender, output) = mpsc::channel();
+        for pipe in [
+            stdout.map(PipeReader::Stdout),
+            stderr.map(PipeReader::Stderr),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let sender = sender.clone();
+            if let Err(error) = std::thread::Builder::new()
+                .name("ai-external-provider-setup".to_owned())
+                .spawn(move || {
+                    for line in pipe.lines() {
+                        let _ = sender.send(line);
+                    }
+                })
+            {
+                let _ = child.kill();
+                return Err(format!(
+                    "Could not read {} setup output: {error}",
+                    kind.label()
+                ));
+            }
+        }
+        Ok(Self {
+            kind,
+            action,
+            child,
+            output,
+            exit_status: None,
+        })
+    }
+
+    /// Which provider this step is setting up.
+    pub(crate) const fn kind(&self) -> ExternalAgentProviderKind {
+        self.kind
+    }
+
+    /// Which step is running.
+    pub(crate) const fn action(&self) -> ExternalAgentSetupAction {
+        self.action
+    }
+
+    /// Returns provider output produced since the previous call.
+    pub(crate) fn drain_output(&self) -> Vec<String> {
+        self.output.try_iter().collect()
+    }
+
+    /// Returns the exit status once the setup process has finished.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the process state cannot be read.
+    pub(crate) fn poll_exit(&mut self) -> Result<Option<ExitStatus>, String> {
+        if let Some(status) = self.exit_status {
+            return Ok(Some(status));
+        }
+        let status = self.child.try_wait().map_err(|error| {
+            format!("Could not read {} setup state: {error}", self.kind.label())
+        })?;
+        self.exit_status = status;
+        Ok(status)
+    }
+
+    /// Stops an unfinished setup step.
+    pub(crate) fn cancel(&mut self) {
+        if self.exit_status.is_none() {
+            let _ = self.child.kill();
+            self.exit_status = self.child.wait().ok();
+        }
+    }
+}
+
+impl Drop for ExternalAgentSetupTask {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+/// One captured provider pipe, kept concrete so both readers share a body.
+enum PipeReader {
+    Stdout(std::process::ChildStdout),
+    Stderr(std::process::ChildStderr),
+}
+
+impl PipeReader {
+    /// Which stream this pipe carries.
+    const fn stream_kind(&self) -> ProcessStreamKind {
+        match self {
+            Self::Stdout(_) => ProcessStreamKind::Stdout,
+            Self::Stderr(_) => ProcessStreamKind::Stderr,
+        }
+    }
+
+    /// Reads the pipe to end of stream, one truncated line at a time.
+    fn lines(self) -> Box<dyn Iterator<Item = String>> {
+        match self {
+            Self::Stdout(pipe) => Box::new(
+                BufReader::new(pipe)
+                    .lines()
+                    .map_while(Result::ok)
+                    .map(truncate_captured_line),
+            ),
+            Self::Stderr(pipe) => Box::new(
+                BufReader::new(pipe)
+                    .lines()
+                    .map_while(Result::ok)
+                    .map(truncate_captured_line),
+            ),
+        }
+    }
+}
+
+/// Extracts the sign-in URL a provider printed, if the line carries one.
+///
+/// A provider that cannot open a browser itself prints the URL instead. The
+/// Editor surfaces it so the flow can be completed without a terminal.
+pub(crate) fn sign_in_url(line: &str) -> Option<String> {
+    let start = line.find("https://").or_else(|| line.find("http://"))?;
+    let url = line[start..]
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(['.', ',', ')', ']', '"', '\'']);
+    (url.len() > "https://".len()).then(|| url.to_owned())
+}
+
+/// What one probe learned about a provider on this machine.
+///
+/// Locations are machine-local paths kept for local display only. They are not
+/// part of the sanitized adapter status ADR 0145 reports remotely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalAgentProviderReport {
+    pub(crate) status: ExternalAgentProviderStatus,
+    pub(crate) locations: Vec<String>,
+    /// Whether the installer this provider is installed with is available.
+    pub(crate) installer_available: bool,
+}
+
+impl ExternalAgentProviderReport {
+    /// Whether more than one directory on `PATH` provides this program.
+    ///
+    /// An install can land beside an older copy that still comes first on
+    /// `PATH`, which otherwise looks like an update that did nothing.
+    pub(crate) fn has_shadowed_copies(&self) -> bool {
+        let mut directories = self
+            .locations
+            .iter()
+            .filter_map(|location| {
+                let path = Path::new(location);
+                path.parent()
+                    .map(|parent| parent.to_string_lossy().into_owned())
+            })
+            .collect::<Vec<_>>();
+        directories.sort();
+        directories.dedup();
+        directories.len() > 1
+    }
+}
+
+/// Resolves every `PATH` entry that provides one provider program.
+fn resolve_program_locations(
+    kind: ExternalAgentProviderKind,
+    placement: &ExternalAgentExecutionPlacement,
+) -> Vec<String> {
+    let Some(program) = kind.program() else {
+        return Vec::new();
+    };
+    let (locator, locator_args) = match placement.environment {
+        ExternalAgentExecutionEnvironment::WindowsNative => {
+            (OsString::from("where.exe"), vec![program.to_os_string()])
+        }
+        ExternalAgentExecutionEnvironment::Wsl2Linux => {
+            let (program, args) = placed_command(
+                placement,
+                OsString::from("bash"),
+                [
+                    OsString::from("-lc"),
+                    OsString::from(format!("command -v {}", program.to_string_lossy())),
+                ],
+            );
+            (program, args)
+        }
+    };
+    let Ok(output) = Command::new(locator)
+        .args(locator_args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(truncate_captured_line_str)
+        .collect()
+}
+
+/// Shortens one resolved path so a display line stays bounded.
+fn truncate_captured_line_str(line: &str) -> String {
+    truncate_captured_line(line.to_owned())
+}
+
+/// Whether the installer used for provider CLIs can be launched here.
+fn installer_is_available(placement: &ExternalAgentExecutionPlacement) -> bool {
+    let (program, args) = placed_command(
+        placement,
+        OsString::from(npm_program(placement)),
+        [OsString::from("--version")],
+    );
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// A background probe of every first-class provider on this machine.
+///
+/// Probing runs provider processes, so it never runs on the UI thread.
+pub(crate) struct ExternalAgentProbeTask {
+    result: Receiver<Vec<ExternalAgentProviderReport>>,
+}
+
+impl ExternalAgentProbeTask {
+    /// Starts probing discovery, authentication, and placement of providers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker thread cannot be created.
+    pub(crate) fn spawn(placement: ExternalAgentExecutionPlacement) -> Result<Self, String> {
+        let (sender, result) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("ai-external-provider-probe".to_owned())
+            .spawn(move || {
+                let installer_available = installer_is_available(&placement);
+                let reports = ExternalAgentProviderKind::ALL
+                    .into_iter()
+                    .filter(|kind| kind.can_answer_questions())
+                    .map(|kind| ExternalAgentProviderReport {
+                        status: probe_provider(kind, "", &placement),
+                        locations: resolve_program_locations(kind, &placement),
+                        installer_available,
+                    })
+                    .collect::<Vec<_>>();
+                let _ = sender.send(reports);
+            })
+            .map_err(|error| format!("Could not start the provider probe: {error}"))?;
+        Ok(Self { result })
+    }
+
+    /// Returns the probe reports once the worker has finished.
+    pub(crate) fn poll(&self) -> Option<Vec<ExternalAgentProviderReport>> {
+        match self.result.try_recv() {
+            Ok(reports) => Some(reports),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Vec::new()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1003,5 +1938,303 @@ mod tests {
         assert!(json.contains("authenticated"));
         assert!(!json.contains("GAMEENGINE_MCP"));
         assert!(!json.contains("program"));
+    }
+
+    #[test]
+    fn a_question_launch_plan_carries_no_write_surface_and_no_mcp_credential() {
+        let placement = ExternalAgentExecutionPlacement::windows_native();
+        for kind in [
+            ExternalAgentProviderKind::ClaudeCode,
+            ExternalAgentProviderKind::Codex,
+        ] {
+            let plan = build_question_launch_plan(kind, &placement, "why is the player falling?")
+                .expect("first-class providers answer questions");
+            let args = plan
+                .args
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!args.contains("workspace-write"));
+            assert!(!args.contains(GAMEENGINE_MCP_TOKEN_ENV));
+            assert!(!args.contains(GAMEENGINE_MCP_SERVER_NAME));
+        }
+        let claude = build_question_launch_plan(
+            ExternalAgentProviderKind::ClaudeCode,
+            &placement,
+            "why is the player falling?",
+        )
+        .expect("Claude Code answers questions");
+        let claude_args = claude
+            .args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        // A deny list is the rule provider settings cannot widen, so the
+        // write-capable tools must be named on it rather than merely omitted.
+        let denied = claude_args
+            .iter()
+            .position(|argument| argument == "--disallowedTools")
+            .expect("write-capable tools are denied explicitly");
+        for tool in ["Write", "Edit", "NotebookEdit", "Bash"] {
+            assert!(
+                claude_args[denied..]
+                    .iter()
+                    .any(|argument| argument == tool)
+            );
+        }
+        let codex = build_question_launch_plan(
+            ExternalAgentProviderKind::Codex,
+            &placement,
+            "why is the player falling?",
+        )
+        .expect("Codex answers questions");
+        let codex_args = codex
+            .args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(codex_args.iter().any(|argument| argument == "read-only"));
+        assert!(
+            codex_args
+                .iter()
+                .any(|argument| argument == "mcp_servers={}")
+        );
+    }
+
+    #[test]
+    fn a_stated_provider_failure_is_reported_instead_of_an_exit_code() {
+        let codex_turn_failed = serde_json::json!({
+            "type": "turn.failed",
+            "error": { "message": "the model requires a newer Codex version" },
+        })
+        .to_string();
+        assert_eq!(
+            extract_error_text(ExternalAgentProviderKind::Codex, &codex_turn_failed),
+            Some("the model requires a newer Codex version".to_owned())
+        );
+        let claude_expired = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": true,
+            "result": "Failed to authenticate: OAuth session expired",
+        })
+        .to_string();
+        assert_eq!(
+            extract_error_text(ExternalAgentProviderKind::ClaudeCode, &claude_expired),
+            Some("Failed to authenticate: OAuth session expired".to_owned())
+        );
+        let claude_answer = serde_json::json!({
+            "type": "result",
+            "is_error": false,
+            "result": "Materials load through the asset manifest.",
+        })
+        .to_string();
+        assert_eq!(
+            extract_error_text(ExternalAgentProviderKind::ClaudeCode, &claude_answer),
+            None
+        );
+        let message = question_failure_message(
+            ExternalAgentProviderKind::Codex,
+            ExternalAgentDiagnostics::default(),
+            Some(1),
+            Some("the model requires a newer Codex version"),
+            &["{\"type\":\"turn.started\"}".to_owned()],
+        );
+        assert!(message.contains("the model requires a newer Codex version"));
+        assert!(!message.contains("exited unsuccessfully"));
+    }
+
+    #[test]
+    fn the_generic_provider_never_answers_a_question() {
+        let placement = ExternalAgentExecutionPlacement::windows_native();
+        let error = build_question_launch_plan(
+            ExternalAgentProviderKind::Generic,
+            &placement,
+            "why is the player falling?",
+        )
+        .expect_err("a user-defined command cannot be proven read-only");
+        assert!(error.contains("Generic command provider"));
+    }
+
+    #[test]
+    fn a_question_prompt_keeps_recorded_turns_in_order() {
+        let prompt = build_question_prompt(&[
+            ExternalAgentQuestionTurn {
+                role: ExternalAgentQuestionRole::User,
+                text: "how do materials load?".to_owned(),
+            },
+            ExternalAgentQuestionTurn {
+                role: ExternalAgentQuestionRole::Assistant,
+                text: "  ".to_owned(),
+            },
+            ExternalAgentQuestionTurn {
+                role: ExternalAgentQuestionRole::System,
+                text: "inference failed".to_owned(),
+            },
+        ]);
+        let first = prompt
+            .find("User: how do materials load?")
+            .expect("the user turn is rendered");
+        let second = prompt
+            .find("System: inference failed")
+            .expect("the system turn is rendered");
+        assert!(first < second);
+        assert!(!prompt.contains("Assistant:"));
+    }
+
+    #[test]
+    fn only_provider_assistant_text_becomes_an_answer() {
+        let claude_result = serde_json::json!({
+            "type": "result",
+            "is_error": false,
+            "result": "Materials load through the asset manifest.",
+        })
+        .to_string();
+        assert_eq!(
+            extract_answer_text(ExternalAgentProviderKind::ClaudeCode, &claude_result),
+            Some("Materials load through the asset manifest.".to_owned())
+        );
+        let claude_error = serde_json::json!({
+            "type": "result",
+            "is_error": true,
+            "result": "provider error",
+        })
+        .to_string();
+        assert_eq!(
+            extract_answer_text(ExternalAgentProviderKind::ClaudeCode, &claude_error),
+            None
+        );
+        let codex_message = serde_json::json!({
+            "type": "item.completed",
+            "item": { "type": "agent_message", "text": "The controller clamps velocity." },
+        })
+        .to_string();
+        assert_eq!(
+            extract_answer_text(ExternalAgentProviderKind::Codex, &codex_message),
+            Some("The controller clamps velocity.".to_owned())
+        );
+        let codex_command = serde_json::json!({
+            "type": "item.completed",
+            "item": { "type": "command_execution", "text": "ls" },
+        })
+        .to_string();
+        assert_eq!(
+            extract_answer_text(ExternalAgentProviderKind::Codex, &codex_command),
+            None
+        );
+        assert_eq!(
+            extract_answer_text(ExternalAgentProviderKind::ClaudeCode, "not json"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_sign_in_plan_starts_the_provider_owned_subscription_flow() {
+        let placement = ExternalAgentExecutionPlacement::windows_native();
+        let claude = build_sign_in_plan(ExternalAgentProviderKind::ClaudeCode, &placement)
+            .expect("Claude Code owns an interactive sign-in");
+        assert_eq!(claude.program, OsString::from("claude"));
+        assert!(claude.args.contains(&OsString::from("--claudeai")));
+        let codex = build_sign_in_plan(ExternalAgentProviderKind::Codex, &placement)
+            .expect("Codex owns an interactive sign-in");
+        assert_eq!(codex.program, OsString::from("codex"));
+        assert!(codex.args.contains(&OsString::from("login")));
+        assert!(build_sign_in_plan(ExternalAgentProviderKind::Generic, &placement).is_err());
+    }
+
+    #[test]
+    fn an_install_plan_runs_the_provider_package_with_the_platform_launcher() {
+        let native = build_install_plan(
+            ExternalAgentProviderKind::Codex,
+            &ExternalAgentExecutionPlacement::windows_native(),
+        )
+        .expect("Codex publishes an install package");
+        // Process creation appends only `.exe`, so the Windows launcher name
+        // has to carry its extension or the launch fails as "not found".
+        assert_eq!(native.program, OsString::from("npm.cmd"));
+        assert_eq!(
+            native.args,
+            vec![
+                OsString::from("install"),
+                OsString::from("-g"),
+                OsString::from("@openai/codex@latest"),
+            ]
+        );
+        let wsl = build_install_plan(
+            ExternalAgentProviderKind::ClaudeCode,
+            &ExternalAgentExecutionPlacement {
+                environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
+                distribution: "Ubuntu-24.04".to_owned(),
+            },
+        )
+        .expect("Claude Code publishes an install package");
+        assert_eq!(wsl.program, OsString::from(WSL_LAUNCHER));
+        let args = wsl
+            .args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args[0], "-d");
+        assert_eq!(args[1], "Ubuntu-24.04");
+        assert_eq!(args[2], "--");
+        assert_eq!(args[3], "npm");
+        assert!(args.contains(&"@anthropic-ai/claude-code@latest".to_owned()));
+        assert!(
+            build_install_plan(
+                ExternalAgentProviderKind::Generic,
+                &ExternalAgentExecutionPlacement::windows_native()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_command_a_setup_step_will_run_is_rendered_before_it_runs() {
+        let placement = ExternalAgentExecutionPlacement::windows_native();
+        let install = setup_command_text(
+            ExternalAgentSetupAction::Install,
+            ExternalAgentProviderKind::Codex,
+            &placement,
+        )
+        .expect("an install command is shown");
+        assert_eq!(install, "npm.cmd install -g @openai/codex@latest");
+        let sign_in = setup_command_text(
+            ExternalAgentSetupAction::SignIn,
+            ExternalAgentProviderKind::Codex,
+            &placement,
+        )
+        .expect("a sign-in command is shown");
+        assert_eq!(sign_in, "codex login");
+        assert_eq!(
+            setup_command_text(
+                ExternalAgentSetupAction::Install,
+                ExternalAgentProviderKind::Generic,
+                &placement
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_copy_shadowed_by_another_path_directory_is_reported() {
+        let report = |locations: &[&str]| ExternalAgentProviderReport {
+            status: ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Codex),
+            locations: locations.iter().map(|path| (*path).to_owned()).collect(),
+            installer_available: true,
+        };
+        // A shim and its launcher in one directory are one installed copy.
+        assert!(!report(&[r"C:\npm\codex", r"C:\npm\codex.cmd"]).has_shadowed_copies());
+        assert!(report(&[r"C:\vendor\bin\codex.exe", r"C:\npm\codex.cmd"]).has_shadowed_copies());
+        assert!(!report(&[]).has_shadowed_copies());
+    }
+
+    #[test]
+    fn a_printed_sign_in_url_is_surfaced_without_surrounding_text() {
+        assert_eq!(
+            sign_in_url("Open this URL to authenticate: https://auth.example.com/x?y=1."),
+            Some("https://auth.example.com/x?y=1".to_owned())
+        );
+        assert_eq!(sign_in_url("Waiting for the browser"), None);
     }
 }

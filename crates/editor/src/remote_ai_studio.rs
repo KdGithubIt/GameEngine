@@ -52,6 +52,19 @@ pub(crate) enum RemoteOperation {
         request_id: String,
         proposal_version: u64,
     },
+    /// Submit an instruction in Build mode: record it, derive the proposal
+    /// version it commits, and start a run from exactly that version.
+    ///
+    /// ADR 0162 §1 removed the separate Go affordance, and §7 requires the
+    /// companion to present what the local surfaces present. This is the
+    /// backward-compatible addition that lets it do so: `Go` remains available
+    /// for a client that already knows the proposal it wants to run.
+    CommitIntent {
+        session_id: String,
+        request_id: String,
+        text: String,
+        proposal_version: u64,
+    },
     Stop {
         run_id: String,
         request_id: String,
@@ -109,6 +122,15 @@ impl RemoteOperation {
                 request_id,
                 proposal_version,
             } => Some((request_id, format!("go:{session_id}:{proposal_version}"))),
+            Self::CommitIntent {
+                session_id,
+                request_id,
+                text,
+                proposal_version,
+            } => Some((
+                request_id,
+                format!("intent:{session_id}:{proposal_version}:{text}"),
+            )),
             Self::Stop { run_id, request_id } => Some((request_id, format!("stop:{run_id}"))),
             Self::AwaitingUser {
                 run_id,
@@ -531,6 +553,13 @@ struct GoBody {
 }
 
 #[derive(Deserialize)]
+struct CommitIntentBody {
+    request_id: String,
+    text: String,
+    proposal_version: u64,
+}
+
+#[derive(Deserialize)]
 struct RequestIdBody {
     request_id: String,
 }
@@ -590,6 +619,24 @@ fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudi
                 session_id: (*session_id).to_owned(),
                 request_id: body.request_id,
                 text: body.text,
+            })
+        }
+        ("POST", ["api", "sessions", session_id, "intent"]) => {
+            let body: CommitIntentBody = parse_json_body(request)?;
+            validate_request_id(&body.request_id)?;
+            if body.text.trim().is_empty() {
+                return Err(RemoteAiStudioResponse::error(
+                    400,
+                    "invalid_message",
+                    "A Build instruction must not be empty.",
+                    false,
+                ));
+            }
+            Ok(RemoteOperation::CommitIntent {
+                session_id: (*session_id).to_owned(),
+                request_id: body.request_id,
+                text: body.text,
+                proposal_version: body.proposal_version,
             })
         }
         ("POST", ["api", "sessions", session_id, "go"]) => {
@@ -1185,8 +1232,8 @@ const COMPANION_HTML: &str = r#"<!doctype html>
 </head>
 <body><main class="shell">
 <section class="card"><div class="row"><div class="grow"><h1>Remote AI Studio</h1><div class="muted">Companion view over the Editor Agent Host · not a remote Editor</div></div><select id="sessions"></select></div><div id="error" class="error"></div></section>
-<section class="card"><h2>Conversation</h2><div id="messages" class="messages"></div><textarea id="message" placeholder="Add a constraint or continue the conversation"></textarea><div class="row"><button id="send">Send</button></div></section>
-<section class="card"><div class="row"><h2 class="grow">Proposal</h2><span id="proposalVersion" class="pill"></span></div><div id="proposal" class="proposal-grid"></div><div class="row"><button id="go" class="primary">Go</button><button id="stop" class="danger">Stop</button></div></section>
+<section class="card"><h2>Conversation</h2><div id="messages" class="messages"></div><textarea id="message" placeholder="Ask about the project, or describe what to build"></textarea><div class="row"><select id="mode"><option value="ask" selected>Ask</option><option value="build">Build</option></select><button id="send" class="primary">Send</button></div><div id="modeNote" class="muted">Read-only. Sending records your message; it never starts a run.</div></section>
+<section class="card"><div class="row"><h2 class="grow">Proposal</h2><span id="proposalVersion" class="pill"></span></div><div id="proposal" class="proposal-grid"></div><div class="row"><button id="stop" class="danger">Stop</button></div></section>
 <section id="decisionCard" class="card" hidden><h2>Decision required</h2><div id="decision"></div></section>
 <section class="card"><div class="row"><h2 class="grow">Run progress</h2><span id="runState" class="pill">idle</span></div><div id="events" class="events"></div><h3>Completion</h3><div id="completion" class="completion"></div></section>
 <section class="card"><div class="row"><h2 class="grow">Live Game View</h2><span id="liveState" class="pill">stopped</span></div><div class="row"><label for="liveFps">Max FPS</label><select id="liveFps"><option>2</option><option selected>4</option><option>8</option></select><button id="liveStart" class="primary">Start live view</button><button id="liveStop" disabled>Stop live view</button></div><div id="liveMeta" class="muted">Game View only · authenticated transient PNG samples · latest frame retained only.</div><img id="liveFrame" class="frame" hidden alt="Live Game View observation"></section>
@@ -1204,8 +1251,8 @@ function renderSnapshot(s){snapshot=s; const m=$('messages');m.innerHTML=(s.sess
 function renderDecision(s,run){const card=$('decisionCard'),d=$('decision'); if(s.pending_permission){const p=s.pending_permission;card.hidden=false;d.innerHTML=`<p>${escapeHtml(p.label)}</p><div class="row">${['once','run','project','deny'].map(scope=>`<button data-scope="${scope}">${scope}</button>`).join('')}</div>`;d.querySelectorAll('button').forEach(b=>b.onclick=()=>permission(p.run_id,p.capability,b.dataset.scope));return} if(s.awaiting_user&&run){card.hidden=false;d.innerHTML='<textarea id="awaitText" placeholder="Response to the agent"></textarea><div class="row"><button id="awaitSend">Respond</button></div>';$('awaitSend').onclick=()=>awaiting(run.id,$('awaitText').value);return} card.hidden=true;d.innerHTML=''}
 async function renderFrame(run){if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=null} const img=$('frame'),meta=$('frameMeta'); const f=run?.frames?.at(-1); if(!f){img.hidden=true;meta.textContent='No captured frame.';return} meta.textContent=`${f.artifact_id} · ${f.width}×${f.height} · run ${run.id}`; try{const r=await api(`/api/runs/${encodeURIComponent(run.id)}/frames/${encodeURIComponent(f.artifact_id)}`);frameUrl=URL.createObjectURL(await r.blob());img.src=frameUrl;img.hidden=false}catch(e){img.hidden=true;showError(e)}}
 async function refresh(){if(!sessionId)return; try{const s=await (await api('/api/sessions/'+encodeURIComponent(sessionId))).json();renderSnapshot(s);const run=s.active_run;if(live&&live.run_id!==run?.id)resetLiveView();if(run){const raw=await (await api(`/api/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`)).text();const line=raw.split('\n').find(x=>x.startsWith('data: '));if(line){const batch=JSON.parse(line.slice(6));if(batch.stale_cursor){cursor=0}else{for(const e of batch.events)cursor=Math.max(cursor,e.sequence);$('events').innerHTML=batch.events.map(e=>`<div class="event"><span class="pill">#${e.sequence} ${escapeHtml(e.kind)}</span><div>${escapeHtml(e.message)}</div></div>`).join('')||$('events').innerHTML}}}}catch(e){showError(e)}}
-async function send(){const v=$('message').value.trim();if(!v)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/messages`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});$('message').value='';await refresh()}
-async function go(){if(!snapshot)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/go`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),proposal_version:snapshot.session.proposal.version})});cursor=0;await refresh()}
+function modeNote(){const build=$('mode').value==='build';$('modeNote').textContent=build?'Write-capable. Sending commits your message as the proposal and starts a run.':'Read-only. Sending records your message; it never starts a run.'}
+async function send(){const v=$('message').value.trim();if(!v)return;if($('mode').value==='build'){if(!snapshot)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/intent`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v,proposal_version:snapshot.session.proposal.version})});$('message').value='';cursor=0;await refresh();return}await api(`/api/sessions/${encodeURIComponent(sessionId)}/messages`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});$('message').value='';await refresh()}
 async function stop(){const run=snapshot?.active_run;if(!run)return;await api(`/api/runs/${encodeURIComponent(run.id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid()})});await refresh()}
 async function permission(run,capability,scope){await api(`/api/runs/${encodeURIComponent(run)}/permissions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),capability,scope})});await refresh()}
 async function awaiting(run,textValue){const v=textValue.trim();if(!v)return;await api(`/api/runs/${encodeURIComponent(run)}/awaiting-user`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});await refresh()}
@@ -1214,7 +1261,7 @@ async function startLive(){const run=snapshot?.active_run;if(!run)throw new Erro
 async function pollLive(){if(!live)return;const current=live;const mediaHeaders={'X-GameEngine-Media-Token':current.media_token};try{const status=await (await api(`/api/live/${encodeURIComponent(current.media_session_id)}`,{headers:mediaHeaders})).json();if(live!==current)return;$('liveState').textContent=status.last_error?'retrying':'live';$('liveMeta').textContent=`${status.source} · ${status.latest_width??'waiting'}×${status.latest_height??'waiting'} · ${status.max_fps} fps cap · samples ${status.capture_count} · readback ${status.latest_readback_micros??'—'} µs · encode ${status.latest_encode_micros??'—'} µs · E2E ${status.latest_end_to_end_micros??'—'} µs`;if(status.latest_sequence!=null&&status.latest_sequence!==current.sequence){const response=await api(`/api/live/${encodeURIComponent(current.media_session_id)}/frames/${status.latest_sequence}`,{headers:mediaHeaders});if(live!==current)return;if(liveUrl)URL.revokeObjectURL(liveUrl);liveUrl=URL.createObjectURL(await response.blob());$('liveFrame').src=liveUrl;$('liveFrame').hidden=false;current.sequence=status.latest_sequence}}catch(e){if(live===current){$('liveState').textContent='retrying';$('liveMeta').textContent=e.message||text(e)}}finally{if(live===current)liveTimer=setTimeout(pollLive,Math.max(125,Math.floor(1000/current.max_fps)))}}
 async function stopLive(){if(!live){resetLiveView();return}const current=live;if(liveTimer){clearTimeout(liveTimer);liveTimer=null}try{await api(`/api/live/${encodeURIComponent(current.media_session_id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json','X-GameEngine-Media-Token':current.media_token},body:JSON.stringify({request_id:rid()})})}finally{resetLiveView()}}
 function showError(e){$('error').textContent=e.message||text(e)}
-$('send').onclick=()=>send().catch(showError);$('go').onclick=()=>go().catch(showError);$('stop').onclick=()=>stop().catch(showError);$('liveStart').onclick=()=>startLive().catch(showError);$('liveStop').onclick=()=>stopLive().catch(showError);(async()=>{try{await loadSessions();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
+$('send').onclick=()=>send().catch(showError);$('mode').onchange=modeNote;modeNote();$('stop').onclick=()=>stop().catch(showError);$('liveStart').onclick=()=>startLive().catch(showError);$('liveStop').onclick=()=>stopLive().catch(showError);(async()=>{try{await loadSessions();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
 </script></body></html>"#;
 
 #[cfg(test)]
@@ -1289,6 +1336,76 @@ mod tests {
             });
         }
         assert_eq!(host.session(&session).expect("session").runs.len(), 1);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn build_intent_routes_with_its_text_and_base_proposal_version() {
+        let request = HttpRequest {
+            method: "POST".into(),
+            path: "/api/sessions/session_1/intent".into(),
+            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+            body: br#"{"request_id":"mobile-1","text":"Add a pause menu","proposal_version":3}"#
+                .to_vec(),
+        };
+        assert!(matches!(
+            route_request(&request).expect("intent route"),
+            RemoteOperation::CommitIntent {
+                session_id,
+                request_id,
+                text,
+                proposal_version: 3,
+            } if session_id == "session_1" && request_id == "mobile-1" && text == "Add a pause menu"
+        ));
+    }
+
+    #[test]
+    fn empty_build_intent_is_rejected_before_it_reaches_the_agent_host() {
+        let request = HttpRequest {
+            method: "POST".into(),
+            path: "/api/sessions/session_1/intent".into(),
+            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
+            body: br#"{"request_id":"mobile-1","text":"   ","proposal_version":3}"#.to_vec(),
+        };
+        assert!(route_request(&request).is_err());
+    }
+
+    #[test]
+    fn duplicate_build_intent_creates_one_agent_host_run() {
+        // ADR 0133 keeps reconnects from duplicating a state-changing action,
+        // and ADR 0162 §1 makes submission that action.
+        let (mut host, project, storage) = test_host("intent");
+        let session = host.create_session("Remote").expect("session");
+        let version = host.session(&session).expect("session").proposal.version;
+        let mut cache = MutationCache::default();
+        let operation = RemoteOperation::CommitIntent {
+            session_id: session.clone(),
+            request_id: "intent-one".into(),
+            text: "Add a pause menu".into(),
+            proposal_version: version,
+        };
+        for _ in 0..2 {
+            let _ = cache.execute(&operation, || {
+                let mut proposal = host.session(&session).expect("session").proposal.clone();
+                proposal.goal = "Add a pause menu".into();
+                let committed = host
+                    .update_proposal(&session, proposal)
+                    .expect("commit proposal version");
+                match host.start_run_authorized(&session, committed, "test") {
+                    Ok(run_id) => RemoteAiStudioResponse::json(json!({"run_id": run_id})),
+                    Err(error) => RemoteAiStudioResponse::error(
+                        409,
+                        "intent_failed",
+                        error.to_string(),
+                        false,
+                    ),
+                }
+            });
+        }
+        let session_state = host.session(&session).expect("session");
+        assert_eq!(session_state.runs.len(), 1);
+        assert_eq!(session_state.proposal.goal, "Add a pause menu");
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -1557,6 +1674,14 @@ mod tests {
         ));
         assert!(COMPANION_HTML.contains("Live Game View"));
         assert!(!COMPANION_HTML.contains("desktop capture"));
+    }
+
+    #[test]
+    fn companion_submits_by_mode_and_offers_no_separate_go_affordance() {
+        // ADR 0162 §7: the companion presents what the local surfaces present.
+        assert!(COMPANION_HTML.contains(r#"<option value="build">Build</option>"#));
+        assert!(COMPANION_HTML.contains("/intent"));
+        assert!(!COMPANION_HTML.contains(r#"id="go""#));
     }
 
     #[test]
