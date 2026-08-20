@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    pub(crate) fn with_benchmark_runtime(mut self, runtime: BenchmarkRuntimeIdentity) -> Self {\n        self.benchmark_runtime = Some(runtime);\n        self.plan_digest = self.compute_digest();\n        self\n    }",
+  "new": "    pub(crate) fn with_benchmark_runtime(mut self, runtime: BenchmarkRuntimeIdentity) -> Self {\n        self.schema_version = CAMPAIGN_SCHEMA_VERSION;\n        self.benchmark_runtime = Some(runtime);\n        self.plan_digest = self.compute_digest();\n        self\n    }"
+}
