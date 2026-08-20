@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod acp_agent_runtime;\nmod agent_benchmark;\n","new":"mod acp_agent_host_bridge;\nmod acp_agent_runtime;\nmod agent_benchmark;\n"}
