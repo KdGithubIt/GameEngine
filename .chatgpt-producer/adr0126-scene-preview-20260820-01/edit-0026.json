@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "        eframe::App::logic(&mut self.app, context, frame);",
+  "new": "        let sequencer_delta = context.input(|input| input.stable_dt).clamp(0.0, 0.1);\n        if self\n            .authoring_windows\n            .update_sequencer_preview(&mut self.app, sequencer_delta)\n        {\n            context.request_repaint();\n        }\n        eframe::App::logic(&mut self.app, context, frame);"
+}
