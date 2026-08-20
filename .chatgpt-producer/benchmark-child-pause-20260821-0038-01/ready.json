@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "benchmark-child-pause-20260821-0038-01",
+  "target_branch": "chatgpt/gameengine-benchmark-child-pause-fix",
+  "expected_head_sha": "678bcc69ce0e49b41c5634f845f280bed318fbfb",
+  "baseline_main_sha": "678bcc69ce0e49b41c5634f845f280bed318fbfb",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Fix benchmark child self-pausing campaign",
+  "pr_title": "Fix benchmark campaign self-pause on child startup",
+  "pr_body": "## Summary\n\n- add an isolated benchmark-child AI Studio initialization path\n- skip interactive campaign checkpoint recovery inside benchmark children\n- keep normal Editor restart recovery unchanged\n\n## Root cause\n\nEach benchmark run starts a child `engine-editor.exe`. The child previously restored the global Running campaign checkpoint before benchmark-child configuration, wrote `pause.requested` as if the Editor had restarted, and caused the parent harness to stop with 0 recorded runs."
+}
