@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {\n        let external_provider = self.selected_external_provider()?;\n",
+  "new": "    fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {\n        let resolution = self.selected_execution_resolution()?;\n        if let AiExecutionDriver::Acp { agent_id } = resolution.driver {\n            return Err(format!(\n                \"ACP driver `{agent_id}` is selected for `{}`. ACP AgentRun dispatch is supplied by the integration layer and is not attached in this routing-only branch; Legacy execution was not used.\",\n                resolution.logical_ai_id\n            ));\n        }\n        let external_provider = self.selected_external_provider()?;\n"
+}
