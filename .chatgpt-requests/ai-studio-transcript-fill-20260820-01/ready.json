@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "ai-studio-transcript-fill-20260820-01",
+  "target_branch": "chatgpt/gameengine-ai-studio-transcript-fill-height",
+  "expected_head_sha": "5408850c6a2b1135e7ec5dc0f366d7c2234db694",
+  "baseline_main_sha": "5408850c6a2b1135e7ec5dc0f366d7c2234db694",
+  "patch_sha256": "0193148e5c054d0124503545ba8c6b8bdd6d694f20da882bd5f6dd9e15f166c6",
+  "patch_bytes": 2804,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Keep AI Studio transcript at available height",
+  "pr_title": "Fix AI Studio transcript height regression",
+  "pr_body": "## Summary\n\n- Keep the centered 960px AI Studio conversation lane from PR #1019.\n- Prevent the transcript's horizontal centering row from shrinking to the height of the current entries.\n- Make only the transcript lane consume the CentralPanel's available height; header and composer remain content-sized.\n- Restore ADR 0158's requirement that the transcript occupy the presentation's available height with the composer pinned below it.\n\n## Validation\n\n- Windows Validation\n- Visual Validation of the AI Studio first-release scenarios\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR First Release -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
