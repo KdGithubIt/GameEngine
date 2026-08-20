@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/sequencer.rs",
+  "old": "        self.status = Some(\"Scrubbed to 2.000s; gameplay events stay suppressed.\".to_owned());",
+  "new": "        self.status = Some(\n            \"Scene View preview · Paused · Loop · 2.000s; gameplay events stay suppressed.\"\n                .to_owned(),\n        );"
+}
