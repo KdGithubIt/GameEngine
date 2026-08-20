@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/animation/src/anim_graph.rs","old":"            last_transition_index: None,\n            transition_sequence: 0,\n            debug_source: None,\n        }","new":"            last_transition_index: None,\n            transition_sequence: 0,\n            debug_source: None,\n            external_override_depth: 0,\n        }"}
