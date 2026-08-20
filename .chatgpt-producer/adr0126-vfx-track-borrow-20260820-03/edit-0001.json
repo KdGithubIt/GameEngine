@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/vfx.rs",
+  "old": "    for transition in &evaluation.exited {\n        if let Some((track_index, clip_index)) =\n            find_transition(timeline, &transition.track, &transition.clip)\n        {\n            let clip = &timeline.tracks[track_index].clips[clip_index];\n            if matches!(\n                clip.payload,",
+  "new": "    for transition in &evaluation.exited {\n        if let Some((track_index, clip_index)) =\n            find_transition(timeline, &transition.track, &transition.clip)\n        {\n            let clip = &timeline.tracks[track_index].clips[clip_index];\n            if matches!(\n                &clip.payload,"
+}
