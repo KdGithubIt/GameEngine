@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline/vfx.rs",
+  "old": "fn boundary_phase(tick: TimelineTick, previous_tick: TimelineTick, wrapped: bool) -> u8 {\n    if wrapped && tick < previous_tick { 1 } else { 0 }\n}\n",
+  "new": "fn boundary_phase(tick: TimelineTick, previous_tick: TimelineTick, wrapped: bool) -> u8 {\n    if wrapped && tick < previous_tick {\n        1\n    } else {\n        0\n    }\n}\n"
+}
