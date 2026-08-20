@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    #[test]\n    fn raw_model_lane_cannot_relabel_the_agent_task_campaign() {",
+  "new": "    #[test]\n    fn schema_two_campaign_plan_stays_readable_without_runtime_identity() {\n        let plan = frozen(&[\"model-a\"], &[\"read_question_v1\"]);\n        let mut json = serde_json::to_value(&plan).expect(\"campaign JSON\");\n        json[\"schema_version\"] = serde_json::Value::from(2_u32);\n        if let Some(object) = json.as_object_mut() {\n            object.remove(\"benchmark_runtime\");\n        }\n        let legacy: CampaignPlan = serde_json::from_value(json).expect(\"schema two plan\");\n        assert_eq!(legacy.schema_version, 2);\n        assert_eq!(legacy.benchmark_runtime(), None);\n        assert_eq!(legacy.plan_digest(), plan.plan_digest());\n    }\n\n    #[test]\n    fn raw_model_lane_cannot_relabel_the_agent_task_campaign() {"
+}
