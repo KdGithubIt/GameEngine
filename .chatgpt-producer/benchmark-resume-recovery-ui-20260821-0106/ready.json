@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "benchmark-resume-recovery-ui-20260821-0106",
+  "target_branch": "chatgpt/gameengine-benchmark-resume-recovery-ui",
+  "expected_head_sha": "222a7add75e9b328e25ae1455283c769ab962cdc",
+  "baseline_main_sha": "222a7add75e9b328e25ae1455283c769ab962cdc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json"
+  ],
+  "commit_message": "Fix stale benchmark campaign resume recovery",
+  "pr_title": "GameEngine: fix stale benchmark campaign resume recovery",
+  "pr_body": "## Summary\n\n- surface benchmark resume diagnostics next to campaign controls\n- allow a paused incompatible campaign to start a new frozen plan while preserving prior evidence\n- report GameEngine commit drift before runtime/model revalidation\n- add regression coverage for rebuilt Editor commit drift\n\n<!-- gameengine-visual-validation: editor -->"
+}
