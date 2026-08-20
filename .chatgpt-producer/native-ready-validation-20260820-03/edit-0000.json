@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "                let successful_mcp_write = run.events.iter().any(|event| {\n                    matches!(\n                        event.evidence.as_ref(),\n                        Some(AgentEventEvidence::ToolAction {\n                            tool,\n                            success: Some(true),\n                            ..\n                        }) if mcp_write(tool)\n                    )\n                });",
+  "new": "                let mcp_tools = authoring_tool_descriptors();\n                let successful_mcp_write = run.events.iter().any(|event| {\n                    matches!(\n                        event.evidence.as_ref(),\n                        Some(AgentEventEvidence::ToolAction {\n                            tool,\n                            success: Some(true),\n                            ..\n                        }) if mcp_write(tool)\n                            && mcp_tools.iter().any(|descriptor| descriptor.name == tool.as_str())\n                    )\n                });"
+}
