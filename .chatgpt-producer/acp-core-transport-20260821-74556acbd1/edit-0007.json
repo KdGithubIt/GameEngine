@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/Cargo.toml","old":"[dependencies]\ndirs = \"5\"\n","new":"[dependencies]\nagent-client-protocol = \"=2.0.0\"\ndirs = \"5\"\n"}
