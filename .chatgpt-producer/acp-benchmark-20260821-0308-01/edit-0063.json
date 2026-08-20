@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "impl BenchmarkModelTelemetry {\n    pub(crate) fn unavailable()",
+  "new": "#[allow(dead_code)]\nimpl BenchmarkModelTelemetry {\n    pub(crate) fn unavailable()"
+}
