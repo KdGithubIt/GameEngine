@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    fn temp_path(name: &str) -> PathBuf {\n        std::env::temp_dir().join(format!(\"gameengine-agent-{name}-{}\", next_id(\"test\")))\n    }\n\n    #[test]\n    fn generic_confinement_profile_never_claims_a_sandbox() {",
+  "new": "    fn temp_path(name: &str) -> PathBuf {\n        std::env::temp_dir().join(format!(\"gameengine-agent-{name}-{}\", next_id(\"test\")))\n    }\n\n    #[test]\n    fn not_applicable_source_validation_is_not_presented_as_passed() {\n        assert_eq!(\n            managed_validation_advance_message(CompletionStatus::NotApplicable, false),\n            \"Managed source validation was not applicable; no playtest was requested by this proposal.\"\n        );\n        assert_eq!(\n            managed_validation_advance_message(CompletionStatus::NotApplicable, true),\n            \"Managed source validation was not applicable; playtest evidence is still required.\"\n        );\n    }\n\n    #[test]\n    fn generic_confinement_profile_never_claims_a_sandbox() {"
+}
