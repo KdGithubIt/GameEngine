@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/timeline.rs",
+  "old": "            // Audio and VFX remain deferred until ADR 0122/0125 expose the\n            // stable runtime controls ADR 0126 requires.\n            TimelineTrackOutput::Audio { .. }\n            | TimelineTrackOutput::Vfx { .. }\n            | TimelineTrackOutput::Event => {}",
+  "new": "            // Audio and VFX are stateful domain adapters applied before this\n            // world-output pass. Their typed outputs remain visible to the\n            // neutral evaluator, while composition ownership stays here.\n            TimelineTrackOutput::Audio { .. }\n            | TimelineTrackOutput::Vfx { .. }\n            | TimelineTrackOutput::Event => {}"
+}
