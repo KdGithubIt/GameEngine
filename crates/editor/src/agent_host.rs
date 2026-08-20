@@ -765,7 +765,7 @@ impl AgentRunState {
         }
     }
 
-    fn is_terminal(self) -> bool {
+    pub(crate) fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
 }
@@ -1340,10 +1340,7 @@ impl AgentHost {
             if artifact_path.try_exists()? {
                 fs::remove_dir_all(&artifact_path)?;
             }
-            let asset_staging_path = self
-                .storage_root
-                .join("asset-acquisition")
-                .join(run_id);
+            let asset_staging_path = self.storage_root.join("asset-acquisition").join(run_id);
             if asset_staging_path.try_exists()? {
                 fs::remove_dir_all(&asset_staging_path)?;
             }
@@ -4220,9 +4217,7 @@ mod tests {
             .export_shared_session(&session)
             .expect("project-shared export");
 
-        let session_path = storage
-            .join("sessions")
-            .join(format!("{session}.json"));
+        let session_path = storage.join("sessions").join(format!("{session}.json"));
         let workspace_path = storage.join("workspaces").join(&session);
         let baseline_path = storage
             .join("workspace-baselines")
@@ -4241,8 +4236,7 @@ mod tests {
         fs::write(workspace_path.join("scratch.txt"), "scratch").expect("workspace file");
         fs::write(&baseline_path, "{}").expect("baseline file");
         fs::write(artifact_path.join("frame.png"), "frame").expect("artifact file");
-        fs::write(asset_staging_path.join("asset.bin"), "asset")
-            .expect("asset staging file");
+        fs::write(asset_staging_path.join("asset.bin"), "asset").expect("asset staging file");
         assert!(session_path.is_file());
         assert!(shared_path.is_file());
 
