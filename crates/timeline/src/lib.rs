@@ -13,9 +13,9 @@
 #![deny(missing_docs)]
 
 use engine_authoring::{
-    AssetId, EntityId, TIMELINE_TICKS_PER_SECOND, TimelineClip, TimelineClipId,
-    TimelineClipPayload, TimelineDocument, TimelineId, TimelineMarkerId, TimelineProperty,
-    TimelineTick, TimelineTrackId, TimelineTrackKind,
+    AssetId, EntityId, MotionSlotId, StableId, TIMELINE_TICKS_PER_SECOND, TimelineClip,
+    TimelineClipId, TimelineClipPayload, TimelineDocument, TimelineId, TimelineMarkerId,
+    TimelineProperty, TimelineTick, TimelineTrackId, TimelineTrackKind,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -73,8 +73,8 @@ pub enum CompiledClipPayload {
     },
     /// Plays one Animation Set motion slot.
     Animation {
-        /// Motion slot name inside the bound Animation Set.
-        motion_slot: String,
+        /// Stable motion slot inside the bound Animation Set.
+        motion_slot: MotionSlotId,
         /// Playback rate multiplier.
         speed: f32,
         /// Whether the motion loops inside the clip interval.
@@ -329,7 +329,8 @@ fn compile_clip(clip: &TimelineClip) -> CompiledClip {
             speed,
             looping,
         } => CompiledClipPayload::Animation {
-            motion_slot: motion_slot.clone(),
+            motion_slot: MotionSlotId::from_stable_id(StableId::new(motion_slot.trim()))
+                .expect("validated Timeline Animation motion slot must be a stable ID"),
             speed: *speed,
             looping: *looping,
         },
@@ -527,5 +528,24 @@ mod tests {
         assert_eq!(tokens.get("voice"), Some(7));
         tokens.clear();
         assert!(tokens.get("voice").is_none());
+    }
+
+    #[test]
+    fn clip_exit_is_reported_on_the_step_that_lands_at_its_end() {
+        let mut document = TimelineDocument::new(TimelineTick(48_000));
+        document.tracks.push(property_track(vec![property_clip(
+            0, 48_000, 0.0, 1.0,
+        )]));
+        let timeline = compile_timeline(&document).expect("compile");
+        let clip = timeline.tracks[0].clips[0].id.clone();
+        let mut player = TimelinePlayer::new();
+        player.play();
+
+        let evaluation = player.advance(&timeline, 1.0);
+
+        assert_eq!(evaluation.tick, TimelineTick(48_000));
+        assert_eq!(evaluation.exited.len(), 1);
+        assert_eq!(evaluation.exited[0].clip, clip);
+        assert!(evaluation.active.is_empty());
     }
 }

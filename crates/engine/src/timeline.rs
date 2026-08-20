@@ -19,7 +19,9 @@ use crate::animation::{Animator, AnimatorPlaybackSnapshot, AnimatorState};
 use crate::script_api::RuntimeEntityIdentity;
 use crate::time::FixedTime;
 use crate::transform::Transform;
-use engine_authoring::{EntityId, TimelineProperty, TimelineTick, TimelineTrackId};
+use engine_authoring::{
+    AssetId, EntityId, MotionSlotId, TimelineProperty, TimelineTick, TimelineTrackId,
+};
 use engine_ecs::{Entity, World};
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -122,12 +124,21 @@ pub enum TimelineBindingDiagnostic {
         /// Component the track requires.
         component: &'static str,
     },
+    /// The target Animation Controller is not using the Animation Set bound by the track.
+    AnimationSetMismatch {
+        /// Authoring identity that resolved.
+        authoring: String,
+        /// Animation Set required by the Timeline track.
+        expected: AssetId,
+        /// Animation Set currently resolved by the target controller, when known.
+        actual: Option<AssetId>,
+    },
     /// The bound Animation Set does not expose the authored motion slot.
     MissingMotionSlot {
         /// Authoring identity that resolved.
         authoring: String,
-        /// Motion slot requested by the Timeline clip.
-        motion_slot: String,
+        /// Stable motion slot requested by the Timeline clip.
+        motion_slot: MotionSlotId,
     },
 }
 
@@ -414,6 +425,7 @@ pub fn apply_evaluation(
             }
             TimelineTrackOutput::Animation {
                 entity,
+                animation_set,
                 motion_slot,
                 speed,
                 looping,
@@ -427,6 +439,9 @@ pub fn apply_evaluation(
                     });
                     continue;
                 };
+                let Some(animation_set) = animation_set else {
+                    continue;
+                };
                 let Some(graph_player) = world.get_component::<AnimGraphPlayer>(target) else {
                     diagnostics.push(TimelineBindingDiagnostic::MissingComponent {
                         authoring: authoring.as_stable_id().as_str().to_owned(),
@@ -434,7 +449,18 @@ pub fn apply_evaluation(
                     });
                     continue;
                 };
-                let Some(clip) = graph_player.clip_handle(motion_slot) else {
+                let actual_set = graph_player
+                    .debug_source()
+                    .map(|source| source.animation_set_asset.clone());
+                if actual_set.as_ref() != Some(animation_set) {
+                    diagnostics.push(TimelineBindingDiagnostic::AnimationSetMismatch {
+                        authoring: authoring.as_stable_id().as_str().to_owned(),
+                        expected: animation_set.clone(),
+                        actual: actual_set,
+                    });
+                    continue;
+                }
+                let Some(clip) = graph_player.clip_handle(motion_slot.as_str()) else {
                     diagnostics.push(TimelineBindingDiagnostic::MissingMotionSlot {
                         authoring: authoring.as_stable_id().as_str().to_owned(),
                         motion_slot: motion_slot.clone(),
@@ -698,7 +724,11 @@ mod tests {
         document
     }
 
-    fn animation_document(entity: &EntityId) -> TimelineDocument {
+    fn animation_document(
+        entity: &EntityId,
+        animation_set: &AssetId,
+        motion_slot: &MotionSlotId,
+    ) -> TimelineDocument {
         let mut document = TimelineDocument::new(TimelineTick(48_000));
         document.tracks.push(TimelineTrack {
             id: TimelineTrackId::generate(),
@@ -707,14 +737,14 @@ mod tests {
             enabled: true,
             binding: TimelineBinding {
                 entity: Some(entity.clone()),
-                asset: None,
+                asset: Some(animation_set.clone()),
             },
             clips: vec![TimelineClip {
                 id: TimelineClipId::generate(),
                 start: TimelineTick::ZERO,
                 end: TimelineTick(48_000),
                 payload: TimelineClipPayload::Animation {
-                    motion_slot: "walk".to_owned(),
+                    motion_slot: motion_slot.as_str().to_owned(),
                     speed: 2.0,
                     looping: false,
                 },
@@ -766,6 +796,8 @@ mod tests {
         let mut world = World::new();
         let target = world.spawn().expect("target");
         let authoring = EntityId::generate();
+        let animation_set = AssetId::generate();
+        let motion_slot = MotionSlotId::generate();
         let mut bindings = TimelineBindings::default();
         bindings.bind(&authoring, target);
 
@@ -803,13 +835,27 @@ mod tests {
             compile_warnings: Vec::new(),
         };
         let mut motion_slots = BTreeMap::new();
-        motion_slots.insert("walk".to_owned(), walk);
+        motion_slots.insert(motion_slot.as_str().to_owned(), walk);
+        let mut graph_player = AnimGraphPlayer::new(graph, motion_slots);
+        graph_player.set_debug_source(crate::anim_graph::AnimationGraphDebugSource {
+            graph_asset: AssetId::generate(),
+            graph_id: engine_authoring::GraphId::generate(),
+            animation_set_asset: animation_set.clone(),
+            transition_edges: Vec::new(),
+            motion_bindings: BTreeMap::new(),
+        });
         world
-            .add_component(target, AnimGraphPlayer::new(graph, motion_slots))
+            .add_component(target, graph_player)
             .expect("graph player");
 
-        let timeline =
-            Arc::new(compile_timeline(&animation_document(&authoring)).expect("compile"));
+        let timeline = Arc::new(
+            compile_timeline(&animation_document(
+                &authoring,
+                &animation_set,
+                &motion_slot,
+            ))
+            .expect("compile"),
+        );
         let player = world.spawn().expect("player");
         let mut component = TimelinePlayerComponent::new(timeline);
         component.autoplay = true;
@@ -840,7 +886,45 @@ mod tests {
                 .external_override_active()
         );
 
-        apply_timeline_control(&mut world, player, TimelineControl::Stop).expect("stop");
+        apply_timeline_control(
+            &mut world,
+            player,
+            TimelineControl::Seek {
+                tick: TimelineTick(36_000),
+            },
+        )
+        .expect("seek");
+        advance_timelines(
+            0.0,
+            &mut world,
+            &bindings,
+            &mut camera_override,
+            &mut events,
+            &mut diagnostics,
+        );
+
+        let animator = world.get_component::<Animator>(target).expect("seeked animator");
+        assert_eq!(animator.clip, walk);
+        assert!((animator.time - 1.5).abs() < 1.0e-6);
+        assert!(
+            world
+                .get_component::<AnimGraphPlayer>(target)
+                .expect("graph player")
+                .external_override_active()
+        );
+
+        advance_timelines(
+            0.25,
+            &mut world,
+            &bindings,
+            &mut camera_override,
+            &mut events,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            timeline_view(&world, player).expect("timeline view").tick,
+            TimelineTick(48_000)
+        );
         let animator = world.get_component::<Animator>(target).expect("restored animator");
         assert_eq!(animator.clip, idle);
         assert!((animator.time - 0.75).abs() < 1.0e-6);

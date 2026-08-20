@@ -790,7 +790,7 @@ fn default_payload(kind: TimelineTrackKind) -> TimelineClipPayload {
             camera: engine_authoring::EntityId::generate(),
         },
         TimelineTrackKind::Animation => TimelineClipPayload::Animation {
-            motion_slot: "motion".to_owned(),
+            motion_slot: engine_authoring::MotionSlotId::generate().as_str().to_owned(),
             speed: 1.0,
             looping: false,
         },
