@@ -581,10 +581,7 @@ mod tests {
 
     #[test]
     fn tick_offsets_convert_to_audio_time_without_frame_rate_rounding() {
-        assert_eq!(
-            ticks_to_duration(TIMELINE_TICKS_PER_SECOND),
-            Duration::from_secs(1)
-        );
+        assert_eq!(ticks_to_duration(TIMELINE_TICKS_PER_SECOND), Duration::from_secs(1));
         assert_eq!(
             ticks_to_duration(TIMELINE_TICKS_PER_SECOND / 2),
             Duration::from_millis(500)
