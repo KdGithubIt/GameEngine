@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "            let animation_preview_request = self.animation_preview_request.clone();\n            let preview = self",
+  "new": "            let animation_preview_request = self.animation_preview_request.clone();\n            let timeline_preview_evaluation = self.timeline_preview_evaluation.clone();\n            let preview = self"
+}
