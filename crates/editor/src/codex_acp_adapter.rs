@@ -307,7 +307,7 @@ pub(crate) fn preflight_codex_acp_session_environment(
 fn codex_acp_session_config(
     binding: &AcpSessionBinding,
     preferences: &CodexAcpSessionPreferences,
-) -> Result<Vec<String, String)>, AcpRuntimeError> {
+) -> Result<Vec<(String, String)>, AcpRuntimeError> {
     let mut selections = vec![(
         MODE_CONFIG_ID.to_owned(),
         codex_acp_policy(binding).mode_id.to_owned(),
