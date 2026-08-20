@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-audio-track-fmt-20260820-03",
+  "target_branch": "chatgpt/gameengine-adr0126-audio-track",
+  "expected_head_sha": "3592f447c241eab570eba94d420a4cdd46b4e899",
+  "baseline_main_sha": "d18a18fc2438e79ae0288b7ea4ef24415b2b6fd8",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json"
+  ],
+  "commit_message": "Format Timeline Audio adapter",
+  "pr_title": "GameEngine: complete Timeline Audio Track adapter",
+  "pr_body": "## Summary\n\n- keep the ADR 0126 Audio Track implementation unchanged semantically\n- normalize the new Audio adapter to workspace rustfmt output after affected validation\n\nVisual validation is not required because this is runtime/audio logic only."
+}
