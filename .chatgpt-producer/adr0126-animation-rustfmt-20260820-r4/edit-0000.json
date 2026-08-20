@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/sequencer.rs","old":"            motion_slot: engine_authoring::MotionSlotId::generate().as_str().to_owned(),","new":"            motion_slot: engine_authoring::MotionSlotId::generate()\n                .as_str()\n                .to_owned(),"}
