@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-int-codex-fix-20260821-0742-01",
+  "target_branch": "chatgpt/gameengine-acp-integration",
+  "expected_head_sha": "62a9f6d2723c0baad44fa59be92e1ec8f4aea09c",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "1e037a79d0ceca763f3128458004a6da84122068cb112eb171edb12d21d8b16b",
+  "patch_bytes": 846,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Codex ACP process runtime construction",
+  "pr_title": "GameEngine: integrate ACP external agent runtime",
+  "pr_body": "## Summary\n\n- integrate the provider-neutral ACP core transport and AgentHost bridge\n- add Claude and Codex ACP adapters on the same common process transport\n- add formal fail-closed `session/set_config_option` support for Codex mode/model/reasoning preferences\n- keep Agent Host authoritative for permissions, MCP writes, validation, and completion\n\n## Integration\n\nGoose Managed Local, AI Studio execution routing, benchmark migration, Cargo.lock, and final validation continue on this Draft integration branch.\n\n## Validation\n\nDispatcher Windows Validation is required after this integration slice; the final integrated head is authoritative.\n"
+}
