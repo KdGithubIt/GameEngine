@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "codex-modern-mcp-20260821-0028-03",
+  "target_branch": "chatgpt/gameengine-codex-modern-mcp",
+  "expected_head_sha": "678bcc69ce0e49b41c5634f845f280bed318fbfb",
+  "baseline_main_sha": "678bcc69ce0e49b41c5634f845f280bed318fbfb",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json"
+  ],
+  "commit_message": "Enable Codex MCP 2026 protocol mode",
+  "pr_title": "GameEngine: enable Codex MCP 2026 protocol mode",
+  "pr_body": "## Summary\n\nExplicitly enables Codex 0.148.0's `mcp_2026_07_28` feature for both Build and Ask launches so the pinned adapter uses the Editor's modern MCP 2026-07-28 transport instead of Codex's legacy default. Adds regression assertions for both launch paths.\n"
+}
