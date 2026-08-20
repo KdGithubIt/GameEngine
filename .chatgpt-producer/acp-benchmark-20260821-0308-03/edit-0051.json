@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "fn coding_agent_contract_matches(\n    left: &BenchmarkRuntimeIdentity,\n    right: &BenchmarkRuntimeIdentity,\n    differences: &mut Vec<&'static str>,\n) {\n    if measured_identity_text(&left.harness.mcp_tool_contract).is_none()",
+  "new": "fn coding_agent_contract_matches(\n    left: &BenchmarkRuntimeIdentity,\n    right: &BenchmarkRuntimeIdentity,\n    differences: &mut Vec<&'static str>,\n) {\n    if left.harness.acp_protocol_version != right.harness.acp_protocol_version {\n        differences.push(\"acp_protocol_version\");\n    }\n    if measured_identity_text(&left.harness.mcp_tool_contract).is_none()"
+}

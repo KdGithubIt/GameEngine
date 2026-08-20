@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "pub(crate) fn agent_run_record_with_runtime(\n    task_id: &str,",
+  "new": "#[allow(dead_code)]\npub(crate) fn agent_run_record_with_runtime(\n    task_id: &str,"
+}

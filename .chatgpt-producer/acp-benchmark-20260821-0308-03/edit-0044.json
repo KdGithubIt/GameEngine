@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "        let classified = legacy\n            .clone()\n            .with_benchmark_runtime(coding_runtime(\"goose\"));\n        assert_ne!(legacy.plan_digest(), classified.plan_digest());",
+  "new": "        let classified = legacy\n            .clone()\n            .with_benchmark_runtime(coding_runtime(\"goose\"))\n            .expect(\"coding runtime registration\");\n        assert_ne!(legacy.plan_digest(), classified.plan_digest());"
+}

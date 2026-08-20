@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_comparison.rs",
+  "old": "            runtime_harness_version: \"runtime-harness-v1\".to_owned(),\n            model: BenchmarkModelIdentity {",
+  "new": "            runtime_harness_version: \"runtime-harness-v1\".to_owned(),\n            runtime: None,\n            model: BenchmarkModelIdentity {"
+}

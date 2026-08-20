@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "        if self.backend_runtime_version != prior.backend_runtime_version {\n            changed.push(\"backend_runtime_version\");\n        }\n        if self.hardware != prior.hardware {",
+  "new": "        if self.backend_runtime_version != prior.backend_runtime_version {\n            changed.push(\"backend_runtime_version\");\n        }\n        if self.benchmark_runtime != prior.benchmark_runtime {\n            changed.push(\"benchmark_runtime\");\n        }\n        if self.hardware != prior.hardware {"
+}

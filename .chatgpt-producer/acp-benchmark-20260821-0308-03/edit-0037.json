@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "                runtime_harness_version: \"runtime-harness-v1\".to_owned(),\n                runtime: plan.benchmark_runtime.clone(),",
+  "new": "                runtime_harness_version: plan\n                    .task_plan(task_id)\n                    .expect(\"task plan\")\n                    .runtime_harness_version\n                    .clone(),\n                runtime: plan.benchmark_runtime.clone(),"
+}

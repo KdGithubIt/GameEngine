@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    if !matches!(left_harness.acp_protocol_version, TelemetryValue::Measured(version) if version > 0)\n        || !matches!(right_harness.acp_protocol_version, TelemetryValue::Measured(version) if version > 0)\n        || left_harness.acp_protocol_version != right_harness.acp_protocol_version\n",
+  "new": "    if !matches!(&left_harness.acp_protocol_version, TelemetryValue::Measured(version) if *version > 0)\n        || !matches!(&right_harness.acp_protocol_version, TelemetryValue::Measured(version) if *version > 0)\n        || left_harness.acp_protocol_version != right_harness.acp_protocol_version\n"
+}

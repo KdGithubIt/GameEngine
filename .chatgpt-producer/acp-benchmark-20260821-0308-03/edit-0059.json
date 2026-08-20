@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    pub(crate) fn benchmark_runtime(&self) -> Option<&BenchmarkRuntimeIdentity> {",
+  "new": "    #[allow(dead_code)]\n    pub(crate) fn benchmark_runtime(&self) -> Option<&BenchmarkRuntimeIdentity> {"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    let mut record = agent_run_record(task_id, run, identity)?;\n    record.identity.runtime = Some(runtime);\n    record.metrics.model_turns = model_telemetry.model_turns;",
+  "new": "    let mut record = agent_run_record(task_id, run, identity)?;\n    record.identity.runtime_harness_version = runtime.harness.harness_version.clone();\n    record.identity.runtime = Some(runtime);\n    record.metrics.model_turns = model_telemetry.model_turns;"
+}

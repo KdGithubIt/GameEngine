@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BenchmarkExecutionIdentity,\n    BenchmarkHardwareIdentity, BenchmarkRecord, benchmark_task,\n",
+  "new": "    BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BenchmarkExecutionIdentity,\n    BenchmarkHardwareIdentity, BenchmarkLane, BenchmarkRecord, BenchmarkRuntimeIdentity,\n    benchmark_task,\n"
+}

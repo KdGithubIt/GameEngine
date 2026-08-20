@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "        if matches!(\n            self.plan.benchmark_runtime.as_ref().map(|runtime| runtime.lane),\n            Some(BenchmarkLane::AgentHarness | BenchmarkLane::CodingAgent)\n        ) {",
+  "new": "        if matches!(\n            self.plan.benchmark_runtime.as_ref().map(|runtime| runtime.lane),\n            Some(BenchmarkLane::AgentHarness) | Some(BenchmarkLane::CodingAgent)\n        ) {"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "        if runtime.harness.harness_id.trim().is_empty()\n            || runtime.harness.harness_version.trim().is_empty()\n        {\n            return Err(\"benchmark harness identity must be non-empty\".to_owned());\n        }",
+  "new": "        if runtime.harness.harness_id.trim().is_empty()\n            || runtime.harness.harness_version.trim().is_empty()\n        {\n            return Err(\"benchmark harness identity must be non-empty\".to_owned());\n        }\n        if record.identity.runtime_harness_version != runtime.harness.harness_version {\n            return Err(\n                \"benchmark runtime harness version must match the explicit harness identity\"\n                    .to_owned(),\n            );\n        }"
+}

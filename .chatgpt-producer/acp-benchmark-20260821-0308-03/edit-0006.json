@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),\n            runtime_harness_version: metrics.harness_version.to_owned(),\n            model: model_identity(metrics.backend_id, &metrics.model_id, inventory),",
+  "new": "            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),\n            runtime_harness_version: metrics.harness_version.to_owned(),\n            runtime: None,\n            model: model_identity(metrics.backend_id, &metrics.model_id, inventory),"
+}
