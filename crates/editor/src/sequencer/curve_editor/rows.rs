@@ -57,12 +57,7 @@ pub(super) fn show(
                 if time.changed() {
                     let mut tick = TimelineTick::from_seconds(seconds);
                     if snap_to_frames {
-                        tick = snap_local_tick(
-                            frame_rate,
-                            clip.start,
-                            clip.duration(),
-                            tick,
-                        );
+                        tick = snap_local_tick(frame_rate, clip.start, clip.duration(), tick);
                     }
                     let clamped = clamp_key_tick(&draft, index, tick, clip.duration());
                     draft[index].tick = clamped;

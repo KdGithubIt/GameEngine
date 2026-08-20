@@ -383,10 +383,16 @@ impl SequencerState {
                 if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
                     action = HeaderAction::Save;
                 }
-                if ui.add_enabled(can_undo, egui::Button::new("Undo")).clicked() {
+                if ui
+                    .add_enabled(can_undo, egui::Button::new("Undo"))
+                    .clicked()
+                {
                     action = HeaderAction::Undo;
                 }
-                if ui.add_enabled(can_redo, egui::Button::new("Redo")).clicked() {
+                if ui
+                    .add_enabled(can_redo, egui::Button::new("Redo"))
+                    .clicked()
+                {
                     action = HeaderAction::Redo;
                 }
                 if ui.button("Close").clicked() {

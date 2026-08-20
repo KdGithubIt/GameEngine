@@ -227,14 +227,16 @@ fn key_at_playhead(
     frame_rate: DisplayFrameRate,
     snap_to_frames: bool,
 ) -> Result<TimelineKey, String> {
-    let mut tick = TimelineTick(
-        (preview_tick.get() - clip.start.get()).clamp(0, clip.duration().get()),
-    );
+    let mut tick =
+        TimelineTick((preview_tick.get() - clip.start.get()).clamp(0, clip.duration().get()));
     if snap_to_frames {
         tick = snap_local_tick(frame_rate, clip.start, clip.duration(), tick);
     }
     if keys.iter().any(|key| key.tick == tick) {
-        return Err(format!("A curve key already exists at {:.3}s", tick.as_seconds()));
+        return Err(format!(
+            "A curve key already exists at {:.3}s",
+            tick.as_seconds()
+        ));
     }
     Ok(TimelineKey {
         tick,
