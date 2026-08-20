@@ -63,7 +63,8 @@ impl EditorShell {
             &root,
             AiStudioConnection::new(
                 mcp_server.endpoint().to_string(),
-                mcp_server.authorization_token().to_owned(),
+                mcp_server.agent_authorization_token().to_owned(),
+                mcp_server.read_only_authorization_token().to_owned(),
             ),
         )?;
         if let Some(benchmark_run) = benchmark_run {
@@ -188,10 +189,42 @@ impl EditorShell {
     }
 
     fn handle_mcp_requests(&mut self) {
-        while let Ok(request) = self.mcp_requests.try_recv() {
+        // Execute at most one authoring request per frame. Provider calls may
+        // queue concurrently, but they must not turn one frame into an
+        // unbounded queue drain that stalls the Editor UI.
+        if let Ok(request) = self.mcp_requests.try_recv() {
+            if !request.try_begin() {
+                request.respond(EditorMcpHostResult::ToolError {
+                    code: "mcp.request_abandoned".to_owned(),
+                    message: "The MCP caller disconnected before the Editor began this request."
+                        .to_owned(),
+                });
+                return;
+            }
+            let run_id = request.agent_run_id().map(str::to_owned);
+            let mutating = engine_mcp::tool_is_mutating(request.name());
+            if let Some(run_id) = run_id.as_deref()
+                && let Err(error) =
+                    self.ai_studio
+                        .begin_external_mcp_call(run_id, request.name(), mutating)
+            {
+                request.respond(EditorMcpHostResult::ToolError {
+                    code: "agent.invalid_run_context".to_owned(),
+                    message: error,
+                });
+                return;
+            }
             let result = self
                 .app
                 .handle_mcp_tool_call(request.name(), request.arguments().clone());
+            if let Some(run_id) = run_id.as_deref() {
+                self.ai_studio.finish_external_mcp_call(
+                    run_id,
+                    request.name(),
+                    mutating,
+                    result.is_ok(),
+                );
+            }
             request.respond(match result {
                 Ok(value) => EditorMcpHostResult::Success(value),
                 Err(error) => EditorMcpHostResult::ToolError {
@@ -777,6 +810,8 @@ fn editor_invocation() -> Result<EditorInvocation, String> {
     let mut benchmark_endpoint = None;
     let mut benchmark_fixture = None;
     let mut benchmark_run_timeout = None;
+    let mut benchmark_resume_from = None;
+    let mut benchmark_pause_file = None;
     while let Some(argument) = arguments.next() {
         if argument == "--project" {
             if project.is_some() {
@@ -819,6 +854,23 @@ fn editor_invocation() -> Result<EditorInvocation, String> {
                 .parse::<u64>()
                 .map_err(|error| format!("--benchmark-run-timeout requires seconds: {error}"))?;
             benchmark_run_timeout = Some(Duration::from_secs(seconds));
+        } else if argument == "--benchmark-resume-from" {
+            if benchmark_resume_from.is_some() {
+                return Err("--benchmark-resume-from may be specified only once".to_owned());
+            }
+            let ordinal = next_argument_value(&mut arguments, "--benchmark-resume-from")?
+                .to_string_lossy()
+                .parse::<u64>()
+                .map_err(|error| format!("--benchmark-resume-from requires an ordinal: {error}"))?;
+            benchmark_resume_from = Some(ordinal);
+        } else if argument == "--benchmark-pause-file" {
+            if benchmark_pause_file.is_some() {
+                return Err("--benchmark-pause-file may be specified only once".to_owned());
+            }
+            benchmark_pause_file = Some(next_argument_value(
+                &mut arguments,
+                "--benchmark-pause-file",
+            )?);
         } else {
             return Err(format!(
                 "unknown Editor argument `{}`",
@@ -839,15 +891,21 @@ fn editor_invocation() -> Result<EditorInvocation, String> {
             options.endpoint = endpoint;
         }
         options.fixture_template_root = benchmark_fixture;
-        options.run_timeout = benchmark_run_timeout;
+        if let Some(timeout) = benchmark_run_timeout {
+            options.run_timeout = Some(timeout);
+        }
+        options.resume_from_ordinal = benchmark_resume_from;
+        options.pause_file = benchmark_pause_file;
         return Ok(EditorInvocation::BenchmarkExperiment(Box::new(options)));
     }
     if benchmark_endpoint.is_some()
         || benchmark_fixture.is_some()
         || benchmark_run_timeout.is_some()
+        || benchmark_resume_from.is_some()
+        || benchmark_pause_file.is_some()
     {
         return Err(
-            "--benchmark-endpoint, --benchmark-fixture, and --benchmark-run-timeout apply only to --benchmark-experiment"
+            "benchmark endpoint, fixture, timeout, resume, and pause options apply only to --benchmark-experiment"
                 .to_owned(),
         );
     }
@@ -879,7 +937,9 @@ fn run_benchmark_suite(options: BenchmarkExperimentOptions) -> Result<(), String
         outcome.passed_runs,
         outcome.comparison_path.display()
     );
-    if let Some(reason) = outcome.stopped_early {
+    if let Some(reason) = outcome.stopped_early
+        && !outcome.paused
+    {
         return Err(format!("benchmark experiment stopped early: {reason}"));
     }
     Ok(())

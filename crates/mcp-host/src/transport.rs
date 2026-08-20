@@ -14,13 +14,14 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-/// MCP protocol version implemented by the local GameEngine host transport.
-pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+/// Current MCP protocol version implemented by the local GameEngine host.
+pub const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
+/// Legacy protocol retained for initialize-based provider clients in migration.
+pub const LEGACY_MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_PATH: &str = "/mcp";
 const MAX_HEADER_BYTES: usize = 32 * 1024;
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const HOST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Descriptive metadata returned from MCP `initialize`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -361,18 +362,49 @@ fn handle_connection(
         );
     };
     let id = object.get("id").cloned();
+    let protocol_version = request
+        .headers
+        .get("mcp-protocol-version")
+        .map(String::as_str);
+    let modern = protocol_version == Some(MCP_PROTOCOL_VERSION) || method == "server/discover";
     if method != "initialize"
+        && method != "server/discover"
         && request
             .headers
             .get("mcp-protocol-version")
             .map(String::as_str)
-            != Some(MCP_PROTOCOL_VERSION)
+            .is_none_or(|version| {
+                version != MCP_PROTOCOL_VERSION && version != LEGACY_MCP_PROTOCOL_VERSION
+            })
     {
         return write_http_response(
             &mut stream,
             400,
             "text/plain",
             b"missing or unsupported MCP-Protocol-Version",
+        );
+    }
+    if modern && request.headers.get("mcp-method").map(String::as_str) != Some(method) {
+        return write_http_response(
+            &mut stream,
+            400,
+            "text/plain",
+            b"Mcp-Method must match the JSON-RPC method",
+        );
+    }
+    if modern
+        && object
+            .get("params")
+            .and_then(|params| params.get("_meta"))
+            .and_then(|metadata| metadata.get("io.modelcontextprotocol/protocolVersion"))
+            .and_then(Value::as_str)
+            != Some(MCP_PROTOCOL_VERSION)
+    {
+        return write_http_response(
+            &mut stream,
+            400,
+            "text/plain",
+            b"modern MCP requests require the 2026-07-28 _meta protocol envelope",
         );
     }
     if id.is_none() {
@@ -382,6 +414,18 @@ fn handle_connection(
     let id = id.unwrap_or(Value::Null);
     let result = match method {
         "initialize" => initialize_result(server_info),
+        "server/discover" => json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": { "tools": { "listChanged": false } },
+            "instructions": server_info.instructions,
+            "resultType": "complete",
+            "_meta": {
+                "io.modelcontextprotocol/serverInfo": {
+                    "name": server_info.name,
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }
+        }),
         "ping" => json!({}),
         "tools/list" => tools_list_result(),
         "tools/call" => {
@@ -397,6 +441,14 @@ fn handle_connection(
                     "tools/call requires a tool name",
                 );
             };
+            if modern && request.headers.get("mcp-name").map(String::as_str) != Some(name) {
+                return write_http_response(
+                    &mut stream,
+                    400,
+                    "text/plain",
+                    b"Mcp-Name must match the requested tool",
+                );
+            }
             let arguments = params
                 .and_then(|params| params.get("arguments"))
                 .cloned()
@@ -411,24 +463,21 @@ fn handle_connection(
                         "authoring host is unavailable",
                     );
                 }
-                Err(DispatchError::Timeout) => {
-                    return write_json_rpc_error(
-                        &mut stream,
-                        id,
-                        -32603,
-                        "authoring host timed out",
-                    );
-                }
             }
         }
         _ => return write_json_rpc_error(&mut stream, id, -32601, "method not found"),
+    };
+    let result = if modern {
+        modern_result(result, server_info)
+    } else {
+        result
     };
     write_json_rpc_result(&mut stream, id, result)
 }
 
 fn initialize_result(server_info: &McpServerInfo) -> Value {
     json!({
-        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "protocolVersion": LEGACY_MCP_PROTOCOL_VERSION,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": server_info.name, "version": env!("CARGO_PKG_VERSION")},
         "instructions": server_info.instructions
@@ -441,6 +490,25 @@ fn tools_list_result() -> Value {
     })
 }
 
+fn modern_result(mut result: Value, server_info: &McpServerInfo) -> Value {
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "resultType".to_owned(),
+            Value::String("complete".to_owned()),
+        );
+        object.insert(
+            "_meta".to_owned(),
+            json!({
+                "io.modelcontextprotocol/serverInfo": {
+                    "name": server_info.name,
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+        );
+    }
+    result
+}
+
 fn tool_descriptor_json(descriptor: McpToolDescriptor) -> Value {
     json!({
         "name": descriptor.name,
@@ -451,7 +519,6 @@ fn tool_descriptor_json(descriptor: McpToolDescriptor) -> Value {
 
 enum DispatchError {
     HostDisconnected,
-    Timeout,
 }
 
 fn dispatch_tool_call(
@@ -470,11 +537,8 @@ fn dispatch_tool_call(
         .map_err(|_| DispatchError::HostDisconnected)?;
     wake_host();
     let response = response_receiver
-        .recv_timeout(HOST_RESPONSE_TIMEOUT)
-        .map_err(|error| match error {
-            mpsc::RecvTimeoutError::Timeout => DispatchError::Timeout,
-            mpsc::RecvTimeoutError::Disconnected => DispatchError::HostDisconnected,
-        })?;
+        .recv()
+        .map_err(|_| DispatchError::HostDisconnected)?;
     Ok(match response {
         McpHostResult::Success(value) => json!({
             "content": [{"type": "text", "text": serde_json::to_string(&value).unwrap_or_else(|_| "{\"error\":\"result serialization failed\"}".into())}],

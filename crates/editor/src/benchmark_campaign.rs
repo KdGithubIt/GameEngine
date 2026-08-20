@@ -11,7 +11,7 @@
 
 use crate::agent_benchmark::{
     BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BenchmarkExecutionIdentity,
-    BenchmarkRecord, benchmark_task,
+    BenchmarkHardwareIdentity, BenchmarkRecord, benchmark_task,
 };
 use crate::agent_benchmark_campaign::{
     CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION, CAMPAIGN_SCHEMA_VERSION,
@@ -36,15 +36,10 @@ use std::path::PathBuf;
 ///
 /// Benchmarks compare capability, not sampler luck, so a campaign pins a
 /// deterministic sampler instead of inheriting interactive defaults.
-pub(crate) const CAMPAIGN_SAMPLING_PROFILE: &str = "deterministic-greedy-v1";
+pub(crate) const CAMPAIGN_SAMPLING_PROFILE: &str = "temperature-zero-seeded-v1";
 
 /// Seed policy frozen into every campaign record.
-pub(crate) const CAMPAIGN_SEED_POLICY: &str = "host-owned-fixture-seed-v1";
-
-/// Retry budget for failures classified as pre-measurement infrastructure.
-///
-/// Measured failures are never retried: a model that fails a task is evidence.
-const PRE_MEASUREMENT_RETRY_BUDGET: u32 = 2;
+pub(crate) const CAMPAIGN_SEED_POLICY: &str = "fixed-model-seed-zero-v1";
 
 /// Why a campaign refused an operation.
 ///
@@ -117,6 +112,12 @@ pub(crate) struct CampaignPolicy {
     pub(crate) execution_environment: CampaignExecutionEnvironment,
     /// Backend runtime version string frozen into every record.
     pub(crate) backend_runtime_version: String,
+    /// Hardware identity captured before the campaign freezes.
+    pub(crate) hardware: BenchmarkHardwareIdentity,
+    /// Quality policy applied by the real inference harness.
+    pub(crate) quality: QualityPreference,
+    /// Finite wall-clock budget applied to every scheduled run.
+    pub(crate) run_timeout_seconds: u64,
     /// Exact candidate set.
     pub(crate) candidates: Vec<CampaignCandidate>,
     /// ADR 0142 task identifiers to run.
@@ -155,6 +156,14 @@ impl CampaignPolicy {
         if self.repetitions == 0 {
             return Err("campaign repetition count must be at least one".to_owned());
         }
+        if self.run_timeout_seconds == 0 {
+            return Err("campaign run timeout must be greater than zero".to_owned());
+        }
+        if self.quality == QualityPreference::Auto {
+            return Err(
+                "campaign quality must be an explicit Fast, Balanced, or Deep policy".to_owned(),
+            );
+        }
         if self.task_ids.is_empty() {
             return Err("campaign requires at least one task".to_owned());
         }
@@ -192,6 +201,9 @@ impl CampaignPolicy {
             execution_profile: self.execution_profile,
             execution_environment: self.execution_environment,
             backend_runtime_version: self.backend_runtime_version,
+            hardware: self.hardware,
+            quality: self.quality,
+            run_timeout_seconds: self.run_timeout_seconds,
             candidates: self.candidates,
             task_plans,
             repetitions: self.repetitions,
@@ -227,6 +239,12 @@ pub(crate) struct CampaignPlan {
     pub(crate) execution_environment: CampaignExecutionEnvironment,
     /// Backend runtime version frozen into every record.
     pub(crate) backend_runtime_version: String,
+    /// Hardware identity frozen for resume and comparison checks.
+    pub(crate) hardware: BenchmarkHardwareIdentity,
+    /// Quality policy frozen into every child run.
+    pub(crate) quality: QualityPreference,
+    /// Finite wall-clock budget for one scheduled run.
+    pub(crate) run_timeout_seconds: u64,
     /// Exact candidate set in frozen order.
     pub(crate) candidates: Vec<CampaignCandidate>,
     /// Per-task plans in frozen order.
@@ -259,6 +277,14 @@ impl CampaignPlan {
         hash = mix(hash, self.execution_profile.label().as_bytes());
         hash = mix(hash, self.execution_environment.label().as_bytes());
         hash = mix(hash, self.backend_runtime_version.as_bytes());
+        hash = mix(
+            hash,
+            serde_json::to_string(&self.hardware)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        hash = mix(hash, self.quality.label().as_bytes());
+        hash = mix(hash, &self.run_timeout_seconds.to_le_bytes());
         hash = mix(hash, self.harness_version.as_bytes());
         hash = mix(hash, self.schedule_version.as_bytes());
         hash = mix(hash, self.sampling_profile.as_bytes());
@@ -300,13 +326,13 @@ impl CampaignPlan {
 
     /// Returns the deterministic execution schedule for this plan.
     ///
-    /// The order is stable for the same plan: candidates in frozen order, then
-    /// tasks in frozen order, then repetitions.
+    /// The order is stable for the same plan: tasks in frozen order, then
+    /// repetitions, then candidates in frozen order for thermal interleaving.
     pub(crate) fn schedule(&self) -> Vec<CampaignScheduledRun> {
         let mut runs = Vec::new();
-        for candidate in &self.candidates {
-            for task_plan in &self.task_plans {
-                for repetition in 0..self.repetitions {
+        for task_plan in &self.task_plans {
+            for repetition in 0..self.repetitions {
+                for candidate in &self.candidates {
                     runs.push(CampaignScheduledRun {
                         ordinal: runs.len() as u64,
                         model_id: candidate.representation.model_id.clone(),
@@ -463,9 +489,9 @@ impl CampaignPlan {
             // Pinned rather than `Auto`: an adaptive policy could pick a
             // different posture per run, so a model would be compared against
             // whatever the harness happened to choose that time.
-            quality: QualityPreference::Balanced,
+            quality: self.quality,
             routing_mode: BenchmarkRoutingMode::SingleModel,
-            execution_order: BenchmarkExecutionOrder::ModelTaskRepeat,
+            execution_order: BenchmarkExecutionOrder::TaskRepeatCandidateInterleaved,
             stop_on_failure: false,
             output_destination,
             execution_identity_by_task: self
@@ -509,6 +535,15 @@ impl CampaignPlan {
         }
         if self.backend_runtime_version != prior.backend_runtime_version {
             changed.push("backend_runtime_version");
+        }
+        if self.hardware != prior.hardware {
+            changed.push("hardware");
+        }
+        if self.quality != prior.quality {
+            changed.push("quality");
+        }
+        if self.run_timeout_seconds != prior.run_timeout_seconds {
+            changed.push("run_timeout");
         }
         if self.harness_version != prior.harness_version
             || self.schedule_version != prior.schedule_version
@@ -604,7 +639,10 @@ pub(crate) struct CampaignEvidence {
     pub(crate) outcome: BenchmarkRunOutcome,
     /// Failure classification when the run did not pass.
     pub(crate) failure_kind: Option<BenchmarkRunFailureKind>,
-    /// Attempt index. Non-zero only for retried pre-measurement failures.
+    /// Attempt index reserved for a future process-connected retry protocol.
+    ///
+    /// The current coordinator never retries: every emitted result advances the
+    /// same schedule in both the process layer and this state machine.
     pub(crate) attempt: u32,
     /// The ADR 0142 record, when the run produced measured evidence.
     pub(crate) record: Option<BenchmarkRecord>,
@@ -619,17 +657,21 @@ pub(crate) struct CampaignEnvironmentProbe {
     pub(crate) backend_runtime_version: String,
     /// GameEngine commit currently loaded.
     pub(crate) engine_commit_head: String,
+    /// Current hardware identity, including truthful unavailable telemetry.
+    pub(crate) hardware: BenchmarkHardwareIdentity,
+    /// Exact model representations currently available for the frozen set.
+    pub(crate) representations: Vec<CampaignRepresentation>,
 }
 
 /// A started campaign that owns the frozen plan and its accumulated evidence.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CampaignRun {
     plan: CampaignPlan,
     state: CampaignState,
+    #[serde(skip)]
     approval: Option<ManagedAcquisitionApproval>,
     evidence: Vec<CampaignEvidence>,
     next_ordinal: u64,
-    pre_measurement_attempts: BTreeMap<u64, u32>,
 }
 
 impl CampaignRun {
@@ -644,7 +686,6 @@ impl CampaignRun {
             approval: None,
             evidence: Vec::new(),
             next_ordinal: 0,
-            pre_measurement_attempts: BTreeMap::new(),
         }
     }
 
@@ -661,6 +702,11 @@ impl CampaignRun {
     /// Returns every recorded evidence entry in schedule order.
     pub(crate) fn evidence(&self) -> &[CampaignEvidence] {
         &self.evidence
+    }
+
+    /// Returns the first schedule ordinal not yet represented by evidence.
+    pub(crate) fn next_ordinal(&self) -> u64 {
+        self.next_ordinal
     }
 
     /// Returns whether an approved acquisition is held for this campaign.
@@ -711,9 +757,10 @@ impl CampaignRun {
 
     /// Records evidence for the next scheduled position.
     ///
-    /// Measured failures advance the schedule because they are evidence. Only
-    /// failures classified as pre-measurement infrastructure problems consume a
-    /// bounded retry budget and leave the position pending.
+    /// Every emitted result advances the schedule because the process
+    /// coordinator also advances after emitting it. Measured failures remain
+    /// evidence, while pre-measurement failures remain explicit unavailable
+    /// evidence instead of entering an unconnected UI-only retry state.
     ///
     /// # Errors
     ///
@@ -727,6 +774,9 @@ impl CampaignRun {
         let expected = self.next_scheduled().ok_or(CampaignRejection::OutOfOrder)?;
         if evidence.scheduled != expected {
             return Err(CampaignRejection::OutOfOrder);
+        }
+        if evidence.outcome == BenchmarkRunOutcome::Passed && evidence.record.is_none() {
+            return Err(CampaignRejection::UnmetHostCriteria);
         }
         if let Some(record) = evidence.record.as_ref() {
             let expected_identity = self
@@ -753,28 +803,15 @@ impl CampaignRun {
             if CampaignRepresentation::from_model(&record.identity.model) != frozen.representation {
                 return Err(CampaignRejection::RepresentationDrift);
             }
-            // Scoring is host-owned. The campaign checks the measured completion
-            // count against the hidden threshold here; the candidate process
-            // never received either value.
+            // Scoring is host-owned. The candidate sees neither these checks nor
+            // their thresholds; admission derives them from host-recorded
+            // metrics rather than trusting the model's completion statement.
             let evaluation = self
                 .plan
                 .host_only_evaluation(&evidence.scheduled.task_id)
                 .map_err(|_| CampaignRejection::IdentityMismatch)?;
-            if evidence.outcome == BenchmarkRunOutcome::Passed
-                && record.identity.completion_criteria.len() < evaluation.scoring_threshold as usize
-            {
+            if evidence.outcome == BenchmarkRunOutcome::Passed && !evaluation.passes(record) {
                 return Err(CampaignRejection::UnmetHostCriteria);
-            }
-        }
-
-        if is_pre_measurement_failure(&evidence) {
-            let attempts = self
-                .pre_measurement_attempts
-                .entry(evidence.scheduled.ordinal)
-                .or_insert(0);
-            if *attempts < PRE_MEASUREMENT_RETRY_BUDGET {
-                *attempts += 1;
-                return Ok(());
             }
         }
 
@@ -807,9 +844,33 @@ impl CampaignRun {
         if self.state != CampaignState::Paused {
             return Err(CampaignRejection::NotRunning);
         }
-        if probe.execution_environment != self.plan.execution_environment
+        let frozen_representations = self
+            .plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.representation.clone())
+            .collect::<BTreeSet<_>>();
+        let current_representations = probe
+            .representations
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let current_contract = self.plan.schema_version == CAMPAIGN_SCHEMA_VERSION
+            && self.plan.plan_digest == self.plan.compute_digest()
+            && self.plan.harness_version == CAMPAIGN_HARNESS_VERSION
+            && self.plan.schedule_version == CAMPAIGN_SCHEDULE_VERSION
+            && self.plan.sampling_profile == CAMPAIGN_SAMPLING_PROFILE
+            && self.plan.seed_policy == CAMPAIGN_SEED_POLICY
+            && self.plan.task_plans.iter().all(|task| {
+                task.fixture.fixture_version
+                    == crate::agent_benchmark_campaign::CAMPAIGN_FIXTURE_VERSION
+            });
+        if !current_contract
+            || probe.execution_environment != self.plan.execution_environment
             || probe.backend_runtime_version != self.plan.backend_runtime_version
             || probe.engine_commit_head != self.plan.engine_commit_head
+            || probe.hardware != self.plan.hardware
+            || current_representations != frozen_representations
         {
             return Err(CampaignRejection::EnvironmentDrift);
         }
@@ -891,6 +952,8 @@ impl CampaignRun {
             comparison_class: self.plan.comparison_class,
             execution_profile: self.plan.execution_profile,
             execution_environment: self.plan.execution_environment,
+            quality: self.plan.quality,
+            run_timeout_seconds: self.plan.run_timeout_seconds,
             state: self.state,
             models,
             evidence_complete,
@@ -961,27 +1024,16 @@ pub(crate) struct CampaignReport {
     pub(crate) execution_profile: CampaignExecutionProfile,
     /// The single frozen execution environment.
     pub(crate) execution_environment: CampaignExecutionEnvironment,
+    /// Frozen inference quality used for every model turn.
+    pub(crate) quality: QualityPreference,
+    /// Frozen timeout applied to each scheduled run.
+    pub(crate) run_timeout_seconds: u64,
     /// Lifecycle state at the time the report was produced.
     pub(crate) state: CampaignState,
     /// Per-model aggregates in stable model order.
     pub(crate) models: Vec<CampaignModelReport>,
     /// Whether every scheduled position produced evidence.
     pub(crate) evidence_complete: bool,
-}
-
-/// Returns whether this evidence is a pre-measurement infrastructure failure.
-///
-/// A model that fails a task is measured evidence and must never be retried. A
-/// harness that could not start the run at all has measured nothing, so it may
-/// be retried within a bounded budget.
-fn is_pre_measurement_failure(evidence: &CampaignEvidence) -> bool {
-    if evidence.record.is_some() {
-        return false;
-    }
-    matches!(
-        evidence.failure_kind,
-        Some(BenchmarkRunFailureKind::Harness) | Some(BenchmarkRunFailureKind::Backend)
-    )
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1048,6 +1100,9 @@ mod tests {
             execution_profile: CampaignExecutionProfile::Warm,
             execution_environment: CampaignExecutionEnvironment::CompatibleBackend,
             backend_runtime_version: "runtime-v1".to_owned(),
+            hardware: BenchmarkHardwareIdentity::default(),
+            quality: QualityPreference::Balanced,
+            run_timeout_seconds: 1_800,
             candidates: models
                 .iter()
                 .map(|model| installed_candidate(model))
@@ -1097,7 +1152,7 @@ mod tests {
     fn record_for(plan: &CampaignPlan, model_id: &str, task_id: &str) -> BenchmarkRecord {
         let task = benchmark_task(task_id).expect("known task");
         BenchmarkRecord {
-            schema_version: 2,
+            schema_version: 3,
             recorded_unix_ms: 1,
             identity: BenchmarkIdentity {
                 corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
@@ -1194,8 +1249,15 @@ mod tests {
             &["model-a", "model-b"],
             &["read_question_v1", "project_inspection_v1"],
         );
-        assert_eq!(plan.schedule(), plan.schedule());
-        assert_eq!(plan.schedule().len(), 2 * 2 * 2);
+        let schedule = plan.schedule();
+        assert_eq!(schedule, plan.schedule());
+        assert_eq!(schedule.len(), 2 * 2 * 2);
+        assert_eq!(schedule[0].model_id, "model-a");
+        assert_eq!(schedule[1].model_id, "model-b");
+        assert_eq!(schedule[0].task_id, "read_question_v1");
+        assert_eq!(schedule[1].task_id, "read_question_v1");
+        assert_eq!(schedule[0].repetition, 0);
+        assert_eq!(schedule[1].repetition, 0);
     }
 
     #[test]
@@ -1231,6 +1293,19 @@ mod tests {
         for assertion in &evaluation.hidden_assertions {
             assert!(!serialized.contains(assertion));
         }
+    }
+
+    #[test]
+    fn host_only_inspection_evaluator_requires_measured_operations_not_gate_names_alone() {
+        let plan = frozen(&["model-a"], &["project_inspection_v1"]);
+        let evaluation = plan
+            .host_only_evaluation("project_inspection_v1")
+            .expect("evaluation");
+        let mut record = record_for(&plan, "model-a", "project_inspection_v1");
+        record.metrics.tool_calls = TelemetryValue::Measured(1);
+        assert!(!evaluation.passes(&record));
+        record.metrics.tool_calls = TelemetryValue::Measured(2);
+        assert!(evaluation.passes(&record));
     }
 
     #[test]
@@ -1348,24 +1423,18 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_measurement_harness_failure_is_retried_within_a_bounded_budget() {
+    fn a_pre_measurement_harness_failure_is_recorded_without_an_unexecuted_retry() {
         let plan = frozen(&["model-a"], &["read_question_v1"]);
         let mut run = started(plan, &["model-a"]);
         let scheduled = run.next_scheduled().expect("a pending position");
         let infrastructure = CampaignEvidence {
-            scheduled: scheduled.clone(),
+            scheduled,
             outcome: BenchmarkRunOutcome::Failed,
             failure_kind: Some(BenchmarkRunFailureKind::Harness),
             attempt: 0,
             record: None,
         };
-        for _ in 0..PRE_MEASUREMENT_RETRY_BUDGET {
-            run.record(infrastructure.clone())
-                .expect("retry is allowed");
-            assert!(run.evidence().is_empty());
-            assert_eq!(run.next_scheduled(), Some(scheduled.clone()));
-        }
-        run.record(infrastructure).expect("budget is exhausted");
+        run.record(infrastructure).expect("failure is evidence");
         assert_eq!(run.evidence().len(), 1);
     }
 
@@ -1382,6 +1451,12 @@ mod tests {
             execution_environment: CampaignExecutionEnvironment::Wsl2Linux,
             backend_runtime_version: "runtime-v1".to_owned(),
             engine_commit_head: ENGINE_SHA.to_owned(),
+            hardware: BenchmarkHardwareIdentity::default(),
+            representations: plan
+                .candidates
+                .iter()
+                .map(|candidate| candidate.representation.clone())
+                .collect(),
         };
         assert_eq!(
             run.resume(&drifted),
@@ -1393,8 +1468,50 @@ mod tests {
             execution_environment: CampaignExecutionEnvironment::CompatibleBackend,
             backend_runtime_version: "runtime-v1".to_owned(),
             engine_commit_head: ENGINE_SHA.to_owned(),
+            hardware: BenchmarkHardwareIdentity::default(),
+            representations: plan
+                .candidates
+                .iter()
+                .map(|candidate| candidate.representation.clone())
+                .collect(),
         };
         assert!(run.resume(&unchanged).is_ok());
+    }
+
+    #[test]
+    fn campaign_checkpoint_round_trip_preserves_the_next_pending_ordinal() {
+        let plan = frozen(&["model-a"], &["read_question_v1"]);
+        let mut run = started(plan.clone(), &["model-a"]);
+        pass(&mut run, &plan);
+        let bytes = serde_json::to_vec(&run).expect("checkpoint serializes");
+        let mut restored = serde_json::from_slice::<CampaignRun>(&bytes).expect("checkpoint reads");
+        assert_eq!(restored.next_ordinal(), 1);
+        assert_eq!(restored.evidence(), run.evidence());
+        restored.pause();
+        assert_eq!(restored.state(), CampaignState::Paused);
+    }
+
+    #[test]
+    fn resume_rejects_a_checkpoint_whose_frozen_plan_digest_was_tampered_with() {
+        let plan = frozen(&["model-a"], &["read_question_v1"]);
+        let mut run = started(plan.clone(), &["model-a"]);
+        run.pause();
+        run.plan.plan_digest.push_str("-tampered");
+        let unchanged = CampaignEnvironmentProbe {
+            execution_environment: CampaignExecutionEnvironment::CompatibleBackend,
+            backend_runtime_version: "runtime-v1".to_owned(),
+            engine_commit_head: ENGINE_SHA.to_owned(),
+            hardware: BenchmarkHardwareIdentity::default(),
+            representations: plan
+                .candidates
+                .iter()
+                .map(|candidate| candidate.representation.clone())
+                .collect(),
+        };
+        assert_eq!(
+            run.resume(&unchanged),
+            Err(CampaignRejection::EnvironmentDrift)
+        );
     }
 
     #[test]

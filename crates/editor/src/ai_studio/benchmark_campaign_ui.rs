@@ -8,7 +8,7 @@
 //! lowered to a benchmark experiment specification, which the headless parent
 //! executes one isolated Editor child at a time. The panel then admits each
 //! on-disk result into the campaign state machine, which is what enforces
-//! schedule order, retry policy, and identity matching.
+//! schedule order, failure retention, and identity matching.
 
 use super::benchmark_child::unix_ms;
 use super::benchmark_experiment_ui::experiment_directory_name;
@@ -20,13 +20,16 @@ use crate::agent_benchmark_campaign::{
 };
 use crate::benchmark_campaign::{
     CampaignBaselineReuse, CampaignEnvironmentProbe, CampaignEvidence, CampaignPlan,
-    CampaignPolicy, CampaignRun, CampaignState,
+    CampaignPolicy, CampaignRun, CampaignScheduledRun, CampaignState,
 };
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRunOutcome, ENGINE_COMMIT_HEAD,
 };
+use crate::benchmark_runner::DEFAULT_BENCHMARK_RUN_TIMEOUT;
 use crate::managed_local_runtime::{ManagedAcquisitionPlan, ManagedModelRegistration};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -34,11 +37,22 @@ use std::process::{Child, Command, Stdio};
 struct RunningCampaign {
     process: Child,
     experiment_root: PathBuf,
+    pause_file: PathBuf,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
     /// When this execution started, so results left by an earlier execution of
     /// the same frozen plan are never admitted as this one's evidence.
     started_unix_ms: u64,
     admitted: BTreeSet<u64>,
-    finished: bool,
+    result_errors: BTreeSet<PathBuf>,
+    pause_requested: bool,
+    exit_status: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CampaignCheckpoint {
+    plan: CampaignPlan,
+    run: CampaignRun,
 }
 
 /// Everything the campaign section needs between frames.
@@ -47,10 +61,12 @@ pub(super) struct BenchmarkCampaignPanel {
     comparison_class: CampaignComparisonClass,
     execution_profile: CampaignExecutionProfile,
     execution_environment: CampaignExecutionEnvironment,
+    quality: QualityPreference,
     selected_models: BTreeSet<String>,
     selected_tasks: BTreeSet<String>,
     repetitions: u32,
     host_seed: u64,
+    run_timeout_seconds: u64,
     plan: Option<CampaignPlan>,
     prior_plan: Option<CampaignPlan>,
     acquisition: Option<ManagedAcquisitionPlan>,
@@ -67,6 +83,7 @@ impl Default for BenchmarkCampaignPanel {
             comparison_class: CampaignComparisonClass::ModelComparison,
             execution_profile: CampaignExecutionProfile::Warm,
             execution_environment: CampaignExecutionEnvironment::CompatibleBackend,
+            quality: QualityPreference::Balanced,
             selected_models: BTreeSet::new(),
             selected_tasks: BENCHMARK_TASKS
                 .iter()
@@ -74,6 +91,7 @@ impl Default for BenchmarkCampaignPanel {
                 .collect(),
             repetitions: DEFAULT_CAMPAIGN_REPETITIONS,
             host_seed: 1,
+            run_timeout_seconds: DEFAULT_BENCHMARK_RUN_TIMEOUT.as_secs(),
             plan: None,
             prior_plan: None,
             acquisition: None,
@@ -83,6 +101,73 @@ impl Default for BenchmarkCampaignPanel {
             message: None,
         }
     }
+}
+
+impl BenchmarkCampaignPanel {
+    pub(super) fn load_checkpoint(root: &Path) -> Self {
+        let path = campaign_checkpoint_path(root);
+        let Ok(bytes) = fs::read(path) else {
+            return Self::default();
+        };
+        let Ok(mut checkpoint) = serde_json::from_slice::<CampaignCheckpoint>(&bytes) else {
+            return Self::default();
+        };
+        if checkpoint.run.plan() != &checkpoint.plan {
+            return Self {
+                message: Some(
+                    "The machine-local campaign checkpoint contains inconsistent plans and was not restored."
+                        .to_owned(),
+                ),
+                ..Self::default()
+            };
+        }
+        if checkpoint.run.state() == CampaignState::Running {
+            let experiment_id = format!(
+                "{}-{}",
+                checkpoint.plan.campaign_id,
+                checkpoint.plan.plan_digest()
+            );
+            let pause_file = root
+                .join(experiment_directory_name(&experiment_id))
+                .join("pause.requested");
+            let _ = fs::write(pause_file, b"pause after Editor restart\n");
+            checkpoint.run.pause();
+        }
+        let selected_models = checkpoint
+            .plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.representation.model_id.clone())
+            .collect();
+        let selected_tasks = checkpoint
+            .plan
+            .task_plans
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect();
+        Self {
+            campaign_id: checkpoint.plan.campaign_id.clone(),
+            comparison_class: checkpoint.plan.comparison_class,
+            execution_profile: checkpoint.plan.execution_profile,
+            execution_environment: checkpoint.plan.execution_environment,
+            quality: checkpoint.plan.quality,
+            selected_models,
+            selected_tasks,
+            repetitions: checkpoint.plan.repetitions,
+            run_timeout_seconds: checkpoint.plan.run_timeout_seconds,
+            plan: Some(checkpoint.plan),
+            run: Some(checkpoint.run),
+            message: Some(
+                "Restored a machine-local campaign checkpoint. Resume revalidates hardware and runtime identity before execution."
+                    .to_owned(),
+            ),
+            ..Self::default()
+        }
+    }
+}
+
+fn campaign_checkpoint_path(root: &Path) -> PathBuf {
+    root.join("campaign-checkpoint.json")
 }
 
 impl AiStudioPanel {
@@ -156,6 +241,22 @@ impl AiStudioPanel {
                     .clicked()
                 {
                     self.benchmark_campaign.execution_profile = profile;
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Quality");
+            for quality in [
+                QualityPreference::Fast,
+                QualityPreference::Balanced,
+                QualityPreference::Deep,
+            ] {
+                let selected = self.benchmark_campaign.quality == quality;
+                if ui
+                    .add_enabled(!frozen, egui::Button::selectable(selected, quality.label()))
+                    .clicked()
+                {
+                    self.benchmark_campaign.quality = quality;
                 }
             }
         });
@@ -327,6 +428,17 @@ impl AiStudioPanel {
             {
                 self.benchmark_campaign.host_seed = seed;
             }
+            ui.label("Run timeout (seconds)");
+            let mut timeout = self.benchmark_campaign.run_timeout_seconds;
+            if ui
+                .add_enabled(
+                    !frozen,
+                    egui::DragValue::new(&mut timeout).range(60..=7_200),
+                )
+                .changed()
+            {
+                self.benchmark_campaign.run_timeout_seconds = timeout;
+            }
         });
         ui.small(
             "The fixture seed is host-owned. It selects a frozen parameterized instance; its hidden evaluation state is never placed in candidate-visible context.",
@@ -363,15 +475,12 @@ impl AiStudioPanel {
                         self.benchmark_campaign.acquisition = None;
                         self.benchmark_campaign.acquisition_approved = false;
                         self.benchmark_campaign.message = None;
+                        self.clear_campaign_checkpoint();
                     }
                 }
                 CampaignState::Running => {
                     if ui.button("Pause").clicked() {
-                        if let Some(run) = self.benchmark_campaign.run.as_mut() {
-                            run.pause();
-                        }
-                        self.benchmark_campaign.message =
-                            Some("Campaign paused. Recorded evidence is retained.".to_owned());
+                        self.request_campaign_pause();
                     }
                 }
                 CampaignState::Paused => {
@@ -387,10 +496,12 @@ impl AiStudioPanel {
         if let Some(plan) = self.benchmark_campaign.plan.as_ref() {
             let runtime = plan.runtime_identity();
             ui.small(format!(
-                "Frozen plan {} · {} scheduled runs · schedule {} · runtime {} {}",
+                "Frozen plan {} · {} scheduled runs · schedule {} · quality {} · timeout {}s · runtime {} {}",
                 plan.plan_digest(),
                 plan.schedule().len(),
                 plan.schedule_version,
+                plan.quality.label(),
+                plan.run_timeout_seconds,
                 runtime.execution_environment.label(),
                 runtime.backend_runtime_version
             ));
@@ -558,6 +669,7 @@ impl AiStudioPanel {
                 ));
                 self.benchmark_campaign.run = Some(CampaignRun::prepare(plan.clone()));
                 self.benchmark_campaign.plan = Some(plan);
+                self.save_campaign_checkpoint();
             }
             Err(error) => {
                 self.benchmark_campaign.message = Some(format!("Cannot freeze: {error}"));
@@ -668,6 +780,9 @@ impl AiStudioPanel {
             execution_profile: self.benchmark_campaign.execution_profile,
             execution_environment: self.benchmark_campaign.execution_environment,
             backend_runtime_version,
+            hardware: self.benchmark_hardware.clone(),
+            quality: self.benchmark_campaign.quality,
+            run_timeout_seconds: self.benchmark_campaign.run_timeout_seconds,
             candidates,
             task_ids: BENCHMARK_TASKS
                 .iter()
@@ -744,19 +859,24 @@ impl AiStudioPanel {
                 Some(format!("{} ({})", rejection.message(), rejection.code()));
             return;
         }
-        match self.spawn_campaign_execution() {
+        match self.spawn_campaign_execution(false) {
             Ok(running) => {
                 self.benchmark_campaign.running = Some(running);
                 self.benchmark_campaign.message =
                     Some("Campaign started. Recording is now active.".to_owned());
+                self.save_campaign_checkpoint();
             }
             Err(error) => {
+                if let Some(run) = self.benchmark_campaign.run.as_mut() {
+                    run.pause();
+                }
                 self.benchmark_campaign.message = Some(format!("Could not start: {error}"));
+                self.save_campaign_checkpoint();
             }
         }
     }
 
-    fn spawn_campaign_execution(&mut self) -> Result<RunningCampaign, String> {
+    fn spawn_campaign_execution(&mut self, resumed: bool) -> Result<RunningCampaign, String> {
         let plan = self
             .benchmark_campaign
             .plan
@@ -771,41 +891,144 @@ impl AiStudioPanel {
         let bytes = serde_json::to_vec_pretty(&spec).map_err(|error| error.to_string())?;
         fs::write(&spec_path, bytes).map_err(|error| error.to_string())?;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let pause_file = experiment_root.join("pause.requested");
+        match fs::remove_file(&pause_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let stdout_path = experiment_root.join("campaign-parent-stdout.log");
+        let stderr_path = experiment_root.join("campaign-parent-stderr.log");
+        let stdout = File::create(&stdout_path).map_err(|error| error.to_string())?;
+        let stderr = File::create(&stderr_path).map_err(|error| error.to_string())?;
         let mut command = Command::new(executable);
-        command.arg("--benchmark-experiment").arg(&spec_path);
+        command
+            .arg("--benchmark-experiment")
+            .arg(&spec_path)
+            .arg("--benchmark-run-timeout")
+            .arg(plan.run_timeout_seconds.to_string())
+            .arg("--benchmark-pause-file")
+            .arg(&pause_file);
+        if resumed {
+            let next_ordinal = self
+                .benchmark_campaign
+                .run
+                .as_ref()
+                .map(CampaignRun::next_ordinal)
+                .ok_or_else(|| "campaign run is unavailable".to_owned())?;
+            command
+                .arg("--benchmark-resume-from")
+                .arg(next_ordinal.to_string());
+        }
         if spec.backend_id != MANAGED_BACKEND_ID {
             command
                 .arg("--benchmark-endpoint")
                 .arg(self.local_model_endpoint.trim());
         }
+        let started_unix_ms = unix_ms();
         let process = command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .map_err(|error| format!("could not start the campaign parent: {error}"))?;
         Ok(RunningCampaign {
             process,
             experiment_root,
-            started_unix_ms: unix_ms(),
-            admitted: BTreeSet::new(),
-            finished: false,
+            pause_file,
+            stdout_path,
+            stderr_path,
+            started_unix_ms,
+            admitted: self
+                .benchmark_campaign
+                .run
+                .as_ref()
+                .map(|run| {
+                    run.evidence()
+                        .iter()
+                        .map(|evidence| evidence.scheduled.ordinal)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            result_errors: BTreeSet::new(),
+            pause_requested: false,
+            exit_status: None,
         })
     }
 
+    fn request_campaign_pause(&mut self) {
+        let Some(running) = self.benchmark_campaign.running.as_mut() else {
+            if let Some(run) = self.benchmark_campaign.run.as_mut() {
+                run.pause();
+            }
+            self.benchmark_campaign.message =
+                Some("Campaign paused. Recorded evidence is retained.".to_owned());
+            self.save_campaign_checkpoint();
+            return;
+        };
+        match fs::write(&running.pause_file, b"pause\n") {
+            Ok(()) => {
+                running.pause_requested = true;
+                self.benchmark_campaign.message = Some(
+                    "Pausing campaign: stopping the active benchmark child at a safe process boundary."
+                        .to_owned(),
+                );
+            }
+            Err(error) => {
+                self.benchmark_campaign.message =
+                    Some(format!("Could not request campaign pause: {error}"));
+            }
+        }
+    }
+
     fn resume_campaign(&mut self) {
+        let backend_runtime_version = match self.campaign_backend_runtime_version() {
+            Ok(version) => version,
+            Err(error) => {
+                self.benchmark_campaign.message =
+                    Some(format!("Cannot revalidate campaign runtime: {error}"));
+                return;
+            }
+        };
+        let representations = match self.build_campaign_policy() {
+            Ok(policy) => policy
+                .candidates
+                .into_iter()
+                .map(|candidate| candidate.representation)
+                .collect(),
+            Err(error) => {
+                self.benchmark_campaign.message =
+                    Some(format!("Cannot revalidate campaign models: {error}"));
+                return;
+            }
+        };
         let probe = CampaignEnvironmentProbe {
             execution_environment: self.benchmark_campaign.execution_environment,
-            backend_runtime_version: self.campaign_backend_runtime_version().unwrap_or_default(),
+            backend_runtime_version,
             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
+            hardware: self.benchmark_hardware.clone(),
+            representations,
         };
         let Some(run) = self.benchmark_campaign.run.as_mut() else {
             return;
         };
         match run.resume(&probe) {
-            Ok(()) => {
-                self.benchmark_campaign.message = Some("Campaign resumed.".to_owned());
-            }
+            Ok(()) => match self.spawn_campaign_execution(true) {
+                Ok(running) => {
+                    self.benchmark_campaign.running = Some(running);
+                    self.benchmark_campaign.message = Some(
+                        "Campaign resumed from its persisted completed-run prefix.".to_owned(),
+                    );
+                    self.save_campaign_checkpoint();
+                }
+                Err(error) => {
+                    if let Some(run) = self.benchmark_campaign.run.as_mut() {
+                        run.pause();
+                    }
+                    self.benchmark_campaign.message =
+                        Some(format!("Could not resume campaign execution: {error}"));
+                }
+            },
             Err(rejection) => {
                 self.benchmark_campaign.message =
                     Some(format!("{} ({})", rejection.message(), rejection.code()));
@@ -818,35 +1041,62 @@ impl AiStudioPanel {
         let Some(running) = self.benchmark_campaign.running.as_mut() else {
             return;
         };
-        if let Ok(Some(_)) = running.process.try_wait() {
-            running.finished = true;
+        if running.exit_status.is_none() {
+            match running.process.try_wait() {
+                Ok(Some(status)) => running.exit_status = Some(status.to_string()),
+                Ok(None) => {}
+                Err(error) => {
+                    running.exit_status = Some(format!("status unavailable: {error}"));
+                }
+            }
         }
         let runs_root = running.experiment_root.join("runs");
         let execution_started_unix_ms = running.started_unix_ms;
-        let Ok(entries) = fs::read_dir(&runs_root) else {
-            return;
-        };
-        let mut results: Vec<BenchmarkExperimentResult> = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
+        let mut results = Vec::new();
+        let mut newest_error = None;
+        if let Ok(entries) = fs::read_dir(&runs_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path
+                    .extension()
                     .is_some_and(|extension| extension == "json")
-            })
-            .filter_map(|path| read_campaign_result(&path).ok())
-            .filter(|result| result_belongs_to_execution(result, execution_started_unix_ms))
-            .collect();
+                {
+                    continue;
+                }
+                match read_campaign_result(&path) {
+                    Ok(result)
+                        if result_belongs_to_execution(&result, execution_started_unix_ms) =>
+                    {
+                        results.push(result);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        if running.result_errors.insert(path.clone()) {
+                            newest_error = Some(format!(
+                                "Campaign result `{}` is invalid and was not admitted: {error}",
+                                path.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         results.sort_by_key(|result| result.run.ordinal);
         let Some(run) = self.benchmark_campaign.run.as_mut() else {
             return;
         };
+        let mut checkpoint_changed = false;
         for result in results {
-            if !running.admitted.insert(result.run.ordinal) {
+            if running.admitted.contains(&result.run.ordinal) {
                 continue;
             }
-            let Some(scheduled) = run.next_scheduled() else {
-                break;
+            let scheduled = CampaignScheduledRun {
+                ordinal: result.run.ordinal,
+                model_id: result.run.model_id,
+                task_id: result.run.task_id,
+                repetition: result.run.repetition,
             };
+            let ordinal = scheduled.ordinal;
             let evidence = CampaignEvidence {
                 scheduled,
                 outcome: result.outcome,
@@ -854,14 +1104,91 @@ impl AiStudioPanel {
                 attempt: 0,
                 record: result.record,
             };
-            if let Err(rejection) = run.record(evidence) {
-                self.benchmark_campaign.message = Some(format!(
-                    "Run {} was not admitted: {} ({})",
-                    result.run.ordinal,
-                    rejection.message(),
-                    rejection.code()
-                ));
-                break;
+            match run.record(evidence) {
+                Ok(()) => {
+                    running.admitted.insert(ordinal);
+                    checkpoint_changed = true;
+                }
+                Err(rejection) => {
+                    newest_error = Some(format!(
+                        "Run {ordinal} was not admitted: {} ({})",
+                        rejection.message(),
+                        rejection.code()
+                    ));
+                    break;
+                }
+            }
+        }
+        if let Some(error) = newest_error {
+            self.benchmark_campaign.message = Some(error);
+        }
+
+        let exit = running.exit_status.clone();
+        let pause_requested = running.pause_requested;
+        let stdout_path = running.stdout_path.clone();
+        let stderr_path = running.stderr_path.clone();
+        if let Some(exit) = exit {
+            let completed = run.state() == CampaignState::Completed;
+            if !completed {
+                run.pause();
+                checkpoint_changed = true;
+                self.benchmark_campaign.message = Some(if pause_requested {
+                    "Campaign paused. The active inference process stopped; completed evidence is retained and the interrupted ordinal will be rerun on Resume."
+                        .to_owned()
+                } else {
+                    format!(
+                        "Campaign parent exited ({exit}) before completion. The campaign is paused and may be resumed. Diagnostics: `{}` and `{}`.",
+                        stdout_path.display(),
+                        stderr_path.display()
+                    )
+                });
+            }
+            self.benchmark_campaign.running = None;
+        }
+        if checkpoint_changed {
+            self.save_campaign_checkpoint();
+        }
+    }
+
+    fn save_campaign_checkpoint(&mut self) {
+        let (Some(plan), Some(run)) = (
+            self.benchmark_campaign.plan.as_ref(),
+            self.benchmark_campaign.run.as_ref(),
+        ) else {
+            return;
+        };
+        let checkpoint = CampaignCheckpoint {
+            plan: plan.clone(),
+            run: run.clone(),
+        };
+        let path = campaign_checkpoint_path(&self.benchmark_experiment_root);
+        let temporary = path.with_extension("tmp");
+        let result = serde_json::to_vec_pretty(&checkpoint)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                }
+                fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+                if path.exists() {
+                    fs::remove_file(&path).map_err(|error| error.to_string())?;
+                }
+                fs::rename(&temporary, &path).map_err(|error| error.to_string())
+            });
+        if let Err(error) = result {
+            self.benchmark_campaign.message =
+                Some(format!("Could not persist campaign checkpoint: {error}"));
+        }
+    }
+
+    fn clear_campaign_checkpoint(&mut self) {
+        let path = campaign_checkpoint_path(&self.benchmark_experiment_root);
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.benchmark_campaign.message =
+                    Some(format!("Could not remove campaign checkpoint: {error}"));
             }
         }
     }

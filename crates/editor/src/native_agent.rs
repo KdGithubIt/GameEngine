@@ -54,6 +54,23 @@ const MAX_RETRIEVED_CHUNKS: usize = 8;
 const MAX_CONVERSATION_MESSAGES: usize = 12;
 const MAX_CONVERSATION_MESSAGE_CHARS: usize = 4_000;
 
+/// Provider-independent sampling controls used by reproducible benchmarks.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct NativeSamplingOptions {
+    pub(crate) temperature: Option<f32>,
+    pub(crate) seed: Option<u64>,
+}
+
+impl NativeSamplingOptions {
+    /// Deterministic campaign policy supported by both local adapters.
+    pub(crate) const fn deterministic_greedy() -> Self {
+        Self {
+            temperature: Some(0.0),
+            seed: Some(0),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum NativeAgentError {
     EmptyModel,
@@ -680,6 +697,20 @@ impl NativeQuestionTask {
         project_root: PathBuf,
         conversation: Vec<QuestionMessage>,
     ) -> Result<Self, NativeAgentError> {
+        Self::spawn_with_sampling(
+            config,
+            project_root,
+            conversation,
+            NativeSamplingOptions::default(),
+        )
+    }
+
+    pub(crate) fn spawn_with_sampling(
+        config: NativeModelConfig,
+        project_root: PathBuf,
+        conversation: Vec<QuestionMessage>,
+        sampling: NativeSamplingOptions,
+    ) -> Result<Self, NativeAgentError> {
         validate_native_model_config(&config)?;
         let (sender, result) = mpsc::channel();
         let interrupted = Arc::new(AtomicBool::new(false));
@@ -693,6 +724,7 @@ impl NativeQuestionTask {
                     &config,
                     &project_root,
                     &conversation,
+                    sampling,
                     &worker_interrupted,
                     &worker_stream,
                 );
@@ -749,11 +781,12 @@ pub(crate) struct NativeModelTask {
 }
 
 impl NativeModelTask {
-    pub(crate) fn spawn(
+    pub(crate) fn spawn_with_sampling(
         config: NativeModelConfig,
         prompt: String,
         images: Vec<Vec<u8>>,
         response_schema: Option<Value>,
+        sampling: NativeSamplingOptions,
     ) -> Result<Self, NativeAgentError> {
         validate_native_model_config(&config)?;
         let (sender, result) = mpsc::channel();
@@ -770,6 +803,7 @@ impl NativeModelTask {
                         &prompt,
                         &images,
                         response_schema.as_ref(),
+                        sampling,
                         &worker_interrupted,
                         &worker_stream,
                     )
@@ -791,6 +825,7 @@ impl NativeModelTask {
                         &prompt,
                         &images,
                         response_schema.as_ref(),
+                        sampling,
                         &worker_interrupted,
                         &worker_stream,
                     )
@@ -1054,6 +1089,7 @@ fn answer_question(
     config: &NativeModelConfig,
     project_root: &Path,
     conversation: &[QuestionMessage],
+    sampling: NativeSamplingOptions,
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<NativeAnswer, NativeAgentError> {
@@ -1075,7 +1111,15 @@ fn answer_question(
     }
     let backend = match config {
         NativeModelConfig::Local(config) => {
-            let response = generate_local(config, &prompt, &[], None, interrupted, active_stream)?;
+            let response = generate_local(
+                config,
+                &prompt,
+                &[],
+                None,
+                sampling,
+                interrupted,
+                active_stream,
+            )?;
             BackendGeneration {
                 text: response.response.trim().to_owned(),
                 prompt_tokens: response.prompt_eval_count,
@@ -1093,9 +1137,15 @@ fn answer_question(
                 ),
             }
         }
-        NativeModelConfig::Managed(config) => {
-            generate_managed(config, &prompt, &[], None, interrupted, active_stream)?
-        }
+        NativeModelConfig::Managed(config) => generate_managed(
+            config,
+            &prompt,
+            &[],
+            None,
+            sampling,
+            interrupted,
+            active_stream,
+        )?,
         NativeModelConfig::Hosted(config) => {
             let response = generate_hosted(config, &prompt, None, interrupted)?;
             BackendGeneration {
@@ -1310,6 +1360,10 @@ struct ManagedChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1375,6 +1429,7 @@ fn generate_managed(
     prompt: &str,
     images: &[Vec<u8>],
     response_schema: Option<&Value>,
+    sampling: NativeSamplingOptions,
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<BackendGeneration, NativeAgentError> {
@@ -1443,6 +1498,8 @@ fn generate_managed(
             }],
             stream: false,
             response_format: schema.map(json_schema_response_format),
+            temperature: sampling.temperature,
+            seed: sampling.seed,
         })
         .map_err(NativeAgentError::from)
     };
@@ -1571,6 +1628,16 @@ struct GenerateRequest<'a> {
     /// JSON Schema the backend constrains generation to, when one is requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<GenerateSamplingOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct GenerateSamplingOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1597,6 +1664,7 @@ fn generate_local(
     prompt: &str,
     images: &[Vec<u8>],
     response_schema: Option<&Value>,
+    sampling: NativeSamplingOptions,
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<GenerateResponse, NativeAgentError> {
@@ -1605,6 +1673,7 @@ fn generate_local(
         prompt,
         images,
         response_schema,
+        sampling,
         interrupted,
         active_stream,
     );
@@ -1612,7 +1681,15 @@ fn generate_local(
     // outright. Retrying once without the schema keeps such a build usable and
     // leaves the response shape to the prompt, which the parser already tolerates.
     if response_schema.is_some() && matches!(response, Err(NativeAgentError::HttpStatus(400, _))) {
-        return generate_local_once(config, prompt, images, None, interrupted, active_stream);
+        return generate_local_once(
+            config,
+            prompt,
+            images,
+            None,
+            sampling,
+            interrupted,
+            active_stream,
+        );
     }
     response
 }
@@ -1622,6 +1699,7 @@ fn generate_local_once(
     prompt: &str,
     images: &[Vec<u8>],
     response_schema: Option<&Value>,
+    sampling: NativeSamplingOptions,
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<GenerateResponse, NativeAgentError> {
@@ -1638,6 +1716,12 @@ fn generate_local_once(
         stream: false,
         images: encoded_images,
         format: response_schema.cloned(),
+        options: (sampling.temperature.is_some() || sampling.seed.is_some()).then_some(
+            GenerateSamplingOptions {
+                temperature: sampling.temperature,
+                seed: sampling.seed,
+            },
+        ),
     })?;
     let mut stream = endpoint.connect()?;
     if interrupted.load(Ordering::Acquire) {
@@ -2495,8 +2579,14 @@ mod tests {
                 runtime_compatibility_version: "test-compat".to_owned(),
             }));
 
-            let task = NativeModelTask::spawn(config, "test turn".to_owned(), Vec::new(), None)
-                .expect("spawning a managed model turn must not verify managed files inline");
+            let task = NativeModelTask::spawn_with_sampling(
+                config,
+                "test turn".to_owned(),
+                Vec::new(),
+                None,
+                NativeSamplingOptions::default(),
+            )
+            .expect("spawning a managed model turn must not verify managed files inline");
             let result = task
                 .result
                 .recv_timeout(Duration::from_secs(2))
@@ -2508,5 +2598,39 @@ mod tests {
             ));
             let _ = fs::remove_dir_all(state_root);
         }
+    }
+
+    #[test]
+    fn deterministic_benchmark_sampling_is_serialized_for_both_model_adapters() {
+        let sampling = NativeSamplingOptions::deterministic_greedy();
+        let ollama = serde_json::to_value(GenerateRequest {
+            model: "model:tag",
+            prompt: "prompt",
+            stream: false,
+            images: None,
+            format: None,
+            options: Some(GenerateSamplingOptions {
+                temperature: sampling.temperature,
+                seed: sampling.seed,
+            }),
+        })
+        .expect("Ollama request serializes");
+        assert_eq!(ollama["options"]["temperature"], serde_json::json!(0.0));
+        assert_eq!(ollama["options"]["seed"], serde_json::json!(0));
+
+        let managed = serde_json::to_value(ManagedChatRequest {
+            model: "model.gguf",
+            messages: [ManagedChatMessage {
+                role: "user",
+                content: ManagedChatContent::Text("prompt"),
+            }],
+            stream: false,
+            response_format: None,
+            temperature: sampling.temperature,
+            seed: sampling.seed,
+        })
+        .expect("managed request serializes");
+        assert_eq!(managed["temperature"], serde_json::json!(0.0));
+        assert_eq!(managed["seed"], serde_json::json!(0));
     }
 }

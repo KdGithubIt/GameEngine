@@ -74,6 +74,30 @@ pub fn authoring_tool_descriptors() -> Vec<McpToolDescriptor> {
     descriptors
 }
 
+/// Returns whether invoking an advertised tool can mutate authoritative
+/// authoring state.
+///
+/// Transports use this shared classifier to keep read-only credentials and
+/// work claims aligned with the actual tool surface. Unknown tools are treated
+/// as mutating so a newly added operation cannot accidentally bypass either
+/// boundary before its classification is reviewed.
+pub fn tool_is_mutating(tool: &str) -> bool {
+    ![
+        ".describe",
+        ".inspect",
+        ".find",
+        ".list",
+        ".search",
+        ".validate",
+        ".preview",
+        ".schemas",
+        ".capabilities",
+    ]
+    .iter()
+    .any(|suffix| tool.ends_with(suffix))
+        && !matches!(tool, "project.describe" | "component.schemas")
+}
+
 /// Describes one available MCP tool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolDescriptor {

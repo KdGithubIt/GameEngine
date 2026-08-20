@@ -4,20 +4,26 @@
 //! existing Agent Host boundary. They do not own authoring semantics,
 //! permissions, code apply, validation, or completion gates.
 
+use crate::agent_host::terminate_process_tree;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(crate) const GAMEENGINE_AGENT_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
 const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
 const GAMEENGINE_MCP_TOKEN_ENV: &str = "GAMEENGINE_MCP_AUTH_TOKEN";
+const GAMEENGINE_AGENT_RUN_ID_ENV: &str = "GAMEENGINE_AGENT_RUN_ID";
+const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
+const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const CLAUDE_CODE_VERSION: &str = "2.1.237";
+const CODEX_VERSION: &str = "0.148.0";
 
 /// Where an external agent provider process runs.
 ///
@@ -264,7 +270,10 @@ pub(crate) fn probe_provider(
     let Some(program) = kind.program() else {
         return ExternalAgentProviderStatus::unchecked(kind);
     };
-    let available = command_success(placement, program, ["--version"]).unwrap_or(false);
+    let version = command_output(placement, program, ["--version"]);
+    let available = version
+        .as_ref()
+        .is_ok_and(|(succeeded, output)| *succeeded && provider_version_matches(kind, output));
     if !available {
         return ExternalAgentProviderStatus {
             kind,
@@ -309,13 +318,28 @@ where
             .map(|argument| argument.as_ref().to_os_string())
             .collect(),
     );
-    Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
+        .spawn()?;
+    wait_for_probe(&mut child).map(|status| status.success())
+}
+
+fn direct_command_output(program: OsString, args: Vec<OsString>) -> io::Result<(bool, String)> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let status = wait_for_probe(&mut child)?;
+    let mut output = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        stdout.read_to_string(&mut output)?;
+    }
+    Ok((status.success(), output))
 }
 
 /// Runs one command for its exit status and captured standard output.
@@ -335,29 +359,48 @@ where
             .map(|argument| argument.as_ref().to_os_string())
             .collect(),
     );
-    let output = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()?;
-    Ok((
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-    ))
+    direct_command_output(program, args)
+}
+
+fn wait_for_probe(child: &mut Child) -> io::Result<ExitStatus> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if started.elapsed() >= PROVIDER_PROBE_TIMEOUT {
+            let _ = terminate_process_tree(child);
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "provider probe exceeded its 10 second budget",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn provider_version_matches(kind: ExternalAgentProviderKind, output: &str) -> bool {
+    let expected = match kind {
+        ExternalAgentProviderKind::ClaudeCode => CLAUDE_CODE_VERSION,
+        ExternalAgentProviderKind::Codex => CODEX_VERSION,
+        ExternalAgentProviderKind::Generic => return true,
+    };
+    output
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '.'))
+        .any(|token| token == expected)
 }
 
 /// Reads whether Claude Code holds a credential from its status report.
 ///
 /// `claude auth status` reports a signed-out session in its JSON body and still
-/// exits successfully, so an exit status alone reports every installed copy as
-/// signed in. A report this function cannot read falls back to the exit status,
-/// which keeps an older or changed CLI from being called signed out on the
-/// strength of a field it never printed.
-fn claude_credential_present(output: &str, exit_succeeded: bool) -> bool {
+/// exits successfully. An unknown response is not accepted as authenticated:
+/// the pinned adapter must understand the credential report before Build or Ask
+/// can send project evidence to the provider.
+fn claude_credential_present(output: &str, _exit_succeeded: bool) -> bool {
     serde_json::from_str::<Value>(output)
         .ok()
         .and_then(|status| status.get("loggedIn").and_then(Value::as_bool))
-        .unwrap_or(exit_succeeded)
+        .unwrap_or(false)
 }
 
 /// Rewrites one command for the environment it must run in.
@@ -721,7 +764,17 @@ pub(crate) fn wsl_environment_forwarding(
     variables: &[(OsString, OsString)],
     path_variables: &[&str],
 ) -> (OsString, OsString) {
-    let forwarded = variables
+    let mut forwarded = std::env::var_os(WSL_ENVIRONMENT_FORWARD_VARIABLE)
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .split(':')
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for entry in variables
         .iter()
         .filter_map(|(name, _)| name.to_str())
         .map(|name| {
@@ -731,11 +784,14 @@ pub(crate) fn wsl_environment_forwarding(
                 name.to_owned()
             }
         })
-        .collect::<Vec<_>>()
-        .join(":");
+    {
+        let forwarded_name = entry.split('/').next().unwrap_or(&entry);
+        forwarded.retain(|existing| existing.split('/').next() != Some(forwarded_name));
+        forwarded.push(entry);
+    }
     (
         OsString::from(WSL_ENVIRONMENT_FORWARD_VARIABLE),
-        OsString::from(forwarded),
+        OsString::from(forwarded.join(":")),
     )
 }
 
@@ -748,6 +804,7 @@ pub(crate) fn wsl_environment_forwarding(
 pub(crate) fn probe_wsl_loopback_reachability(
     placement: &ExternalAgentExecutionPlacement,
     mcp_endpoint: &str,
+    authorization_token: &str,
 ) -> Result<(), String> {
     if placement.environment != ExternalAgentExecutionEnvironment::Wsl2Linux {
         return Ok(());
@@ -755,22 +812,36 @@ pub(crate) fn probe_wsl_loopback_reachability(
     let (host, port) = loopback_authority(mcp_endpoint)?;
     let mut args = placement.wsl_prefix_args();
     args.push(OsString::from("--"));
-    args.push(OsString::from("bash"));
-    args.push(OsString::from("-c"));
-    args.push(OsString::from(format!("exec 3<>/dev/tcp/{host}/{port}")));
-    let reachable = Command::new(WSL_LAUNCHER)
+    args.push(OsString::from("sh"));
+    args.push(OsString::from("-lc"));
+    args.push(OsString::from(
+        r#"if ! command -v curl >/dev/null 2>&1; then exit 42; fi
+response=$(curl --silent --show-error --fail --max-time 10 \
+  -H "Authorization: Bearer $GAMEENGINE_MCP_AUTH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"gameengine-wsl-probe","version":"1"}}}' \
+  "$GAMEENGINE_MCP_ENDPOINT") || exit $?
+printf '%s' "$response" | grep -q '"protocolVersion"'"#,
+    ));
+    let status = Command::new(WSL_LAUNCHER)
         .args(args)
+        .env(GAMEENGINE_MCP_TOKEN_ENV, authorization_token)
+        .env("GAMEENGINE_MCP_ENDPOINT", mcp_endpoint)
+        .env(
+            WSL_ENVIRONMENT_FORWARD_VARIABLE,
+            format!("{GAMEENGINE_MCP_TOKEN_ENV}:GAMEENGINE_MCP_ENDPOINT"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
+        .spawn()
+        .and_then(|mut child| wait_for_probe(&mut child))
         .map_err(|error| format!("could not run {WSL_LAUNCHER}: {error}"))?;
-    if reachable {
+    if status.success() || status.code() == Some(42) {
         return Ok(());
     }
     Err(format!(
-        "the WSL2 distribution cannot reach the Editor MCP endpoint at {host}:{port}. Enable mirrored networking for WSL (networkingMode=mirrored in .wslconfig) or run the provider in the Windows-native environment, because GameEngine keeps that endpoint bound to loopback."
+        "the WSL2 distribution could not complete an authenticated MCP handshake with the Editor at {host}:{port}. Enable mirrored networking for WSL (networkingMode=mirrored in .wslconfig), verify the Editor MCP endpoint, or run the provider in the Windows-native environment."
     ))
 }
 
@@ -801,8 +872,14 @@ pub(crate) fn build_launch_plan(
     prompt: &str,
     mcp_endpoint: &str,
 ) -> Result<ExternalAgentLaunchPlan, String> {
-    let plan =
-        build_provider_launch_plan(kind, generic_program, generic_args, prompt, mcp_endpoint)?;
+    let plan = build_provider_launch_plan(
+        kind,
+        placement,
+        generic_program,
+        generic_args,
+        prompt,
+        mcp_endpoint,
+    )?;
     let (program, args) = placed_launch_command(placement, plan.program, plan.args);
     ensure_launcher_carries_arguments(&program, &args)?;
     Ok(ExternalAgentLaunchPlan { program, args })
@@ -810,6 +887,7 @@ pub(crate) fn build_launch_plan(
 
 fn build_provider_launch_plan(
     kind: ExternalAgentProviderKind,
+    placement: &ExternalAgentExecutionPlacement,
     generic_program: &str,
     generic_args: &[String],
     prompt: &str,
@@ -822,6 +900,7 @@ fn build_provider_launch_plan(
                 "url": mcp_endpoint,
                 "headers": {
                     "Authorization": format!("Bearer ${{{GAMEENGINE_MCP_TOKEN_ENV}}}"),
+                    GAMEENGINE_AGENT_RUN_ID_HEADER: format!("${{{GAMEENGINE_AGENT_RUN_ID_ENV}}}"),
                 },
             });
             let mut servers = serde_json::Map::new();
@@ -844,6 +923,9 @@ fn build_provider_launch_plan(
                     OsString::from("Edit"),
                     OsString::from("Write"),
                     OsString::from("mcp__gameengine_editor__*"),
+                    OsString::from("--disallowedTools"),
+                    OsString::from("Bash"),
+                    OsString::from("Task"),
                 ],
             })
         }
@@ -856,20 +938,35 @@ fn build_provider_launch_plan(
                 "mcp_servers.{GAMEENGINE_MCP_SERVER_NAME}.bearer_token_env_var={}",
                 toml_basic_string(GAMEENGINE_MCP_TOKEN_ENV)
             );
+            let run_header = format!(
+                "mcp_servers.{GAMEENGINE_MCP_SERVER_NAME}.env_http_headers.{}={}",
+                toml_basic_string(GAMEENGINE_AGENT_RUN_ID_HEADER),
+                toml_basic_string(GAMEENGINE_AGENT_RUN_ID_ENV)
+            );
+            let windows_sandbox = (placement.environment
+                == ExternalAgentExecutionEnvironment::WindowsNative)
+                .then(|| OsString::from("windows.sandbox=\"elevated\""));
+            let mut args = vec![
+                OsString::from("exec"),
+                OsString::from("--json"),
+                OsString::from("--skip-git-repo-check"),
+                OsString::from("--sandbox"),
+                OsString::from("workspace-write"),
+                OsString::from("-c"),
+                OsString::from(mcp_url),
+                OsString::from("-c"),
+                OsString::from(bearer_env),
+                OsString::from("-c"),
+                OsString::from(run_header),
+            ];
+            if let Some(windows_sandbox) = windows_sandbox {
+                args.push(OsString::from("-c"));
+                args.push(windows_sandbox);
+            }
+            args.push(OsString::from(prompt));
             Ok(ExternalAgentLaunchPlan {
                 program: OsString::from("codex"),
-                args: vec![
-                    OsString::from("exec"),
-                    OsString::from("--json"),
-                    OsString::from("--skip-git-repo-check"),
-                    OsString::from("--sandbox"),
-                    OsString::from("workspace-write"),
-                    OsString::from("-c"),
-                    OsString::from(mcp_url),
-                    OsString::from("-c"),
-                    OsString::from(bearer_env),
-                    OsString::from(prompt),
-                ],
+                args,
             })
         }
         ExternalAgentProviderKind::Generic => {
@@ -918,6 +1015,7 @@ pub(crate) enum ExternalAgentSemanticEvent {
         success: Option<bool>,
     },
     GameEngineProtocolPayload(String),
+    ProtocolDiagnostic(String),
 }
 
 pub(crate) fn translate_provider_line(
@@ -933,7 +1031,10 @@ pub(crate) fn translate_provider_line(
 
 fn translate_claude_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
-        return Vec::new();
+        return vec![ExternalAgentSemanticEvent::ProtocolDiagnostic(format!(
+            "Claude Code emitted invalid stream-json: {}",
+            truncate_captured_line(line.to_owned())
+        ))];
     };
     let mut events = Vec::new();
     match value.get("type").and_then(Value::as_str) {
@@ -979,14 +1080,19 @@ fn translate_claude_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
                 detail: "Claude Code returned control to the GameEngine host.",
             });
         }
-        _ => {}
+        other => events.push(ExternalAgentSemanticEvent::ProtocolDiagnostic(format!(
+            "Claude Code emitted an unsupported event type {other:?}."
+        ))),
     }
     events
 }
 
 fn translate_codex_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
-        return Vec::new();
+        return vec![ExternalAgentSemanticEvent::ProtocolDiagnostic(format!(
+            "Codex emitted invalid --json output: {}",
+            truncate_captured_line(line.to_owned())
+        ))];
     };
     let mut events = Vec::new();
     match value.get("type").and_then(Value::as_str) {
@@ -1043,7 +1149,9 @@ fn translate_codex_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
                 }
             }
         }
-        _ => {}
+        other => events.push(ExternalAgentSemanticEvent::ProtocolDiagnostic(format!(
+            "Codex emitted an unsupported event type {other:?}."
+        ))),
     }
     events
 }
@@ -1195,9 +1303,9 @@ pub(crate) fn build_question_prompt(turns: &[ExternalAgentQuestionTurn]) -> Stri
 
 /// Builds the read-only launch plan that answers one Ask turn.
 ///
-/// The plan carries no Editor MCP connection material. An answer needs no
-/// authoring authority, so the process is given the narrowest provider surface
-/// that can still read the project.
+/// The plan carries a read-only Editor MCP connection. The credential itself
+/// rejects mutating tools, so Ask can inspect unsaved authoritative Editor
+/// state without acquiring authoring authority.
 ///
 /// # Errors
 ///
@@ -1207,53 +1315,76 @@ pub(crate) fn build_question_launch_plan(
     kind: ExternalAgentProviderKind,
     placement: &ExternalAgentExecutionPlacement,
     prompt: &str,
+    mcp_endpoint: &str,
 ) -> Result<ExternalAgentLaunchPlan, String> {
     let plan = match kind {
-        ExternalAgentProviderKind::ClaudeCode => ExternalAgentLaunchPlan {
-            program: OsString::from("claude"),
-            args: vec![
-                OsString::from("-p"),
-                OsString::from(prompt),
-                OsString::from("--output-format"),
-                OsString::from("stream-json"),
-                OsString::from("--verbose"),
-                // An empty strict MCP configuration keeps unrelated user MCP
-                // servers out of an answer that only has to read this project.
-                OsString::from("--mcp-config"),
-                OsString::from(r#"{"mcpServers":{}}"#),
-                OsString::from("--strict-mcp-config"),
-                OsString::from("--allowedTools"),
-                OsString::from("Read"),
-                OsString::from("Glob"),
-                OsString::from("Grep"),
-                // An allow list only decides what may run without a prompt, and
-                // a project's own provider settings can widen it. A deny list is
-                // the rule the provider cannot be configured around, so the
-                // write-capable tools are named here explicitly.
-                OsString::from("--disallowedTools"),
-                OsString::from("Write"),
-                OsString::from("Edit"),
-                OsString::from("NotebookEdit"),
-                OsString::from("Bash"),
-                OsString::from("Task"),
-            ],
-        },
-        ExternalAgentProviderKind::Codex => ExternalAgentLaunchPlan {
-            program: OsString::from("codex"),
-            args: vec![
-                OsString::from("exec"),
-                OsString::from("--json"),
-                OsString::from("--skip-git-repo-check"),
-                OsString::from("--sandbox"),
-                OsString::from("read-only"),
-                // Codex has no strict-configuration switch, so the user's own
-                // MCP servers are overridden away for the same reason Claude
-                // Code is launched with an empty strict configuration.
-                OsString::from("-c"),
-                OsString::from("mcp_servers={}"),
-                OsString::from(prompt),
-            ],
-        },
+        ExternalAgentProviderKind::ClaudeCode => {
+            let mcp_config = serde_json::json!({
+                "mcpServers": {
+                    GAMEENGINE_MCP_SERVER_NAME: {
+                        "type": "http",
+                        "url": mcp_endpoint,
+                        "headers": {
+                            "Authorization": format!("Bearer ${{{GAMEENGINE_MCP_TOKEN_ENV}}}"),
+                        },
+                    }
+                }
+            })
+            .to_string();
+            ExternalAgentLaunchPlan {
+                program: OsString::from("claude"),
+                args: vec![
+                    OsString::from("-p"),
+                    OsString::from(prompt),
+                    OsString::from("--output-format"),
+                    OsString::from("stream-json"),
+                    OsString::from("--verbose"),
+                    OsString::from("--mcp-config"),
+                    OsString::from(mcp_config),
+                    OsString::from("--strict-mcp-config"),
+                    OsString::from("--allowedTools"),
+                    OsString::from("Read"),
+                    OsString::from("Glob"),
+                    OsString::from("Grep"),
+                    OsString::from("mcp__gameengine_editor__*"),
+                    // An allow list only decides what may run without a prompt, and
+                    // a project's own provider settings can widen it. A deny list is
+                    // the rule the provider cannot be configured around, so the
+                    // write-capable tools are named here explicitly.
+                    OsString::from("--disallowedTools"),
+                    OsString::from("Write"),
+                    OsString::from("Edit"),
+                    OsString::from("NotebookEdit"),
+                    OsString::from("Bash"),
+                    OsString::from("Task"),
+                ],
+            }
+        }
+        ExternalAgentProviderKind::Codex => {
+            let mcp_url = format!(
+                "mcp_servers.{GAMEENGINE_MCP_SERVER_NAME}.url={}",
+                toml_basic_string(mcp_endpoint)
+            );
+            let bearer_env = format!(
+                "mcp_servers.{GAMEENGINE_MCP_SERVER_NAME}.bearer_token_env_var={}",
+                toml_basic_string(GAMEENGINE_MCP_TOKEN_ENV)
+            );
+            ExternalAgentLaunchPlan {
+                program: OsString::from("codex"),
+                args: vec![
+                    OsString::from("exec"),
+                    OsString::from("--json"),
+                    OsString::from("--skip-git-repo-check"),
+                    OsString::from("--sandbox"),
+                    OsString::from("read-only"),
+                    OsString::from("-c"),
+                    OsString::from(mcp_url),
+                    OsString::from("-c"),
+                    OsString::from(bearer_env),
+                    OsString::from(prompt),
+                ],
+            }
+        }
         ExternalAgentProviderKind::Generic => {
             return Err(
                 "The Generic command provider cannot answer Ask, because GameEngine cannot prove a user-defined command stays read-only. Select Claude Code or Codex, or answer with the selected ModelBackend."
@@ -1370,8 +1501,9 @@ pub(crate) struct ExternalAgentAnswer {
 /// A running provider process that answers one Ask turn and then exits.
 ///
 /// This is deliberately not an Agent Host run: an answer acquires no work
-/// claim, prepares no code workspace, and receives no Editor MCP connection
-/// material, so a question never enters the run lifecycle.
+/// claim and prepares no code workspace. Its separate read-only Editor MCP
+/// credential cannot invoke mutation tools, so a question never enters the run
+/// lifecycle while still seeing unsaved authoritative state.
 pub(crate) struct ExternalAgentQuestionTask {
     kind: ExternalAgentProviderKind,
     result: Receiver<Result<ExternalAgentAnswer, String>>,
@@ -1388,6 +1520,7 @@ impl ExternalAgentQuestionTask {
         kind: ExternalAgentProviderKind,
         plan: ExternalAgentLaunchPlan,
         working_directory: PathBuf,
+        environment: Vec<(OsString, OsString)>,
     ) -> Result<Self, String> {
         let (sender, result) = mpsc::channel();
         let child = Arc::new(Mutex::new(None));
@@ -1395,7 +1528,13 @@ impl ExternalAgentQuestionTask {
         std::thread::Builder::new()
             .name("ai-external-question".to_owned())
             .spawn(move || {
-                let answer = answer_with_provider(kind, &plan, &working_directory, &worker_child);
+                let answer = answer_with_provider(
+                    kind,
+                    &plan,
+                    &working_directory,
+                    &environment,
+                    &worker_child,
+                );
                 let _ = sender.send(answer);
             })
             .map_err(|error| format!("Could not start the provider answer worker: {error}"))?;
@@ -1427,7 +1566,7 @@ impl ExternalAgentQuestionTask {
         if let Ok(mut guard) = self.child.lock()
             && let Some(child) = guard.as_mut()
         {
-            let _ = child.kill();
+            let _ = terminate_process_tree(child);
         }
     }
 }
@@ -1437,12 +1576,14 @@ fn answer_with_provider(
     kind: ExternalAgentProviderKind,
     plan: &ExternalAgentLaunchPlan,
     working_directory: &Path,
+    environment: &[(OsString, OsString)],
     child_slot: &Arc<Mutex<Option<Child>>>,
 ) -> Result<ExternalAgentAnswer, String> {
     let started = Instant::now();
     let mut child = Command::new(&plan.program)
         .args(&plan.args)
         .current_dir(working_directory)
+        .envs(environment.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1468,7 +1609,7 @@ fn answer_with_provider(
                 }
             })
         {
-            let _ = child.kill();
+            let _ = terminate_process_tree(&mut child);
             return Err(format!("Could not read {} output: {error}", kind.label()));
         }
     }
@@ -1476,7 +1617,7 @@ fn answer_with_provider(
     let Ok(mut guard) = child_slot.lock() else {
         // The slot exists only for cancellation, but a poisoned lock must not
         // leave a provider process running with nothing able to stop it.
-        let _ = child.kill();
+        let _ = terminate_process_tree(&mut child);
         return Err(format!(
             "Could not track the {} process for cancellation.",
             kind.label()
@@ -1498,7 +1639,7 @@ fn answer_with_provider(
                 stated_error = Some(text);
             }
         }
-        recent.push(line);
+        recent.push(truncate_captured_line(line));
         if recent.len() > MAX_RETAINED_DIAGNOSTIC_LINES {
             recent.remove(0);
         }
@@ -1634,8 +1775,8 @@ impl ExternalAgentSetupAction {
 /// The npm package that publishes each first-class provider CLI.
 const fn install_package(kind: ExternalAgentProviderKind) -> Option<&'static str> {
     match kind {
-        ExternalAgentProviderKind::ClaudeCode => Some("@anthropic-ai/claude-code@latest"),
-        ExternalAgentProviderKind::Codex => Some("@openai/codex@latest"),
+        ExternalAgentProviderKind::ClaudeCode => Some("@anthropic-ai/claude-code@2.1.237"),
+        ExternalAgentProviderKind::Codex => Some("@openai/codex@0.148.0"),
         ExternalAgentProviderKind::Generic => None,
     }
 }
@@ -1654,10 +1795,9 @@ const fn npm_program(placement: &ExternalAgentExecutionPlacement) -> &'static st
 
 /// Builds the command that installs or updates a provider CLI.
 ///
-/// The version is deliberately `latest` rather than pinned. A provider CLI is a
-/// client of a service that moves independently of GameEngine, and an outdated
-/// client fails against the provider's current models; pinning would convert a
-/// one-click update into a support problem GameEngine cannot fix.
+/// The version is pinned to the adapter version validated by GameEngine.
+/// Updating a provider therefore requires updating and testing its stream
+/// parser, command-line flags, MCP behavior, and credential probe together.
 ///
 /// # Errors
 ///
@@ -1749,6 +1889,7 @@ pub(crate) struct ExternalAgentSetupTask {
     kind: ExternalAgentProviderKind,
     action: ExternalAgentSetupAction,
     child: Child,
+    input: Option<std::process::ChildStdin>,
     output: Receiver<String>,
     exit_status: Option<ExitStatus>,
 }
@@ -1775,7 +1916,11 @@ impl ExternalAgentSetupTask {
         let mut child = Command::new(&program)
             .args(&args)
             .current_dir(working_directory)
-            .stdin(Stdio::null())
+            .stdin(if action == ExternalAgentSetupAction::SignIn {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1788,6 +1933,7 @@ impl ExternalAgentSetupTask {
             })?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let input = child.stdin.take();
         let (sender, output) = mpsc::channel();
         for pipe in [
             stdout.map(PipeReader::Stdout),
@@ -1805,7 +1951,7 @@ impl ExternalAgentSetupTask {
                     }
                 })
             {
-                let _ = child.kill();
+                let _ = terminate_process_tree(&mut child);
                 return Err(format!(
                     "Could not read {} setup output: {error}",
                     kind.label()
@@ -1816,6 +1962,7 @@ impl ExternalAgentSetupTask {
             kind,
             action,
             child,
+            input,
             output,
             exit_status: None,
         })
@@ -1834,6 +1981,21 @@ impl ExternalAgentSetupTask {
     /// Returns provider output produced since the previous call.
     pub(crate) fn drain_output(&self) -> Vec<String> {
         self.output.try_iter().collect()
+    }
+
+    /// Sends one confirmation or device-code response to an interactive
+    /// provider sign-in flow.
+    pub(crate) fn send_input(&mut self, input: &str) -> Result<(), String> {
+        use std::io::Write;
+
+        let Some(stdin) = self.input.as_mut() else {
+            return Err("This provider setup step is not accepting input.".to_owned());
+        };
+        stdin
+            .write_all(input.as_bytes())
+            .and_then(|()| stdin.write_all(b"\n"))
+            .and_then(|()| stdin.flush())
+            .map_err(|error| format!("Could not send provider sign-in input: {error}"))
     }
 
     /// Returns the exit status once the setup process has finished.
@@ -1855,8 +2017,7 @@ impl ExternalAgentSetupTask {
     /// Stops an unfinished setup step.
     pub(crate) fn cancel(&mut self) {
         if self.exit_status.is_none() {
-            let _ = self.child.kill();
-            self.exit_status = self.child.wait().ok();
+            self.exit_status = terminate_process_tree(&mut self.child).ok().flatten();
         }
     }
 }
@@ -1882,21 +2043,11 @@ impl PipeReader {
         }
     }
 
-    /// Reads the pipe to end of stream, one truncated line at a time.
+    /// Reads the pipe to end of stream without modifying provider JSON.
     fn lines(self) -> Box<dyn Iterator<Item = String>> {
         match self {
-            Self::Stdout(pipe) => Box::new(
-                BufReader::new(pipe)
-                    .lines()
-                    .map_while(Result::ok)
-                    .map(truncate_captured_line),
-            ),
-            Self::Stderr(pipe) => Box::new(
-                BufReader::new(pipe)
-                    .lines()
-                    .map_while(Result::ok)
-                    .map(truncate_captured_line),
-            ),
+            Self::Stdout(pipe) => Box::new(BufReader::new(pipe).lines().map_while(Result::ok)),
+            Self::Stderr(pipe) => Box::new(BufReader::new(pipe).lines().map_while(Result::ok)),
         }
     }
 }
@@ -1971,18 +2122,13 @@ fn resolve_program_locations(
             (program, args)
         }
     };
-    let Ok(output) = Command::new(locator)
-        .args(locator_args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-    else {
+    let Ok((succeeded, output)) = direct_command_output(locator, locator_args) else {
         return Vec::new();
     };
-    if !output.status.success() {
+    if !succeeded {
         return Vec::new();
     }
-    String::from_utf8_lossy(&output.stdout)
+    output
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -2002,12 +2148,16 @@ fn installer_is_available(placement: &ExternalAgentExecutionPlacement) -> bool {
         OsString::from(npm_program(placement)),
         [OsString::from("--version")],
     );
-    Command::new(program)
+    let Ok(mut child) = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .spawn()
+    else {
+        return false;
+    };
+    wait_for_probe(&mut child)
         .map(|status| status.success())
         .unwrap_or(false)
 }
@@ -2117,8 +2267,8 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_claude_status_report_falls_back_to_the_exit_status() {
-        assert!(claude_credential_present("not a status report", true));
+    fn an_unreadable_claude_status_report_fails_closed() {
+        assert!(!claude_credential_present("not a status report", true));
         assert!(!claude_credential_present("not a status report", false));
     }
 
@@ -2388,10 +2538,9 @@ mod tests {
         let (name, value) =
             wsl_environment_forwarding(&variables, &["GAMEENGINE_AGENT_CAPTURE_PATH"]);
         assert_eq!(name, OsString::from("WSLENV"));
-        assert_eq!(
-            value,
-            OsString::from("GAMEENGINE_MCP_AUTH_TOKEN:GAMEENGINE_AGENT_CAPTURE_PATH/p")
-        );
+        let value = value.to_string_lossy();
+        assert!(value.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
+        assert!(value.contains("GAMEENGINE_AGENT_CAPTURE_PATH/p"));
     }
 
     #[test]
@@ -2400,6 +2549,7 @@ mod tests {
             probe_wsl_loopback_reachability(
                 &ExternalAgentExecutionPlacement::windows_native(),
                 "http://127.0.0.1:1234/mcp",
+                "token",
             )
             .is_ok()
         );
@@ -2411,7 +2561,10 @@ mod tests {
             environment: ExternalAgentExecutionEnvironment::Wsl2Linux,
             distribution: String::new(),
         };
-        assert!(probe_wsl_loopback_reachability(&placement, "https://example.test/mcp").is_err());
+        assert!(
+            probe_wsl_loopback_reachability(&placement, "https://example.test/mcp", "token")
+                .is_err()
+        );
     }
 
     #[test]
@@ -2471,13 +2624,17 @@ mod tests {
             server["headers"]["Authorization"],
             "Bearer ${GAMEENGINE_MCP_AUTH_TOKEN}"
         );
+        assert_eq!(
+            server["headers"][GAMEENGINE_AGENT_RUN_ID_HEADER],
+            "${GAMEENGINE_AGENT_RUN_ID}"
+        );
         let allowed_index = plan
             .args
             .iter()
             .position(|value| value == OsStr::new("--allowedTools"))
             .expect("allowed tools flag");
         assert_eq!(
-            &plan.args[allowed_index + 1..],
+            &plan.args[allowed_index + 1..allowed_index + 4],
             &[
                 OsString::from("Edit"),
                 OsString::from("Write"),
@@ -2506,6 +2663,8 @@ mod tests {
         assert!(args.contains("--sandbox\nworkspace-write"));
         assert!(args.contains("http://127.0.0.1:4321/mcp"));
         assert!(args.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
+        assert!(args.contains(GAMEENGINE_AGENT_RUN_ID_HEADER));
+        assert!(args.contains("windows.sandbox=\"elevated\""));
     }
 
     #[test]
@@ -2540,6 +2699,43 @@ mod tests {
     }
 
     #[test]
+    fn provider_translation_preserves_an_event_beyond_four_thousand_characters() {
+        let long_detail = "x".repeat(8_000);
+        let payload = serde_json::json!({
+            "type": "progress",
+            "step": "inspect",
+            "detail": long_detail,
+        })
+        .to_string();
+        let line = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": format!("{GAMEENGINE_AGENT_EVENT_PREFIX}{payload}"),
+                }]
+            }
+        })
+        .to_string();
+
+        let events = translate_provider_line(ExternalAgentProviderKind::ClaudeCode, &line);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExternalAgentSemanticEvent::GameEngineProtocolPayload(found) if found == &payload
+        )));
+    }
+
+    #[test]
+    fn invalid_provider_json_becomes_an_explicit_protocol_diagnostic() {
+        let events = translate_provider_line(ExternalAgentProviderKind::Codex, "{truncated");
+        assert!(matches!(
+            events.as_slice(),
+            [ExternalAgentSemanticEvent::ProtocolDiagnostic(message)]
+                if message.contains("invalid --json output")
+        ));
+    }
+
+    #[test]
     fn provider_failure_mapping_is_sanitized_and_classified() {
         let mut diagnostics = ExternalAgentDiagnostics::default();
         diagnostics.observe(ExternalAgentProviderKind::Codex, "rate limit exceeded");
@@ -2564,14 +2760,19 @@ mod tests {
     }
 
     #[test]
-    fn a_question_launch_plan_carries_no_write_surface_and_no_mcp_credential() {
+    fn a_question_launch_plan_carries_read_only_mcp_and_no_write_surface() {
         let placement = ExternalAgentExecutionPlacement::windows_native();
         for kind in [
             ExternalAgentProviderKind::ClaudeCode,
             ExternalAgentProviderKind::Codex,
         ] {
-            let plan = build_question_launch_plan(kind, &placement, "why is the player falling?")
-                .expect("first-class providers answer questions");
+            let plan = build_question_launch_plan(
+                kind,
+                &placement,
+                "why is the player falling?",
+                "http://127.0.0.1:1234/mcp",
+            )
+            .expect("first-class providers answer questions");
             let args = plan
                 .args
                 .iter()
@@ -2579,13 +2780,14 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             assert!(!args.contains("workspace-write"));
-            assert!(!args.contains(GAMEENGINE_MCP_TOKEN_ENV));
-            assert!(!args.contains(GAMEENGINE_MCP_SERVER_NAME));
+            assert!(args.contains(GAMEENGINE_MCP_TOKEN_ENV));
+            assert!(args.contains(GAMEENGINE_MCP_SERVER_NAME));
         }
         let claude = build_question_launch_plan(
             ExternalAgentProviderKind::ClaudeCode,
             &placement,
             "why is the player falling?",
+            "http://127.0.0.1:1234/mcp",
         )
         .expect("Claude Code answers questions");
         let claude_args = claude
@@ -2610,6 +2812,7 @@ mod tests {
             ExternalAgentProviderKind::Codex,
             &placement,
             "why is the player falling?",
+            "http://127.0.0.1:1234/mcp",
         )
         .expect("Codex answers questions");
         let codex_args = codex
@@ -2618,11 +2821,7 @@ mod tests {
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(codex_args.iter().any(|argument| argument == "read-only"));
-        assert!(
-            codex_args
-                .iter()
-                .any(|argument| argument == "mcp_servers={}")
-        );
+        assert!(codex_args.iter().any(|argument| argument.contains(".url=")));
     }
 
     #[test]
@@ -2675,6 +2874,7 @@ mod tests {
             ExternalAgentProviderKind::Generic,
             &placement,
             "why is the player falling?",
+            "http://127.0.0.1:1234/mcp",
         )
         .expect_err("a user-defined command cannot be proven read-only");
         assert!(error.contains("Generic command provider"));
@@ -2781,7 +2981,7 @@ mod tests {
             vec![
                 OsString::from("install"),
                 OsString::from("-g"),
-                OsString::from("@openai/codex@latest"),
+                OsString::from("@openai/codex@0.148.0"),
             ]
         );
         let wsl = build_install_plan(
@@ -2802,7 +3002,7 @@ mod tests {
         assert_eq!(args[1], "Ubuntu-24.04");
         assert_eq!(args[2], "--");
         assert_eq!(args[3], "npm");
-        assert!(args.contains(&"@anthropic-ai/claude-code@latest".to_owned()));
+        assert!(args.contains(&"@anthropic-ai/claude-code@2.1.237".to_owned()));
         assert!(
             build_install_plan(
                 ExternalAgentProviderKind::Generic,
@@ -2821,7 +3021,7 @@ mod tests {
             &placement,
         )
         .expect("an install command is shown");
-        assert_eq!(install, "npm.cmd install -g @openai/codex@latest");
+        assert_eq!(install, "npm.cmd install -g @openai/codex@0.148.0");
         let sign_in = setup_command_text(
             ExternalAgentSetupAction::SignIn,
             ExternalAgentProviderKind::Codex,

@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 /// Default loopback endpoint of the Ollama-compatible local backend.
 pub const DEFAULT_BENCHMARK_ENDPOINT: &str = "http://127.0.0.1:11434";
 
+/// Finite default wall-clock budget for every benchmark run.
+pub const DEFAULT_BENCHMARK_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 /// How often the parent checks whether the active child has exited.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -46,6 +49,10 @@ pub struct BenchmarkExperimentOptions {
     pub editor_executable: Option<PathBuf>,
     /// Wall-clock budget for a single run before it is treated as hung.
     pub run_timeout: Option<Duration>,
+    /// Completed schedule prefix restored for an explicit pause/resume.
+    pub resume_from_ordinal: Option<u64>,
+    /// Machine-local marker whose presence asks the parent to stop its child.
+    pub pause_file: Option<PathBuf>,
 }
 
 impl BenchmarkExperimentOptions {
@@ -56,7 +63,9 @@ impl BenchmarkExperimentOptions {
             endpoint: DEFAULT_BENCHMARK_ENDPOINT.to_owned(),
             fixture_template_root: None,
             editor_executable: None,
-            run_timeout: None,
+            run_timeout: Some(DEFAULT_BENCHMARK_RUN_TIMEOUT),
+            resume_from_ordinal: None,
+            pause_file: None,
         }
     }
 }
@@ -78,6 +87,8 @@ pub struct BenchmarkExperimentOutcome {
     pub supports_recommendation: bool,
     /// Reason the suite stopped early, when it did.
     pub stopped_early: Option<String>,
+    /// Whether the suite stopped at a user-requested resumable pause boundary.
+    pub paused: bool,
     /// Human-readable comparison report for the executed experiment.
     pub report: String,
 }
@@ -118,12 +129,26 @@ pub fn run_benchmark_experiment(
         fixture_template_root,
         run_root,
     )?;
+    if let Some(next_ordinal) = options.resume_from_ordinal {
+        coordinator.resume_from(next_ordinal)?;
+    }
 
     let mut stopped_early = None;
+    let mut paused = false;
     let mut current_ordinal = None;
     let mut current_started = Instant::now();
     loop {
         coordinator.poll()?;
+        if options
+            .pause_file
+            .as_ref()
+            .is_some_and(|path| path.exists())
+        {
+            coordinator.pause_active()?;
+            stopped_early = Some("campaign paused by the user".to_owned());
+            paused = true;
+            break;
+        }
         match coordinator.state() {
             BenchmarkCoordinatorState::Complete { .. } => break,
             BenchmarkCoordinatorState::Failed { message, .. } => {
@@ -138,14 +163,9 @@ pub fn run_benchmark_experiment(
                 if let Some(timeout) = options.run_timeout
                     && current_started.elapsed() >= timeout
                 {
-                    coordinator.interrupt()?;
-                    stopped_early = Some(format!(
-                        "benchmark run {} on model `{}` exceeded its {} second budget",
-                        current.ordinal,
-                        current.model_id,
-                        timeout.as_secs()
-                    ));
-                    break;
+                    coordinator.timeout_active(timeout)?;
+                    current_ordinal = None;
+                    continue;
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -169,6 +189,7 @@ pub fn run_benchmark_experiment(
         comparison_path,
         supports_recommendation: comparison.supports_recommendation(),
         stopped_early,
+        paused,
         report: format_comparison(&comparison),
     })
 }
@@ -199,10 +220,11 @@ fn format_comparison(comparison: &BenchmarkExperimentComparison) -> String {
             model.missing_runs,
         ));
         text.push_str(&format!(
-            "    completion gate {}, backend failures {}, OOM {}, capability unavailable {}\n",
+            "    completion gate {}, backend failures {}, OOM {}, timeouts {}, capability unavailable {}\n",
             format_rate(model.completion_gate_success.permille()),
             model.backend_failures,
             model.out_of_memory_failures,
+            model.timeout_failures,
             model.capability_unavailable_runs,
         ));
         text.push_str(&format!(

@@ -23,6 +23,7 @@ use crate::agent_host::{
     ResumeDisposition, project_storage_key,
 };
 use crate::ai_studio_theme as theme;
+use crate::benchmark_experiment::BenchmarkRunFailureKind;
 use crate::external_agent_provider::{
     ExternalAgentDiagnostics, ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement,
     ExternalAgentProbeTask, ExternalAgentProviderKind, ExternalAgentProviderReport,
@@ -46,7 +47,7 @@ use crate::native_agent::{
     DEFAULT_LOCAL_MODEL_ENDPOINT, InstalledLocalModel, InstalledModelDiscoveryTask,
     InstalledModelInventory, LocalModelConfig, LocalModelResourceConfig, ModelCapabilityProfile,
     ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
-    QuestionMessage, QuestionRole,
+    NativeSamplingOptions, QuestionMessage, QuestionRole,
 };
 use crate::native_agent_runtime::{
     NativeAgentAction, NativeAgentRuntime, NativeMcpTask, mcp_write,
@@ -508,6 +509,7 @@ enum AgentRuntimeMode {
 
 enum ModelResourceContinuation {
     RestoreForEditing,
+    BenchmarkProfilePrepared,
     LaunchManagedPlay {
         run_id: String,
     },
@@ -639,6 +641,27 @@ enum ProviderRuntimeInput {
         at_tick: Option<u64>,
     },
 }
+
+/// Complete provider-facing schema for GameEngine semantic events. This text
+/// is inserted into the actual prompt as well as the child environment because
+/// provider models do not implicitly inspect environment variables.
+const PROVIDER_EVENT_PROTOCOL_GUIDANCE: &str = r#"Each semantic event must be exactly one standalone line:
+GAMEENGINE_AGENT_EVENT {JSON}
+Supported JSON objects (no other type or field names are accepted):
+{"type":"progress","step":"string","detail":"string"}
+{"type":"tool_action","tool":"string","action":"string","success":true|false|null}
+{"type":"completion_gate","gate":"acceptance_criteria"|"authoring_validation"|"visual_evaluation","status":"pending"|"passed"|"failed"|"not_applicable","message":"string"}
+{"type":"playtest_result","launched":true|false,"interactions_passed":true|false|null,"message":"string"}
+{"type":"runtime_input","input":{"kind":"key","key":"string","pressed":true|false,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"hold_key","key":"string","ticks":u64,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"mouse_button","button":"string","pressed":true|false,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"hold_mouse_button","button":"string","ticks":u64,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"gamepad_button","gamepad":u32,"button":"string","pressed":true|false,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"gamepad_axis","gamepad":u32,"axis":"string","value":f32,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"mouse_move","x":f32,"y":f32,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"mouse_delta","x":f64,"y":f64,"at_tick":optional_u64}}
+{"type":"runtime_input","input":{"kind":"mouse_scroll","amount":f32,"at_tick":optional_u64}}
+The only valid completion gate names are acceptance_criteria, authoring_validation, and visual_evaluation. Do not substitute validation, source_validation, or similar names."#;
 
 impl ProviderRuntimeInput {
     fn scheduled_commands(
@@ -793,14 +816,20 @@ fn next_runtime_input_tick(inputs: &[RuntimeDebugScheduledInput]) -> u64 {
 pub struct AiStudioConnection {
     endpoint: String,
     authorization_token: String,
+    read_only_authorization_token: String,
 }
 
 impl AiStudioConnection {
     /// Creates an in-memory connection descriptor for the active Editor MCP host.
-    pub fn new(endpoint: impl Into<String>, authorization_token: impl Into<String>) -> Self {
+    pub fn new(
+        endpoint: impl Into<String>,
+        authorization_token: impl Into<String>,
+        read_only_authorization_token: impl Into<String>,
+    ) -> Self {
         Self {
             endpoint: endpoint.into(),
             authorization_token: authorization_token.into(),
+            read_only_authorization_token: read_only_authorization_token.into(),
         }
     }
 }
@@ -1038,6 +1067,8 @@ pub struct AiStudioPanel {
     external_setup: Option<ExternalAgentSetupTask>,
     /// Provider output retained while a setup step is in progress.
     external_setup_log: Vec<String>,
+    /// Confirmation text or device code entered for an interactive sign-in.
+    external_setup_input: String,
     /// The sign-in URL the provider printed, when it printed one.
     external_sign_in_url: Option<String>,
     /// A background discovery/authentication probe of first-class providers.
@@ -1113,6 +1144,9 @@ pub struct AiStudioPanel {
     process: Option<ExternalAgentProcess>,
     process_purpose: Option<ExternalAgentPurpose>,
     external_provider_diagnostics: ExternalAgentDiagnostics,
+    /// Whether the provider stream claimed workspace file-change activity in
+    /// the current process. Used to detect Windows sandbox false-success.
+    external_provider_reported_workspace_write: bool,
     pending_external_work_owner: Option<(ExternalAgentPurpose, String)>,
     code_workspace: Option<CodeWorkspace>,
     pending_code_changes: Vec<CodeChange>,
@@ -1157,6 +1191,9 @@ impl AiStudioPanel {
             .map_err(|error| error.to_string())?;
         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
         let benchmark_experiment_root = ai_root.join("benchmark-experiments");
+        let benchmark_campaign = benchmark_campaign_ui::BenchmarkCampaignPanel::load_checkpoint(
+            &benchmark_experiment_root,
+        );
         let (benchmark_records, benchmark_status) = match benchmark_store.load() {
             Ok(records) => (records, None),
             Err(error) => (
@@ -1211,6 +1248,7 @@ impl AiStudioPanel {
             external_question_session: None,
             external_setup: None,
             external_setup_log: Vec::new(),
+            external_setup_input: String::new(),
             external_sign_in_url: None,
             external_provider_probe: None,
             external_provider_probe_requested: false,
@@ -1282,6 +1320,7 @@ impl AiStudioPanel {
             process: None,
             process_purpose: None,
             external_provider_diagnostics: ExternalAgentDiagnostics::default(),
+            external_provider_reported_workspace_write: false,
             pending_external_work_owner: None,
             code_workspace: None,
             pending_code_changes: Vec::new(),
@@ -1301,11 +1340,85 @@ impl AiStudioPanel {
             managed_playtest_started_at: None,
             last_captured_frame: None,
             benchmark_child: None,
-            benchmark_campaign: benchmark_campaign_ui::BenchmarkCampaignPanel::default(),
+            benchmark_campaign,
             benchmark_experiment: benchmark_experiment_ui::BenchmarkExperimentPanel::default(),
             benchmark_experiment_root,
             status: benchmark_status,
         })
+    }
+
+    /// Authorizes an MCP request that claims to belong to an external run.
+    /// Mutating calls acquire canonical authoring ownership only for the
+    /// duration of the actual tool invocation, so code-only runs never block
+    /// unrelated authoring and an abandoned process cannot retain ownership.
+    pub fn begin_external_mcp_call(
+        &mut self,
+        run_id: &str,
+        tool: &str,
+        mutating: bool,
+    ) -> Result<(), String> {
+        if self.active_run_id.as_deref() != Some(run_id) || self.process.is_none() {
+            return Err(format!(
+                "MCP request for run `{run_id}` was rejected because that external run is no longer active."
+            ));
+        }
+        self.host.run(run_id).map_err(|error| error.to_string())?;
+        if mutating {
+            if self.process_purpose != Some(ExternalAgentPurpose::BuildOrRepair) {
+                return Err(format!(
+                    "Mutating MCP tool `{tool}` is not allowed during read-only runtime evaluation."
+                ));
+            }
+            self.host
+                .acquire_work_claims(
+                    run_id,
+                    [AgentWorkClaim::shared_resource("canonical_authoring")],
+                )
+                .map_err(|error| {
+                    format!("Could not acquire authoring ownership for `{tool}`: {error}")
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Records the authoritative result returned by the Editor MCP host and
+    /// releases any short-lived mutation claim.
+    pub fn finish_external_mcp_call(
+        &mut self,
+        run_id: &str,
+        tool: &str,
+        mutating: bool,
+        succeeded: bool,
+    ) {
+        if let Err(error) = self.host.record_tool_action(
+            run_id,
+            tool,
+            "Editor MCP host executed the requested tool",
+            Some(succeeded),
+        ) {
+            self.status = Some(error.to_string());
+        }
+        if mutating
+            && succeeded
+            && let Err(error) = self.host.record_completion_gate(
+                run_id,
+                "authoring_validation",
+                CompletionStatus::Passed,
+                format!("Editor MCP host successfully applied `{tool}`."),
+            )
+        {
+            self.status = Some(error.to_string());
+        }
+        if mutating
+            && let Err(error) = self.host.release_work_claims(
+                run_id,
+                [AgentWorkClaim::shared_resource("canonical_authoring")],
+            )
+        {
+            self.status = Some(format!(
+                "Could not release authoring ownership after `{tool}`: {error}"
+            ));
+        }
     }
 
     /// Makes the AI Studio presentation visible without changing its current placement.
@@ -3692,12 +3805,124 @@ impl AiStudioPanel {
 
     /// Applies the derivation an intent commit performs on the draft proposal.
     ///
-    /// The submitted instruction becomes the goal and every other field of the
-    /// current draft is carried forward. Both the composer and the ADR 0133
-    /// companion commit through this, so the two surfaces record the same
-    /// proposal version for the same instruction (ADR 0162 §7).
+    /// The submitted instruction becomes both the goal and a deterministic
+    /// minimum structured plan. Explicitly edited draft fields are preserved;
+    /// empty fields are populated from conservative intent categories so Host
+    /// workload, evidence, and permission decisions do not see a goal-only
+    /// proposal that disagrees with the user's request.
     fn derive_intent_proposal(&mut self, message: &str) {
         self.proposal_draft.goal = message.to_owned();
+        if !self
+            .proposal_draft
+            .requirements
+            .iter()
+            .any(|item| item == message)
+        {
+            self.proposal_draft.requirements.push(message.to_owned());
+        }
+        if self.proposal_draft.acceptance_criteria.is_empty() {
+            self.proposal_draft.acceptance_criteria.push(
+                "The submitted request is completed without changes outside its stated scope."
+                    .to_owned(),
+            );
+        }
+
+        let lower = message.to_ascii_lowercase();
+        let code_intent = [
+            "code",
+            "rust",
+            "script",
+            "compile",
+            "test",
+            "bug",
+            "fix",
+            "コード",
+            "実装",
+            "修正",
+        ]
+        .iter()
+        .any(|term| lower.contains(term));
+        let authoring_intent = [
+            "scene",
+            "entity",
+            "prefab",
+            "graph",
+            "material",
+            "animation",
+            "ui",
+            "シーン",
+            "エンティティ",
+            "プレハブ",
+            "アセット",
+        ]
+        .iter()
+        .any(|term| lower.contains(term));
+        let runtime_intent = [
+            "play",
+            "runtime",
+            "visual",
+            "game",
+            "プレイ",
+            "実行",
+            "見た目",
+        ]
+        .iter()
+        .any(|term| lower.contains(term));
+        let asset_intent = ["image", "audio", "texture", "model", "画像", "音声", "素材"]
+            .iter()
+            .any(|term| lower.contains(term));
+
+        if code_intent {
+            if self.proposal_draft.planned_code_changes.is_empty() {
+                self.proposal_draft
+                    .planned_code_changes
+                    .push("Project code changes required by the submitted request.".to_owned());
+            }
+            if self.proposal_draft.validation_plan.is_empty() {
+                self.proposal_draft.validation_plan.push(
+                    "Run targeted checks for changed packages, then the repository core gate."
+                        .to_owned(),
+                );
+            }
+            self.proposal_draft
+                .requested_capabilities
+                .insert(AgentCapability::CodeWorkspaceApply);
+        }
+        if authoring_intent && self.proposal_draft.planned_project_changes.is_empty() {
+            self.proposal_draft.planned_project_changes.push(
+                "Apply the requested typed authoring changes through the live Editor MCP host."
+                    .to_owned(),
+            );
+            if self.proposal_draft.validation_plan.is_empty() {
+                self.proposal_draft.validation_plan.push(
+                    "Validate the changed authoritative authoring documents in the Editor."
+                        .to_owned(),
+                );
+            }
+        }
+        if runtime_intent {
+            if self.proposal_draft.playtest_plan.is_empty() {
+                self.proposal_draft.playtest_plan.push(
+                    "Launch managed Play and verify the requested runtime behavior.".to_owned(),
+                );
+            }
+            self.proposal_draft
+                .requested_capabilities
+                .insert(AgentCapability::RuntimeLaunch);
+            self.proposal_draft
+                .requested_capabilities
+                .insert(AgentCapability::FrameCapture);
+        }
+        if asset_intent {
+            if self.proposal_draft.planned_assets.is_empty() {
+                self.proposal_draft
+                    .planned_assets
+                    .push("Assets required by the submitted request.".to_owned());
+            }
+            self.proposal_draft
+                .requested_capabilities
+                .insert(AgentCapability::ExternalAssetAcquisition);
+        }
     }
 
     fn model_routing_status(&mut self) -> String {
@@ -4171,8 +4396,9 @@ impl AiStudioPanel {
     /// Starts the read-only provider process that answers one Ask turn.
     ///
     /// ADR 0163 §1: the answer never enters the run lifecycle. It takes no work
-    /// claim, prepares no code workspace, and receives no Editor MCP connection
-    /// material, so Ask cannot acquire write capability through the provider.
+    /// claim and prepares no code workspace. It receives the Editor's separate
+    /// read-only MCP credential so unsaved authoritative state is visible while
+    /// mutation remains impossible at the transport boundary.
     fn start_external_question(&mut self) {
         let kind = self.external_provider_kind;
         let session_id = self.selected_session.clone();
@@ -4195,15 +4421,27 @@ impl AiStudioPanel {
             }
         };
         let prompt = build_question_prompt(&turns);
-        let plan = match build_question_launch_plan(kind, &self.external_agent_placement(), &prompt)
-        {
+        let placement = self.external_agent_placement();
+        let plan = match build_question_launch_plan(
+            kind,
+            &placement,
+            &prompt,
+            &self.connection.endpoint,
+        ) {
             Ok(plan) => plan,
             Err(error) => {
                 self.status = Some(error);
                 return;
             }
         };
-        match ExternalAgentQuestionTask::spawn(kind, plan, self.project_root.clone()) {
+        let mut environment = vec![(
+            OsString::from("GAMEENGINE_MCP_AUTH_TOKEN"),
+            OsString::from(&self.connection.read_only_authorization_token),
+        )];
+        if placement.environment == ExternalAgentExecutionEnvironment::Wsl2Linux {
+            environment.push(wsl_environment_forwarding(&environment, &[]));
+        }
+        match ExternalAgentQuestionTask::spawn(kind, plan, self.project_root.clone(), environment) {
             Ok(task) => {
                 self.external_question = Some(task);
                 self.external_question_session = Some(session_id);
@@ -4403,7 +4641,17 @@ impl AiStudioPanel {
         conversation: Vec<QuestionMessage>,
         session_id: String,
     ) {
-        match NativeQuestionTask::spawn(config, self.project_root.clone(), conversation) {
+        let task = if self.benchmark_child_active() {
+            NativeQuestionTask::spawn_with_sampling(
+                config,
+                self.project_root.clone(),
+                conversation,
+                NativeSamplingOptions::deterministic_greedy(),
+            )
+        } else {
+            NativeQuestionTask::spawn(config, self.project_root.clone(), conversation)
+        };
+        match task {
             Ok(task) => {
                 self.native_question = Some(task);
                 self.native_question_session = Some(session_id);
@@ -4544,6 +4792,29 @@ impl AiStudioPanel {
         };
         self.model_resource_task = None;
         let continuation = self.model_resource_continuation.take();
+        if matches!(
+            continuation.as_ref(),
+            Some(ModelResourceContinuation::BenchmarkProfilePrepared)
+        ) {
+            match result {
+                Ok(transition) => {
+                    self.last_model_resource_telemetry = transition.after;
+                    if let Some(child) = self.benchmark_child.as_mut() {
+                        child.profile_prepared = true;
+                    }
+                    self.status = Some(format!(
+                        "Verified benchmark model resource boundary {:?} in {} ms.",
+                        transition.operation,
+                        telemetry_u64_value(&transition.operation_latency_ms)
+                    ));
+                }
+                Err(error) => self.write_benchmark_child_failure(
+                    BenchmarkRunFailureKind::CapabilityUnavailable,
+                    format!("benchmark execution profile could not be established: {error}"),
+                ),
+            }
+            return;
+        }
         match result {
             Ok(transition) => {
                 self.last_model_resource_telemetry = transition.after.clone();
@@ -4572,6 +4843,9 @@ impl AiStudioPanel {
         match continuation {
             ModelResourceContinuation::RestoreForEditing => {
                 unreachable!("restore continuation is handled before non-renderer continuations")
+            }
+            ModelResourceContinuation::BenchmarkProfilePrepared => {
+                unreachable!("benchmark continuation is handled by the resource poller")
             }
             ModelResourceContinuation::LaunchManagedPlay { run_id } => {
                 if self.active_run_id.as_deref() == Some(run_id.as_str())
@@ -5507,6 +5781,7 @@ impl AiStudioPanel {
             return;
         }
         self.external_setup_log.clear();
+        self.external_setup_input.clear();
         self.external_sign_in_url = None;
         match ExternalAgentSetupTask::spawn(
             kind,
@@ -5538,6 +5813,25 @@ impl AiStudioPanel {
         };
         task.cancel();
         self.status = Some(format!("{} was cancelled.", task.action().progress_label()));
+    }
+
+    /// Sends the settings input field to the provider-owned sign-in process.
+    pub(super) fn submit_external_setup_input(&mut self) {
+        let input = self.external_setup_input.trim().to_owned();
+        if input.is_empty() {
+            return;
+        }
+        let Some(task) = self.external_setup.as_mut() else {
+            self.status = Some("No provider sign-in is waiting for input.".to_owned());
+            return;
+        };
+        match task.send_input(&input) {
+            Ok(()) => {
+                self.external_setup_input.clear();
+                self.status = Some("Sent input to the provider sign-in process.".to_owned());
+            }
+            Err(error) => self.status = Some(error),
+        }
     }
 
     /// Relays setup output and re-probes the provider once a step finishes.
@@ -5753,6 +6047,7 @@ impl AiStudioPanel {
         self.active_external_program = None;
         self.active_external_args = None;
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        self.external_provider_reported_workspace_write = false;
         self.pending_external_work_owner = None;
     }
 
@@ -5977,7 +6272,7 @@ impl AiStudioPanel {
             .unwrap_or_default();
         self.native_agent_runtime = native_config.map(|config| {
             if benchmark_single_model {
-                NativeAgentRuntime::configured(config)
+                NativeAgentRuntime::configured_benchmark(config)
             } else {
                 NativeAgentRuntime::configured_routed(
                     config,
@@ -6176,28 +6471,6 @@ impl AiStudioPanel {
         let generic_program = self.active_external_program.clone().unwrap_or_default();
         let generic_args_text = self.active_external_args.clone().unwrap_or_default();
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
-        if purpose == ExternalAgentPurpose::BuildOrRepair {
-            match self.host.acquire_work_claims(
-                run_id,
-                [AgentWorkClaim::shared_resource("canonical_authoring")],
-            ) {
-                Ok(()) => self.pending_external_work_owner = None,
-                Err(AgentHostError::WorkClaimConflict { owner_run_id, .. }) => {
-                    self.pending_external_work_owner = Some((purpose, owner_run_id.clone()));
-                    self.status = Some(format!(
-                        "External agent is waiting for canonical authoring ownership held by run {owner_run_id}."
-                    ));
-                    return;
-                }
-                Err(error) => {
-                    self.fail_run(
-                        run_id,
-                        format!("Could not acquire external agent authoring ownership: {error}"),
-                    );
-                    return;
-                }
-            }
-        }
         let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
             Ok(paths) => paths,
             Err(error) => {
@@ -6309,9 +6582,7 @@ impl AiStudioPanel {
             ),
             (
                 OsString::from("GAMEENGINE_AGENT_EVENT_PROTOCOL"),
-                OsString::from(
-                    "Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result, runtime_input. runtime_input is a provider-planned interaction and is executed later only through the authorized Editor Play virtual-input path. Never emit credentials or bearer tokens.",
-                ),
+                OsString::from(PROVIDER_EVENT_PROTOCOL_GUIDANCE),
             ),
         ];
         if let Some(repair_context) = repair_context.as_deref() {
@@ -6348,7 +6619,11 @@ impl AiStudioPanel {
         // A provider placed in WSL2 reaches the Editor only when the
         // distribution shares the host loopback. Proving that here keeps the
         // failure at launch, where it names the cause, instead of inside a turn.
-        if let Err(error) = probe_wsl_loopback_reachability(&placement, &self.connection.endpoint) {
+        if let Err(error) = probe_wsl_loopback_reachability(
+            &placement,
+            &self.connection.endpoint,
+            &self.connection.authorization_token,
+        ) {
             match purpose {
                 ExternalAgentPurpose::BuildOrRepair => self.fail_run(run_id, error),
                 ExternalAgentPurpose::RuntimeEvaluation => {
@@ -6461,24 +6736,6 @@ impl AiStudioPanel {
         }
     }
 
-    fn release_external_authoring_claim(
-        &mut self,
-        run_id: &str,
-        purpose: ExternalAgentPurpose,
-    ) -> Result<(), String> {
-        if purpose != ExternalAgentPurpose::BuildOrRepair {
-            return Ok(());
-        }
-        self.host
-            .release_work_claims(
-                run_id,
-                [AgentWorkClaim::shared_resource("canonical_authoring")],
-            )
-            .map_err(|error| {
-                format!("Could not release external agent authoring ownership: {error}")
-            })
-    }
-
     fn poll_external_process(&mut self, context: &egui::Context) {
         let Some(run_id) = self.active_run_id.clone() else {
             return;
@@ -6527,6 +6784,9 @@ impl AiStudioPanel {
                                 action,
                                 success,
                             } => {
+                                if tool == "workspace.file_change" {
+                                    self.external_provider_reported_workspace_write = true;
+                                }
                                 if let Err(error) =
                                     self.host.record_tool_action(&run_id, tool, action, success)
                                 {
@@ -6548,6 +6808,14 @@ impl AiStudioPanel {
                                         ));
                                     }
                                 }
+                            }
+                            ExternalAgentSemanticEvent::ProtocolDiagnostic(message) => {
+                                let _ = self.host.record_event(
+                                    &run_id,
+                                    AgentEventKind::Failure,
+                                    message.clone(),
+                                );
+                                self.status = Some(message);
                             }
                         }
                     }
@@ -6580,10 +6848,6 @@ impl AiStudioPanel {
                     .process_purpose
                     .take()
                     .unwrap_or(ExternalAgentPurpose::BuildOrRepair);
-                if let Err(error) = self.release_external_authoring_claim(&run_id, purpose) {
-                    self.fail_run(&run_id, error);
-                    return;
-                }
                 if status.success() {
                     match purpose {
                         ExternalAgentPurpose::BuildOrRepair => {
@@ -6619,11 +6883,6 @@ impl AiStudioPanel {
                     .process_purpose
                     .take()
                     .unwrap_or(ExternalAgentPurpose::BuildOrRepair);
-                if let Err(release_error) = self.release_external_authoring_claim(&run_id, purpose)
-                {
-                    self.fail_run(&run_id, release_error);
-                    return;
-                }
                 let message = format!("Could not poll external agent: {error}");
                 match purpose {
                     ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
@@ -7074,6 +7333,19 @@ impl AiStudioPanel {
             self.status = Some(error.to_string());
         }
         let has_code_changes = !changes.is_empty();
+        if self.active_external_provider == Some(ExternalAgentProviderKind::Codex)
+            && self.external_provider_environment
+                == ExternalAgentExecutionEnvironment::WindowsNative
+            && self.external_provider_reported_workspace_write
+            && !has_code_changes
+        {
+            self.fail_run(
+                run_id,
+                "Codex reported file-change activity but the isolated workspace is unchanged. The Windows workspace-write sandbox may have become effectively read-only; retry with the WSL2 Linux provider environment after its authenticated MCP probe succeeds."
+                    .to_owned(),
+            );
+            return;
+        }
         self.pending_code_changes = changes;
         if !self.managed_candidate_input_recipe.is_empty() {
             self.managed_input_recipe = std::mem::take(&mut self.managed_candidate_input_recipe);
@@ -7539,7 +7811,7 @@ fn external_agent_provider_prompt(
     runtime_evaluation_context: Option<&str>,
 ) -> String {
     let mut prompt = format!(
-        "Act as a GameEngine external AgentRuntime for the immutable proposal below.\n\n{proposal_json}\n\nPersisted project authoring changes must use the injected gameengine_editor MCP server. Project code changes must stay inside the current isolated Agent Code Workspace. Do not commit, push, or alter Git history. Agent Host permissions, work claims, managed validation, Play/frame evidence, and completion gates remain authoritative. When reporting GameEngine semantic progress, emit a standalone line beginning GAMEENGINE_AGENT_EVENT followed by the supported JSON event payload. Never emit credentials, bearer tokens, or MCP authorization material."
+        "Act as a GameEngine external AgentRuntime for the immutable proposal below.\n\n{proposal_json}\n\nPersisted project authoring changes must use the injected gameengine_editor MCP server. Project code changes must stay inside the current isolated Agent Code Workspace. Do not commit, push, or alter Git history. Agent Host permissions, work claims, managed validation, Play/frame evidence, and completion gates remain authoritative. Never emit credentials, bearer tokens, or MCP authorization material.\n\n{PROVIDER_EVENT_PROTOCOL_GUIDANCE}"
     );
     if let Some(context) = repair_context {
         prompt.push_str("\n\nRepair context:\n");
@@ -8001,7 +8273,7 @@ fn split_direct_args(text: &str) -> Vec<String> {
 fn change_summary(change: &CodeChange) -> &'static str {
     match (&change.before, &change.after) {
         (None, Some(_)) => "new",
-        (Some(_), None) => "delete (apply blocked)",
+        (Some(_), None) => "delete",
         (Some(_), Some(_)) => "modified",
         (None, None) => "unchanged",
     }
@@ -8132,13 +8404,13 @@ mod tests {
     }
 
     #[test]
-    fn code_change_summary_keeps_deletion_blocked() {
+    fn code_change_summary_reports_supported_deletion() {
         let change = CodeChange {
             relative_path: PathBuf::from("game/src/lib.rs"),
             before: Some("old".to_owned()),
             after: None,
         };
-        assert_eq!(change_summary(&change), "delete (apply blocked)");
+        assert_eq!(change_summary(&change), "delete");
     }
 
     #[test]

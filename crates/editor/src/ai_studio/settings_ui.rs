@@ -1394,6 +1394,20 @@ impl AiStudioPanel {
                 ui.hyperlink_to("Open the sign-in page", &url);
                 ui.small("Open this only if the agent could not open your browser by itself.");
             }
+            if self.external_setup.as_ref().is_some_and(|task| {
+                task.kind() == kind && task.action() == ExternalAgentSetupAction::SignIn
+            }) {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.external_setup_input)
+                            .hint_text("Confirmation or device code"),
+                    );
+                    if ui.button("Send to sign-in").clicked() {
+                        self.submit_external_setup_input();
+                    }
+                });
+                ui.small("Use this only when the provider asks for terminal input.");
+            }
             self.show_agent_diagnostics(ui, kind);
         });
     }

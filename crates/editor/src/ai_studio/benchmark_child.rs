@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent_benchmark_campaign::CampaignExecutionProfile;
 use crate::agent_benchmark_campaign::campaign_task_agent_policy;
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
@@ -7,10 +8,16 @@ use crate::benchmark_process::BenchmarkChildRunSpec;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const BENCHMARK_PREFLIGHT_TIMEOUT_MS: u64 = 120_000;
+const BENCHMARK_RUN_INITIALIZATION_TIMEOUT_MS: u64 = 30_000;
+
 pub(super) struct BenchmarkChildState {
     spec: BenchmarkChildRunSpec,
     started: bool,
+    configured_unix_ms: u64,
     started_unix_ms: u64,
+    profile_requested: bool,
+    pub(super) profile_prepared: bool,
     result_written: bool,
 }
 
@@ -53,7 +60,10 @@ impl AiStudioPanel {
         self.benchmark_child = Some(BenchmarkChildState {
             spec,
             started: false,
-            started_unix_ms: unix_ms(),
+            configured_unix_ms: unix_ms(),
+            started_unix_ms: 0,
+            profile_requested: false,
+            profile_prepared: false,
             result_written: false,
         });
         self.presentation.close();
@@ -109,7 +119,19 @@ impl AiStudioPanel {
         let backend_id = child.spec.backend_id.clone();
         let started = child.started;
         let task_id = child.spec.task_id.clone();
+        let configured_unix_ms = child.configured_unix_ms;
+        let started_unix_ms = child.started_unix_ms;
         if result_written {
+            return;
+        }
+        if !started
+            && unix_ms().saturating_sub(configured_unix_ms) >= BENCHMARK_PREFLIGHT_TIMEOUT_MS
+        {
+            self.write_benchmark_child_failure(
+                BenchmarkRunFailureKind::Timeout,
+                "benchmark preflight exceeded its managed-probe/model-discovery deadline"
+                    .to_owned(),
+            );
             return;
         }
         if backend_id == MANAGED_BACKEND_ID {
@@ -137,6 +159,21 @@ impl AiStudioPanel {
             // Representation discovery is still in flight; starting now would
             // freeze an unmeasured model identity for the whole run.
             return;
+        }
+        if !started {
+            let profile_prepared = self
+                .benchmark_child
+                .as_ref()
+                .is_some_and(|child| child.profile_prepared);
+            if !profile_prepared {
+                if let Err(error) = self.prepare_benchmark_execution_profile() {
+                    self.write_benchmark_child_failure(
+                        BenchmarkRunFailureKind::CapabilityUnavailable,
+                        error,
+                    );
+                }
+                return;
+            }
         }
         if !started {
             if let Err(error) = self.start_benchmark_child_task() {
@@ -175,6 +212,14 @@ impl AiStudioPanel {
         }
 
         let Some(run_id) = self.active_run_id.clone() else {
+            if unix_ms().saturating_sub(started_unix_ms) >= BENCHMARK_RUN_INITIALIZATION_TIMEOUT_MS
+            {
+                self.write_benchmark_child_failure(
+                    BenchmarkRunFailureKind::Harness,
+                    "benchmark task started but no AgentRun identity was created before the initialization deadline"
+                        .to_owned(),
+                );
+            }
             return;
         };
         let state = self.host.run(&run_id).map(|run| run.state).ok();
@@ -284,6 +329,61 @@ impl AiStudioPanel {
         }
         self.proposal_draft = benchmark_proposal(&task_id)?;
         self.begin_run();
+        if self.active_run_id.is_none() {
+            return Err(self.status.clone().unwrap_or_else(|| {
+                "benchmark AgentRun initialization produced no run id".to_owned()
+            }));
+        }
+        Ok(())
+    }
+
+    fn prepare_benchmark_execution_profile(&mut self) -> Result<(), String> {
+        let (requested, profile) = self
+            .benchmark_child
+            .as_ref()
+            .map(|child| {
+                let profile = child
+                    .spec
+                    .execution_identity
+                    .as_ref()
+                    .map(|identity| identity.execution_profile.clone());
+                (child.profile_requested, profile)
+            })
+            .ok_or_else(|| "benchmark child is unavailable".to_owned())?;
+        let Some(profile) = profile else {
+            if let Some(child) = self.benchmark_child.as_mut() {
+                child.profile_prepared = true;
+            }
+            return Ok(());
+        };
+        if requested || self.model_resource_task.is_some() {
+            return Ok(());
+        }
+        let operation = match profile.as_str() {
+            value if value == CampaignExecutionProfile::Warm.label() => {
+                ModelResourceOperation::Reload
+            }
+            value if value == CampaignExecutionProfile::Cold.label() => {
+                ModelResourceOperation::Release
+            }
+            other => return Err(format!("unsupported benchmark execution profile `{other}`")),
+        };
+        let config = self.selected_local_resource_config().ok_or_else(|| {
+            "benchmark execution profile requires a verifiable local model resource adapter"
+                .to_owned()
+        })?;
+        let task =
+            ModelResourceTask::spawn(config, operation).map_err(|error| error.to_string())?;
+        if let Some(child) = self.benchmark_child.as_mut() {
+            child.profile_requested = true;
+        }
+        self.model_resource_task = Some(task);
+        self.model_resource_continuation =
+            Some(ModelResourceContinuation::BenchmarkProfilePrepared);
+        self.status = Some(format!(
+            "Preparing benchmark {} boundary through verified model resource controls.",
+            profile
+        ));
         Ok(())
     }
 
@@ -323,7 +423,11 @@ impl AiStudioPanel {
         );
     }
 
-    fn write_benchmark_child_failure(&mut self, kind: BenchmarkRunFailureKind, message: String) {
+    pub(super) fn write_benchmark_child_failure(
+        &mut self,
+        kind: BenchmarkRunFailureKind,
+        message: String,
+    ) {
         self.status = Some(message.clone());
         let outcome = if matches!(kind, BenchmarkRunFailureKind::CapabilityUnavailable) {
             BenchmarkRunOutcome::Unavailable
@@ -374,7 +478,15 @@ impl AiStudioPanel {
             });
         match write_result {
             Ok(()) => child.result_written = true,
-            Err(error) => self.status = Some(format!("Benchmark result write failed: {error}")),
+            Err(error) => {
+                // The parent can classify a child that exits without a valid
+                // result as a harness failure. Remaining alive here would turn
+                // a recoverable disk/path error into an infinite wait.
+                child.result_written = true;
+                let message = format!("Benchmark result write failed: {error}");
+                eprintln!("{message}");
+                self.status = Some(message);
+            }
         }
     }
 }

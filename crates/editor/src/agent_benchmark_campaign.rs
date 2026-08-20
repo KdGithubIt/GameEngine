@@ -4,7 +4,7 @@
 //! Windows-native versus WSL2 evidence cannot be mistaken for model-only evidence.
 
 use crate::agent_benchmark::{
-    BenchmarkModelIdentity, BenchmarkTaskKind, BenchmarkToolBudget, benchmark_task,
+    BenchmarkModelIdentity, BenchmarkRecord, BenchmarkTaskKind, BenchmarkToolBudget, benchmark_task,
 };
 use crate::agent_host::{AgentCapability, AgentWorkClaim};
 use crate::managed_local_runtime::ManagedExecutionEnvironment;
@@ -14,9 +14,9 @@ use crate::resource_arbitration::{InferenceWorkload, TelemetryValue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 1;
-pub(crate) const CAMPAIGN_HARNESS_VERSION: &str = "gameengine-agent-benchmark-campaign-v1";
-pub(crate) const CAMPAIGN_SCHEDULE_VERSION: &str = "task-repetition-candidate-interleave-v1";
+pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 2;
+pub(crate) const CAMPAIGN_HARNESS_VERSION: &str = "gameengine-agent-benchmark-campaign-v2";
+pub(crate) const CAMPAIGN_SCHEDULE_VERSION: &str = "task-repetition-candidate-interleave-v2";
 pub(crate) const CAMPAIGN_FIXTURE_VERSION: &str = "gameengine-agent-fixture-v1";
 pub(crate) const DEFAULT_CAMPAIGN_REPETITIONS: u32 = 3;
 
@@ -356,6 +356,47 @@ pub(crate) struct HostOnlyEvaluation {
     pub(crate) hidden_assertions: Vec<String>,
     pub(crate) scoring_threshold: u32,
     pub(crate) expected_marker: u64,
+}
+
+impl HostOnlyEvaluation {
+    /// Evaluates task-specific host evidence without exposing the oracle.
+    ///
+    /// The model's claimed gate names are insufficient by themselves. Each
+    /// task must also carry the production-harness measurements that prove the
+    /// relevant operation actually occurred.
+    pub(crate) fn passes(&self, record: &BenchmarkRecord) -> bool {
+        if record.identity.task_id != self.task_id
+            || record.metrics.acceptance_success != TelemetryValue::Measured(true)
+            || record.metrics.completion_success != TelemetryValue::Measured(true)
+        {
+            return false;
+        }
+        let at_least = |value: &TelemetryValue<u64>, minimum| matches!(value, TelemetryValue::Measured(actual) if *actual >= minimum);
+        match self.task_id.as_str() {
+            "read_question_v1" => at_least(&record.metrics.model_turns, 1),
+            "project_inspection_v1" => {
+                at_least(&record.metrics.tool_calls, 2)
+                    && record.metrics.invalid_or_failed_tool_calls == TelemetryValue::Measured(0)
+            }
+            "code_implementation_v1" => {
+                at_least(&record.metrics.code_edits, 1)
+                    && at_least(&record.metrics.validation_attempts, 1)
+            }
+            "typed_authoring_mutation_v1" => at_least(&record.metrics.tool_calls, 1),
+            "validation_repair_v1" => {
+                at_least(&record.metrics.code_edits, 1)
+                    && at_least(&record.metrics.validation_attempts, 2)
+                    && at_least(&record.metrics.repair_loops, 1)
+            }
+            "runtime_interaction_v1" => at_least(&record.metrics.play_attempts, 1),
+            "visual_evaluation_v1" => {
+                at_least(&record.metrics.play_attempts, 1)
+                    && at_least(&record.metrics.frame_capture_attempts, 1)
+                    && at_least(&record.metrics.visual_evaluation_attempts, 1)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

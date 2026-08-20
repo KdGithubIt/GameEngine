@@ -1348,7 +1348,10 @@ fn task_required_tool_evidence_satisfied(task: &BenchmarkTaskDescriptor, run: &A
         if *success != Some(true) {
             continue;
         }
-        scene_inspected |= matches!(tool.as_str(), "scene.inspect" | "scene.validate");
+        scene_inspected |= matches!(
+            tool.as_str(),
+            "scene.inspect" | "scene.validate" | "authoring.inspect"
+        );
         source_read |= tool == "workspace.code_read";
     }
     scene_inspected && source_read

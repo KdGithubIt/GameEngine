@@ -520,6 +520,26 @@ ADR 0142 redaction and provenance rules.
 
 ## Implementation
 
+The campaign implementation uses schema version 2 and the
+`task-repetition-candidate-interleave-v2` schedule identity. The concrete order
+is task, repetition, then candidate, so the recorded identity and actual
+thermal/time-order policy agree. Schema version 2 freezes the explicit quality
+policy, hardware identity, and finite per-run timeout in addition to the
+previous campaign dimensions.
+
+The headless coordinator records a timed-out child as one `Timeout` run failure
+and continues the remaining schedule. It does not clear the queue. The campaign
+state machine does not perform a UI-only pre-measurement retry; a future retry
+may be added only together with a coordinator protocol that reruns the same
+ordinal. Campaign Pause asks the headless parent to terminate the active child,
+persists the completed prefix, and Resume validates and restores that prefix
+before rerunning the interrupted ordinal. Machine-local checkpoints preserve
+the frozen plan and progress across Editor restarts.
+
+Warm and cold profiles are established through verified backend reload/release
+operations before measurement. The deterministic sampling identity is connected
+to temperature-zero, seed-zero requests for the supported local adapters.
+
 The campaign orchestrator belongs above the benchmark record primitives and
 Agent Host, in application-layer code. It coordinates existing services rather
 than duplicating task semantics in the UI. Runtime-interaction and visual task

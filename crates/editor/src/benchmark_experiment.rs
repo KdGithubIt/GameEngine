@@ -36,6 +36,11 @@ pub(crate) const ENGINE_COMMIT_HEAD: &str = env!("GAMEENGINE_COMMIT_HEAD");
 pub(crate) enum BenchmarkExecutionOrder {
     #[default]
     ModelTaskRepeat,
+    /// Interleaves candidates for each task/repetition pair.
+    ///
+    /// This is the ADR 0156 campaign order: no candidate completes its whole
+    /// workload before the next candidate receives comparable work.
+    TaskRepeatCandidateInterleaved,
     SeededInterleaved {
         seed: u64,
     },
@@ -183,15 +188,34 @@ impl BenchmarkExperimentSpec {
     pub(crate) fn planned_runs(&self) -> Result<Vec<BenchmarkPlannedRun>, String> {
         self.validate()?;
         let mut runs = Vec::new();
-        for model_id in &self.model_ids {
-            for task_id in &self.task_ids {
-                for repetition in 0..self.repeat_count {
-                    runs.push(BenchmarkPlannedRun {
-                        ordinal: runs.len() as u64,
-                        model_id: model_id.clone(),
-                        task_id: task_id.clone(),
-                        repetition,
-                    });
+        match self.execution_order {
+            BenchmarkExecutionOrder::TaskRepeatCandidateInterleaved => {
+                for task_id in &self.task_ids {
+                    for repetition in 0..self.repeat_count {
+                        for model_id in &self.model_ids {
+                            runs.push(BenchmarkPlannedRun {
+                                ordinal: runs.len() as u64,
+                                model_id: model_id.clone(),
+                                task_id: task_id.clone(),
+                                repetition,
+                            });
+                        }
+                    }
+                }
+            }
+            BenchmarkExecutionOrder::ModelTaskRepeat
+            | BenchmarkExecutionOrder::SeededInterleaved { .. } => {
+                for model_id in &self.model_ids {
+                    for task_id in &self.task_ids {
+                        for repetition in 0..self.repeat_count {
+                            runs.push(BenchmarkPlannedRun {
+                                ordinal: runs.len() as u64,
+                                model_id: model_id.clone(),
+                                task_id: task_id.clone(),
+                                repetition,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -230,6 +254,7 @@ pub(crate) enum BenchmarkRunFailureKind {
     CapabilityUnavailable,
     CompletionGate,
     Harness,
+    Timeout,
     Interrupted,
 }
 
@@ -319,6 +344,34 @@ impl BenchmarkExperimentStore {
         let path = runs_root.join(format!("run-{:04}.json", result.run.ordinal));
         write_json_atomic(&path, result)?;
         Ok(path)
+    }
+
+    /// Reads one previously persisted run for an explicitly resumed suite.
+    pub(crate) fn read_result(
+        &self,
+        spec: &BenchmarkExperimentSpec,
+        ordinal: u64,
+    ) -> Result<BenchmarkExperimentResult, String> {
+        let path = self
+            .root
+            .join(safe_component(&spec.experiment_id))
+            .join("runs")
+            .join(format!("run-{ordinal:04}.json"));
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("could not resume from `{}`: {error}", path.display()))?;
+        let result =
+            serde_json::from_slice::<BenchmarkExperimentResult>(&bytes).map_err(|error| {
+                format!("could not parse resumed run `{}`: {error}", path.display())
+            })?;
+        result.validate_against(spec)?;
+        if result.run.ordinal != ordinal {
+            return Err(format!(
+                "resumed result `{}` carries ordinal {} instead of {ordinal}",
+                path.display(),
+                result.run.ordinal
+            ));
+        }
+        Ok(result)
     }
 
     /// Writes one named experiment-level report next to the recorded runs.
@@ -557,6 +610,28 @@ mod tests {
         let first = spec.planned_runs().expect("first");
         let second = spec.planned_runs().expect("second");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn campaign_order_interleaves_candidates_inside_each_task_repetition() {
+        let root = tempfile::tempdir().expect("root");
+        let mut spec = four_model_spec(root.path().to_path_buf());
+        spec.execution_order = BenchmarkExecutionOrder::TaskRepeatCandidateInterleaved;
+        let runs = spec.planned_runs().expect("plan");
+        let first_models = runs
+            .iter()
+            .take(4)
+            .map(|run| run.model_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            first_models,
+            vec!["model-a:q4", "model-b:q4", "model-c:q8", "model-d:f16"]
+        );
+        assert!(
+            runs.iter()
+                .take(4)
+                .all(|run| { run.task_id == BENCHMARK_TASKS[0].id && run.repetition == 0 })
+        );
     }
 
     #[test]

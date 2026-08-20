@@ -1764,7 +1764,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_snapshot_restores_run_and_pending_decision_view() {
+    fn reconnect_snapshot_does_not_ghost_an_interrupted_run() {
         let (mut host, project, storage) = test_host("reconnect");
         let session = host.create_session("Remote").expect("session");
         let version = host.session(&session).expect("session").proposal.version;
@@ -1776,8 +1776,12 @@ mod tests {
         drop(host);
         let reopened = AgentHost::open(project.clone(), storage.clone()).expect("reopened");
         let snapshot = snapshot_json(&reopened, "project-a", &session, None).expect("snapshot");
-        assert_eq!(snapshot["active_run"]["id"], run);
-        assert_eq!(snapshot["awaiting_user"]["run_id"], run);
+        assert_eq!(snapshot["active_run"], Value::Null);
+        assert_eq!(snapshot["awaiting_user"], Value::Null);
+        assert_eq!(
+            reopened.run(&run).expect("retained interrupted run").state,
+            AgentRunState::Failed
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }

@@ -135,6 +135,7 @@ pub(crate) struct BenchmarkModelComparison {
     pub(crate) backend_failures: usize,
     pub(crate) capability_unavailable_runs: usize,
     pub(crate) out_of_memory_failures: usize,
+    pub(crate) timeout_failures: usize,
     pub(crate) task_success: BTreeMap<String, BenchmarkSuccessRate>,
     pub(crate) acceptance_success: BenchmarkSuccessRate,
     pub(crate) completion_gate_success: BenchmarkSuccessRate,
@@ -186,6 +187,7 @@ impl BenchmarkModelComparison {
                 self.capability_unavailable_runs += 1
             }
             Some(BenchmarkRunFailureKind::OutOfMemory) => self.out_of_memory_failures += 1,
+            Some(BenchmarkRunFailureKind::Timeout) => self.timeout_failures += 1,
             _ => {}
         }
         let passed = result.outcome == BenchmarkRunOutcome::Passed;

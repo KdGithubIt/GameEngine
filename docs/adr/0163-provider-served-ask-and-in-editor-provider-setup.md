@@ -5,6 +5,10 @@ Date: 2026-08-20
 Builds on: ADR 0145, ADR 0162
 Relates to: ADR 0121, ADR 0131, ADR 0155, ADR 0158, ADR 0160
 
+Update: ADR 0165 supersedes the no-MCP Ask launch and `@latest` installer
+choices. Ask now receives a transport-enforced read-only Editor MCP credential,
+and provider CLI versions are pinned to the validated adapter versions.
+
 ## Context
 
 ADR 0145 made Claude Code and Codex first-class external agent runtimes and kept

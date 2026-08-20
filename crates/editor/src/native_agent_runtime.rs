@@ -13,7 +13,7 @@ use crate::model_router::{
 };
 use crate::native_agent::{
     LocalModelConfig, ModelCapabilityProfile, ModelTurnOutcome, NativeAgentError,
-    NativeModelConfig, NativeModelTask,
+    NativeModelConfig, NativeModelTask, NativeSamplingOptions,
 };
 use engine_mcp::authoring_tool_descriptors;
 use serde::Deserialize;
@@ -75,14 +75,17 @@ pub(crate) trait ModelBackend: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
-struct ConfiguredModelBackend(NativeModelConfig);
+struct ConfiguredModelBackend {
+    config: NativeModelConfig,
+    sampling: NativeSamplingOptions,
+}
 
 impl ModelBackend for ConfiguredModelBackend {
     fn label(&self) -> String {
-        self.0.label()
+        self.config.label()
     }
     fn profile(&self) -> ModelCapabilityProfile {
-        self.0.capability_profile()
+        self.config.capability_profile()
     }
     fn start_turn(
         &self,
@@ -90,8 +93,14 @@ impl ModelBackend for ConfiguredModelBackend {
         images: Vec<Vec<u8>>,
         response_schema: Option<Value>,
     ) -> Result<Box<dyn ModelTurnTask>, NativeAgentError> {
-        NativeModelTask::spawn(self.0.clone(), prompt, images, response_schema)
-            .map(|task| Box::new(task) as Box<dyn ModelTurnTask>)
+        NativeModelTask::spawn_with_sampling(
+            self.config.clone(),
+            prompt,
+            images,
+            response_schema,
+            self.sampling,
+        )
+        .map(|task| Box::new(task) as Box<dyn ModelTurnTask>)
     }
 }
 
@@ -275,11 +284,26 @@ pub(crate) struct NativeAgentRuntime {
     exchanges: Vec<Exchange>,
     active_prompt: Option<String>,
     active: Option<Box<dyn ModelTurnTask>>,
+    sampling: NativeSamplingOptions,
 }
 
 impl NativeAgentRuntime {
     pub(crate) fn configured(config: NativeModelConfig) -> Self {
         Self::configured_routed(config, Vec::new(), &[])
+    }
+    pub(crate) fn configured_benchmark(config: NativeModelConfig) -> Self {
+        let routing = ModelRoutingPolicy::derive(config.clone(), Vec::new(), &[]);
+        let sampling = NativeSamplingOptions::deterministic_greedy();
+        Self::new(
+            Box::new(ConfiguredModelBackend {
+                config: config.clone(),
+                sampling,
+            }),
+            config,
+            routing,
+            HarnessPolicy::default(),
+            sampling,
+        )
     }
     pub(crate) fn configured_routed(
         primary: NativeModelConfig,
@@ -288,10 +312,14 @@ impl NativeAgentRuntime {
     ) -> Self {
         let routing = ModelRoutingPolicy::derive(primary.clone(), candidates, benchmark_records);
         Self::new(
-            Box::new(ConfiguredModelBackend(primary.clone())),
+            Box::new(ConfiguredModelBackend {
+                config: primary.clone(),
+                sampling: NativeSamplingOptions::default(),
+            }),
             primary,
             routing,
             HarnessPolicy::default(),
+            NativeSamplingOptions::default(),
         )
     }
     #[allow(dead_code)]
@@ -303,6 +331,7 @@ impl NativeAgentRuntime {
         backend_config: NativeModelConfig,
         routing: ModelRoutingPolicy,
         policy: HarnessPolicy,
+        sampling: NativeSamplingOptions,
     ) -> Self {
         Self {
             backend,
@@ -315,6 +344,7 @@ impl NativeAgentRuntime {
             exchanges: Vec::new(),
             active_prompt: None,
             active: None,
+            sampling,
         }
     }
     pub(crate) fn backend_label(&self) -> String {
@@ -446,7 +476,10 @@ impl NativeAgentRuntime {
     fn apply_route_decision(&mut self, decision: &ModelRouteDecision) {
         if !same_model(&self.backend_config, &decision.config) {
             self.backend_config = decision.config.clone();
-            self.backend = Box::new(ConfiguredModelBackend(decision.config.clone()));
+            self.backend = Box::new(ConfiguredModelBackend {
+                config: decision.config.clone(),
+                sampling: self.sampling,
+            });
         }
         self.routing_decisions.push(decision.clone());
         if self.routing_decisions.len() > 128 {
@@ -651,11 +684,15 @@ fn build_prompt(
         ));
     }
     prompt.push_str("MCP tools:\n");
-    for tool in authoring_tool_descriptors() {
+    let allows_authoring_mutation = !run.proposal_snapshot.planned_project_changes.is_empty();
+    for tool in authoring_tool_descriptors()
+        .into_iter()
+        .filter(|tool| allows_authoring_mutation || !mcp_write(&tool.name))
+    {
         prompt.push_str(&format!(
             "{} schema={}\n",
             tool.name,
-            truncate(&tool.input_schema.to_string(), 2400)
+            truncate(&tool.input_schema.to_string(), 800)
         ));
     }
     prompt.push_str(concat!(
@@ -777,12 +814,63 @@ pub(crate) fn agent_turn_response_schema() -> Value {
 
 fn parse_turn(text: &str) -> Result<NativeAgentTurn, NativeAgentRuntimeError> {
     let text = text.trim();
-    let text = text
+    if let Ok(turn) = serde_json::from_str(text) {
+        return Ok(turn);
+    }
+    let fenced = text
         .strip_prefix("```json")
         .or_else(|| text.strip_prefix("```"))
         .unwrap_or(text);
-    let text = text.strip_suffix("```").unwrap_or(text).trim();
-    serde_json::from_str(text).map_err(|e| NativeAgentRuntimeError::InvalidOutput(e.to_string()))
+    let fenced = fenced.strip_suffix("```").unwrap_or(fenced).trim();
+    if let Ok(turn) = serde_json::from_str(fenced) {
+        return Ok(turn);
+    }
+    for candidate in json_object_candidates(text) {
+        if let Ok(turn) = serde_json::from_str(candidate) {
+            return Ok(turn);
+        }
+    }
+    serde_json::from_str::<NativeAgentTurn>(fenced)
+        .map_err(|error| NativeAgentRuntimeError::InvalidOutput(error.to_string()))
+}
+
+/// Finds balanced JSON objects while respecting braces inside JSON strings.
+fn json_object_candidates(text: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    for (start, character) in text.char_indices() {
+        if character != '{' {
+            continue;
+        }
+        let mut depth = 0_u32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (relative, current) in text[start..].char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if current == '\\' {
+                    escaped = true;
+                } else if current == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match current {
+                '"' => in_string = true,
+                '{' => depth = depth.saturating_add(1),
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let end = start + relative + current.len_utf8();
+                        candidates.push(&text[start..end]);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    candidates
 }
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -792,20 +880,7 @@ fn truncate(text: &str, max: usize) -> String {
     }
 }
 pub(crate) fn mcp_write(tool: &str) -> bool {
-    ![
-        ".describe",
-        ".inspect",
-        ".find",
-        ".list",
-        ".search",
-        ".validate",
-        ".preview",
-        ".schemas",
-        ".capabilities",
-    ]
-    .iter()
-    .any(|suffix| tool.ends_with(suffix))
-        && !matches!(tool, "project.describe" | "component.schemas")
+    engine_mcp::tool_is_mutating(tool)
 }
 fn managed_code_path(path: &Path) -> bool {
     !path.is_absolute()
@@ -975,6 +1050,15 @@ mod tests {
             .is_ok()
         );
     }
+
+    #[test]
+    fn parser_accepts_one_balanced_json_object_surrounded_by_model_prose() {
+        let turn = parse_turn(
+            "Here is the result:\n{\"summary\":\"brace } in text\",\"action\":{\"type\":\"progress\",\"step\":\"inspect\",\"detail\":\"done\"}}\nThanks.",
+        )
+        .expect("surrounding prose must not discard a valid structured turn");
+        assert!(matches!(turn.action, NativeAgentAction::Progress { .. }));
+    }
     #[test]
     fn mcp_endpoint_is_loopback_only() {
         assert!(parse_mcp_endpoint("http://127.0.0.1:1234/mcp").is_ok());
@@ -1070,6 +1154,7 @@ mod tests {
                 config.clone(),
                 ModelRoutingPolicy::derive(config.clone(), Vec::new(), &[]),
                 HarnessPolicy::default(),
+                NativeSamplingOptions::default(),
             );
             assert_eq!(
                 runtime.constrained_response_schema().is_some(),

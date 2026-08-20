@@ -20,7 +20,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SESSION_SCHEMA_VERSION: u32 = 1;
 const POLICY_SCHEMA_VERSION: u32 = 1;
-const MAX_PROVIDER_EVENT_CHARS: usize = 4_000;
 const MAX_PERSISTED_EVENTS_PER_RUN: usize = 512;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -44,7 +43,6 @@ pub(crate) enum AgentHostError {
     },
     CompletionPending,
     InvalidRelativePath(PathBuf),
-    UnsupportedCodeDeletion(PathBuf),
     StaleCodeFile(PathBuf),
     NonUtf8CodeFile(PathBuf),
     Serialization(serde_json::Error),
@@ -88,11 +86,6 @@ impl fmt::Display for AgentHostError {
                     path.display()
                 )
             }
-            Self::UnsupportedCodeDeletion(path) => write!(
-                formatter,
-                "deleting `{}` is not supported by the managed code apply path",
-                path.display()
-            ),
             Self::StaleCodeFile(path) => write!(
                 formatter,
                 "live code file `{}` changed after the run workspace was created",
@@ -246,10 +239,18 @@ impl AgentConfinementProfile {
     fn application_policy_only(network_policy: AgentConfinementNetworkPolicy) -> Self {
         Self {
             layer: AgentConfinementLayer::ApplicationPolicyOnly,
-            mechanism: "generic_process_runtime".to_owned(),
+            mechanism: if cfg!(windows) {
+                "generic_process_runtime+windows_taskkill_tree".to_owned()
+            } else {
+                "generic_process_runtime".to_owned()
+            },
             filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
             network_guarantee: AgentConfinementGuarantee::Unavailable,
-            process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
+            process_tree_guarantee: if cfg!(windows) {
+                AgentConfinementGuarantee::Enforced
+            } else {
+                AgentConfinementGuarantee::Unavailable
+            },
             credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
             requested_network_policy: network_policy,
         }
@@ -445,6 +446,7 @@ impl PermissionBroker {
             ApprovalScope::Deny => {
                 self.once.remove(&key);
                 self.run.remove(&key);
+                self.project.insert(capability, ProjectPermission::Deny);
             }
         }
     }
@@ -1250,7 +1252,7 @@ impl AgentHost {
         self.session(session_id)?;
         let subject = format!("question:{session_id}");
         self.permissions.resolve(&subject, capability, scope);
-        if scope == ApprovalScope::Project {
+        if matches!(scope, ApprovalScope::Project | ApprovalScope::Deny) {
             self.permissions
                 .save(&self.storage_root.join("permissions.json"))?;
         }
@@ -2642,7 +2644,7 @@ impl AgentHost {
     ) -> Result<(), AgentHostError> {
         self.run(run_id)?;
         self.permissions.resolve(run_id, capability, scope);
-        if matches!(scope, ApprovalScope::Project) {
+        if matches!(scope, ApprovalScope::Project | ApprovalScope::Deny) {
             self.permissions
                 .save(&self.storage_root.join("permissions.json"))?;
         }
@@ -3006,7 +3008,6 @@ fn managed_validation_plan(
 fn recover_persisted_runs(
     sessions: &mut BTreeMap<String, AgentSession>,
 ) -> Result<(BTreeSet<String>, BTreeSet<String>), AgentHostError> {
-    let mut active_runs = BTreeSet::new();
     let mut recovered_sessions = BTreeSet::new();
     for session in sessions.values_mut() {
         let session_id = session.id.clone();
@@ -3027,50 +3028,48 @@ fn recover_persisted_runs(
                 }
                 continue;
             }
-            active_runs.insert(run.id.clone());
-            let Some(attempt) = run
+            if let Some(attempt) = run
                 .validation_attempts
                 .last_mut()
                 .filter(|attempt| attempt.status == ManagedValidationAttemptStatus::Running)
-            else {
-                continue;
-            };
-            recovered_sessions.insert(session_id.clone());
-            for result in &mut attempt.gate_results {
-                if result.status == ManagedValidationGateStatus::Running {
-                    result.status = ManagedValidationGateStatus::Interrupted;
-                    result.failure = Some(ManagedValidationFailure {
-                        kind: ManagedValidationFailureKind::Interrupted,
-                        exit_code: None,
-                        message: "Managed validation process did not survive the Editor restart."
-                            .to_owned(),
-                    });
+            {
+                for result in &mut attempt.gate_results {
+                    if result.status == ManagedValidationGateStatus::Running {
+                        result.status = ManagedValidationGateStatus::Interrupted;
+                        result.failure = Some(ManagedValidationFailure {
+                            kind: ManagedValidationFailureKind::Interrupted,
+                            exit_code: None,
+                            message:
+                                "Managed validation process did not survive the Editor restart."
+                                    .to_owned(),
+                        });
+                    }
                 }
+                attempt.status = ManagedValidationAttemptStatus::Interrupted;
+                attempt.finished_unix_ms = Some(unix_ms());
+                run.completion.source_validation = CompletionStatus::Pending;
             }
-            attempt.status = ManagedValidationAttemptStatus::Interrupted;
-            attempt.finished_unix_ms = Some(unix_ms());
-            let attempt_id = attempt.id.clone();
-            run.completion.source_validation = CompletionStatus::Pending;
-            push_validation_event(
-                run,
-                "Previous managed validation attempt was interrupted by Editor restart; no process was resumed.".to_owned(),
-                ManagedValidationEvent::Finished {
-                    attempt_id,
-                    status: ManagedValidationAttemptStatus::Interrupted,
-                },
-            );
-            if run.state == AgentRunState::Validating {
-                run.state = AgentRunState::Repairing;
+
+            let released = std::mem::take(&mut run.work_claims);
+            for claim in released {
                 push_event(
                     run,
-                    AgentEventKind::StateChanged,
-                    "Validation execution was interrupted; a new attempt is required before completion."
-                        .to_owned(),
+                    AgentEventKind::WorkClaimReleased,
+                    format!("Released interrupted work claim `{claim}` after Editor restart."),
                 );
             }
+            run.state = AgentRunState::Failed;
+            run.finished_unix_ms = Some(unix_ms());
+            push_event(
+                run,
+                AgentEventKind::Failure,
+                "The Editor restarted while this run owned an in-process provider or validation task. The child process cannot be resumed, so the run was failed and all work claims were released; start a new run from the retained proposal and workspace evidence."
+                    .to_owned(),
+            );
+            recovered_sessions.insert(session_id.clone());
         }
     }
-    Ok((active_runs, recovered_sessions))
+    Ok((BTreeSet::new(), recovered_sessions))
 }
 
 struct ManagedValidationProcess {
@@ -3108,25 +3107,14 @@ impl ManagedValidationProcess {
     }
 
     fn cancel(&mut self) -> io::Result<Option<ExitStatus>> {
-        match self.child.try_wait()? {
-            Some(status) => Ok(Some(status)),
-            None => {
-                match self.child.kill() {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-                    Err(error) => return Err(error),
-                }
-                self.child.wait().map(Some)
-            }
-        }
+        terminate_process_tree(&mut self.child)
     }
 }
 
 impl Drop for ManagedValidationProcess {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            let _ = terminate_process_tree(&mut self.child);
         }
     }
 }
@@ -3345,13 +3333,10 @@ impl CodeWorkspace {
     }
 
     pub(crate) fn apply_changes(&mut self, changes: &[CodeChange]) -> Result<(), AgentHostError> {
+        let original_baseline = self.baseline.clone();
+        let mut original_files = Vec::with_capacity(changes.len());
         for change in changes {
             validate_code_relative_path(&change.relative_path)?;
-            if change.after.is_none() {
-                return Err(AgentHostError::UnsupportedCodeDeletion(
-                    change.relative_path.clone(),
-                ));
-            }
             let live = read_optional_utf8(
                 &self.project_root.join(&change.relative_path),
                 &change.relative_path,
@@ -3359,22 +3344,62 @@ impl CodeWorkspace {
             if live != change.before && live != change.after {
                 return Err(AgentHostError::StaleCodeFile(change.relative_path.clone()));
             }
+            original_files.push((change.relative_path.clone(), live));
         }
-        for change in changes {
+
+        for (applied, change) in changes.iter().enumerate() {
             let destination = self.project_root.join(&change.relative_path);
-            let after = change.after.as_deref().ok_or_else(|| {
-                AgentHostError::UnsupportedCodeDeletion(change.relative_path.clone())
-            })?;
             let live = read_optional_utf8(&destination, &change.relative_path)?;
-            if live.as_deref() != Some(after) {
-                write_text_atomic(&destination, after)?;
+            let result = match change.after.as_deref() {
+                Some(after) if live.as_deref() != Some(after) => {
+                    write_text_atomic(&destination, after)
+                }
+                Some(_) => Ok(()),
+                None if live.is_some() => fs::remove_file(&destination).map_err(AgentHostError::Io),
+                None => Ok(()),
+            };
+            if let Err(error) = result {
+                let rollback = rollback_code_files(&self.project_root, &original_files[..=applied]);
+                return match rollback {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(AgentHostError::Io(io::Error::other(format!(
+                        "managed code apply failed ({error}); rollback also failed ({rollback_error})"
+                    )))),
+                };
             }
-            self.baseline
-                .insert(change.relative_path.clone(), Some(after.to_owned()));
         }
-        self.persist_baseline()?;
+
+        for change in changes {
+            self.baseline
+                .insert(change.relative_path.clone(), change.after.clone());
+        }
+        if let Err(error) = self.persist_baseline() {
+            self.baseline = original_baseline;
+            let rollback = rollback_code_files(&self.project_root, &original_files);
+            return match rollback {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(AgentHostError::Io(io::Error::other(format!(
+                    "managed baseline persistence failed ({error}); live-file rollback also failed ({rollback_error})"
+                )))),
+            };
+        }
         Ok(())
     }
+}
+
+fn rollback_code_files(
+    project_root: &Path,
+    originals: &[(PathBuf, Option<String>)],
+) -> Result<(), AgentHostError> {
+    for (relative, original) in originals.iter().rev() {
+        let destination = project_root.join(relative);
+        match original {
+            Some(text) => write_text_atomic(&destination, text)?,
+            None if destination.exists() => fs::remove_file(destination)?,
+            None => {}
+        }
+    }
+    Ok(())
 }
 
 fn copy_code_tree(
@@ -3730,7 +3755,7 @@ impl ExternalAgentProcess {
                     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                         let _ = sender.send(ProcessLine {
                             stream: ProcessStream::Stdout,
-                            text: truncate_provider_output(line),
+                            text: line,
                         });
                     }
                 })
@@ -3746,7 +3771,7 @@ impl ExternalAgentProcess {
                     for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                         let _ = sender.send(ProcessLine {
                             stream: ProcessStream::Stderr,
-                            text: truncate_provider_output(line),
+                            text: line,
                         });
                     }
                 })
@@ -3783,12 +3808,7 @@ impl ExternalAgentProcess {
 
     pub(crate) fn cancel(&mut self) -> io::Result<()> {
         if self.exit_status.is_none() {
-            match self.child.kill() {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-                Err(error) => return Err(error),
-            }
-            self.exit_status = Some(self.child.wait()?);
+            self.exit_status = terminate_process_tree(&mut self.child)?;
         }
         Ok(())
     }
@@ -3803,8 +3823,42 @@ impl Drop for ExternalAgentProcess {
 }
 
 fn terminate_child(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = terminate_process_tree(child);
+}
+
+/// Terminates one child and all descendants it created.
+///
+/// Provider CLIs and Cargo may launch helper processes. Killing only the direct
+/// child leaves those helpers alive with inherited workspace or MCP material,
+/// so cancellation uses the platform's process-tree primitive on Windows and
+/// falls back to the direct child where no equivalent is available here.
+pub(crate) fn terminate_process_tree(child: &mut Child) -> io::Result<Option<ExitStatus>> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(Some(status));
+    }
+    #[cfg(windows)]
+    {
+        let result = Command::new("taskkill.exe")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if result
+            .as_ref()
+            .is_err_and(|error| error.kind() != io::ErrorKind::NotFound)
+        {
+            return result.map(|_| None);
+        }
+    }
+    if child.try_wait()?.is_none() {
+        match child.kill() {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
+            Err(error) => return Err(error),
+        }
+    }
+    child.wait().map(Some)
 }
 
 fn mcp_endpoint_is_loopback(endpoint: &str) -> bool {
@@ -3822,21 +3876,31 @@ fn mcp_endpoint_is_loopback(endpoint: &str) -> bool {
         || authority.starts_with("[::1]:")
 }
 
-fn truncate_provider_output(mut line: String) -> String {
-    if line.chars().count() <= MAX_PROVIDER_EVENT_CHARS {
-        return line;
-    }
-    line = line.chars().take(MAX_PROVIDER_EVENT_CHARS).collect();
-    line.push_str("… [truncated]");
-    line
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gameengine-agent-{name}-{}", next_id("test")))
+    }
+
+    #[test]
+    fn deny_scope_persists_as_a_project_permission() {
+        let policy = temp_path("permission-deny.json");
+        let mut broker = PermissionBroker::load(&policy).expect("permission broker");
+        broker.resolve(
+            "run-one",
+            AgentCapability::NetworkAccess,
+            ApprovalScope::Deny,
+        );
+        broker.save(&policy).expect("persist denial");
+
+        let mut reloaded = PermissionBroker::load(&policy).expect("reload permission broker");
+        assert_eq!(
+            reloaded.check("run-two", AgentCapability::NetworkAccess),
+            PermissionCheck::Denied
+        );
+        let _ = fs::remove_file(policy);
     }
 
     #[test]
@@ -4175,7 +4239,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_restores_active_claims_and_cleans_terminal_claims() {
+    fn restart_fails_nonterminal_runs_and_cleans_all_claims() {
         let project = temp_path("claim-restart-project");
         let storage = temp_path("claim-restart-storage");
         fs::create_dir_all(&project).expect("test project directory");
@@ -4209,19 +4273,16 @@ mod tests {
         }
 
         let host = AgentHost::open(project.clone(), storage.clone()).expect("reopened host");
-        assert_eq!(host.active_writer_run_ids(), vec![second_run.clone()]);
+        assert!(host.active_writer_run_ids().is_empty());
         assert!(
             host.run(&first_run)
                 .expect("first run")
                 .work_claims
                 .is_empty()
         );
-        assert!(
-            host.run(&second_run)
-                .expect("second run")
-                .work_claims
-                .contains(&AgentWorkClaim::authoring_document("scene:menu"))
-        );
+        let second = host.run(&second_run).expect("second run");
+        assert!(second.work_claims.is_empty());
+        assert_eq!(second.state, AgentRunState::Failed);
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
@@ -4440,6 +4501,36 @@ mod tests {
         assert_eq!(
             fs::read_to_string(project.join("game/src/lib.rs")).expect("live file"),
             "pub fn value() -> u32 { 2 }\n"
+        );
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn code_apply_supports_deletion_and_rename_pairs() {
+        let project = temp_path("code-delete-project");
+        let workspace = temp_path("code-delete-workspace");
+        fs::create_dir_all(project.join("game/src")).expect("project tree");
+        fs::write(
+            project.join("game/src/old_name.rs"),
+            "pub fn value() -> u32 { 1 }\n",
+        )
+        .expect("base file");
+        let mut code = CodeWorkspace::create(&project, workspace.clone()).expect("workspace");
+        fs::rename(
+            workspace.join("game/src/old_name.rs"),
+            workspace.join("game/src/new_name.rs"),
+        )
+        .expect("workspace rename");
+
+        let changes = code.collect_changes().expect("rename changes");
+        assert_eq!(changes.len(), 2);
+        code.apply_changes(&changes).expect("rename apply");
+
+        assert!(!project.join("game/src/old_name.rs").exists());
+        assert_eq!(
+            fs::read_to_string(project.join("game/src/new_name.rs")).expect("renamed live file"),
+            "pub fn value() -> u32 { 1 }\n"
         );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(workspace);
@@ -4869,7 +4960,7 @@ mod tests {
             .flat_map(|session| session.runs.iter())
             .find(|run| run.id.starts_with("run_"))
             .expect("run");
-        assert_eq!(run_state.state, AgentRunState::Repairing);
+        assert_eq!(run_state.state, AgentRunState::Failed);
         assert_eq!(
             run_state
                 .validation_attempts

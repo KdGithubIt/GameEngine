@@ -5,23 +5,35 @@
 //! project authoring session remains authoritative.
 
 use eframe::egui;
-use engine_mcp::{McpToolDescriptor, authoring_tool_descriptors};
+use engine_mcp::{McpToolDescriptor, authoring_tool_descriptors, tool_is_mutating};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-pub(crate) const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+pub(crate) const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
+pub(crate) const LEGACY_MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_PATH: &str = "/mcp";
 const MAX_HEADER_BYTES: usize = 32 * 1024;
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const HOST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const HOST_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const REQUEST_PENDING: u8 = 0;
+const REQUEST_EXECUTING: u8 = 1;
+const REQUEST_CANCELLED: u8 = 2;
+
+/// Authority carried by the credential that authenticated an MCP request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorMcpAccess {
+    ReadWrite,
+    AgentRunBound,
+    ReadOnly,
+}
 
 /// Result returned by the live Editor host for one MCP tool request.
 pub(crate) enum EditorMcpHostResult {
@@ -33,6 +45,8 @@ pub(crate) enum EditorMcpHostResult {
 pub(crate) struct EditorMcpRequest {
     name: String,
     arguments: Value,
+    agent_run_id: Option<String>,
+    lifecycle: Arc<AtomicU8>,
     response: mpsc::SyncSender<EditorMcpHostResult>,
 }
 
@@ -43,6 +57,21 @@ impl EditorMcpRequest {
 
     pub(crate) fn arguments(&self) -> &Value {
         &self.arguments
+    }
+
+    pub(crate) fn agent_run_id(&self) -> Option<&str> {
+        self.agent_run_id.as_deref()
+    }
+
+    pub(crate) fn try_begin(&self) -> bool {
+        self.lifecycle
+            .compare_exchange(
+                REQUEST_PENDING,
+                REQUEST_EXECUTING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
     }
 
     pub(crate) fn respond(self, result: EditorMcpHostResult) {
@@ -100,6 +129,8 @@ pub(crate) struct EditorMcpServer {
     local_addr: SocketAddr,
     endpoint: String,
     authorization_token: String,
+    agent_authorization_token: String,
+    read_only_authorization_token: String,
     shutdown: Arc<AtomicBool>,
     listener_thread: Option<JoinHandle<()>>,
 }
@@ -118,7 +149,11 @@ impl EditorMcpServer {
             .map_err(EditorMcpServerError::Configure)?;
         let endpoint = format!("http://{local_addr}{MCP_PATH}");
         let authorization_token = new_authorization_token()?;
+        let agent_authorization_token = new_authorization_token()?;
+        let read_only_authorization_token = new_authorization_token()?;
         let worker_token = authorization_token.clone();
+        let worker_agent_token = agent_authorization_token.clone();
+        let worker_read_only_token = read_only_authorization_token.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
         let (request_sender, request_receiver) = mpsc::channel();
@@ -129,6 +164,8 @@ impl EditorMcpServer {
                 serve_loop(
                     listener,
                     worker_token,
+                    worker_agent_token,
+                    worker_read_only_token,
                     request_sender,
                     context,
                     worker_shutdown,
@@ -141,6 +178,8 @@ impl EditorMcpServer {
                 local_addr,
                 endpoint,
                 authorization_token,
+                agent_authorization_token,
+                read_only_authorization_token,
                 shutdown,
                 listener_thread: Some(listener_thread),
             },
@@ -154,6 +193,14 @@ impl EditorMcpServer {
 
     pub(crate) fn authorization_token(&self) -> &str {
         &self.authorization_token
+    }
+
+    pub(crate) fn read_only_authorization_token(&self) -> &str {
+        &self.read_only_authorization_token
+    }
+
+    pub(crate) fn agent_authorization_token(&self) -> &str {
+        &self.agent_authorization_token
     }
 }
 
@@ -181,6 +228,8 @@ fn new_authorization_token() -> Result<String, EditorMcpServerError> {
 fn serve_loop(
     listener: TcpListener,
     authorization_token: String,
+    agent_authorization_token: String,
+    read_only_authorization_token: String,
     request_sender: mpsc::Sender<EditorMcpRequest>,
     context: egui::Context,
     shutdown: Arc<AtomicBool>,
@@ -192,12 +241,21 @@ fn serve_loop(
                     break;
                 }
                 let token = authorization_token.clone();
+                let agent_token = agent_authorization_token.clone();
+                let read_only_token = read_only_authorization_token.clone();
                 let sender = request_sender.clone();
                 let context = context.clone();
                 let _ = thread::Builder::new()
                     .name("gameengine-editor-mcp-request".into())
                     .spawn(move || {
-                        let _ = handle_connection(stream, &token, &sender, &context);
+                        let _ = handle_connection(
+                            stream,
+                            &token,
+                            &agent_token,
+                            &read_only_token,
+                            &sender,
+                            &context,
+                        );
                     });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -211,6 +269,8 @@ fn serve_loop(
 fn handle_connection(
     mut stream: TcpStream,
     authorization_token: &str,
+    agent_authorization_token: &str,
+    read_only_authorization_token: &str,
     request_sender: &mpsc::Sender<EditorMcpRequest>,
     context: &egui::Context,
 ) -> io::Result<()> {
@@ -256,10 +316,16 @@ fn handle_connection(
         return write_http_response(&mut stream, 403, "text/plain", b"forbidden origin");
     }
 
-    let expected_authorization = format!("Bearer {authorization_token}");
-    if request.headers.get("authorization") != Some(&expected_authorization) {
+    let authorization = request.headers.get("authorization");
+    let access = if authorization == Some(&format!("Bearer {authorization_token}")) {
+        EditorMcpAccess::ReadWrite
+    } else if authorization == Some(&format!("Bearer {agent_authorization_token}")) {
+        EditorMcpAccess::AgentRunBound
+    } else if authorization == Some(&format!("Bearer {read_only_authorization_token}")) {
+        EditorMcpAccess::ReadOnly
+    } else {
         return write_http_response(&mut stream, 401, "text/plain", b"unauthorized");
-    }
+    };
 
     match request.method.as_str() {
         "GET" => {
@@ -339,18 +405,44 @@ fn handle_connection(
     };
     let id = object.get("id").cloned();
 
+    let protocol_version = request
+        .headers
+        .get("mcp-protocol-version")
+        .map(String::as_str);
+    let modern = protocol_version == Some(MCP_PROTOCOL_VERSION) || method == "server/discover";
     if method != "initialize"
-        && request
-            .headers
-            .get("mcp-protocol-version")
-            .map(String::as_str)
-            != Some(MCP_PROTOCOL_VERSION)
+        && protocol_version != Some(MCP_PROTOCOL_VERSION)
+        && protocol_version != Some(LEGACY_MCP_PROTOCOL_VERSION)
+        && method != "server/discover"
     {
         return write_http_response(
             &mut stream,
             400,
             "text/plain",
             b"missing or unsupported MCP-Protocol-Version",
+        );
+    }
+    if modern && request.headers.get("mcp-method").map(String::as_str) != Some(method) {
+        return write_http_response(
+            &mut stream,
+            400,
+            "text/plain",
+            b"Mcp-Method must match the JSON-RPC method",
+        );
+    }
+    if modern
+        && object
+            .get("params")
+            .and_then(|params| params.get("_meta"))
+            .and_then(|metadata| metadata.get("io.modelcontextprotocol/protocolVersion"))
+            .and_then(Value::as_str)
+            != Some(MCP_PROTOCOL_VERSION)
+    {
+        return write_http_response(
+            &mut stream,
+            400,
+            "text/plain",
+            b"modern MCP requests require the 2026-07-28 _meta protocol envelope",
         );
     }
 
@@ -362,8 +454,9 @@ fn handle_connection(
     let id = id.unwrap_or(Value::Null);
     let result = match method {
         "initialize" => initialize_result(),
+        "server/discover" => modern_discover_result(),
         "ping" => json!({}),
-        "tools/list" => tools_list_result(),
+        "tools/list" => tools_list_result(access),
         "tools/call" => {
             let params = object.get("params").and_then(Value::as_object);
             let Some(name) = params
@@ -377,11 +470,47 @@ fn handle_connection(
                     "tools/call requires a tool name",
                 );
             };
+            if modern && request.headers.get("mcp-name").map(String::as_str) != Some(name) {
+                return write_http_response(
+                    &mut stream,
+                    400,
+                    "text/plain",
+                    b"Mcp-Name must match the requested tool",
+                );
+            }
             let arguments = params
                 .and_then(|params| params.get("arguments"))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            match dispatch_tool_call(name, arguments, request_sender, context) {
+            if access == EditorMcpAccess::ReadOnly && tool_is_mutating(name) {
+                return write_json_rpc_error(
+                    &mut stream,
+                    id,
+                    -32003,
+                    "the read-only Editor credential cannot invoke mutating tools",
+                );
+            }
+            let agent_run_id = request
+                .headers
+                .get("x-gameengine-agent-run-id")
+                .cloned()
+                .filter(|run_id| !run_id.trim().is_empty());
+            if access == EditorMcpAccess::AgentRunBound && agent_run_id.is_none() {
+                return write_json_rpc_error(
+                    &mut stream,
+                    id,
+                    -32003,
+                    "the external-agent MCP credential requires X-GameEngine-Agent-Run-Id",
+                );
+            }
+            match dispatch_tool_call(
+                name,
+                arguments,
+                agent_run_id,
+                request_sender,
+                context,
+                &stream,
+            ) {
                 Ok(result) => result,
                 Err(DispatchError::HostDisconnected) => {
                     return write_json_rpc_error(
@@ -391,14 +520,6 @@ fn handle_connection(
                         "Editor authoring host is unavailable",
                     );
                 }
-                Err(DispatchError::Timeout) => {
-                    return write_json_rpc_error(
-                        &mut stream,
-                        id,
-                        -32603,
-                        "Editor authoring host timed out",
-                    );
-                }
             }
         }
         _ => {
@@ -406,12 +527,17 @@ fn handle_connection(
         }
     };
 
+    let result = if modern {
+        modern_result(result)
+    } else {
+        result
+    };
     write_json_rpc_result(&mut stream, id, result)
 }
 
 fn initialize_result() -> Value {
     json!({
-        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "protocolVersion": LEGACY_MCP_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {
                 "listChanged": false
@@ -425,10 +551,43 @@ fn initialize_result() -> Value {
     })
 }
 
-fn tools_list_result() -> Value {
+fn modern_discover_result() -> Value {
+    modern_result(json!({
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "capabilities": { "tools": { "listChanged": false } },
+        "instructions": "Structured authoring requests are routed to the live project-scoped Editor session."
+    }))
+}
+
+fn modern_result(mut result: Value) -> Value {
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "resultType".to_owned(),
+            Value::String("complete".to_owned()),
+        );
+        object.insert(
+            "_meta".to_owned(),
+            json!({
+                "io.modelcontextprotocol/serverInfo": {
+                    "name": "gameengine-editor",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+        );
+    }
+    result
+}
+
+fn tools_list_result(access: EditorMcpAccess) -> Value {
     json!({
         "tools": authoring_tool_descriptors()
             .into_iter()
+            .filter(|descriptor| {
+                matches!(
+                    access,
+                    EditorMcpAccess::ReadWrite | EditorMcpAccess::AgentRunBound
+                ) || !tool_is_mutating(&descriptor.name)
+            })
             .map(tool_descriptor_json)
             .collect::<Vec<_>>()
     })
@@ -446,31 +605,69 @@ fn handle_notification(_method: &str) {}
 
 enum DispatchError {
     HostDisconnected,
-    Timeout,
 }
 
 fn dispatch_tool_call(
     name: &str,
     arguments: Value,
+    agent_run_id: Option<String>,
     request_sender: &mpsc::Sender<EditorMcpRequest>,
     context: &egui::Context,
+    stream: &TcpStream,
 ) -> Result<Value, DispatchError> {
     let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    let lifecycle = Arc::new(AtomicU8::new(REQUEST_PENDING));
     request_sender
         .send(EditorMcpRequest {
             name: name.to_owned(),
             arguments,
+            agent_run_id,
+            lifecycle: Arc::clone(&lifecycle),
             response: response_sender,
         })
         .map_err(|_| DispatchError::HostDisconnected)?;
     context.request_repaint();
 
-    let response = response_receiver
-        .recv_timeout(HOST_RESPONSE_TIMEOUT)
-        .map_err(|error| match error {
-            mpsc::RecvTimeoutError::Timeout => DispatchError::Timeout,
-            mpsc::RecvTimeoutError::Disconnected => DispatchError::HostDisconnected,
-        })?;
+    stream
+        .set_read_timeout(Some(HOST_POLL_INTERVAL))
+        .map_err(|_| DispatchError::HostDisconnected)?;
+    let response = loop {
+        match response_receiver.recv_timeout(HOST_POLL_INTERVAL) {
+            Ok(response) => break response,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(DispatchError::HostDisconnected);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let mut probe = [0_u8; 1];
+                match stream.peek(&mut probe) {
+                    Ok(0) => {
+                        let _ = lifecycle.compare_exchange(
+                            REQUEST_PENDING,
+                            REQUEST_CANCELLED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                        return Err(DispatchError::HostDisconnected);
+                    }
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => {
+                        let _ = lifecycle.compare_exchange(
+                            REQUEST_PENDING,
+                            REQUEST_CANCELLED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                        return Err(DispatchError::HostDisconnected);
+                    }
+                }
+            }
+        }
+    };
     Ok(match response {
         EditorMcpHostResult::Success(value) => json!({
             "content": [{
@@ -696,9 +893,18 @@ mod tests {
     }
 
     fn post(server: &EditorMcpServer, body: &str, extra_headers: &str) -> String {
+        post_with_token(server, server.authorization_token(), body, extra_headers)
+    }
+
+    fn post_with_token(
+        server: &EditorMcpServer,
+        token: &str,
+        body: &str,
+        extra_headers: &str,
+    ) -> String {
         let request = format!(
             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n{}\r\n{}",
-            server.authorization_token(),
+            token,
             body.len(),
             extra_headers,
             body
@@ -756,12 +962,83 @@ mod tests {
                 .expect("tool request must arrive");
             assert_eq!(request.name(), "project.describe");
             assert_eq!(request.arguments(), &json!({}));
+            assert_eq!(request.agent_run_id(), Some("run-test"));
             request.respond(EditorMcpHostResult::Success(json!({"project":"ok"})));
         });
 
         let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project.describe","arguments":{}}}"#;
-        let response = post(&server, call, "MCP-Protocol-Version: 2025-11-25\r\n");
+        let response = post(
+            &server,
+            call,
+            "MCP-Protocol-Version: 2025-11-25\r\nX-GameEngine-Agent-Run-Id: run-test\r\n",
+        );
         host.join().expect("host thread");
         assert!(response.contains("\"structuredContent\":{\"project\":\"ok\"}"));
+    }
+
+    #[test]
+    fn read_only_credential_lists_reads_and_rejects_mutations_before_dispatch() {
+        let (server, requests) = start();
+        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let response = post_with_token(
+            &server,
+            server.read_only_authorization_token(),
+            list,
+            "MCP-Protocol-Version: 2025-11-25\r\n",
+        );
+        let body = response.split("\r\n\r\n").nth(1).expect("HTTP body");
+        let json: Value = serde_json::from_str(body).expect("JSON-RPC response");
+        let names = json["result"]["tools"]
+            .as_array()
+            .expect("tool list")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"project.describe"));
+        assert!(!names.contains(&"scene.apply"));
+
+        let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scene.apply","arguments":{}}}"#;
+        let response = post_with_token(
+            &server,
+            server.read_only_authorization_token(),
+            call,
+            "MCP-Protocol-Version: 2025-11-25\r\n",
+        );
+        assert!(response.contains("read-only Editor credential"));
+        assert!(matches!(
+            requests.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn agent_credential_requires_a_run_id_before_dispatch() {
+        let (server, requests) = start();
+        let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project.describe","arguments":{}}}"#;
+        let response = post_with_token(
+            &server,
+            server.agent_authorization_token(),
+            call,
+            "MCP-Protocol-Version: 2025-11-25\r\n",
+        );
+        assert!(response.contains("X-GameEngine-Agent-Run-Id"));
+        assert!(matches!(
+            requests.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn modern_discovery_requires_matching_method_header_and_stamps_results() {
+        let (server, _requests) = start();
+        let discover = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
+        let response = post(
+            &server,
+            discover,
+            "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: server/discover\r\n",
+        );
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("\"resultType\":\"complete\""));
+        assert!(response.contains("io.modelcontextprotocol/serverInfo"));
     }
 }

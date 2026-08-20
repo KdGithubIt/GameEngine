@@ -17,7 +17,7 @@ use crate::managed_local_runtime::{MANAGED_BACKEND_ID, ManagedExecutionEnvironme
 use crate::resource_arbitration::QualityPreference;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -171,6 +171,8 @@ pub(crate) trait BenchmarkChildLauncher {
         executable: &Path,
         project_root: &Path,
         child_spec_path: &Path,
+        stdout_path: &Path,
+        stderr_path: &Path,
     ) -> Result<Box<dyn BenchmarkChildProcess>, String>;
 }
 
@@ -183,6 +185,8 @@ impl BenchmarkChildLauncher for EditorProcessLauncher {
         executable: &Path,
         project_root: &Path,
         child_spec_path: &Path,
+        stdout_path: &Path,
+        stderr_path: &Path,
     ) -> Result<Box<dyn BenchmarkChildProcess>, String> {
         if !executable.is_file() {
             return Err(format!(
@@ -190,14 +194,26 @@ impl BenchmarkChildLauncher for EditorProcessLauncher {
                 executable.display()
             ));
         }
+        let stdout = File::create(stdout_path).map_err(|error| {
+            format!(
+                "could not create benchmark child log `{}`: {error}",
+                stdout_path.display()
+            )
+        })?;
+        let stderr = File::create(stderr_path).map_err(|error| {
+            format!(
+                "could not create benchmark child log `{}`: {error}",
+                stderr_path.display()
+            )
+        })?;
         let child = Command::new(executable)
             .arg("--project")
             .arg(project_root)
             .arg("--benchmark-run")
             .arg(child_spec_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .map_err(|error| format!("could not start benchmark Editor child: {error}"))?;
         Ok(Box::new(EditorChildProcess { child }))
@@ -228,6 +244,8 @@ struct ActiveChild {
     process: Box<dyn BenchmarkChildProcess>,
     run: BenchmarkPlannedRun,
     result_path: PathBuf,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
     started_unix_ms: u64,
 }
 
@@ -327,6 +345,43 @@ impl BenchmarkExperimentCoordinator {
         &self.results
     }
 
+    /// Restores the completed prefix of a paused experiment.
+    ///
+    /// Every preceding result must exist and match the frozen spec. Missing or
+    /// corrupt evidence stops resume instead of silently rerunning a different
+    /// schedule under the same campaign identity.
+    pub(crate) fn resume_from(&mut self, next_ordinal: u64) -> Result<(), String> {
+        if self.active.is_some() || !self.results.is_empty() {
+            return Err("benchmark resume must be configured before polling".to_owned());
+        }
+        let planned = self.spec.planned_runs()?;
+        if next_ordinal as usize > planned.len() {
+            return Err(format!(
+                "benchmark resume ordinal {next_ordinal} exceeds {} planned runs",
+                planned.len()
+            ));
+        }
+        let mut restored = Vec::with_capacity(next_ordinal as usize);
+        for ordinal in 0..next_ordinal {
+            let result = self.store.read_result(&self.spec, ordinal)?;
+            let expected = planned
+                .get(ordinal as usize)
+                .ok_or_else(|| format!("benchmark run {ordinal} is not planned"))?;
+            if &result.run != expected {
+                return Err(format!(
+                    "resumed run {ordinal} does not match the frozen schedule"
+                ));
+            }
+            restored.push(result);
+        }
+        self.results = restored;
+        self.queue = planned
+            .into_iter()
+            .filter(|run| run.ordinal >= next_ordinal)
+            .collect();
+        Ok(())
+    }
+
     pub(crate) fn poll(&mut self) -> Result<(), String> {
         if let Some(active) = self.active.as_mut() {
             let Some(status) = active.process.finished()? else {
@@ -339,9 +394,14 @@ impl BenchmarkExperimentCoordinator {
             // dead run is recorded as a harness failure and the queue continues.
             let result = match read_child_result(&active.result_path) {
                 Ok(result) => result,
-                Err(error) => self.harness_failure_result(
+                Err(error) => self.failure_result(
                     &active,
-                    format!("child exited as {status} without a valid result: {error}"),
+                    BenchmarkRunFailureKind::Harness,
+                    format!(
+                        "child exited as {status} without a valid result: {error}; stdout `{}`, stderr `{}`",
+                        active.stdout_path.display(),
+                        active.stderr_path.display()
+                    ),
                 ),
             };
             result.validate_against(&self.spec)?;
@@ -376,13 +436,52 @@ impl BenchmarkExperimentCoordinator {
         Ok(())
     }
 
+    /// Stops only the active run for a user-requested campaign pause.
+    ///
+    /// No evidence is fabricated for the interrupted run. A resumed parent
+    /// starts again at this ordinal after restoring the completed prefix.
+    pub(crate) fn pause_active(&mut self) -> Result<(), String> {
+        if let Some(active) = self.active.as_mut() {
+            active.process.terminate()?;
+        }
+        self.active = None;
+        Ok(())
+    }
+
+    /// Converts one hung child into timeout evidence and keeps the queue alive.
+    pub(crate) fn timeout_active(&mut self, timeout: std::time::Duration) -> Result<(), String> {
+        let Some(mut active) = self.active.take() else {
+            return Ok(());
+        };
+        active.process.terminate()?;
+        let result = self.failure_result(
+            &active,
+            BenchmarkRunFailureKind::Timeout,
+            format!(
+                "benchmark run {} on model `{}` exceeded its {} second budget; stdout `{}`, stderr `{}`",
+                active.run.ordinal,
+                active.run.model_id,
+                timeout.as_secs(),
+                active.stdout_path.display(),
+                active.stderr_path.display()
+            ),
+        );
+        self.store.write_result(&self.spec, &result)?;
+        self.results.push(result);
+        if self.spec.stop_on_failure {
+            self.stopped = true;
+        }
+        Ok(())
+    }
+
     /// Records a run whose child never reported, without inventing metrics.
     ///
     /// The outcome is a failure with no record at all, so a crashed run can
     /// never contribute measured evidence or qualify a recommendation.
-    fn harness_failure_result(
+    fn failure_result(
         &self,
         active: &ActiveChild,
+        failure_kind: BenchmarkRunFailureKind,
         message: String,
     ) -> BenchmarkExperimentResult {
         BenchmarkExperimentResult {
@@ -394,7 +493,7 @@ impl BenchmarkExperimentCoordinator {
             started_unix_ms: active.started_unix_ms,
             finished_unix_ms: unix_ms().max(active.started_unix_ms),
             outcome: BenchmarkRunOutcome::Failed,
-            failure_kind: Some(BenchmarkRunFailureKind::Harness),
+            failure_kind: Some(failure_kind),
             routed_to_another_model: false,
             harness_message: Some(message),
             record: None,
@@ -416,6 +515,8 @@ impl BenchmarkExperimentCoordinator {
         fs::create_dir_all(&child_root).map_err(|error| error.to_string())?;
         let child_spec_path = child_root.join(format!("run-{:04}.json", run.ordinal));
         let result_path = child_root.join(format!("run-{:04}-result.json", run.ordinal));
+        let stdout_path = child_root.join(format!("run-{:04}-stdout.log", run.ordinal));
+        let stderr_path = child_root.join(format!("run-{:04}-stderr.log", run.ordinal));
         // Result paths are derived from the ordinal, so re-running an experiment
         // finds the previous execution's file already there. A child that dies
         // before reporting would otherwise inherit that stale result and record
@@ -456,13 +557,19 @@ impl BenchmarkExperimentCoordinator {
                 .cloned(),
         };
         child_spec.write(&child_spec_path)?;
-        let process =
-            self.launcher
-                .launch(&self.editor_executable, &project_root, &child_spec_path)?;
+        let process = self.launcher.launch(
+            &self.editor_executable,
+            &project_root,
+            &child_spec_path,
+            &stdout_path,
+            &stderr_path,
+        )?;
         Ok(ActiveChild {
             process,
             run,
             result_path,
+            stdout_path,
+            stderr_path,
             started_unix_ms: unix_ms(),
         })
     }
@@ -554,6 +661,7 @@ mod coordinator_tests {
         BENCHMARK_FIXTURE_VERSION, BenchmarkExperimentResult, BenchmarkRunFailureKind,
         BenchmarkRunOutcome,
     };
+    use std::cell::Cell;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -595,12 +703,50 @@ mod coordinator_tests {
         }
     }
 
+    struct HangingChild {
+        terminations: Rc<Cell<usize>>,
+    }
+
+    impl BenchmarkChildProcess for HangingChild {
+        fn finished(&mut self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn terminate(&mut self) -> Result<(), String> {
+            self.terminations.set(self.terminations.get() + 1);
+            Ok(())
+        }
+    }
+
+    struct HangingChildLauncher {
+        launches: Rc<Cell<usize>>,
+        terminations: Rc<Cell<usize>>,
+    }
+
+    impl BenchmarkChildLauncher for HangingChildLauncher {
+        fn launch(
+            &self,
+            _executable: &Path,
+            _project_root: &Path,
+            _child_spec_path: &Path,
+            _stdout_path: &Path,
+            _stderr_path: &Path,
+        ) -> Result<Box<dyn BenchmarkChildProcess>, String> {
+            self.launches.set(self.launches.get() + 1);
+            Ok(Box::new(HangingChild {
+                terminations: Rc::clone(&self.terminations),
+            }))
+        }
+    }
+
     impl BenchmarkChildLauncher for FakeChildLauncher {
         fn launch(
             &self,
             _executable: &Path,
             project_root: &Path,
             child_spec_path: &Path,
+            _stdout_path: &Path,
+            _stderr_path: &Path,
         ) -> Result<Box<dyn BenchmarkChildProcess>, String> {
             let spec = BenchmarkChildRunSpec::read(child_spec_path)?;
             let target = project_root.join(TARGET);
@@ -810,6 +956,43 @@ mod coordinator_tests {
             1
         );
         assert!(matches!(state, BenchmarkCoordinatorState::Complete { .. }));
+    }
+
+    #[test]
+    fn a_timed_out_child_is_one_failed_run_and_the_next_run_still_starts() {
+        let root = tempfile::tempdir().expect("root");
+        let spec = experiment(root.path(), &["model-a"], &["read_question_v1"], 2);
+        let launches = Rc::new(Cell::new(0));
+        let terminations = Rc::new(Cell::new(0));
+        let launcher = HangingChildLauncher {
+            launches: Rc::clone(&launches),
+            terminations: Rc::clone(&terminations),
+        };
+        let mut coordinator = BenchmarkExperimentCoordinator::with_launcher(
+            spec,
+            "http://127.0.0.1:11434".to_owned(),
+            root.path().join("editor.exe"),
+            fixture_template(root.path()),
+            root.path().join("runs"),
+            Box::new(launcher),
+        )
+        .expect("coordinator");
+        coordinator.poll().expect("first run starts");
+        coordinator
+            .timeout_active(std::time::Duration::from_secs(1))
+            .expect("timeout becomes evidence");
+        assert_eq!(terminations.get(), 1);
+        assert_eq!(coordinator.results().len(), 1);
+        assert_eq!(
+            coordinator.results()[0].failure_kind,
+            Some(BenchmarkRunFailureKind::Timeout)
+        );
+        coordinator.poll().expect("next run starts");
+        assert_eq!(launches.get(), 2);
+        assert!(matches!(
+            coordinator.state(),
+            BenchmarkCoordinatorState::Running { current, .. } if current.ordinal == 1
+        ));
     }
 
     #[test]

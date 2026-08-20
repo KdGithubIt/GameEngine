@@ -319,3 +319,5 @@ implementation contract.
 | [0161](0161-managed-local-multimodal-input-and-projector-registration.md) | Managed Local Multimodal Input and Projector Registration |
 | [0162](0162-intent-driven-ai-studio-execution-and-progressive-configuration-disclosure.md) | Intent-Driven AI Studio Execution and Progressive Configuration Disclosure |
 | [0163](0163-provider-served-ask-and-in-editor-provider-setup.md) | Provider-Served Ask and In-Editor Provider Setup |
+| [0164](0164-unified-ai-selection-agent-vocabulary-and-reachable-remote-access.md) | Unified AI Selection, Agent Vocabulary, and Reachable Remote Access |
+| [0165](0165-external-agent-and-mcp-reliability-boundaries.md) | External Agent and MCP Reliability Boundaries |
