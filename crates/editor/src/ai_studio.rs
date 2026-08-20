@@ -52,8 +52,9 @@ use crate::native_agent_runtime::{
     NativeAgentAction, NativeAgentRuntime, NativeMcpTask, mcp_write,
 };
 use crate::remote_ai_studio::{
-    RemoteAiStudioRequest, RemoteAiStudioResponse, RemoteAiStudioServer, RemoteOperation,
-    RemotePermissionScope, events_json, frame_bytes, sessions_json, snapshot_json,
+    PhoneUrlBaseError, RemoteAiStudioRequest, RemoteAiStudioResponse, RemoteAiStudioServer,
+    RemoteOperation, RemotePermissionScope, events_json, frame_bytes, masked_phone_url,
+    sessions_json, snapshot_json,
 };
 use crate::resource_arbitration::{
     CapabilityAvailability, InferenceWorkload, MemoryPressure, ModelResidencyRequest,
@@ -69,7 +70,7 @@ use eframe::egui;
 use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
 use serde::{Deserialize, Serialize};
-use settings_ui::SettingsSection;
+use settings_ui::{ProviderReadiness, SettingsSection};
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
@@ -111,6 +112,37 @@ impl ModelBackendPreference {
             Self::Enterprise => "Enterprise",
         }
     }
+
+    /// Returns the identity the companion uses for this backend.
+    const fn remote_id(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::ManagedLocal => "managed_local",
+            Self::HostedApi => "hosted_api",
+            Self::Enterprise => "enterprise",
+        }
+    }
+
+    /// Returns which group of the composer's AI list this backend appears in.
+    const fn ai_group(self) -> AiGroup {
+        match self {
+            Self::Local | Self::ManagedLocal => AiGroup::LocalModels,
+            Self::HostedApi | Self::Enterprise => AiGroup::Cloud,
+        }
+    }
+}
+
+/// Which group of the composer's AI list an entry appears in.
+///
+/// ADR 0164 §1 groups by what the reader is choosing between rather than by
+/// which internal path serves the entry, so a backend added later has to say
+/// where it belongs instead of silently missing the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiGroup {
+    /// Runs on this machine.
+    LocalModels,
+    /// Runs on someone else's machine.
+    Cloud,
 }
 
 /// What submitting a message does.
@@ -143,6 +175,26 @@ impl ConversationMode {
         }
     }
 
+    /// Returns the identity the companion uses for this mode.
+    const fn remote_id(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Build => "build",
+        }
+    }
+
+    /// Returns the shortest accurate summary of the mode.
+    ///
+    /// Used where both modes are listed side by side, so the mode that is not
+    /// selected can still be understood without repeating the sentence the
+    /// composer already states about the mode that is.
+    const fn summary(self) -> &'static str {
+        match self {
+            Self::Ask => "Answers from project evidence. Never writes.",
+            Self::Build => "Commits your message as the proposal and starts a run.",
+        }
+    }
+
     /// Returns what submitting a message does in this mode.
     const fn description(self) -> &'static str {
         match self {
@@ -170,8 +222,16 @@ struct AiStudioPreferences {
     #[serde(default)]
     external_agent_wsl_distribution: String,
     /// Whether Ask is answered by the ready external provider (ADR 0163 §1).
+    ///
+    /// Retained for compatibility only; see [`default_ask_uses_external_provider`].
     #[serde(default = "default_ask_uses_external_provider")]
     ask_uses_external_provider: bool,
+    /// Which family the selected AI belongs to (ADR 0164 §1).
+    ///
+    /// Absent in a file written before ADR 0164, which is why it is optional:
+    /// the family is then derived from the three controls that record replaced.
+    #[serde(default)]
+    selected_ai_family: Option<SelectedAiFamily>,
     #[serde(default)]
     model_backend: ModelBackendPreference,
     #[serde(default)]
@@ -188,6 +248,12 @@ struct AiStudioPreferences {
     hosted_model_name: String,
     #[serde(default)]
     presentation_mode: AiStudioPresentationMode,
+    /// The external origin a private reverse proxy publishes for this PC.
+    ///
+    /// ADR 0164 §4: empty is the not-ready state, so an installation written
+    /// before that record loads without gaining a claim about reachability.
+    #[serde(default)]
+    remote_phone_url_base: String,
 }
 
 impl Default for AiStudioPreferences {
@@ -201,6 +267,7 @@ impl Default for AiStudioPreferences {
             external_agent_execution_environment: ExternalAgentExecutionEnvironment::default(),
             external_agent_wsl_distribution: String::new(),
             ask_uses_external_provider: default_ask_uses_external_provider(),
+            selected_ai_family: None,
             model_backend: ModelBackendPreference::Local,
             managed_execution_environment: ManagedExecutionEnvironment::WindowsNative,
             managed_model_id: String::new(),
@@ -209,6 +276,7 @@ impl Default for AiStudioPreferences {
             hosted_model_endpoint: String::new(),
             hosted_model_name: String::new(),
             presentation_mode: AiStudioPresentationMode::default(),
+            remote_phone_url_base: String::new(),
         }
     }
 }
@@ -217,24 +285,144 @@ fn default_local_model_endpoint() -> String {
     DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned()
 }
 
+impl AiStudioPreferences {
+    /// Returns which family the recorded preferences select.
+    ///
+    /// ADR 0164 Compatibility: a file written before that record has no
+    /// selection of its own, and instead records a provider, a backend, and an
+    /// Ask routing flag. Exactly one selection is recovered from them — the
+    /// agent when Ask was routed to one that can answer questions, and the
+    /// recorded `ModelBackend` in every other case — so an upgrade never
+    /// changes who runs the next message.
+    fn resolved_selected_ai_family(&self) -> SelectedAiFamily {
+        if let Some(family) = self.selected_ai_family {
+            return family;
+        }
+        if self.ask_uses_external_provider && self.external_agent_provider.can_answer_questions() {
+            SelectedAiFamily::Agent
+        } else {
+            SelectedAiFamily::Model
+        }
+    }
+}
+
 /// Ask prefers a ready external provider so one signed-in provider serves both
 /// modes without a second runtime to configure (ADR 0163 §1).
+///
+/// ADR 0164 §1 removed the control that set this. The field remains readable so
+/// a preference file written before that record still loads, and it is consumed
+/// once, by [`AiStudioPreferences::resolved_selected_ai_family`].
 const fn default_ask_uses_external_provider() -> bool {
     true
 }
 
-/// Whether an Ask turn is answered by the external provider.
+/// Which family the selected AI belongs to.
 ///
-/// ADR 0163 §1: the provider answers only when the user keeps that preference,
-/// the provider is one whose read-only launch GameEngine can construct, and the
-/// status being read describes that same provider and reports it ready. Every
-/// other combination keeps the ModelBackend answer path.
-fn ask_is_provider_served(
-    prefers_provider: bool,
+/// ADR 0164 §1 makes "who runs the next message" one value. The entry inside
+/// each family is carried by the field that family already used, so the split
+/// ADR 0163 established between an agent program and a `ModelBackend` survives
+/// unchanged behind a single selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum SelectedAiFamily {
+    /// An external agent program with its own account and its own models.
+    Agent,
+    /// A model GameEngine itself runs or calls.
+    #[default]
+    Model,
+}
+
+/// Who runs the next message.
+///
+/// ADR 0164 §1: this is the one value the composer selects. Mode display,
+/// effective write capability, and the executing path are all derived from it
+/// together with the conversation mode, so the studio cannot report one
+/// executor while another performs the work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectedAi {
+    /// An external agent program answers Ask and runs Build.
+    Agent(ExternalAgentProviderKind),
+    /// A model backend answers Ask and runs Build.
+    Model(ModelBackendPreference),
+}
+
+/// Whether an Ask turn is answered by an external agent.
+///
+/// ADR 0164 §1 removes the routing preference: selecting an agent is the
+/// statement that the agent serves the selected mode. ADR 0163 §1's conditions
+/// are otherwise unchanged — the agent must be one whose read-only launch
+/// GameEngine can construct, and the status being read must describe that same
+/// agent and report it ready.
+/// Returns the stable identity the companion uses for one AI entry.
+///
+/// The identity has to survive a restart and a reordering of the list, so it
+/// names what the entry is rather than where it appears. `managed_model_id` is
+/// read only for a Managed Local entry, where the registered model is what
+/// distinguishes one entry from another.
+fn ai_entry_id(selection: SelectedAi, managed_model_id: &str) -> String {
+    match selection {
+        SelectedAi::Agent(kind) => format!("agent:{}", kind.run_label()),
+        SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
+            format!("model:managed_local:{managed_model_id}")
+        }
+        SelectedAi::Model(backend) => format!("model:{}", backend.remote_id()),
+    }
+}
+
+/// Returns the identity the companion uses for one effort level.
+fn effort_id(quality: QualityPreference) -> String {
+    quality.label().to_ascii_lowercase()
+}
+
+/// Returns which effort level an identity names.
+fn effort_from_id(id: &str) -> Option<QualityPreference> {
+    QualityPreference::ALL
+        .into_iter()
+        .find(|quality| quality.label().eq_ignore_ascii_case(id))
+}
+
+/// Returns why an agent cannot serve a mode, when it cannot.
+///
+/// ADR 0164 §2: the sentence names the entry, says which mode it cannot serve,
+/// and points at the two places that change it. It never proposes running the
+/// turn on something else, because the composer would then be naming an
+/// executor that did not do the work.
+fn agent_unavailable_for_mode(
     kind: ExternalAgentProviderKind,
-    status: &ExternalAgentProviderStatus,
-) -> bool {
-    prefers_provider && kind.can_answer_questions() && status.kind == kind && status.ready()
+    mode: ConversationMode,
+    readiness: ProviderReadiness,
+) -> Option<String> {
+    if mode == ConversationMode::Ask && !kind.can_answer_questions() {
+        return Some(format!(
+            "{} can run Build, and cannot answer Ask. Choose a model for Ask, or switch to Build.",
+            kind.label()
+        ));
+    }
+    match readiness {
+        ProviderReadiness::Ready => None,
+        ProviderReadiness::Working => Some(format!(
+            "{} is still being checked on this machine.",
+            kind.label()
+        )),
+        _ => Some(format!(
+            "{} cannot {} yet: {}. Set it up under Agents in settings, or choose another AI.",
+            kind.label(),
+            match mode {
+                ConversationMode::Ask => "answer",
+                ConversationMode::Build => "build",
+            },
+            readiness.label().to_lowercase()
+        )),
+    }
+}
+
+fn ask_is_agent_served(selection: SelectedAi, status: &ExternalAgentProviderStatus) -> bool {
+    match selection {
+        SelectedAi::Agent(kind) => {
+            kind.can_answer_questions() && status.kind == kind && status.ready()
+        }
+        SelectedAi::Model(_) => false,
+    }
 }
 
 /// Authoritative Editor identity captured across native-inference interruption boundaries.
@@ -795,6 +983,12 @@ pub struct AiStudioPanel {
     host: AgentHost,
     remote_server: Option<RemoteAiStudioServer>,
     remote_requests: Option<std::sync::mpsc::Receiver<RemoteAiStudioRequest>>,
+    /// The external origin a private reverse proxy publishes for this PC.
+    ///
+    /// ADR 0164 §4 composes the phone URL from this value and the gateway's own
+    /// access token. It is user-supplied because the hop that produces it is
+    /// user-owned, and GameEngine must not learn it from an overlay vendor.
+    remote_phone_url_base: String,
     live_observation: LiveObservationManager,
     selected_session: String,
     proposal_draft: AgentProposal,
@@ -812,6 +1006,12 @@ pub struct AiStudioPanel {
     external_provider_kind: ExternalAgentProviderKind,
     /// Whether the machine-local settings surface is open (ADR 0158 §5).
     settings_open: bool,
+    /// Set while the settings surface asks to move the studio between its
+    /// embedded and detached presentations (ADR 0147).
+    ///
+    /// The request is recorded rather than applied where it is made, because
+    /// the control is drawn inside the very presentation it replaces.
+    presentation_toggle_requested: bool,
     /// Which section of that surface is being read (ADR 0162 §5).
     settings_section: SettingsSection,
     /// Whether the editable proposal surface is open (ADR 0162 §4).
@@ -823,8 +1023,13 @@ pub struct AiStudioPanel {
     external_provider_environment: ExternalAgentExecutionEnvironment,
     external_provider_wsl_distribution: String,
     external_provider_status: ExternalAgentProviderStatus,
-    /// Whether Ask is answered by the ready external provider (ADR 0163 §1).
-    ask_uses_external_provider: bool,
+    /// Which family the selected AI belongs to (ADR 0164 §1).
+    ///
+    /// Together with `external_provider_kind` or `model_backend` this is the
+    /// single value the composer selects. It is written only by
+    /// [`AiStudioPanel::select_ai`], so the family and the entry cannot drift
+    /// apart into the two independent selections ADR 0164 §1 replaced.
+    selected_ai_family: SelectedAiFamily,
     /// The provider process answering the current Ask turn, if one is running.
     external_question: Option<ExternalAgentQuestionTask>,
     /// Which session a provider-served answer belongs to.
@@ -847,6 +1052,12 @@ pub struct AiStudioPanel {
     /// configured, and only once per Editor session.
     external_provider_adoption_done: bool,
     model_backend: ModelBackendPreference,
+    /// Which backend's settings the Models section is currently about.
+    ///
+    /// ADR 0164 §1 leaves the selection to the composer, so this scopes what is
+    /// being configured and never decides who runs the next message. It is not
+    /// persisted: it is a reading position, not a preference.
+    settings_model_view: ModelBackendPreference,
     managed_local_runtime: ManagedLocalRuntime,
     managed_execution_environment: ManagedExecutionEnvironment,
     managed_model_id: String,
@@ -941,6 +1152,7 @@ impl AiStudioPanel {
         let preferences_path = data_root.join("preferences.json");
         let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
         let preferences = load_ai_studio_preferences(&preferences_path);
+        let selected_ai_family = preferences.resolved_selected_ai_family();
         let managed_local_runtime = ManagedLocalRuntime::open(ai_root.join("managed-local"))
             .map_err(|error| error.to_string())?;
         let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
@@ -974,6 +1186,7 @@ impl AiStudioPanel {
             host,
             remote_server: None,
             remote_requests: None,
+            remote_phone_url_base: preferences.remote_phone_url_base,
             live_observation: LiveObservationManager::default(),
             selected_session,
             proposal_draft,
@@ -985,6 +1198,7 @@ impl AiStudioPanel {
             confinement_requirement: preferences.confinement_requirement,
             external_provider_kind: preferences.external_agent_provider,
             settings_open: false,
+            presentation_toggle_requested: false,
             settings_section: SettingsSection::Models,
             proposal_open: false,
             external_provider_environment: preferences.external_agent_execution_environment,
@@ -992,7 +1206,7 @@ impl AiStudioPanel {
             external_provider_status: ExternalAgentProviderStatus::unchecked(
                 preferences.external_agent_provider,
             ),
-            ask_uses_external_provider: preferences.ask_uses_external_provider,
+            selected_ai_family,
             external_question: None,
             external_question_session: None,
             external_setup: None,
@@ -1003,6 +1217,7 @@ impl AiStudioPanel {
             external_provider_probe_results: Vec::new(),
             external_provider_adoption_done: false,
             model_backend: preferences.model_backend,
+            settings_model_view: preferences.model_backend,
             managed_local_runtime,
             managed_execution_environment: preferences.managed_execution_environment,
             managed_model_id: preferences.managed_model_id,
@@ -1489,6 +1704,37 @@ impl AiStudioPanel {
             "adr0158-transcript" => {
                 self.prepare_transcript_visual_validation();
             }
+            "adr0164-ai-selection" => {
+                self.external_provider_status = ExternalAgentProviderStatus::visual_fixture(
+                    ExternalAgentProviderKind::ClaudeCode,
+                );
+                self.select_ai(SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode));
+                self.conversation_mode = ConversationMode::Build;
+                self.status = Some(
+                    "One AI selection · agents, local models, and cloud in one list · mode, AI, and effort are the only composer selections."
+                        .to_owned(),
+                );
+            }
+            "adr0164-agents-section" => {
+                self.external_provider_status = ExternalAgentProviderStatus::visual_fixture(
+                    ExternalAgentProviderKind::ClaudeCode,
+                );
+                self.settings_section = SettingsSection::Agents;
+                self.settings_open = true;
+                self.status = Some(
+                    "Agents · one readiness state and one action per agent · discovery, capabilities, and resolved paths are collapsed diagnosis."
+                        .to_owned(),
+                );
+            }
+            "adr0164-remote-phone-url" => {
+                self.remote_phone_url_base = "https://my-pc.example-tailnet.ts.net".to_owned();
+                self.settings_section = SettingsSection::Remote;
+                self.settings_open = true;
+                self.status = Some(
+                    "Remote · one reachable phone URL with a masked token · the loopback gateway is collapsed under Advanced."
+                        .to_owned(),
+                );
+            }
             "adr0149-live-observation" => {
                 self.model_backend = ModelBackendPreference::Local;
                 self.status = Some(
@@ -1914,39 +2160,41 @@ impl AiStudioPanel {
             AiStudioPresentationMode::Embedded => self.show_embedded(context),
             AiStudioPresentationMode::Detached => self.show_detached(context),
         }
+        self.apply_requested_presentation_toggle();
+    }
+
+    /// Moves the studio between its presentations once the frame has drawn.
+    ///
+    /// ADR 0147 keeps detach and reattach presentation-only operations, and the
+    /// control that asks for them now lives in the settings surface the studio
+    /// itself draws, so the mode may only change after that drawing is done.
+    fn apply_requested_presentation_toggle(&mut self) {
+        if !std::mem::take(&mut self.presentation_toggle_requested) {
+            return;
+        }
+        match self.presentation.mode {
+            AiStudioPresentationMode::Embedded => self.presentation.detach(),
+            AiStudioPresentationMode::Detached => self.presentation.reattach(),
+        }
+        self.save_preferences();
     }
 
     fn show_embedded(&mut self, context: &egui::Context) {
         let mut open = self.presentation.open;
-        let mut detach_requested = false;
         embedded_window(context)
             .open(&mut open)
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Detach").clicked() {
-                        detach_requested = true;
-                    }
-                    ui.small("Open AI Studio in its own OS window.");
-                });
-                ui.separator();
-                self.show_contents(ui);
-            });
+            .show(context, |ui| self.show_contents(ui));
         self.presentation.open = open;
-        if detach_requested {
-            self.presentation.detach();
-            self.save_preferences();
-        }
     }
 
     fn show_detached(&mut self, context: &egui::Context) {
-        let mut reattach_requested = false;
         let mut close_requested = false;
         context.show_viewport_immediate(
             egui::ViewportId::from_hash_of("gameengine_ai_studio_detached"),
             egui::ViewportBuilder::default()
                 .with_title("AI Studio")
-                .with_inner_size([600.0, 680.0])
-                .with_min_inner_size([460.0, 520.0])
+                .with_inner_size(DETACHED_DEFAULT_SIZE)
+                .with_min_inner_size(DETACHED_MIN_SIZE)
                 .with_resizable(true),
             |ui, _class| {
                 close_requested = ui.input(|input| input.viewport().close_requested());
@@ -1956,13 +2204,6 @@ impl AiStudioPanel {
                 // paints the studio ground itself.
                 ui.painter()
                     .rect_filled(ui.max_rect(), 0.0_f32, theme::BACKGROUND);
-                ui.horizontal(|ui| {
-                    if ui.button("Reattach").clicked() {
-                        reattach_requested = true;
-                    }
-                    ui.small("Same project Agent Host · detached presentation");
-                });
-                ui.separator();
                 self.show_contents(ui);
             },
         );
@@ -1972,10 +2213,7 @@ impl AiStudioPanel {
             self.detached_visual_frames = self.detached_visual_frames.saturating_add(1);
         }
 
-        if reattach_requested {
-            self.presentation.reattach();
-            self.save_preferences();
-        } else if close_requested {
+        if close_requested {
             self.presentation.close();
         }
     }
@@ -2038,6 +2276,24 @@ impl AiStudioPanel {
         match operation {
             RemoteOperation::Sessions => {
                 RemoteAiStudioResponse::json(sessions_json(&self.host, &self.project_id))
+            }
+            RemoteOperation::Selection => {
+                let selection = self.selection_json();
+                RemoteAiStudioResponse::json(selection)
+            }
+            RemoteOperation::SetSelection {
+                mode, ai, effort, ..
+            } => {
+                match self.apply_remote_selection(mode.as_deref(), ai.as_deref(), effort.as_deref())
+                {
+                    Ok(()) => {
+                        let selection = self.selection_json();
+                        RemoteAiStudioResponse::json(selection)
+                    }
+                    Err(error) => {
+                        RemoteAiStudioResponse::error(400, "invalid_selection", error, false)
+                    }
+                }
             }
             RemoteOperation::Snapshot { session_id } => {
                 let pending = self
@@ -2482,9 +2738,10 @@ impl AiStudioPanel {
             .id_salt("ai_studio_transcript")
             .auto_shrink([false, false])
             .stick_to_bottom(true);
+        let mode = self.conversation_mode;
         transcript_scroll.show(ui, |ui| {
             if transcript.entries.is_empty() {
-                ui.weak("Describe what you want to build, change, inspect, or validate.");
+                show_empty_transcript(ui, mode);
                 return;
             }
             let mut current_run: Option<String> = None;
@@ -2537,7 +2794,7 @@ impl AiStudioPanel {
         ui.horizontal_wrapped(|ui| {
             theme::status_dot(ui, theme::ACCENT_TEXT);
             ui.strong(format!("Run · {}", span.proposal_summary));
-            ui.small(format!("{:?}", span.state));
+            theme::status_pill(ui, run_state_tone(span.state), span.state.label());
         });
         let Ok(snapshot) = self
             .host
@@ -2683,10 +2940,243 @@ impl AiStudioPanel {
     }
 
     /// Draws the message composer and its compact backend indicator.
+    /// Returns who runs the next message.
+    ///
+    /// ADR 0164 §1: one value, read by everything that has to know which
+    /// executor the composer is displaying.
+    fn selected_ai(&self) -> SelectedAi {
+        match self.selected_ai_family {
+            SelectedAiFamily::Agent => SelectedAi::Agent(self.external_provider_kind),
+            SelectedAiFamily::Model => SelectedAi::Model(self.model_backend),
+        }
+    }
+
+    /// Records who runs the next message.
+    ///
+    /// This is the only writer of the family and the entry together, so the
+    /// two cannot drift into the separate selections ADR 0164 §1 replaced.
+    fn select_ai(&mut self, selection: SelectedAi) {
+        if self.selected_ai() == selection {
+            return;
+        }
+        match selection {
+            SelectedAi::Agent(kind) => {
+                self.selected_ai_family = SelectedAiFamily::Agent;
+                if self.external_provider_kind != kind {
+                    self.external_provider_kind = kind;
+                    self.external_provider_status = ExternalAgentProviderStatus::unchecked(kind);
+                }
+            }
+            SelectedAi::Model(backend) => {
+                self.selected_ai_family = SelectedAiFamily::Model;
+                self.model_backend = backend;
+                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+            }
+        }
+        self.save_preferences();
+    }
+
+    /// Returns the name of the selected AI, as the composer displays it.
+    fn selected_ai_label(&mut self) -> String {
+        match self.selected_ai() {
+            SelectedAi::Agent(kind) => kind.label().to_owned(),
+            SelectedAi::Model(_) => match self.described_native_model_config() {
+                Ok(config) => config.label(),
+                Err(_) => self.model_backend.label().to_owned(),
+            },
+        }
+    }
+
+    /// Returns why the selected AI cannot serve the selected mode.
+    ///
+    /// ADR 0164 §2: the studio states this and refuses to send. It never
+    /// answers on a different AI, because the composer would then name one
+    /// executor while another performed the work, and no audit of the
+    /// transcript could recover which one ran.
+    fn selected_ai_unavailable(&mut self) -> Option<String> {
+        match self.selected_ai() {
+            SelectedAi::Agent(kind) => {
+                agent_unavailable_for_mode(kind, self.conversation_mode, self.agent_readiness(kind))
+            }
+            SelectedAi::Model(_) => self.described_native_model_config().err(),
+        }
+    }
+
+    /// Returns the identity the companion uses for the selected AI.
+    fn selected_ai_id(&self) -> String {
+        ai_entry_id(self.selected_ai(), &self.managed_model_id)
+    }
+
+    /// Returns every AI this machine offers, as the companion receives it.
+    ///
+    /// ADR 0164 §5: entries that already exist, with the readiness the local
+    /// composer shows. Nothing here is a way to create one.
+    fn ai_entries(&self) -> Vec<serde_json::Value> {
+        let mut entries = Vec::new();
+        for kind in ExternalAgentProviderKind::ALL {
+            entries.push(serde_json::json!({
+                "id": ai_entry_id(SelectedAi::Agent(kind), ""),
+                "group": "Agents",
+                "label": kind.label(),
+                "readiness": self.agent_readiness(kind).label(),
+            }));
+        }
+        for model in self
+            .managed_local_runtime
+            .registered_models()
+            .unwrap_or_default()
+        {
+            entries.push(serde_json::json!({
+                "id": ai_entry_id(
+                    SelectedAi::Model(ModelBackendPreference::ManagedLocal),
+                    &model.model_id,
+                ),
+                "group": "Local models",
+                // A registered GGUF is named by the user and can carry a path,
+                // which ADR 0133 §13 keeps out of the remote projection.
+                "label": crate::remote_ai_studio::sanitize_text(&model.display_name),
+                "readiness": "registered",
+            }));
+        }
+        for backend in ModelBackendPreference::ALL
+            .into_iter()
+            .filter(|backend| *backend != ModelBackendPreference::ManagedLocal)
+        {
+            entries.push(serde_json::json!({
+                "id": ai_entry_id(SelectedAi::Model(backend), ""),
+                "group": match backend.ai_group() {
+                    AiGroup::LocalModels => "Local models",
+                    AiGroup::Cloud => "Cloud",
+                },
+                "label": backend.label(),
+                "readiness": self.backend_readiness(backend),
+            }));
+        }
+        entries
+    }
+
+    /// Returns the composer's three selections and everything selectable.
+    fn selection_json(&mut self) -> serde_json::Value {
+        let entries = self.ai_entries();
+        let selected_ai = self.selected_ai_id();
+        let unavailable = self.selected_ai_unavailable();
+        serde_json::json!({
+            "mode": {
+                "selected": self.conversation_mode.remote_id(),
+                "entries": ConversationMode::ALL
+                    .into_iter()
+                    .map(|mode| serde_json::json!({
+                        "id": mode.remote_id(),
+                        "label": mode.label(),
+                        "summary": mode.summary(),
+                    }))
+                    .collect::<Vec<_>>(),
+            },
+            "ai": {
+                "selected": selected_ai,
+                "entries": entries,
+            },
+            "effort": {
+                "selected": effort_id(self.quality_preference),
+                "entries": QualityPreference::ALL
+                    .into_iter()
+                    .map(|quality| serde_json::json!({
+                        "id": effort_id(quality),
+                        "label": quality.label(),
+                    }))
+                    .collect::<Vec<_>>(),
+            },
+            // ADR 0164 §2 applies remotely too: the companion states this and
+            // refuses to send rather than substituting another AI.
+            "unavailable": unavailable,
+        })
+    }
+
+    /// Returns which entry an AI identity names, when this machine offers one.
+    ///
+    /// ADR 0164 §5: an identity that is not in the list the host published is
+    /// rejected rather than created, so a remote client cannot register a model
+    /// or configure an agent by naming one.
+    fn ai_selection_for_id(&self, id: &str) -> Option<(SelectedAi, Option<String>)> {
+        for kind in ExternalAgentProviderKind::ALL {
+            if ai_entry_id(SelectedAi::Agent(kind), "") == id {
+                return Some((SelectedAi::Agent(kind), None));
+            }
+        }
+        for model in self
+            .managed_local_runtime
+            .registered_models()
+            .unwrap_or_default()
+        {
+            let managed = SelectedAi::Model(ModelBackendPreference::ManagedLocal);
+            if ai_entry_id(managed, &model.model_id) == id {
+                return Some((managed, Some(model.model_id)));
+            }
+        }
+        for backend in ModelBackendPreference::ALL
+            .into_iter()
+            .filter(|backend| *backend != ModelBackendPreference::ManagedLocal)
+        {
+            if ai_entry_id(SelectedAi::Model(backend), "") == id {
+                return Some((SelectedAi::Model(backend), None));
+            }
+        }
+        None
+    }
+
+    /// Applies a companion selection change to this machine's own state.
+    ///
+    /// ADR 0164 §6: there is one selection, and every presentation reads and
+    /// writes it, so a change made on the phone is the change the PC shows.
+    ///
+    /// # Errors
+    ///
+    /// Returns which supplied identity this machine does not offer. Nothing is
+    /// applied when any part of the request is rejected.
+    fn apply_remote_selection(
+        &mut self,
+        mode: Option<&str>,
+        ai: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), String> {
+        let mode = mode
+            .map(|id| {
+                ConversationMode::ALL
+                    .into_iter()
+                    .find(|mode| mode.remote_id() == id)
+                    .ok_or_else(|| format!("{id} is not a conversation mode."))
+            })
+            .transpose()?;
+        let effort = effort
+            .map(|id| effort_from_id(id).ok_or_else(|| format!("{id} is not an effort level.")))
+            .transpose()?;
+        let ai = ai
+            .map(|id| {
+                self.ai_selection_for_id(id)
+                    .ok_or_else(|| format!("{id} is not an AI this machine offers."))
+            })
+            .transpose()?;
+        if let Some(mode) = mode {
+            self.conversation_mode = mode;
+        }
+        if let Some(effort) = effort {
+            self.quality_preference = effort;
+        }
+        if let Some((selection, managed_model_id)) = ai {
+            if let Some(model_id) = managed_model_id {
+                self.managed_model_id = model_id;
+                self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+            }
+            self.select_ai(selection);
+        }
+        self.save_preferences();
+        Ok(())
+    }
+
     fn show_composer(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             self.show_mode_selection(ui);
-            self.show_model_selection(ui);
+            self.show_ai_selection(ui);
             self.show_effort_selection(ui);
         });
         ui.add(
@@ -2719,67 +3209,104 @@ impl AiStudioPanel {
         }
     }
 
-    /// Draws the model entry of the composer's selection tier.
+    /// Draws the AI entry of the composer's selection tier.
     ///
-    /// ADR 0131 §1 requires the provider and its connection state to stay
-    /// visible, and ADR 0162 §5 limits this control to choosing among entries
-    /// that are already registered: nothing here installs, registers,
-    /// authenticates, or removes anything. The one action that leaves the tier
-    /// opens the configuration surface at the section that does.
-    fn show_model_selection(&mut self, ui: &mut egui::Ui) {
-        let selected_label = match self.described_native_model_config() {
-            Ok(config) => config.label(),
-            Err(_) => format!("{} · not ready", self.model_backend.label()),
-        };
+    /// ADR 0164 §1: one list is the single place the executor of the next turn
+    /// is chosen, grouped by what the reader is choosing between rather than by
+    /// which internal path serves the entry. ADR 0162 §5 limits it to entries
+    /// that already exist: nothing here installs, registers, authenticates, or
+    /// removes anything, and the one action that leaves the tier opens the
+    /// configuration section that owns the entry.
+    fn show_ai_selection(&mut self, ui: &mut egui::Ui) {
+        let selected_label = self.selected_ai_label();
         let managed_models = self
             .managed_local_runtime
             .registered_models()
             .unwrap_or_default();
-        let mut open_models_configuration = false;
-        egui::ComboBox::from_id_salt("ai_studio_composer_model")
+        let agent_readiness: Vec<_> = ExternalAgentProviderKind::ALL
+            .into_iter()
+            .map(|kind| (kind, self.agent_readiness(kind)))
+            .collect();
+        let mut chosen = None;
+        let mut open_configuration = None;
+        egui::ComboBox::from_id_salt("ai_studio_composer_ai")
             .selected_text(selected_label)
             .width(300.0)
             .show_ui(ui, |ui| {
-                theme::caption(ui, "Managed Local AI");
+                theme::caption(ui, "Agents");
+                for (kind, readiness) in &agent_readiness {
+                    let selected = self.selected_ai() == SelectedAi::Agent(*kind);
+                    if ui
+                        .selectable_label(
+                            selected,
+                            format!("{} · {}", kind.label(), readiness.label()),
+                        )
+                        .clicked()
+                    {
+                        chosen = Some(SelectedAi::Agent(*kind));
+                    }
+                }
+                ui.separator();
+                theme::caption(ui, "Local models");
                 if managed_models.is_empty() {
                     theme::hint(ui, "No GGUF is registered on this machine yet.");
                 }
                 for model in &managed_models {
-                    let selected = self.model_backend == ModelBackendPreference::ManagedLocal
+                    let selected = self.selected_ai()
+                        == SelectedAi::Model(ModelBackendPreference::ManagedLocal)
                         && self.managed_model_id == model.model_id;
-                    if ui.selectable_label(selected, &model.display_name).clicked() && !selected {
-                        self.model_backend = ModelBackendPreference::ManagedLocal;
+                    if ui.selectable_label(selected, &model.display_name).clicked() {
                         self.managed_model_id = model.model_id.clone();
-                        self.last_model_resource_telemetry = ModelResourceTelemetry::default();
-                        self.save_preferences();
+                        chosen = Some(SelectedAi::Model(ModelBackendPreference::ManagedLocal));
                     }
                 }
+                self.show_ai_backend_entries(ui, AiGroup::LocalModels, &mut chosen);
                 ui.separator();
-                theme::caption(ui, "Other backends");
-                // Managed Local AI is listed above as the models it has
-                // registered, so it is not repeated as a backend here.
-                for backend in ModelBackendPreference::ALL
-                    .into_iter()
-                    .filter(|backend| *backend != ModelBackendPreference::ManagedLocal)
-                {
-                    let selected = self.model_backend == backend;
-                    let response = ui.selectable_label(
-                        selected,
-                        format!("{} · {}", backend.label(), self.backend_readiness(backend)),
-                    );
-                    if response.clicked() && !selected {
-                        self.model_backend = backend;
-                        self.save_preferences();
-                    }
+                theme::caption(ui, "Cloud");
+                self.show_ai_backend_entries(ui, AiGroup::Cloud, &mut chosen);
+                ui.separator();
+                if ui.button("Set up agents…").clicked() {
+                    open_configuration = Some(SettingsSection::Agents);
                 }
-                ui.separator();
-                if ui.button("Configure models…").clicked() {
-                    open_models_configuration = true;
+                if ui.button("Set up models…").clicked() {
+                    open_configuration = Some(SettingsSection::Models);
                 }
             });
-        if open_models_configuration {
-            self.settings_section = SettingsSection::Models;
+        if let Some(selection) = chosen {
+            // The managed model id may have changed without the family or the
+            // backend changing, so the preference write is not left to
+            // `select_ai` alone.
+            self.select_ai(selection);
+            self.save_preferences();
+        }
+        if let Some(section) = open_configuration {
+            self.settings_section = section;
             self.settings_open = true;
+        }
+    }
+
+    /// Draws one group of model-backend entries inside the AI list.
+    fn show_ai_backend_entries(
+        &mut self,
+        ui: &mut egui::Ui,
+        group: AiGroup,
+        chosen: &mut Option<SelectedAi>,
+    ) {
+        for backend in ModelBackendPreference::ALL.into_iter().filter(|backend| {
+            // Managed Local AI appears above as the models it has registered,
+            // so it is not repeated as a backend of its own.
+            backend.ai_group() == group && *backend != ModelBackendPreference::ManagedLocal
+        }) {
+            let selected = self.selected_ai() == SelectedAi::Model(backend);
+            if ui
+                .selectable_label(
+                    selected,
+                    format!("{} · {}", backend.label(), self.backend_readiness(backend)),
+                )
+                .clicked()
+            {
+                *chosen = Some(SelectedAi::Model(backend));
+            }
         }
     }
 
@@ -2908,11 +3435,7 @@ impl AiStudioPanel {
     fn show_send_controls(&mut self, ui: &mut egui::Ui) {
         let awaiting_native = self.native_run_awaits_user();
         let run_active = self.run_is_active();
-        let commit_blocked = match self.conversation_mode {
-            ConversationMode::Ask => None,
-            ConversationMode::Build if awaiting_native || run_active => None,
-            ConversationMode::Build => self.intent_commit_blocked(),
-        };
+        let commit_blocked = self.send_blocked();
         let can_send = !self.message_draft.trim().is_empty()
             && self.native_question.is_none()
             && self.external_question.is_none()
@@ -2957,11 +3480,8 @@ impl AiStudioPanel {
             match self.conversation_mode {
                 ConversationMode::Ask => {
                     ui.small(ConversationMode::Ask.description());
-                    if self.provider_answers_questions() {
-                        ui.small(format!(
-                            "Answered by {}.",
-                            self.external_provider_kind.label()
-                        ));
+                    if let SelectedAi::Agent(kind) = self.selected_ai() {
+                        ui.small(format!("Answered by {}.", kind.label()));
                     }
                 }
                 ConversationMode::Build if run_active => {
@@ -3018,26 +3538,36 @@ impl AiStudioPanel {
     /// This is the predicate the removed Go control carried (ADR 0162 §1): a
     /// run starts only when no other execution owns the studio and a usable
     /// runtime has been selected.
-    fn intent_commit_blocked(&mut self) -> Option<&'static str> {
+    fn intent_commit_blocked(&mut self) -> Option<String> {
         if self.process.is_some() || self.native_runtime_busy() {
-            return Some("An agent process is already running.");
+            return Some("An agent process is already running.".to_owned());
         }
         if self.external_question.is_some() {
-            return Some("The external agent provider is answering a question.");
+            return Some("The selected agent is answering a question.".to_owned());
         }
         if self.pending_permission.is_some() || self.pending_question_permission.is_some() {
-            return Some("Resolve the pending approval first.");
+            return Some("Resolve the pending approval first.".to_owned());
         }
-        if self.external_provider_is_ready() {
+        self.selected_ai_unavailable()
+    }
+
+    /// Returns why the composer cannot submit the draft right now.
+    ///
+    /// ADR 0164 §2: the reason is stated in one line at the composer and Send
+    /// refuses. The same predicate guards submission itself, so no other path
+    /// can answer a turn on an AI the composer is not displaying.
+    fn send_blocked(&mut self) -> Option<String> {
+        if self.native_run_awaits_user() {
             return None;
         }
-        if self.external_provider_is_requested() {
-            return Some("The selected external agent provider is not ready.");
+        match self.conversation_mode {
+            ConversationMode::Ask => self.selected_ai_unavailable(),
+            // ADR 0162 §3 records this instruction for the next run rather than
+            // executing it now, so the selection is checked when that run
+            // starts and not while the previous one is still executing.
+            ConversationMode::Build if self.run_is_active() => None,
+            ConversationMode::Build => self.intent_commit_blocked(),
         }
-        if self.described_native_model_config().is_err() {
-            return Some("Select a configured model before building.");
-        }
-        None
     }
 
     /// Performs what the composer's mode says submitting a message does.
@@ -3048,6 +3578,12 @@ impl AiStudioPanel {
     fn submit_message(&mut self) {
         let text = self.message_draft.trim().to_owned();
         if text.is_empty() {
+            return;
+        }
+        // ADR 0164 §2: the draft is kept rather than recorded, so changing the
+        // selection and sending the same text is one interaction.
+        if let Some(reason) = self.send_blocked() {
+            self.status = Some(reason);
             return;
         }
         if let Err(error) =
@@ -3590,13 +4126,9 @@ impl AiStudioPanel {
         self.start_native_question();
     }
 
-    /// Whether the selected provider is ready to answer this Ask turn.
+    /// Whether the selected agent is ready to answer this Ask turn.
     fn provider_answers_questions(&self) -> bool {
-        ask_is_provider_served(
-            self.ask_uses_external_provider,
-            self.external_provider_kind,
-            &self.current_external_provider_status(),
-        )
+        ask_is_agent_served(self.selected_ai(), &self.current_external_provider_status())
     }
 
     /// Starts the read-only provider process that answers one Ask turn.
@@ -4075,7 +4607,8 @@ impl AiStudioPanel {
             external_agent_provider: self.external_provider_kind,
             external_agent_execution_environment: self.external_provider_environment,
             external_agent_wsl_distribution: self.external_provider_wsl_distribution.clone(),
-            ask_uses_external_provider: self.ask_uses_external_provider,
+            ask_uses_external_provider: default_ask_uses_external_provider(),
+            selected_ai_family: Some(self.selected_ai_family),
             model_backend: self.model_backend,
             managed_execution_environment: self.managed_execution_environment,
             managed_model_id: self.managed_model_id.clone(),
@@ -4084,6 +4617,7 @@ impl AiStudioPanel {
             hosted_model_endpoint: self.hosted_model_endpoint.clone(),
             hosted_model_name: self.hosted_model_name.clone(),
             presentation_mode: self.presentation.mode,
+            remote_phone_url_base: self.remote_phone_url_base.clone(),
         };
         match serde_json::to_vec_pretty(&preferences) {
             Ok(bytes) => {
@@ -4808,8 +5342,12 @@ impl AiStudioPanel {
             return;
         }
         self.external_provider_adoption_done = true;
+        // ADR 0164 §1 made this one selection, so a usable model is now
+        // something that has been configured: seeding over it would overwrite
+        // an explicit choice, which ADR 0163 §3 does not permit.
         let nothing_configured = self.external_provider_kind == ExternalAgentProviderKind::Generic
-            && self.provider_program.trim().is_empty();
+            && self.provider_program.trim().is_empty()
+            && self.described_native_model_config().is_err();
         if !nothing_configured {
             return;
         }
@@ -4822,11 +5360,11 @@ impl AiStudioPanel {
         else {
             return;
         };
-        self.external_provider_kind = detected.kind;
+        self.select_ai(SelectedAi::Agent(detected.kind));
         self.external_provider_status = detected.clone();
         self.save_preferences();
         self.status = Some(format!(
-            "Detected a signed-in {} on this machine and selected it as the external agent provider.",
+            "Detected a signed-in {} on this machine and selected it as the AI.",
             detected.kind.label()
         ));
     }
@@ -4847,11 +5385,17 @@ impl AiStudioPanel {
     /// GameEngine starts the provider's own command so the setup path does not
     /// leave the Editor, and owns neither the installed artifact nor the
     /// credential the provider stores.
-    pub(super) fn begin_external_provider_setup(&mut self, action: ExternalAgentSetupAction) {
+    ///
+    /// ADR 0164 §3 lists every agent in one section, so the step names the
+    /// agent it sets up rather than inheriting whichever one is selected.
+    pub(super) fn begin_external_provider_setup(
+        &mut self,
+        kind: ExternalAgentProviderKind,
+        action: ExternalAgentSetupAction,
+    ) {
         if self.external_setup.is_some() {
             return;
         }
-        let kind = self.external_provider_kind;
         self.external_setup_log.clear();
         self.external_sign_in_url = None;
         match ExternalAgentSetupTask::spawn(
@@ -4939,29 +5483,30 @@ impl AiStudioPanel {
         self.begin_external_provider_probe();
     }
 
-    fn external_provider_is_requested(&self) -> bool {
-        self.external_provider_kind != ExternalAgentProviderKind::Generic
-            || !self.provider_program.trim().is_empty()
-    }
-
-    fn external_provider_is_ready(&self) -> bool {
-        self.external_provider_is_requested() && self.current_external_provider_status().ready()
-    }
-
+    /// Returns the agent a run must use, or `None` when a model was selected.
+    ///
+    /// ADR 0164 §1: the executing path is derived from the one selection, so a
+    /// run can no longer fall through to a `ModelBackend` while the composer
+    /// names an agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the selected agent cannot run, which is the same sentence
+    /// §2 states at the composer before Send is pressed.
     fn selected_external_provider(&self) -> Result<Option<ExternalAgentProviderKind>, String> {
-        if !self.external_provider_is_requested() {
+        let SelectedAi::Agent(kind) = self.selected_ai() else {
             return Ok(None);
-        }
+        };
         let status = self.current_external_provider_status();
         if !status.ready() {
             return Err(format!(
-                "{} is not ready (discovery: {}, authentication: {}). Refresh provider status or choose another runtime.",
-                self.external_provider_kind.label(),
+                "{} is not ready (discovery: {}, authentication: {}). Set it up under Agents in settings, or choose another AI.",
+                kind.label(),
                 status.discovery.label(),
                 status.auth.label(),
             ));
         }
-        Ok(Some(self.external_provider_kind))
+        Ok(Some(kind))
     }
 
     /// Draws the one-line run status strip.
@@ -4985,8 +5530,7 @@ impl AiStudioPanel {
         });
         ui.horizontal_wrapped(|ui| {
             if let Some((state, proposal_version, provider_label)) = active_run.as_ref() {
-                theme::status_dot(ui, theme::ACCENT_TEXT);
-                ui.strong(format!("{state:?}"));
+                theme::status_pill(ui, run_state_tone(*state), state.label());
                 ui.label(
                     egui::RichText::new(format!("proposal v{proposal_version} · {provider_label}"))
                         .small()
@@ -6990,7 +7534,17 @@ fn provider_gamepad_axis(axis: &str) -> Result<GamepadAxis, String> {
 /// Smallest embedded studio that still shows a conversation beside its cards.
 const EMBEDDED_MIN_SIZE: egui::Vec2 = egui::vec2(460.0_f32, 520.0_f32);
 /// Size the embedded studio opens at before the user resizes it.
-const EMBEDDED_DEFAULT_SIZE: egui::Vec2 = egui::vec2(600.0_f32, 760.0_f32);
+///
+/// The transcript, its composer, and the run status line share one column, so
+/// the opening size is the one that reads a reply without being resized first.
+const EMBEDDED_DEFAULT_SIZE: egui::Vec2 = egui::vec2(820.0_f32, 880.0_f32);
+/// Smallest detached OS window that still shows a usable conversation.
+const DETACHED_MIN_SIZE: [f32; 2] = [460.0_f32, 520.0_f32];
+/// Size the detached studio's OS window opens at before the user resizes it.
+///
+/// Larger than the embedded default because an OS window is bounded by the
+/// display rather than by the Editor around it.
+const DETACHED_DEFAULT_SIZE: [f32; 2] = [900.0_f32, 880.0_f32];
 /// Room the embedded studio leaves around itself inside the Editor.
 const EMBEDDED_EDITOR_MARGIN: f32 = 80.0_f32;
 
@@ -7050,6 +7604,68 @@ fn load_ai_studio_preferences(path: &std::path::Path) -> AiStudioPreferences {
         preferences
     } else {
         AiStudioPreferences::default()
+    }
+}
+
+/// Draws the transcript column before the session has any messages.
+///
+/// An empty column used to be one weak sentence pinned to the top-left corner
+/// of the largest surface in the studio, which said neither what the studio
+/// does with a message nor what the currently selected mode will do with it.
+/// Both modes are named here because the mode decides whether sending writes.
+fn show_empty_transcript(ui: &mut egui::Ui, mode: ConversationMode) {
+    ui.add_space(28.0);
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(460.0);
+        theme::card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                theme::caption(ui, "No messages yet");
+                theme::status_pill(
+                    ui,
+                    theme::StatusTone::Idle,
+                    format!("Mode · {}", mode.label()),
+                );
+            });
+            ui.add_space(4.0);
+            ui.label("Describe what you want to build, change, inspect, or validate.");
+            ui.add_space(6.0);
+            for listed in ConversationMode::ALL {
+                theme::field_row(
+                    ui,
+                    listed.label(),
+                    egui::RichText::new(listed.summary())
+                        .small()
+                        .color(if listed == mode {
+                            theme::TEXT
+                        } else {
+                            theme::TEXT_MUTED
+                        }),
+                );
+            }
+        });
+    });
+}
+
+/// Returns the tone that carries what a run state means for the reader.
+///
+/// A run is either working on its own, waiting for the person watching it, or
+/// finished one way or the other. The wording says which; the tone makes it
+/// visible without reading.
+fn run_state_tone(state: AgentRunState) -> theme::StatusTone {
+    match state {
+        AgentRunState::Completed => theme::StatusTone::Ready,
+        AgentRunState::Failed => theme::StatusTone::Blocked,
+        AgentRunState::Cancelled => theme::StatusTone::Idle,
+        AgentRunState::AwaitingUser | AgentRunState::InterruptedForEditing => {
+            theme::StatusTone::Attention
+        }
+        AgentRunState::Inspecting
+        | AgentRunState::Planning
+        | AgentRunState::Executing
+        | AgentRunState::Validating
+        | AgentRunState::Playtesting
+        | AgentRunState::Evaluating
+        | AgentRunState::Repairing => theme::StatusTone::Busy,
     }
 }
 
@@ -7472,7 +8088,9 @@ mod tests {
             local_model_name: String::new(),
             hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
             hosted_model_name: "example-model".to_owned(),
+            selected_ai_family: Some(SelectedAiFamily::Agent),
             presentation_mode: AiStudioPresentationMode::default(),
+            remote_phone_url_base: "https://my-pc.example.ts.net".to_owned(),
         };
         let json = serde_json::to_string(&preferences).expect("serialize preferences");
         assert!(!json.contains("authorization"));
@@ -7490,55 +8108,187 @@ mod tests {
         assert_eq!(preferences.conversation_mode, ConversationMode::Ask);
     }
 
+    /// An AI that cannot serve the mode is stated, never substituted.
+    ///
+    /// ADR 0164 §2: the reason names the entry and the mode, and offers the
+    /// two places that change the state. Nothing in it proposes running the
+    /// turn on a different AI, which is what the removed Ask routing toggle
+    /// used to do silently.
     #[test]
-    fn ask_is_provider_served_only_by_a_ready_first_class_provider() {
+    fn an_agent_that_cannot_serve_the_mode_is_named_with_its_reason() {
+        let ask_with_generic = agent_unavailable_for_mode(
+            ExternalAgentProviderKind::Generic,
+            ConversationMode::Ask,
+            ProviderReadiness::Ready,
+        )
+        .expect("a compatible agent command cannot answer Ask");
+        assert!(ask_with_generic.contains(ExternalAgentProviderKind::Generic.label()));
+        assert!(ask_with_generic.contains("cannot answer Ask"));
+
+        // The same agent runs Build, so Build is not blocked by that rule.
+        assert_eq!(
+            agent_unavailable_for_mode(
+                ExternalAgentProviderKind::Generic,
+                ConversationMode::Build,
+                ProviderReadiness::Ready,
+            ),
+            None
+        );
+
+        let signed_out = agent_unavailable_for_mode(
+            ExternalAgentProviderKind::ClaudeCode,
+            ConversationMode::Build,
+            ProviderReadiness::SignInRequired,
+        )
+        .expect("a signed-out agent cannot run Build");
+        assert!(signed_out.contains(ExternalAgentProviderKind::ClaudeCode.label()));
+        assert!(signed_out.contains("Agents in settings"));
+
+        assert_eq!(
+            agent_unavailable_for_mode(
+                ExternalAgentProviderKind::Codex,
+                ConversationMode::Ask,
+                ProviderReadiness::Ready,
+            ),
+            None
+        );
+    }
+
+    /// An AI entry is named by what it is, not by where it sits in the list.
+    ///
+    /// ADR 0164 §5: the companion sends this identity back, and the host has to
+    /// resolve it to the same entry after a restart or a reordering.
+    #[test]
+    fn ai_entry_identities_distinguish_every_entry_the_composer_lists() {
+        let mut identities = std::collections::BTreeSet::new();
+        for kind in ExternalAgentProviderKind::ALL {
+            assert!(identities.insert(ai_entry_id(SelectedAi::Agent(kind), "")));
+        }
+        for backend in ModelBackendPreference::ALL {
+            assert!(identities.insert(ai_entry_id(SelectedAi::Model(backend), "")));
+        }
+        // Two registered GGUF files are two entries, not one.
+        assert_ne!(
+            ai_entry_id(
+                SelectedAi::Model(ModelBackendPreference::ManagedLocal),
+                "qwen3-14b"
+            ),
+            ai_entry_id(
+                SelectedAi::Model(ModelBackendPreference::ManagedLocal),
+                "gemma-12b"
+            )
+        );
+        // An agent identity can never be read as a model identity.
+        assert!(
+            ai_entry_id(SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode), "")
+                .starts_with("agent:")
+        );
+    }
+
+    /// Effort identities round-trip without a second table to keep in step.
+    #[test]
+    fn every_effort_level_round_trips_through_its_remote_identity() {
+        for quality in QualityPreference::ALL {
+            assert_eq!(effort_from_id(&effort_id(quality)), Some(quality));
+        }
+        assert_eq!(effort_from_id("thorough"), None);
+    }
+
+    /// Mode identities are the values the companion already sends.
+    #[test]
+    fn every_conversation_mode_round_trips_through_its_remote_identity() {
+        for mode in ConversationMode::ALL {
+            assert_eq!(
+                ConversationMode::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.remote_id() == mode.remote_id()),
+                Some(mode)
+            );
+        }
+        assert_eq!(ConversationMode::Ask.remote_id(), "ask");
+        assert_eq!(ConversationMode::Build.remote_id(), "build");
+    }
+
+    #[test]
+    fn ask_is_agent_served_only_by_a_ready_first_class_agent() {
         let ready = |kind| ExternalAgentProviderStatus {
             kind,
             discovery: ExternalAgentDiscoveryStatus::Available,
             auth: ExternalAgentAuthStatus::Authenticated,
         };
-        assert!(ask_is_provider_served(
-            true,
-            ExternalAgentProviderKind::Codex,
+        assert!(ask_is_agent_served(
+            SelectedAi::Agent(ExternalAgentProviderKind::Codex),
             &ready(ExternalAgentProviderKind::Codex)
         ));
-        assert!(!ask_is_provider_served(
-            false,
-            ExternalAgentProviderKind::Codex,
+        // ADR 0164 §1: selecting a model is the statement that the model
+        // answers, whatever a signed-in agent happens to be installed.
+        assert!(!ask_is_agent_served(
+            SelectedAi::Model(ModelBackendPreference::ManagedLocal),
             &ready(ExternalAgentProviderKind::Codex)
         ));
         // A generic command has no launch shape GameEngine can prove read-only.
-        assert!(!ask_is_provider_served(
-            true,
-            ExternalAgentProviderKind::Generic,
+        assert!(!ask_is_agent_served(
+            SelectedAi::Agent(ExternalAgentProviderKind::Generic),
             &ready(ExternalAgentProviderKind::Generic)
         ));
-        assert!(!ask_is_provider_served(
-            true,
-            ExternalAgentProviderKind::ClaudeCode,
+        assert!(!ask_is_agent_served(
+            SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode),
             &ExternalAgentProviderStatus {
                 kind: ExternalAgentProviderKind::ClaudeCode,
                 discovery: ExternalAgentDiscoveryStatus::Available,
                 auth: ExternalAgentAuthStatus::SignInRequired,
             }
         ));
-        // A status left over from another provider never authorizes this one.
-        assert!(!ask_is_provider_served(
-            true,
-            ExternalAgentProviderKind::ClaudeCode,
+        // A status left over from another agent never authorizes this one.
+        assert!(!ask_is_agent_served(
+            SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode),
             &ready(ExternalAgentProviderKind::Codex)
         ));
     }
 
     #[test]
-    fn preferences_written_before_provider_answering_keep_one_signed_in_runtime() {
-        // ADR 0163 §1: Ask has no write capability, so an installation that
-        // already selected and signed into a provider gets that provider's
-        // answers without a second runtime to configure.
-        let preferences: AiStudioPreferences =
+    fn preferences_written_before_one_ai_selection_resolve_to_exactly_one() {
+        // ADR 0164 Compatibility: a file written before the selection existed
+        // records a provider, a backend, and an Ask routing flag. Exactly one
+        // selection is recovered from them, so an upgrade never changes who
+        // runs the next message.
+        let routed_to_agent: AiStudioPreferences = serde_json::from_str(
+            r#"{"schema_version":1,"model_backend":"local","external_agent_provider":"claude_code"}"#,
+        )
+        .expect("deserialize preferences written before ADR 0164");
+        assert_eq!(
+            routed_to_agent.resolved_selected_ai_family(),
+            SelectedAiFamily::Agent
+        );
+
+        let routing_declined: AiStudioPreferences = serde_json::from_str(
+            r#"{"schema_version":1,"model_backend":"managed_local","external_agent_provider":"claude_code","ask_uses_external_provider":false}"#,
+        )
+        .expect("deserialize preferences that declined provider-served Ask");
+        assert_eq!(
+            routing_declined.resolved_selected_ai_family(),
+            SelectedAiFamily::Model
+        );
+
+        // A generic command cannot answer Ask, so the routing flag never made
+        // it the Ask runtime and it does not become the selection now.
+        let generic_command: AiStudioPreferences =
             serde_json::from_str(r#"{"schema_version":1,"model_backend":"local"}"#)
-                .expect("deserialize preferences without an Ask routing preference");
-        assert!(preferences.ask_uses_external_provider);
+                .expect("deserialize preferences with no first-class provider");
+        assert_eq!(
+            generic_command.resolved_selected_ai_family(),
+            SelectedAiFamily::Model
+        );
+
+        // A file written after the record keeps what it recorded.
+        let recorded: AiStudioPreferences = serde_json::from_str(
+            r#"{"schema_version":1,"model_backend":"local","selected_ai_family":"agent","ask_uses_external_provider":false}"#,
+        )
+        .expect("deserialize preferences written after ADR 0164");
+        assert_eq!(
+            recorded.resolved_selected_ai_family(),
+            SelectedAiFamily::Agent
+        );
     }
 
     #[test]

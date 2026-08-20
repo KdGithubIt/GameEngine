@@ -732,6 +732,28 @@ pub(crate) enum AgentRunState {
 }
 
 impl AgentRunState {
+    /// Returns the state as the studio names it to the reader.
+    ///
+    /// The variant names are protocol identifiers; a reader watching a run
+    /// needs to know whether the run is working, waiting on them, or over, so
+    /// the two states that wait on a person say so in words.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Inspecting => "Inspecting",
+            Self::Planning => "Planning",
+            Self::Executing => "Executing",
+            Self::AwaitingUser => "Waiting for you",
+            Self::InterruptedForEditing => "Paused for editing",
+            Self::Validating => "Validating",
+            Self::Playtesting => "Playtesting",
+            Self::Evaluating => "Evaluating",
+            Self::Repairing => "Repairing",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+        }
+    }
+
     fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }

@@ -34,6 +34,8 @@ pub(crate) const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(141, 150, 1
 pub(crate) const WARNING: egui::Color32 = egui::Color32::from_rgb(232, 190, 92);
 /// Foreground color for failures.
 pub(crate) const DANGER: egui::Color32 = egui::Color32::from_rgb(226, 104, 104);
+/// Foreground color for a state that is ready and needs nothing from the user.
+pub(crate) const SUCCESS: egui::Color32 = egui::Color32::from_rgb(126, 196, 140);
 
 /// Corner radius shared by cards, buttons, and input fields.
 const CORNER_RADIUS: u8 = 7;
@@ -143,6 +145,17 @@ fn full_width<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> 
     add_contents(ui)
 }
 
+/// Draws a card that spans the surface it is drawn on.
+///
+/// Preferred over `egui::Ui::group` inside the studio: a group draws the
+/// Editor's own frame at the width of its contents, so a column of them reads
+/// as a ragged stack of boxes rather than as one surface.
+pub(crate) fn card<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    card_frame()
+        .show(ui, |ui| full_width(ui, add_contents))
+        .inner
+}
+
 /// Draws a card whose border is tinted because it is waiting on the user.
 pub(crate) fn attention_card<R>(
     ui: &mut egui::Ui,
@@ -206,4 +219,138 @@ pub(crate) fn spec_note(ui: &mut egui::Ui, label: &str, specification: &str) {
 pub(crate) fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 3.5, color);
+}
+
+/// What a reported state means for the reader, independent of its wording.
+///
+/// The studio reports many states — a provider, a run, a backend, a resource —
+/// and each used to be spelled out as a sentence in the same weight and color
+/// as everything around it. A tone lets one glance answer whether a state is
+/// finished, working, waiting on the user, or broken, and keeps that answer
+/// consistent between surfaces that otherwise share no code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusTone {
+    /// Nothing has happened yet, or the state does not apply here.
+    Idle,
+    /// Work is under way and needs nothing from the user.
+    Busy,
+    /// The state is settled and usable.
+    Ready,
+    /// Usable only after the user does something.
+    Attention,
+    /// Failed, or unusable until something is repaired.
+    Blocked,
+}
+
+impl StatusTone {
+    /// Returns the foreground color that carries this tone.
+    pub(crate) const fn color(self) -> egui::Color32 {
+        match self {
+            Self::Idle => TEXT_MUTED,
+            Self::Busy => ACCENT_TEXT,
+            Self::Ready => SUCCESS,
+            Self::Attention => WARNING,
+            Self::Blocked => DANGER,
+        }
+    }
+
+    /// Returns the fill behind a pill of this tone.
+    ///
+    /// Tinted rather than saturated: a status pill must be findable at a glance
+    /// without becoming the brightest thing on a surface that may show several
+    /// of them at once.
+    fn tint(self) -> egui::Color32 {
+        let color = self.color();
+        egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 30)
+    }
+
+    /// Returns the hairline around a pill of this tone.
+    fn edge(self) -> egui::Color32 {
+        let color = self.color();
+        egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90)
+    }
+}
+
+/// Draws a compact tinted badge naming one state.
+///
+/// This is the studio's answer to "what is happening right now": the state is
+/// named in two or three words and colored by [`StatusTone`], so the reader
+/// never has to parse a sentence to find out whether something is ready.
+pub(crate) fn status_pill(ui: &mut egui::Ui, tone: StatusTone, text: impl Into<String>) {
+    let text = text.into();
+    egui::Frame::NONE
+        .fill(tone.tint())
+        .stroke(egui::Stroke::new(1.0_f32, tone.edge()))
+        .corner_radius(egui::CornerRadius::same(9))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                status_dot(ui, tone.color());
+                ui.label(
+                    egui::RichText::new(text)
+                        .small()
+                        .strong()
+                        .color(tone.color()),
+                );
+            });
+        });
+}
+
+/// Width reserved for the label column of [`field_row`].
+const FIELD_LABEL_WIDTH: f32 = 124.0;
+
+/// Draws one labeled fact as a column-aligned row.
+///
+/// Reported facts used to be concatenated into one sentence per line, which
+/// left nothing to scan down: the reader had to read every line to find the one
+/// they wanted. Aligning the labels turns a card into a table.
+pub(crate) fn field_row(ui: &mut egui::Ui, label: &str, value: impl Into<egui::RichText>) {
+    labeled_row(ui, label, |ui| {
+        ui.label(value.into());
+    });
+}
+
+/// Draws a labeled fact whose value is a state, as a column-aligned pill row.
+pub(crate) fn field_row_pill(ui: &mut egui::Ui, label: &str, tone: StatusTone, value: &str) {
+    labeled_row(ui, label, |ui| status_pill(ui, tone, value));
+}
+
+/// Draws one row of the label column with `value` filling the value column.
+///
+/// The value is drawn inside its own column rather than beside the label, so a
+/// value that wraps continues under itself instead of returning to the left
+/// edge of the card and breaking the column it belongs to.
+fn labeled_row(ui: &mut egui::Ui, label: &str, value: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_top(|ui| {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(FIELD_LABEL_WIDTH, ui.spacing().interact_size.y),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            egui::pos2(rect.left(), rect.top() + 4.0),
+            egui::Align2::LEFT_TOP,
+            label,
+            egui::TextStyle::Small.resolve(ui.style()),
+            TEXT_MUTED,
+        );
+        ui.vertical(|ui| value(ui));
+    });
+}
+
+/// Draws a row of capability chips, lit for what is supported.
+///
+/// Capabilities used to be printed as `name true`, which asks the reader to
+/// translate a debug value back into a yes or no. A lit chip is the yes.
+pub(crate) fn capability_chips(ui: &mut egui::Ui, capabilities: &[(&str, bool)]) {
+    ui.horizontal_wrapped(|ui| {
+        for (name, supported) in capabilities {
+            let tone = if *supported {
+                StatusTone::Ready
+            } else {
+                StatusTone::Idle
+            };
+            status_pill(ui, tone, *name);
+        }
+    });
 }

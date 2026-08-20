@@ -498,7 +498,10 @@ try {
                 "adr0144-enterprise-backend",
                 "adr0149-live-observation",
                 "adr0153-confinement",
-                "adr0158-transcript"
+                "adr0158-transcript",
+                "adr0164-ai-selection",
+                "adr0164-agents-section",
+                "adr0164-remote-phone-url"
             )
             foreach ($scenario in $adrScenarios) {
                 $activeCapture = $scenario

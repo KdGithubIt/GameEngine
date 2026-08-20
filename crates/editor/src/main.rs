@@ -537,6 +537,9 @@ fn visual_validation_touches_ai_studio() -> bool {
                 | "adr0144-enterprise-backend"
                 | "adr0149-live-observation"
                 | "adr0153-confinement"
+                | "adr0164-ai-selection"
+                | "adr0164-agents-section"
+                | "adr0164-remote-phone-url"
         );
     }
     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());

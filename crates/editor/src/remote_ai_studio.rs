@@ -65,6 +65,22 @@ pub(crate) enum RemoteOperation {
         text: String,
         proposal_version: u64,
     },
+    /// Read the composer's three selections and everything selectable.
+    ///
+    /// ADR 0164 §5 makes the companion the selection tier and nothing else, so
+    /// the host returns entries that already exist and never a way to create
+    /// one.
+    Selection,
+    /// Set one or more of the composer's three selections.
+    ///
+    /// An absent field leaves that selection alone, so a client can change the
+    /// AI without restating the mode it did not touch.
+    SetSelection {
+        request_id: String,
+        mode: Option<String>,
+        ai: Option<String>,
+        effort: Option<String>,
+    },
     Stop {
         run_id: String,
         request_id: String,
@@ -131,6 +147,20 @@ impl RemoteOperation {
                 request_id,
                 format!("intent:{session_id}:{proposal_version}:{text}"),
             )),
+            Self::SetSelection {
+                request_id,
+                mode,
+                ai,
+                effort,
+            } => Some((
+                request_id,
+                format!(
+                    "selection:{}:{}:{}",
+                    mode.as_deref().unwrap_or_default(),
+                    ai.as_deref().unwrap_or_default(),
+                    effort.as_deref().unwrap_or_default()
+                ),
+            )),
             Self::Stop { run_id, request_id } => Some((request_id, format!("stop:{run_id}"))),
             Self::AwaitingUser {
                 run_id,
@@ -160,6 +190,7 @@ impl RemoteOperation {
                 format!("live_stop:{media_session_id}:{media_token}"),
             )),
             Self::Sessions
+            | Self::Selection
             | Self::Snapshot { .. }
             | Self::Events { .. }
             | Self::Frame { .. }
@@ -336,6 +367,154 @@ impl RemoteAiStudioServer {
 
     pub(crate) fn companion_url(&self) -> String {
         format!("{}/#access_token={}", self.endpoint, self.access_token)
+    }
+
+    /// Returns the URL to open on another device.
+    ///
+    /// ADR 0164 §4: the gateway binds to loopback, so the address another
+    /// device can reach is the external origin the user's own reverse proxy
+    /// publishes. That origin is supplied rather than discovered, because
+    /// ADR 0133 §4 refuses a dependency on any particular overlay vendor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason `base` cannot address this studio from another
+    /// device. The loopback URL is never returned as a substitute.
+    pub(crate) fn phone_url(&self, base: &str) -> Result<String, PhoneUrlBaseError> {
+        let origin = normalized_phone_url_base(base)?;
+        Ok(format!("{origin}/#access_token={}", self.access_token))
+    }
+}
+
+/// Stands in for the access token wherever the phone URL is displayed.
+///
+/// ADR 0164 §4 keeps the token out of the drawn surface and available only
+/// through the copy action, so a screen share or a screenshot of the Remote
+/// section does not carry a working credential.
+const PHONE_URL_TOKEN_MASK: &str = "••••••••";
+
+/// Returns the phone URL with its token replaced by a fixed-width mask.
+///
+/// # Errors
+///
+/// Returns the reason `base` cannot address this studio from another device.
+pub(crate) fn masked_phone_url(base: &str) -> Result<String, PhoneUrlBaseError> {
+    let origin = normalized_phone_url_base(base)?;
+    Ok(format!("{origin}/#access_token={PHONE_URL_TOKEN_MASK}"))
+}
+
+/// Why an external base URL cannot address this studio from another device.
+///
+/// ADR 0164 §4 makes the phone URL the Remote section's primary content, so a
+/// base that cannot work has to be rejected with the reason it failed. The
+/// loopback URL is not offered instead: `127.0.0.1` names the device reading
+/// it, which is the phone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PhoneUrlBaseError {
+    /// No base has been entered on this machine yet.
+    Missing,
+    /// The base is not an absolute `https` URL.
+    NotHttps,
+    /// The authority carries no host.
+    MissingHost,
+    /// The host names the device reading it rather than the host PC.
+    LoopbackHost,
+    /// The base carries a path, a query, or a fragment.
+    NotOrigin,
+    /// The base embeds a user name or a password.
+    EmbeddedCredentials,
+}
+
+impl PhoneUrlBaseError {
+    /// Returns what is wrong, in the words the Remote section reports.
+    pub(crate) const fn reason(self) -> &'static str {
+        match self {
+            Self::Missing => {
+                "Enter the address your private network publishes for this PC. The gateway binds to loopback, so GameEngine cannot work it out on its own."
+            }
+            Self::NotHttps => {
+                "The address must start with https://. The proxy in front of the gateway terminates TLS, and the companion is only served over it."
+            }
+            Self::MissingHost => "The address has no host name after https://.",
+            Self::LoopbackHost => {
+                "127.0.0.1 and localhost name the device reading them, which is the phone. Enter the address your private network publishes for this PC instead."
+            }
+            Self::NotOrigin => {
+                "Enter the address only, with no path, query, or fragment. The companion is served from the root of the origin the proxy publishes."
+            }
+            Self::EmbeddedCredentials => {
+                "The address must not embed a user name or a password. The access token in the phone URL is what authorizes the session."
+            }
+        }
+    }
+}
+
+/// Returns the external origin a phone URL can be built from.
+///
+/// The returned value carries no trailing separator, so the caller composes the
+/// URL by appending the companion's own fragment.
+///
+/// # Errors
+///
+/// Returns the first rule `base` breaks. See [`PhoneUrlBaseError`].
+pub(crate) fn normalized_phone_url_base(base: &str) -> Result<String, PhoneUrlBaseError> {
+    let trimmed = base.trim();
+    if trimmed.is_empty() {
+        return Err(PhoneUrlBaseError::Missing);
+    }
+    let authority = trimmed
+        .strip_prefix("https://")
+        .ok_or(PhoneUrlBaseError::NotHttps)?;
+    // A single trailing separator is how a browser reports an origin, so it is
+    // accepted and normalized away rather than rejected as a path.
+    let authority = authority.strip_suffix('/').unwrap_or(authority);
+    if authority.is_empty() {
+        return Err(PhoneUrlBaseError::MissingHost);
+    }
+    if authority.contains('@') {
+        return Err(PhoneUrlBaseError::EmbeddedCredentials);
+    }
+    if authority.contains('/') || authority.contains('?') || authority.contains('#') {
+        return Err(PhoneUrlBaseError::NotOrigin);
+    }
+    let host = authority_host(authority);
+    if host.is_empty() {
+        return Err(PhoneUrlBaseError::MissingHost);
+    }
+    if host_is_loopback(host) {
+        return Err(PhoneUrlBaseError::LoopbackHost);
+    }
+    Ok(format!("https://{authority}"))
+}
+
+/// Returns the host part of an authority, without its port.
+///
+/// A bracketed IPv6 literal keeps its brackets so the caller can tell it apart
+/// from a name, and so the colons inside it are not read as a port separator.
+fn authority_host(authority: &str) -> &str {
+    match authority.strip_prefix('[') {
+        Some(rest) => match rest.find(']') {
+            // The brackets are re-included so an IPv6 literal round-trips.
+            Some(end) => &authority[..=end + 1],
+            None => authority,
+        },
+        None => authority.split(':').next().unwrap_or(authority),
+    }
+}
+
+/// Returns whether a host names the device that reads it.
+fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // A `.localhost` name is reserved for the reading device by RFC 6761.
+    if host.to_ascii_lowercase().ends_with(".localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(address) => address.is_loopback() || address.is_unspecified(),
+        Err(_) => false,
     }
 }
 
@@ -546,6 +725,20 @@ struct MessageBody {
     text: String,
 }
 
+/// A change to the composer's selections (ADR 0164 §5).
+///
+/// Every selection is optional so a client changes only what it touched.
+#[derive(Deserialize)]
+struct SelectionBody {
+    request_id: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    ai: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct GoBody {
     request_id: String,
@@ -601,6 +794,25 @@ fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudi
         .collect::<Vec<_>>();
     match (request.method.as_str(), parts.as_slice()) {
         ("GET", ["api", "sessions"]) => Ok(RemoteOperation::Sessions),
+        ("GET", ["api", "selection"]) => Ok(RemoteOperation::Selection),
+        ("POST", ["api", "selection"]) => {
+            let body: SelectionBody = parse_json_body(request)?;
+            validate_request_id(&body.request_id)?;
+            if body.mode.is_none() && body.ai.is_none() && body.effort.is_none() {
+                return Err(RemoteAiStudioResponse::error(
+                    400,
+                    "invalid_selection",
+                    "A selection request must change at least one of mode, ai, or effort.",
+                    false,
+                ));
+            }
+            Ok(RemoteOperation::SetSelection {
+                request_id: body.request_id,
+                mode: body.mode,
+                ai: body.ai,
+                effort: body.effort,
+            })
+        }
         ("GET", ["api", "sessions", session_id]) => Ok(RemoteOperation::Snapshot {
             session_id: (*session_id).to_owned(),
         }),
@@ -1187,7 +1399,7 @@ fn sanitize_strings(values: &[String]) -> Vec<String> {
     values.iter().map(|value| sanitize_text(value)).collect()
 }
 
-fn sanitize_text(text: &str) -> String {
+pub(crate) fn sanitize_text(text: &str) -> String {
     let lowered = text.to_ascii_lowercase();
     if lowered.contains("gameengine_mcp_auth_token")
         || lowered.contains("authorization: bearer")
@@ -1227,12 +1439,12 @@ const COMPANION_HTML: &str = r#"<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Remote AI Studio</title>
 <style>
-:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#11151c;color:#eef2f7}*{box-sizing:border-box}body{margin:0}.shell{width:100%;max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;grid-template-columns:minmax(0,1fr);gap:14px}.card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0;overflow-wrap:anywhere}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px;max-width:100%;min-width:0}button{cursor:pointer}button.primary{background:#285ea8}button.danger{background:#853c42}textarea{width:100%;min-height:76px;resize:vertical}.muted{color:#aab5c5;font-size:.9rem}.messages,.events{display:grid;gap:8px;max-height:300px;overflow:auto}.msg,.event{padding:9px;border-radius:9px;background:#11151c;overflow-wrap:anywhere}.proposal-grid,.completion{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#303948;font-size:.8rem}.frame{max-width:100%;height:auto;border-radius:10px;border:1px solid #455166}.error{color:#ffb3b3;overflow-wrap:anywhere}h1,h2,h3,p{margin-top:0}@media(max-width:640px){.shell{padding:10px}.proposal-grid,.completion{grid-template-columns:1fr}.row>button{flex:1 1 8rem}#sessions{width:100%;flex:1 1 100%}.card{padding:12px}.messages,.events{max-height:240px}h1{font-size:1.45rem}}
+:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#11151c;color:#eef2f7}*{box-sizing:border-box}body{margin:0}.shell{width:100%;max-width:980px;margin:auto;padding:clamp(12px,3vw,28px);display:grid;grid-template-columns:minmax(0,1fr);gap:14px}.card{background:#1a202a;border:1px solid #303948;border-radius:14px;padding:14px;min-width:0;overflow-wrap:anywhere}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}button,select,textarea,input{font:inherit;color:inherit;background:#11151c;border:1px solid #455166;border-radius:9px;padding:9px;max-width:100%;min-width:0}button{cursor:pointer}button.primary{background:#285ea8}button.danger{background:#853c42}textarea{width:100%;min-height:76px;resize:vertical}.muted{color:#aab5c5;font-size:.9rem}.messages,.events{display:grid;gap:8px;max-height:300px;overflow:auto}.msg,.event{padding:9px;border-radius:9px;background:#11151c;overflow-wrap:anywhere}.proposal-grid,.completion{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#303948;font-size:.8rem}.frame{max-width:100%;height:auto;border-radius:10px;border:1px solid #455166}.error{color:#ffb3b3;overflow-wrap:anywhere}h1,h2,h3,p{margin-top:0}label{display:flex;gap:6px;align-items:center;min-width:0;flex:1 1 9rem}label>select{flex:1;min-width:0}@media(max-width:640px){.shell{padding:10px}.proposal-grid,.completion{grid-template-columns:1fr}.row>button{flex:1 1 8rem}#sessions{width:100%;flex:1 1 100%}label{flex:1 1 100%}.card{padding:12px}.messages,.events{max-height:240px}h1{font-size:1.45rem}}
 </style>
 </head>
 <body><main class="shell">
 <section class="card"><div class="row"><div class="grow"><h1>Remote AI Studio</h1><div class="muted">Companion view over the Editor Agent Host · not a remote Editor</div></div><select id="sessions"></select></div><div id="error" class="error"></div></section>
-<section class="card"><h2>Conversation</h2><div id="messages" class="messages"></div><textarea id="message" placeholder="Ask about the project, or describe what to build"></textarea><div class="row"><select id="mode"><option value="ask" selected>Ask</option><option value="build">Build</option></select><button id="send" class="primary">Send</button></div><div id="modeNote" class="muted">Read-only. Sending records your message; it never starts a run.</div></section>
+<section class="card"><h2>Conversation</h2><div class="row"><label>Mode<select id="mode"></select></label><label>AI<select id="ai"></select></label><label>Effort<select id="effort"></select></label></div><div id="messages" class="messages"></div><textarea id="message" placeholder="Ask about the project, or describe what to build"></textarea><div class="row"><button id="send" class="primary">Send</button></div><div id="modeNote" class="muted"></div><div id="unavailable" class="error"></div></section>
 <section class="card"><div class="row"><h2 class="grow">Proposal</h2><span id="proposalVersion" class="pill"></span></div><div id="proposal" class="proposal-grid"></div><div class="row"><button id="stop" class="danger">Stop</button></div></section>
 <section id="decisionCard" class="card" hidden><h2>Decision required</h2><div id="decision"></div></section>
 <section class="card"><div class="row"><h2 class="grow">Run progress</h2><span id="runState" class="pill">idle</span></div><div id="events" class="events"></div><h3>Completion</h3><div id="completion" class="completion"></div></section>
@@ -1240,7 +1452,7 @@ const COMPANION_HTML: &str = r#"<!doctype html>
 <section class="card"><h2>Captured frame</h2><div id="frameMeta" class="muted">No captured frame.</div><img id="frame" class="frame" hidden alt="Captured managed Play frame"></section>
 </main>
 <script>
-const token=new URLSearchParams(location.hash.slice(1)).get('access_token')||''; history.replaceState(null,'',location.pathname); const h={'Authorization':'Bearer '+token}; let sessionId=null,snapshot=null,cursor=0,frameUrl=null,live=null,liveUrl=null,liveTimer=null;
+const token=new URLSearchParams(location.hash.slice(1)).get('access_token')||''; history.replaceState(null,'',location.pathname); const h={'Authorization':'Bearer '+token}; let sessionId=null,snapshot=null,selection=null,cursor=0,frameUrl=null,live=null,liveUrl=null,liveTimer=null;
 const $=id=>document.getElementById(id); const rid=()=>crypto.randomUUID();
 async function api(path,opt={}){const r=await fetch(path,{...opt,headers:{...h,...(opt.headers||{})}}); if(!r.ok){let e;try{e=await r.json()}catch{e={error:{message:'Request failed'}}}throw new Error(e.error?.message||'Request failed')}return r}
 function text(v){return String(v??'')}
@@ -1250,8 +1462,10 @@ async function loadSessions(){const data=await (await api('/api/sessions')).json
 function renderSnapshot(s){snapshot=s; const m=$('messages');m.innerHTML=(s.session.messages||[]).map(x=>`<div class="msg"><b>${escapeHtml(x.role)}</b><div>${escapeHtml(x.text)}</div></div>`).join('')||'<div class="muted">No messages yet.</div>'; $('proposalVersion').textContent='v'+s.session.proposal.version; const p=s.session.proposal; $('proposal').innerHTML=`<div><b>Goal</b><div>${escapeHtml(p.goal)}</div></div><div><b>Acceptance criteria</b>${list(p.acceptance_criteria)}</div><div><b>Requirements</b>${list(p.requirements)}</div><div><b>Validation</b>${list(p.validation_plan)}</div><div><b>Playtest</b>${list(p.playtest_plan)}</div>`; const run=s.active_run; $('runState').textContent=run?.state||'idle'; $('stop').disabled=!run; const c=$('completion'); c.innerHTML=run?Object.entries(run.completion||{}).map(([k,v])=>`<div><b>${escapeHtml(k.replaceAll('_',' '))}</b><div>${escapeHtml(v)}</div></div>`).join(''):'<div class="muted">No active run.</div>'; renderDecision(s,run); renderFrame(run)}
 function renderDecision(s,run){const card=$('decisionCard'),d=$('decision'); if(s.pending_permission){const p=s.pending_permission;card.hidden=false;d.innerHTML=`<p>${escapeHtml(p.label)}</p><div class="row">${['once','run','project','deny'].map(scope=>`<button data-scope="${scope}">${scope}</button>`).join('')}</div>`;d.querySelectorAll('button').forEach(b=>b.onclick=()=>permission(p.run_id,p.capability,b.dataset.scope));return} if(s.awaiting_user&&run){card.hidden=false;d.innerHTML='<textarea id="awaitText" placeholder="Response to the agent"></textarea><div class="row"><button id="awaitSend">Respond</button></div>';$('awaitSend').onclick=()=>awaiting(run.id,$('awaitText').value);return} card.hidden=true;d.innerHTML=''}
 async function renderFrame(run){if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=null} const img=$('frame'),meta=$('frameMeta'); const f=run?.frames?.at(-1); if(!f){img.hidden=true;meta.textContent='No captured frame.';return} meta.textContent=`${f.artifact_id} · ${f.width}×${f.height} · run ${run.id}`; try{const r=await api(`/api/runs/${encodeURIComponent(run.id)}/frames/${encodeURIComponent(f.artifact_id)}`);frameUrl=URL.createObjectURL(await r.blob());img.src=frameUrl;img.hidden=false}catch(e){img.hidden=true;showError(e)}}
-async function refresh(){if(!sessionId)return; try{const s=await (await api('/api/sessions/'+encodeURIComponent(sessionId))).json();renderSnapshot(s);const run=s.active_run;if(live&&live.run_id!==run?.id)resetLiveView();if(run){const raw=await (await api(`/api/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`)).text();const line=raw.split('\n').find(x=>x.startsWith('data: '));if(line){const batch=JSON.parse(line.slice(6));if(batch.stale_cursor){cursor=0}else{for(const e of batch.events)cursor=Math.max(cursor,e.sequence);$('events').innerHTML=batch.events.map(e=>`<div class="event"><span class="pill">#${e.sequence} ${escapeHtml(e.kind)}</span><div>${escapeHtml(e.message)}</div></div>`).join('')||$('events').innerHTML}}}}catch(e){showError(e)}}
-function modeNote(){const build=$('mode').value==='build';$('modeNote').textContent=build?'Write-capable. Sending commits your message as the proposal and starts a run.':'Read-only. Sending records your message; it never starts a run.'}
+async function refresh(){if(!sessionId)return; try{await loadSelection();const s=await (await api('/api/sessions/'+encodeURIComponent(sessionId))).json();renderSnapshot(s);const run=s.active_run;if(live&&live.run_id!==run?.id)resetLiveView();if(run){const raw=await (await api(`/api/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`)).text();const line=raw.split('\n').find(x=>x.startsWith('data: '));if(line){const batch=JSON.parse(line.slice(6));if(batch.stale_cursor){cursor=0}else{for(const e of batch.events)cursor=Math.max(cursor,e.sequence);$('events').innerHTML=batch.events.map(e=>`<div class="event"><span class="pill">#${e.sequence} ${escapeHtml(e.kind)}</span><div>${escapeHtml(e.message)}</div></div>`).join('')||$('events').innerHTML}}}}catch(e){showError(e)}}
+function renderSelection(s){selection=s;for(const [id,model] of [['mode',s.mode],['effort',s.effort]]){const sel=$(id);sel.innerHTML='';for(const e of model.entries){const o=document.createElement('option');o.value=e.id;o.textContent=e.label;sel.appendChild(o)}sel.value=model.selected}const ai=$('ai');ai.innerHTML='';let group=null,holder=ai;for(const e of s.ai.entries){if(e.group!==group){group=e.group;holder=document.createElement('optgroup');holder.label=group;ai.appendChild(holder)}const o=document.createElement('option');o.value=e.id;o.textContent=e.readiness?`${e.label} · ${e.readiness}`:e.label;holder.appendChild(o)}ai.value=s.ai.selected;const mode=s.mode.entries.find(e=>e.id===s.mode.selected);$('modeNote').textContent=mode?mode.summary:'';$('unavailable').textContent=s.unavailable||'';$('send').disabled=!!s.unavailable}
+async function loadSelection(){renderSelection(await (await api('/api/selection')).json())}
+async function setSelection(patch){renderSelection(await (await api('/api/selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),...patch})})).json())}
 async function send(){const v=$('message').value.trim();if(!v)return;if($('mode').value==='build'){if(!snapshot)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/intent`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v,proposal_version:snapshot.session.proposal.version})});$('message').value='';cursor=0;await refresh();return}await api(`/api/sessions/${encodeURIComponent(sessionId)}/messages`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});$('message').value='';await refresh()}
 async function stop(){const run=snapshot?.active_run;if(!run)return;await api(`/api/runs/${encodeURIComponent(run.id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid()})});await refresh()}
 async function permission(run,capability,scope){await api(`/api/runs/${encodeURIComponent(run)}/permissions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),capability,scope})});await refresh()}
@@ -1261,7 +1475,7 @@ async function startLive(){const run=snapshot?.active_run;if(!run)throw new Erro
 async function pollLive(){if(!live)return;const current=live;const mediaHeaders={'X-GameEngine-Media-Token':current.media_token};try{const status=await (await api(`/api/live/${encodeURIComponent(current.media_session_id)}`,{headers:mediaHeaders})).json();if(live!==current)return;$('liveState').textContent=status.last_error?'retrying':'live';$('liveMeta').textContent=`${status.source} · ${status.latest_width??'waiting'}×${status.latest_height??'waiting'} · ${status.max_fps} fps cap · samples ${status.capture_count} · readback ${status.latest_readback_micros??'—'} µs · encode ${status.latest_encode_micros??'—'} µs · E2E ${status.latest_end_to_end_micros??'—'} µs`;if(status.latest_sequence!=null&&status.latest_sequence!==current.sequence){const response=await api(`/api/live/${encodeURIComponent(current.media_session_id)}/frames/${status.latest_sequence}`,{headers:mediaHeaders});if(live!==current)return;if(liveUrl)URL.revokeObjectURL(liveUrl);liveUrl=URL.createObjectURL(await response.blob());$('liveFrame').src=liveUrl;$('liveFrame').hidden=false;current.sequence=status.latest_sequence}}catch(e){if(live===current){$('liveState').textContent='retrying';$('liveMeta').textContent=e.message||text(e)}}finally{if(live===current)liveTimer=setTimeout(pollLive,Math.max(125,Math.floor(1000/current.max_fps)))}}
 async function stopLive(){if(!live){resetLiveView();return}const current=live;if(liveTimer){clearTimeout(liveTimer);liveTimer=null}try{await api(`/api/live/${encodeURIComponent(current.media_session_id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json','X-GameEngine-Media-Token':current.media_token},body:JSON.stringify({request_id:rid()})})}finally{resetLiveView()}}
 function showError(e){$('error').textContent=e.message||text(e)}
-$('send').onclick=()=>send().catch(showError);$('mode').onchange=modeNote;modeNote();$('stop').onclick=()=>stop().catch(showError);$('liveStart').onclick=()=>startLive().catch(showError);$('liveStop').onclick=()=>stopLive().catch(showError);(async()=>{try{await loadSessions();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
+$('send').onclick=()=>send().catch(showError);for(const control of ['mode','ai','effort'])$(control).onchange=()=>setSelection({[control]:$(control).value}).catch(showError);$('stop').onclick=()=>stop().catch(showError);$('liveStart').onclick=()=>startLive().catch(showError);$('liveStop').onclick=()=>stopLive().catch(showError);(async()=>{try{await loadSessions();await loadSelection();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
 </script></body></html>"#;
 
 #[cfg(test)]
@@ -1271,6 +1485,100 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    /// A loopback base names the phone, not the host PC.
+    ///
+    /// Reported as a Remote section that displayed `http://127.0.0.1:49172`
+    /// as the URL to open on a phone. The address is correct for the gateway
+    /// and unusable for the reader, so it must be rejected rather than shown.
+    #[test]
+    fn loopback_bases_are_rejected_rather_than_published_as_a_phone_url() {
+        for base in [
+            "https://127.0.0.1",
+            "https://127.0.0.1:49172",
+            "https://localhost:8443",
+            "https://LOCALHOST",
+            "https://app.localhost",
+            "https://[::1]:8443",
+            "https://0.0.0.0",
+        ] {
+            assert_eq!(
+                normalized_phone_url_base(base),
+                Err(PhoneUrlBaseError::LoopbackHost),
+                "{base} names the device reading it"
+            );
+        }
+    }
+
+    /// The companion is served from the root of the published origin.
+    #[test]
+    fn only_an_absolute_https_origin_is_accepted_as_a_phone_url_base() {
+        assert_eq!(
+            normalized_phone_url_base(""),
+            Err(PhoneUrlBaseError::Missing)
+        );
+        assert_eq!(
+            normalized_phone_url_base("   "),
+            Err(PhoneUrlBaseError::Missing)
+        );
+        assert_eq!(
+            normalized_phone_url_base("http://my-pc.example.ts.net"),
+            Err(PhoneUrlBaseError::NotHttps)
+        );
+        assert_eq!(
+            normalized_phone_url_base("my-pc.example.ts.net"),
+            Err(PhoneUrlBaseError::NotHttps)
+        );
+        assert_eq!(
+            normalized_phone_url_base("https://"),
+            Err(PhoneUrlBaseError::MissingHost)
+        );
+        assert_eq!(
+            normalized_phone_url_base("https://my-pc.example.ts.net/studio"),
+            Err(PhoneUrlBaseError::NotOrigin)
+        );
+        assert_eq!(
+            normalized_phone_url_base("https://my-pc.example.ts.net/#access_token=x"),
+            Err(PhoneUrlBaseError::NotOrigin)
+        );
+        assert_eq!(
+            normalized_phone_url_base("https://user:pass@my-pc.example.ts.net"),
+            Err(PhoneUrlBaseError::EmbeddedCredentials)
+        );
+    }
+
+    /// A browser reports an origin with a trailing separator; that is the same
+    /// origin, and re-appending it would produce a double separator.
+    #[test]
+    fn an_accepted_base_is_normalized_to_one_origin() {
+        assert_eq!(
+            normalized_phone_url_base("https://my-pc.example.ts.net"),
+            Ok("https://my-pc.example.ts.net".to_owned())
+        );
+        assert_eq!(
+            normalized_phone_url_base("  https://my-pc.example.ts.net/  "),
+            Ok("https://my-pc.example.ts.net".to_owned())
+        );
+        assert_eq!(
+            normalized_phone_url_base("https://my-pc.example.ts.net:8443"),
+            Ok("https://my-pc.example.ts.net:8443".to_owned())
+        );
+        assert_eq!(
+            normalized_phone_url_base("https://[2001:db8::1]:8443"),
+            Ok("https://[2001:db8::1]:8443".to_owned())
+        );
+    }
+
+    /// A screenshot of the Remote section must not carry a working credential.
+    #[test]
+    fn the_displayed_phone_url_masks_the_access_token() {
+        let masked = masked_phone_url("https://my-pc.example.ts.net")
+            .expect("a published origin is a usable base");
+        assert_eq!(
+            masked,
+            format!("https://my-pc.example.ts.net/#access_token={PHONE_URL_TOKEN_MASK}")
+        );
+    }
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1679,9 +1987,42 @@ mod tests {
     #[test]
     fn companion_submits_by_mode_and_offers_no_separate_go_affordance() {
         // ADR 0162 §7: the companion presents what the local surfaces present.
-        assert!(COMPANION_HTML.contains(r#"<option value="build">Build</option>"#));
+        // ADR 0164 §5 makes the mode one of three selections the host owns, so
+        // the entries are read from the host rather than written into the page.
+        assert!(COMPANION_HTML.contains("/api/selection"));
         assert!(COMPANION_HTML.contains("/intent"));
         assert!(!COMPANION_HTML.contains(r#"id="go""#));
+    }
+
+    /// The phone selects; it never configures.
+    ///
+    /// ADR 0164 §5: registration, sign-in, credential entry, and the remote
+    /// base URL stay on the machine that owns them, so the companion has no
+    /// control that reaches them.
+    #[test]
+    fn companion_presents_three_selections_and_no_configuration() {
+        for control in [r#"id="mode""#, r#"id="ai""#, r#"id="effort""#] {
+            assert!(COMPANION_HTML.contains(control), "{control} is missing");
+        }
+        for absent in [
+            "/api/models",
+            "/api/agents",
+            "sign-in",
+            "api_key",
+            "remote_phone_url_base",
+        ] {
+            assert!(
+                !COMPANION_HTML.contains(absent),
+                "{absent} must not be reachable from the companion"
+            );
+        }
+    }
+
+    /// ADR 0164 §2 applies remotely: state it, and refuse to send.
+    #[test]
+    fn companion_refuses_to_send_when_the_selected_ai_cannot_serve_the_mode() {
+        assert!(COMPANION_HTML.contains("$('send').disabled=!!s.unavailable"));
+        assert!(COMPANION_HTML.contains("$('unavailable').textContent=s.unavailable||''"));
     }
 
     #[test]
