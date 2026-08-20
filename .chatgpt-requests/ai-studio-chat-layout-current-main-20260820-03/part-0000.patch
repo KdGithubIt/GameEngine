@@ -1,0 +1,109 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 6ee5a9f422dec57b40d0d733edb18e693ac101b8..336b3afdaeaa4c4bc9c4e0e89c53db5b54cad43a 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -2677,11 +2677,37 @@ impl AiStudioPanel {
+             .map_err(|error| error.to_string())
+     }
+ 
++    fn conversation_lane_width(available_width: f32) -> f32 {
++        available_width.clamp(0.0, 960.0)
++    }
++
++    /// Keeps the header, transcript, and composer in one readable column.
++    ///
++    /// Wide detached AI Studio windows should not turn a vertical conversation
++    /// into full-window controls. Narrow windows keep using all available width.
++    fn show_conversation_lane<R>(
++        ui: &mut egui::Ui,
++        add_contents: impl FnOnce(&mut egui::Ui) -> R,
++    ) -> R {
++        let available_width = ui.available_width();
++        let lane_width = Self::conversation_lane_width(available_width);
++        let gutter = ((available_width - lane_width) * 0.5).max(0.0);
++        ui.horizontal(|ui| {
++            ui.add_space(gutter);
++            ui.vertical(|ui| {
++                ui.set_width(lane_width);
++                add_contents(ui)
++            })
++            .inner
++        })
++        .inner
++    }
++
+     fn show_contents(&mut self, ui: &mut egui::Ui) {
+         // Scoped to this Ui and its children, so the surrounding Editor chrome
+         // keeps the style installed by `crate::ui::chrome`.
+         theme::apply_studio_style(ui);
+-        self.show_studio_header(ui);
++        Self::show_conversation_lane(ui, |ui| self.show_studio_header(ui));
+         // ADR 0158 §1: one transcript is the primary surface, with the composer
+         // pinned to its lower edge. ADR 0162 §4 narrows what may share that
+         // dock to the decisions that block the user, one run status line, and
+@@ -2690,22 +2716,26 @@ impl AiStudioPanel {
+             .frame(egui::Frame::NONE)
+             .show_separator_line(false)
+             .show_inside(ui, |ui| {
+-                self.show_pinned_affordances(ui);
+-                self.show_run_status_strip(ui);
+-                self.show_composer(ui);
+-                if let Some(status) = self.status.clone() {
+-                    ui.horizontal_top(|ui| {
+-                        theme::status_dot(ui, theme::ACCENT_TEXT);
+-                        theme::selectable_text(
+-                            ui,
+-                            egui::RichText::new(status).small().color(theme::TEXT_MUTED),
+-                        );
+-                    });
+-                }
++                Self::show_conversation_lane(ui, |ui| {
++                    self.show_pinned_affordances(ui);
++                    self.show_run_status_strip(ui);
++                    self.show_composer(ui);
++                    if let Some(status) = self.status.clone() {
++                        ui.horizontal_top(|ui| {
++                            theme::status_dot(ui, theme::ACCENT_TEXT);
++                            theme::selectable_text(
++                                ui,
++                                egui::RichText::new(status).small().color(theme::TEXT_MUTED),
++                            );
++                        });
++                    }
++                });
+             });
+         egui::CentralPanel::default()
+             .frame(egui::Frame::NONE)
+-            .show_inside(ui, |ui| self.show_transcript(ui));
++            .show_inside(ui, |ui| {
++                Self::show_conversation_lane(ui, |ui| self.show_transcript(ui));
++            });
+         self.show_settings_surface(ui.ctx());
+         self.show_proposal_surface(ui.ctx());
+     }
+@@ -3181,7 +3211,7 @@ impl AiStudioPanel {
+         });
+         ui.add(
+             egui::TextEdit::multiline(&mut self.message_draft)
+-                .desired_rows(3)
++                .desired_rows(2)
+                 .desired_width(f32::INFINITY)
+                 .hint_text("Ask a question, add a constraint, or continue the same conversation…"),
+         );
+@@ -7958,6 +7988,16 @@ mod tests {
+     use super::*;
+     use crate::external_agent_provider::{ExternalAgentAuthStatus, ExternalAgentDiscoveryStatus};
+ 
++    #[test]
++    fn conversation_lane_caps_wide_windows() {
++        assert_eq!(AiStudioPanel::conversation_lane_width(1_915.0), 960.0);
++    }
++
++    #[test]
++    fn conversation_lane_preserves_narrow_windows() {
++        assert_eq!(AiStudioPanel::conversation_lane_width(720.0), 720.0);
++    }
++
+     #[test]
+     fn direct_args_do_not_invoke_shell_parsing() {
+         assert_eq!(
