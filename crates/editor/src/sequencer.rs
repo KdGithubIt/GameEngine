@@ -171,6 +171,144 @@ impl LoadedTimeline {
 }
 
 impl SequencerState {
+    /// Loads a deterministic Timeline for visual validation.
+    ///
+    /// Opening the workspace with no document proves only that the window
+    /// starts. Reviewing tracks, clips, markers, and the playhead needs a
+    /// document, and this fixture is compiled only for visual validation so no
+    /// normal Editor launch can reach it.
+    #[cfg(feature = "visual-validation")]
+    pub(crate) fn prepare_visual_validation(&mut self) {
+        use engine_authoring::{
+            EntityId, TimelineAudioAction, TimelineBinding, TimelineInterpolation, TimelineKey,
+        };
+
+        let camera = EntityId::generate();
+        let subject = EntityId::generate();
+        let mut document = TimelineDocument::new(TimelineTick::from_seconds(6.0));
+        document.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            kind: TimelineTrackKind::CameraCut,
+            name: "Camera".to_owned(),
+            enabled: true,
+            binding: TimelineBinding::default(),
+            clips: vec![
+                TimelineClip {
+                    id: TimelineClipId::generate(),
+                    start: TimelineTick::ZERO,
+                    end: TimelineTick::from_seconds(2.5),
+                    payload: TimelineClipPayload::CameraCut {
+                        camera: camera.clone(),
+                    },
+                },
+                TimelineClip {
+                    id: TimelineClipId::generate(),
+                    start: TimelineTick::from_seconds(3.0),
+                    end: TimelineTick::from_seconds(5.5),
+                    payload: TimelineClipPayload::CameraCut { camera },
+                },
+            ],
+        });
+        document.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            kind: TimelineTrackKind::Property,
+            name: "Subject position".to_owned(),
+            enabled: true,
+            binding: TimelineBinding {
+                entity: Some(subject),
+                asset: None,
+            },
+            clips: vec![TimelineClip {
+                id: TimelineClipId::generate(),
+                start: TimelineTick::from_seconds(0.5),
+                end: TimelineTick::from_seconds(4.0),
+                payload: TimelineClipPayload::Property {
+                    property: TimelineProperty::TranslationX,
+                    keys: vec![
+                        TimelineKey {
+                            tick: TimelineTick::ZERO,
+                            value: 0.0,
+                            interpolation: TimelineInterpolation::Smooth,
+                        },
+                        TimelineKey {
+                            tick: TimelineTick::from_seconds(3.5),
+                            value: 8.0,
+                            interpolation: TimelineInterpolation::Linear,
+                        },
+                    ],
+                },
+            }],
+        });
+        document.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            kind: TimelineTrackKind::Event,
+            name: "Sequence events".to_owned(),
+            enabled: true,
+            binding: TimelineBinding::default(),
+            clips: vec![TimelineClip {
+                id: TimelineClipId::generate(),
+                start: TimelineTick::from_seconds(2.0),
+                end: TimelineTick::from_seconds(2.4),
+                payload: TimelineClipPayload::Event {
+                    event: "cutscene.door_opens".to_owned(),
+                },
+            }],
+        });
+        document.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            kind: TimelineTrackKind::Audio,
+            name: "Music".to_owned(),
+            enabled: false,
+            binding: TimelineBinding::default(),
+            clips: vec![TimelineClip {
+                id: TimelineClipId::generate(),
+                start: TimelineTick::ZERO,
+                end: TimelineTick::from_seconds(6.0),
+                payload: TimelineClipPayload::Audio {
+                    cue: engine_authoring::AssetId::generate(),
+                    action: TimelineAudioAction::Play,
+                    fade_ticks: TimelineTick::from_seconds(0.5),
+                },
+            }],
+        });
+        document.markers.push(TimelineMarker {
+            id: TimelineMarkerId::generate(),
+            tick: TimelineTick::from_seconds(2.0),
+            name: "Door".to_owned(),
+            event: "cutscene.door_opens".to_owned(),
+        });
+        document.markers.push(TimelineMarker {
+            id: TimelineMarkerId::generate(),
+            tick: TimelineTick::from_seconds(4.5),
+            name: "Reveal".to_owned(),
+            event: "cutscene.reveal".to_owned(),
+        });
+
+        let Ok(compiled) = compile_timeline(&document) else {
+            self.status = Some("Timeline visual fixture failed to compile".to_owned());
+            return;
+        };
+        let mut loaded = LoadedTimeline {
+            relative: PathBuf::from("assets/cutscenes/intro.timeline.json"),
+            path: PathBuf::from("assets/cutscenes/intro.timeline.json"),
+            document,
+            undo: Vec::new(),
+            dirty: false,
+            compiled,
+            player: TimelinePlayer::new(),
+            preview_tick: TimelineTick::ZERO,
+            diagnostics: Vec::new(),
+        };
+        loaded.seek(TimelineTick::from_seconds(2.0), false);
+        self.selected_track = 1;
+        self.selected_clip = loaded.document.tracks[1]
+            .clips
+            .first()
+            .map(|clip| clip.id.clone());
+        self.status = Some("Scrubbed to 2.000s; gameplay events stay suppressed.".to_owned());
+        self.open = Some(loaded);
+    }
+
     /// Opens one Timeline document for editing.
     pub(crate) fn open_document(&mut self, project: &ProjectRoot, relative: &Path) {
         match LoadedTimeline::open(project, relative) {

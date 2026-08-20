@@ -47,6 +47,12 @@ impl AuthoringWindows {
         }
     }
 
+    /// Loads the deterministic Sequencer fixture used by visual validation.
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_sequencer_visual_validation(&mut self) {
+        self.sequencer.prepare_visual_validation();
+    }
+
     /// Opens one Timeline document in the Sequencer workspace.
     pub fn open_timeline(&mut self, project: &ProjectRoot, relative: &std::path::Path) {
         self.sequencer.open_document(project, relative);

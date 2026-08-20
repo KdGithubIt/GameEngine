@@ -147,6 +147,9 @@ impl EditorShell {
                 if requested == "VFX Builder" {
                     app.prepare_vfx_visual_validation();
                 }
+                if requested == "Sequencer" {
+                    authoring_windows.prepare_sequencer_visual_validation();
+                }
                 let tool = AuthoringTool::ALL
                     .into_iter()
                     .find(|tool| tool.label() == requested)
