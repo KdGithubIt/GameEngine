@@ -1,0 +1,1234 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 53b7f309eba13c9f6fc17582047fafc2456963b6..60e9cf9812421a70b6718ef127a468cb90fef945 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -16,10 +16,12 @@ use std::io::Write;
+ use std::path::PathBuf;
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+-pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 3;
++pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 4;
+ const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
+ pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
+ pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v2";
++pub(crate) const RAW_MODEL_BENCHMARK_TASK_ID: &str = "raw_model_generation_v1";
++pub(crate) const RAW_MODEL_COMPLETION_CRITERIA: &[&str] = &["model_response_completed"];
+ pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
+ const CATALOG_SCHEMA_VERSION: u32 = 1;
+ 
+@@ -102,6 +104,121 @@ pub(crate) struct BenchmarkModelIdentity {
+     pub(crate) backend_runtime_version: TelemetryValue<String>,
+ }
+ 
++/// Explicit execution lane introduced by benchmark schema v4.
++///
++/// Records written before v4 deliberately deserialize with no lane instead of
++/// being reinterpreted as one of these migration-era benchmark classes.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum BenchmarkLane {
++    RawModel,
++    AgentHarness,
++    CodingAgent,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkAgentRuntimeIdentity {
++    pub(crate) runtime_id: String,
++    pub(crate) runtime_version: TelemetryValue<String>,
++}
++
++impl BenchmarkAgentRuntimeIdentity {
++    fn from_acp(identity: &crate::acp_agent_runtime::AcpRuntimeIdentity) -> Self {
++        let runtime_version = identity
++            .agent_version
++            .as_ref()
++            .filter(|version| !version.trim().is_empty())
++            .cloned()
++            .map(TelemetryValue::Measured)
++            .unwrap_or(TelemetryValue::Unavailable);
++        Self {
++            runtime_id: identity.agent_name.clone(),
++            runtime_version,
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkHarnessIdentity {
++    pub(crate) harness_id: String,
++    pub(crate) harness_version: String,
++    pub(crate) adapter_version: TelemetryValue<String>,
++    pub(crate) acp_protocol_version: TelemetryValue<u16>,
++    pub(crate) mcp_tool_contract: TelemetryValue<String>,
++    pub(crate) permission_profile: TelemetryValue<String>,
++}
++
++#[allow(dead_code)]
++impl BenchmarkHarnessIdentity {
++    pub(crate) fn new(harness_id: impl Into<String>, harness_version: impl Into<String>) -> Self {
++        Self {
++            harness_id: harness_id.into(),
++            harness_version: harness_version.into(),
++            adapter_version: TelemetryValue::Unavailable,
++            acp_protocol_version: TelemetryValue::Unavailable,
++            mcp_tool_contract: TelemetryValue::Unavailable,
++            permission_profile: TelemetryValue::Unavailable,
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkRuntimeIdentity {
++    pub(crate) lane: BenchmarkLane,
++    pub(crate) harness: BenchmarkHarnessIdentity,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) agent_runtime: Option<BenchmarkAgentRuntimeIdentity>,
++}
++
++#[allow(dead_code)]
++impl BenchmarkRuntimeIdentity {
++    pub(crate) fn raw_model(harness: BenchmarkHarnessIdentity) -> Self {
++        Self {
++            lane: BenchmarkLane::RawModel,
++            harness,
++            agent_runtime: None,
++        }
++    }
++
++    pub(crate) fn agent_harness(
++        harness: BenchmarkHarnessIdentity,
++        agent_runtime: BenchmarkAgentRuntimeIdentity,
++    ) -> Self {
++        Self {
++            lane: BenchmarkLane::AgentHarness,
++            harness,
++            agent_runtime: Some(agent_runtime),
++        }
++    }
++
++    pub(crate) fn coding_agent(
++        harness: BenchmarkHarnessIdentity,
++        agent_runtime: BenchmarkAgentRuntimeIdentity,
++    ) -> Self {
++        Self {
++            lane: BenchmarkLane::CodingAgent,
++            harness,
++            agent_runtime: Some(agent_runtime),
++        }
++    }
++
++    pub(crate) fn acp_agent_harness(
++        mut harness: BenchmarkHarnessIdentity,
++        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
++    ) -> Self {
++        harness.acp_protocol_version = TelemetryValue::Measured(identity.protocol_version);
++        Self::agent_harness(harness, BenchmarkAgentRuntimeIdentity::from_acp(identity))
++    }
++
++    pub(crate) fn acp_coding_agent(
++        mut harness: BenchmarkHarnessIdentity,
++        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
++    ) -> Self {
++        harness.acp_protocol_version = TelemetryValue::Measured(identity.protocol_version);
++        Self::coding_agent(harness, BenchmarkAgentRuntimeIdentity::from_acp(identity))
++    }
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub(crate) struct BenchmarkHardwareIdentity {
+     pub(crate) platform: String,
+@@ -458,6 +575,8 @@ pub(crate) struct BenchmarkExecutionIdentity {
+     pub(crate) fixture_instance_id: String,
+     pub(crate) sampling_profile: String,
+     pub(crate) seed_policy: String,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+@@ -466,6 +585,8 @@ pub(crate) struct BenchmarkIdentity {
+     pub(crate) task_id: String,
+     pub(crate) harness_version: String,
+     pub(crate) runtime_harness_version: String,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) runtime: Option<BenchmarkRuntimeIdentity>,
+     pub(crate) model: BenchmarkModelIdentity,
+     pub(crate) hardware: BenchmarkHardwareIdentity,
+     pub(crate) quality: QualityPreference,
+@@ -515,6 +636,8 @@ pub(crate) struct BenchmarkRecord {
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) enum ComparisonEquivalence {
+     EquivalentModelComparison,
++    EquivalentAgentHarnessComparison,
++    EquivalentCodingAgentComparison,
+     NonEquivalent(Vec<&'static str>),
+ }
+ 
+@@ -538,6 +661,86 @@ fn benchmark_identity_is_measured(identity: &BenchmarkIdentity) -> bool {
+         && matches!(identity.observed_workload, TelemetryValue::Measured(_))
+ }
+ 
++fn measured_identity_text(value: &TelemetryValue<String>) -> Option<&str> {
++    match value {
++        TelemetryValue::Measured(value) if !value.trim().is_empty() => Some(value.as_str()),
++        TelemetryValue::Measured(_)
++        | TelemetryValue::ConservativeEstimate(_)
++        | TelemetryValue::Unavailable => None,
++    }
++}
++
++fn execution_contract_matches(
++    left: &Option<BenchmarkExecutionIdentity>,
++    right: &Option<BenchmarkExecutionIdentity>,
++) -> bool {
++    match (left, right) {
++        (None, None) => true,
++        (Some(left), Some(right)) => {
++            left.campaign_harness_version == right.campaign_harness_version
++                && left.schedule_policy_version == right.schedule_policy_version
++                && left.comparison_class == right.comparison_class
++                && left.execution_profile == right.execution_profile
++                && left.execution_environment == right.execution_environment
++                && left.fixture_id == right.fixture_id
++                && left.fixture_version == right.fixture_version
++                && left.fixture_instance_id == right.fixture_instance_id
++                && left.sampling_profile == right.sampling_profile
++                && left.seed_policy == right.seed_policy
++        }
++        _ => false,
++    }
++}
++
++fn agent_harness_contract_matches(
++    left: &BenchmarkRuntimeIdentity,
++    right: &BenchmarkRuntimeIdentity,
++    differences: &mut Vec<&'static str>,
++) {
++    let left_harness = &left.harness;
++    let right_harness = &right.harness;
++    if !matches!(&left_harness.acp_protocol_version, TelemetryValue::Measured(version) if *version > 0)
++        || !matches!(&right_harness.acp_protocol_version, TelemetryValue::Measured(version) if *version > 0)
++        || left_harness.acp_protocol_version != right_harness.acp_protocol_version
++    {
++        differences.push("acp_protocol_version");
++    }
++    if measured_identity_text(&left_harness.mcp_tool_contract).is_none()
++        || measured_identity_text(&right_harness.mcp_tool_contract).is_none()
++        || left_harness.mcp_tool_contract != right_harness.mcp_tool_contract
++    {
++        differences.push("mcp_tool_contract");
++    }
++    if measured_identity_text(&left_harness.permission_profile).is_none()
++        || measured_identity_text(&right_harness.permission_profile).is_none()
++        || left_harness.permission_profile != right_harness.permission_profile
++    {
++        differences.push("permission_profile");
++    }
++}
++
++fn coding_agent_contract_matches(
++    left: &BenchmarkRuntimeIdentity,
++    right: &BenchmarkRuntimeIdentity,
++    differences: &mut Vec<&'static str>,
++) {
++    if left.harness.acp_protocol_version != right.harness.acp_protocol_version {
++        differences.push("acp_protocol_version");
++    }
++    if measured_identity_text(&left.harness.mcp_tool_contract).is_none()
++        || measured_identity_text(&right.harness.mcp_tool_contract).is_none()
++        || left.harness.mcp_tool_contract != right.harness.mcp_tool_contract
++    {
++        differences.push("mcp_tool_contract");
++    }
++    if measured_identity_text(&left.harness.permission_profile).is_none()
++        || measured_identity_text(&right.harness.permission_profile).is_none()
++        || left.harness.permission_profile != right.harness.permission_profile
++    {
++        differences.push("permission_profile");
++    }
++}
++
+ pub(crate) fn comparison_equivalence(
+     left: &BenchmarkRecord,
+     right: &BenchmarkRecord,
+@@ -549,22 +752,9 @@ pub(crate) fn comparison_equivalence(
+     if left.identity.task_id != right.identity.task_id {
+         differences.push("task_id");
+     }
+-    if left.identity.harness_version != right.identity.harness_version
+-        || left.identity.runtime_harness_version != right.identity.runtime_harness_version
+-    {
++    if left.identity.harness_version != right.identity.harness_version {
+         differences.push("harness_version");
+     }
+-    if !model_identity_is_measured(&left.identity.model)
+-        || !model_identity_is_measured(&right.identity.model)
+-    {
+-        differences.push("model_representation");
+-    }
+-    if left.identity.model.backend_id != right.identity.model.backend_id
+-        || left.identity.model.backend_runtime_version
+-            != right.identity.model.backend_runtime_version
+-    {
+-        differences.push("backend_runtime");
+-    }
+     if !hardware_identity_is_measured(&left.identity.hardware)
+         || !hardware_identity_is_measured(&right.identity.hardware)
+         || left.identity.hardware != right.identity.hardware
+@@ -574,10 +764,7 @@ pub(crate) fn comparison_equivalence(
+     if left.identity.quality != right.identity.quality
+         || left.identity.workload_policy_version != right.identity.workload_policy_version
+         || !matches!(left.identity.observed_workload, TelemetryValue::Measured(_))
+-        || !matches!(
+-            right.identity.observed_workload,
+-            TelemetryValue::Measured(_)
+-        )
++        || !matches!(right.identity.observed_workload, TelemetryValue::Measured(_))
+         || left.identity.observed_workload != right.identity.observed_workload
+     {
+         differences.push("quality_or_workload");
+@@ -588,11 +775,77 @@ pub(crate) fn comparison_equivalence(
+     if left.identity.completion_criteria != right.identity.completion_criteria {
+         differences.push("completion_criteria");
+     }
+-    if left.identity.execution != right.identity.execution {
++    if !execution_contract_matches(&left.identity.execution, &right.identity.execution) {
+         differences.push("execution_identity");
+     }
++
++    let equivalence = match (&left.identity.runtime, &right.identity.runtime) {
++        (None, None) => {
++            if left.identity.runtime_harness_version != right.identity.runtime_harness_version {
++                differences.push("harness_version");
++            }
++            if !model_identity_is_measured(&left.identity.model)
++                || !model_identity_is_measured(&right.identity.model)
++            {
++                differences.push("model_representation");
++            }
++            if left.identity.model.backend_id != right.identity.model.backend_id
++                || left.identity.model.backend_runtime_version
++                    != right.identity.model.backend_runtime_version
++            {
++                differences.push("backend_runtime");
++            }
++            ComparisonEquivalence::EquivalentModelComparison
++        }
++        (Some(left_runtime), Some(right_runtime))
++            if left_runtime.lane == right_runtime.lane =>
++        {
++            match left_runtime.lane {
++                BenchmarkLane::RawModel => {
++                    if left.identity.runtime_harness_version != right.identity.runtime_harness_version
++                        || left_runtime != right_runtime
++                    {
++                        differences.push("harness_version");
++                    }
++                    if !model_identity_is_measured(&left.identity.model)
++                        || !model_identity_is_measured(&right.identity.model)
++                    {
++                        differences.push("model_representation");
++                    }
++                    if left.identity.model.backend_id != right.identity.model.backend_id
++                        || left.identity.model.backend_runtime_version
++                            != right.identity.model.backend_runtime_version
++                    {
++                        differences.push("backend_runtime");
++                    }
++                    ComparisonEquivalence::EquivalentModelComparison
++                }
++                BenchmarkLane::AgentHarness => {
++                    if !model_identity_is_measured(&left.identity.model)
++                        || !model_identity_is_measured(&right.identity.model)
++                        || left.identity.model != right.identity.model
++                    {
++                        differences.push("model_representation");
++                    }
++                    agent_harness_contract_matches(left_runtime, right_runtime, &mut differences);
++                    ComparisonEquivalence::EquivalentAgentHarnessComparison
++                }
++                BenchmarkLane::CodingAgent => {
++                    coding_agent_contract_matches(left_runtime, right_runtime, &mut differences);
++                    ComparisonEquivalence::EquivalentCodingAgentComparison
++                }
++            }
++        }
++        _ => {
++            differences.push("benchmark_lane");
++            ComparisonEquivalence::EquivalentModelComparison
++        }
++    };
++
++    differences.sort_unstable();
++    differences.dedup();
+     if differences.is_empty() {
+-        ComparisonEquivalence::EquivalentModelComparison
++        equivalence
+     } else {
+         ComparisonEquivalence::NonEquivalent(differences)
+     }
+@@ -673,26 +926,123 @@ fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
+     if record.schema_version == 1 && record.identity.execution.is_some() {
+         return Err("benchmark schema v1 cannot carry campaign execution identity".to_owned());
+     }
++    if record.schema_version < 4
++        && (record.identity.runtime.is_some()
++            || record
++                .identity
++                .execution
++                .as_ref()
++                .is_some_and(|execution| execution.benchmark_runtime.is_some()))
++    {
++        return Err("benchmark schemas v1-v3 cannot carry schema-v4 runtime identity".to_owned());
++    }
++    if let Some(execution) = record.identity.execution.as_ref() {
++        if execution.benchmark_runtime != record.identity.runtime {
++            return Err(
++                "campaign benchmark runtime identity must match the record runtime identity"
++                    .to_owned(),
++            );
++        }
++    }
++    if let Some(runtime) = record.identity.runtime.as_ref() {
++        if runtime.harness.harness_id.trim().is_empty()
++            || runtime.harness.harness_version.trim().is_empty()
++        {
++            return Err("benchmark harness identity must be non-empty".to_owned());
++        }
++        if record.identity.runtime_harness_version != runtime.harness.harness_version {
++            return Err(
++                "benchmark runtime harness version must match the explicit harness identity"
++                    .to_owned(),
++            );
++        }
++        let exact_or_unavailable = |value: &TelemetryValue<String>| {
++            !matches!(value, TelemetryValue::ConservativeEstimate(_))
++                && !matches!(value, TelemetryValue::Measured(text) if text.trim().is_empty())
++        };
++        if !exact_or_unavailable(&runtime.harness.adapter_version)
++            || !exact_or_unavailable(&runtime.harness.mcp_tool_contract)
++            || !exact_or_unavailable(&runtime.harness.permission_profile)
++            || matches!(
++                &runtime.harness.acp_protocol_version,
++                TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Measured(0)
++            )
++        {
++            return Err(
++                "benchmark runtime identity must be exact or explicitly unavailable".to_owned(),
++            );
++        }
++        match runtime.lane {
++            BenchmarkLane::RawModel => {
++                if runtime.agent_runtime.is_some()
++                    || runtime.harness.acp_protocol_version != TelemetryValue::Unavailable
++                    || runtime.harness.mcp_tool_contract != TelemetryValue::Unavailable
++                    || runtime.harness.permission_profile != TelemetryValue::Unavailable
++                {
++                    return Err(
++                        "raw model benchmark identity cannot carry agent, ACP, MCP, or permission identity"
++                            .to_owned(),
++                    );
++                }
++            }
++            BenchmarkLane::AgentHarness | BenchmarkLane::CodingAgent => {
++                let Some(agent_runtime) = runtime.agent_runtime.as_ref() else {
++                    return Err("agent benchmark lane requires agent runtime identity".to_owned());
++                };
++                if agent_runtime.runtime_id.trim().is_empty()
++                    || !exact_or_unavailable(&agent_runtime.runtime_version)
++                {
++                    return Err(
++                        "agent runtime identity must be non-empty and exact or unavailable"
++                            .to_owned(),
++                    );
++                }
++            }
++        }
++    }
+     if record.identity.corpus_version != BENCHMARK_CORPUS_VERSION {
+         return Err(format!(
+             "unsupported benchmark corpus `{}`",
+             record.identity.corpus_version
+         ));
+     }
+-    let Some(task) = benchmark_task(&record.identity.task_id) else {
+-        return Err(format!(
+-            "unknown benchmark task `{}`",
+-            record.identity.task_id
+-        ));
++    let expected = if record.identity.task_id == RAW_MODEL_BENCHMARK_TASK_ID {
++        if !matches!(
++            record.identity.runtime.as_ref().map(|runtime| runtime.lane),
++            Some(BenchmarkLane::RawModel)
++        ) {
++            return Err(
++                "raw model benchmark task requires explicit raw_model runtime identity".to_owned(),
++            );
++        }
++        RAW_MODEL_COMPLETION_CRITERIA
++            .iter()
++            .map(|criterion| (*criterion).to_owned())
++            .collect::<Vec<_>>()
++    } else {
++        if matches!(
++            record.identity.runtime.as_ref().map(|runtime| runtime.lane),
++            Some(BenchmarkLane::RawModel)
++        ) {
++            return Err(
++                "raw_model runtime identity cannot relabel an Agent Benchmark corpus task"
++                    .to_owned(),
++            );
++        }
++        let Some(task) = benchmark_task(&record.identity.task_id) else {
++            return Err(format!(
++                "unknown benchmark task `{}`",
++                record.identity.task_id
++            ));
++        };
++        task.completion_criteria
++            .iter()
++            .map(|criterion| (*criterion).to_owned())
++            .collect::<Vec<_>>()
+     };
+-    let expected = task
+-        .completion_criteria
+-        .iter()
+-        .map(|criterion| (*criterion).to_owned())
+-        .collect::<Vec<_>>();
+     if record.identity.completion_criteria != expected {
+         return Err(
+-            "benchmark completion criteria do not match the versioned corpus task".to_owned(),
++            "benchmark completion criteria do not match the versioned benchmark task".to_owned(),
+         );
+     }
+     if record.identity.model.backend_id.trim().is_empty()
+@@ -1026,6 +1376,53 @@ pub(crate) fn model_identity(
+     }
+ }
+ 
++/// Builds one direct model/runtime benchmark record without AgentRun semantics.
++///
++/// The caller owns the actual model-only harness and supplies only telemetry it
++/// measured. Agent/ACP/MCP identity is structurally absent from this lane.
++#[allow(dead_code)]
++pub(crate) fn raw_model_record(
++    model: BenchmarkModelIdentity,
++    hardware: BenchmarkHardwareIdentity,
++    quality: QualityPreference,
++    workload: InferenceWorkload,
++    harness: BenchmarkHarnessIdentity,
++    metrics: BenchmarkMetrics,
++) -> Result<BenchmarkRecord, String> {
++    let runtime_harness_version = harness.harness_version.clone();
++    let record = BenchmarkRecord {
++        schema_version: BENCHMARK_SCHEMA_VERSION,
++        recorded_unix_ms: unix_ms(),
++        identity: BenchmarkIdentity {
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            task_id: RAW_MODEL_BENCHMARK_TASK_ID.to_owned(),
++            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            runtime_harness_version,
++            runtime: Some(BenchmarkRuntimeIdentity::raw_model(harness)),
++            model,
++            hardware,
++            quality,
++            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++            observed_workload: TelemetryValue::Measured(workload),
++            tool_budget: BenchmarkToolBudget {
++                max_model_turns: 0,
++                max_tool_failures: 0,
++                repair_budget: 0,
++                permission_budget: Vec::new(),
++                work_claims: Vec::new(),
++            },
++            completion_criteria: RAW_MODEL_COMPLETION_CRITERIA
++                .iter()
++                .map(|criterion| (*criterion).to_owned())
++                .collect(),
++            execution: None,
++        },
++        metrics,
++    };
++    validate_record(&record)?;
++    Ok(record)
++}
++
+ pub(crate) fn read_question_record(
+     task_id: &str,
+     metrics: &NativeMetrics,
+@@ -1051,6 +1448,7 @@ pub(crate) fn read_question_record(
+             task_id: task.id.to_owned(),
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             runtime_harness_version: metrics.harness_version.to_owned(),
++            runtime: None,
+             model: model_identity(metrics.backend_id, &metrics.model_id, inventory),
+             hardware: hardware.clone(),
+             quality,
+@@ -1198,6 +1596,7 @@ pub(crate) fn agent_run_record(
+             task_id: task.id.to_owned(),
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             runtime_harness_version: NATIVE_WRITE_HARNESS_VERSION.to_owned(),
++            runtime: None,
+             model: model_identity(identity.backend_id, identity.model_id, identity.inventory),
+             hardware: identity.hardware.clone(),
+             quality: identity.quality,
+@@ -1252,10 +1651,61 @@ pub(crate) fn agent_run_record(
+     })
+ }
+ 
+-/// Metrics an AgentRun can report from its recorded model exchanges (ADR 0159).
++/// Model-internal telemetry supplied by the runtime that actually observed it.
++///
++/// ACP adapters use [`BenchmarkModelTelemetry::unavailable`] when the agent does
++/// not expose model turns or token counts. GameEngine never derives those values
++/// from ACP prompt boundaries or normalized agent events.
++#[allow(dead_code)]
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct BenchmarkModelTelemetry {
++    pub(crate) model_turns: TelemetryValue<u64>,
++    pub(crate) prompt_tokens: TelemetryValue<u64>,
++    pub(crate) response_tokens: TelemetryValue<u64>,
++}
++
++#[allow(dead_code)]
++impl BenchmarkModelTelemetry {
++    pub(crate) fn unavailable() -> Self {
++        Self {
++            model_turns: TelemetryValue::Unavailable,
++            prompt_tokens: TelemetryValue::Unavailable,
++            response_tokens: TelemetryValue::Unavailable,
++        }
++    }
++}
++
++/// Records a terminal AgentRun under an explicit agent-inclusive benchmark lane.
++///
++/// `model_telemetry` must come from the runtime that observed the underlying
++/// model. Callers that only have ACP-level evidence must pass explicit
++/// `Unavailable` values instead of estimating model turns or tokens.
++#[allow(dead_code)]
++pub(crate) fn agent_run_record_with_runtime(
++    task_id: &str,
++    run: &AgentRun,
++    identity: AgentRunBenchmarkIdentity<'_>,
++    runtime: BenchmarkRuntimeIdentity,
++    model_telemetry: BenchmarkModelTelemetry,
++) -> Result<BenchmarkRecord, String> {
++    if runtime.lane == BenchmarkLane::RawModel {
++        return Err("AgentRun evidence cannot be registered as a raw model benchmark".to_owned());
++    }
++    let mut record = agent_run_record(task_id, run, identity)?;
++    record.identity.runtime_harness_version = runtime.harness.harness_version.clone();
++    record.identity.runtime = Some(runtime);
++    record.metrics.model_turns = model_telemetry.model_turns;
++    record.metrics.prompt_tokens = model_telemetry.prompt_tokens;
++    record.metrics.response_tokens = model_telemetry.response_tokens;
++    validate_record(&record)?;
++    Ok(record)
++}
++
++/// Metrics a legacy native AgentRun can report from its recorded model exchanges (ADR 0159).
+ ///
+-/// A run with no recorded exchange reports zero turns, which is itself a
+-/// diagnosis and is distinct from a run that never recorded whether it had any.
++/// A legacy run with no recorded exchange reports zero turns, which preserves
++/// the existing harness meaning. ACP-backed callers must use
++/// [`agent_run_record_with_runtime`] and explicit unavailable telemetry instead.
+ /// Token counts stay unavailable unless every recorded exchange reported them,
+ /// so a partial sum is never presented as a measurement.
+ struct ModelExchangeMetrics {
+@@ -1493,7 +1943,7 @@ mod tests {
+     fn a_failing_run_reports_the_model_turns_and_tokens_it_recorded() {
+         let (run, directories) = failing_run_with_exchanges("failing-with-output", 3);
+         let record = record_for(&run);
+-        assert_eq!(record.schema_version, 3);
++        assert_eq!(record.schema_version, BENCHMARK_SCHEMA_VERSION);
+         assert_eq!(record.metrics.model_turns, TelemetryValue::Measured(3));
+         assert_eq!(record.metrics.prompt_tokens, TelemetryValue::Measured(300));
+         assert_eq!(record.metrics.response_tokens, TelemetryValue::Measured(30));
+@@ -1583,12 +2033,156 @@ mod tests {
+         );
+     }
+ 
++    fn agent_harness_identity(agent_name: &str) -> BenchmarkRuntimeIdentity {
++        let mut harness = BenchmarkHarnessIdentity::new("acp-agent-harness", "harness-v1");
++        harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
++        harness.mcp_tool_contract =
++            TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
++        harness.permission_profile =
++            TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
++        let acp = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++            agent_name,
++            Some("1.0".to_owned()),
++        );
++        BenchmarkRuntimeIdentity::acp_agent_harness(harness, &acp)
++    }
++
++    fn coding_agent_identity(agent_name: &str) -> BenchmarkRuntimeIdentity {
++        let mut harness = BenchmarkHarnessIdentity::new("coding-agent-adapter", "harness-v1");
++        harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
++        harness.mcp_tool_contract =
++            TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
++        harness.permission_profile =
++            TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
++        BenchmarkRuntimeIdentity::coding_agent(
++            harness,
++            BenchmarkAgentRuntimeIdentity {
++                runtime_id: agent_name.to_owned(),
++                runtime_version: TelemetryValue::Unavailable,
++            },
++        )
++    }
++
++    #[test]
++    fn schema_v1_through_v3_records_remain_unclassified_legacy_records() {
++        for schema_version in 1..=3 {
++            let mut legacy = record("legacy-model", BENCHMARK_TASKS[0], 10);
++            legacy.schema_version = schema_version;
++            legacy.identity.runtime = None;
++            legacy.identity.execution = None;
++            let bytes = serde_json::to_vec(&legacy).expect("legacy JSON");
++            let loaded: BenchmarkRecord = serde_json::from_slice(&bytes).expect("legacy record");
++            assert!(validate_record(&loaded).is_ok());
++            assert_eq!(loaded.identity.runtime, None);
++        }
++    }
++
++    #[test]
++    fn acp_agent_record_keeps_unobservable_model_telemetry_unavailable() {
++        let (run, directories) = failing_run_with_exchanges("acp-unavailable-model-metrics", 0);
++        let runtime = agent_harness_identity("goose");
++        let record = agent_run_record_with_runtime(
++            "project_inspection_v1",
++            &run,
++            AgentRunBenchmarkIdentity {
++                backend_id: "external-agent",
++                model_id: "agent-managed-model",
++                inventory: None,
++                quality: QualityPreference::Balanced,
++                workload: InferenceWorkload::InteractiveReasoning,
++                hardware: &BenchmarkHardwareIdentity::default(),
++            },
++            runtime,
++            BenchmarkModelTelemetry::unavailable(),
++        )
++        .expect("ACP benchmark record");
++        assert_eq!(record.metrics.model_turns, TelemetryValue::Unavailable);
++        assert_eq!(record.metrics.prompt_tokens, TelemetryValue::Unavailable);
++        assert_eq!(record.metrics.response_tokens, TelemetryValue::Unavailable);
++        assert_eq!(
++            record.identity.runtime.as_ref().map(|runtime| runtime.lane),
++            Some(BenchmarkLane::AgentHarness)
++        );
++        for directory in directories {
++            let _ = std::fs::remove_dir_all(directory);
++        }
++    }
++
++    #[test]
++    fn raw_model_task_registers_without_reusing_agent_corpus_semantics() {
++        let identity = measured_identity("model-a");
++        let raw = raw_model_record(
++            identity.model,
++            identity.hardware,
++            identity.quality,
++            InferenceWorkload::InteractiveReasoning,
++            BenchmarkHarnessIdentity::new("llama-direct", "raw-model-harness-v1"),
++            measured_metrics(10),
++        )
++        .expect("raw model record");
++        assert_eq!(raw.identity.task_id, RAW_MODEL_BENCHMARK_TASK_ID);
++        assert_eq!(
++            raw.identity.runtime.as_ref().map(|runtime| runtime.lane),
++            Some(BenchmarkLane::RawModel)
++        );
++
++        let mut relabelled_agent_task = record("model-a", BENCHMARK_TASKS[0], 10);
++        relabelled_agent_task.identity.runtime = raw.identity.runtime.clone();
++        assert!(validate_record(&relabelled_agent_task).is_err());
++    }
++
++    #[test]
++    fn benchmark_lanes_have_distinct_comparison_equivalence() {
++        let raw_record = |model: &str| {
++            let identity = measured_identity(model);
++            raw_model_record(
++                identity.model,
++                identity.hardware,
++                identity.quality,
++                InferenceWorkload::InteractiveReasoning,
++                BenchmarkHarnessIdentity::new("llama-direct", "runtime-v1"),
++                measured_metrics(10),
++            )
++            .expect("raw model record")
++        };
++        let raw_left = raw_record("model-a");
++        let raw_right = raw_record("model-b");
++        assert_eq!(
++            comparison_equivalence(&raw_left, &raw_right),
++            ComparisonEquivalence::EquivalentModelComparison
++        );
++
++        let mut harness_left = record("model-a", BENCHMARK_TASKS[0], 10);
++        let mut harness_right = harness_left.clone();
++        harness_left.identity.runtime = Some(agent_harness_identity("goose-a"));
++        harness_right.identity.runtime = Some(agent_harness_identity("goose-b"));
++        assert_eq!(
++            comparison_equivalence(&harness_left, &harness_right),
++            ComparisonEquivalence::EquivalentAgentHarnessComparison
++        );
++
++        let mut coding_left = record("model-a", BENCHMARK_TASKS[0], 10);
++        let mut coding_right = record("model-b", BENCHMARK_TASKS[0], 10);
++        coding_left.identity.runtime = Some(coding_agent_identity("codex"));
++        coding_right.identity.runtime = Some(coding_agent_identity("claude"));
++        assert_eq!(
++            comparison_equivalence(&coding_left, &coding_right),
++            ComparisonEquivalence::EquivalentCodingAgentComparison
++        );
++
++        assert!(matches!(
++            comparison_equivalence(&raw_left, &harness_left),
++            ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"benchmark_lane")
++        ));
++    }
++
+     fn measured_identity(model: &str) -> BenchmarkIdentity {
+         BenchmarkIdentity {
+             corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
+             task_id: BENCHMARK_TASKS[0].id.to_owned(),
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             runtime_harness_version: "runtime-harness-v1".to_owned(),
++            runtime: None,
+             model: BenchmarkModelIdentity {
+                 backend_id: "test-backend".to_owned(),
+                 model_id: model.to_owned(),
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index 7252e088f0555e25d6546c421337c53f54c43b8f..ddf09f0c992a9e610b9d613c342df0add44e793c 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -14,7 +14,7 @@ use crate::resource_arbitration::{InferenceWorkload, TelemetryValue};
+ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ 
+-pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 2;
++pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 3;
+ pub(crate) const CAMPAIGN_HARNESS_VERSION: &str = "gameengine-agent-benchmark-campaign-v2";
+ pub(crate) const CAMPAIGN_SCHEDULE_VERSION: &str = "task-repetition-candidate-interleave-v2";
+ pub(crate) const CAMPAIGN_FIXTURE_VERSION: &str = "gameengine-agent-fixture-v1";
+diff --git a/crates/editor/src/benchmark_campaign.rs b/crates/editor/src/benchmark_campaign.rs
+index 9db61c7e729ccb998faba13d0bda4019762d1d62..a8b9bad5d1ef3d190fc62281d299bd9ba3b6f7cb 100644
+--- a/crates/editor/src/benchmark_campaign.rs
++++ b/crates/editor/src/benchmark_campaign.rs
+@@ -11,7 +11,8 @@
+ 
+ use crate::agent_benchmark::{
+     BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BenchmarkExecutionIdentity,
+-    BenchmarkHardwareIdentity, BenchmarkRecord, benchmark_task,
++    BenchmarkHardwareIdentity, BenchmarkLane, BenchmarkRecord, BenchmarkRuntimeIdentity,
++    benchmark_task,
+ };
+ use crate::agent_benchmark_campaign::{
+     CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION, CAMPAIGN_SCHEMA_VERSION,
+@@ -40,6 +41,7 @@ pub(crate) const CAMPAIGN_SAMPLING_PROFILE: &str = "temperature-zero-seeded-v1";
+ 
+ /// Seed policy frozen into every campaign record.
+ pub(crate) const CAMPAIGN_SEED_POLICY: &str = "fixed-model-seed-zero-v1";
++const MIN_SUPPORTED_CAMPAIGN_SCHEMA_VERSION: u32 = 2;
+ 
+ /// Why a campaign refused an operation.
+ ///
+@@ -206,6 +208,7 @@ impl CampaignPolicy {
+             run_timeout_seconds: self.run_timeout_seconds,
+             candidates: self.candidates,
+             task_plans,
++            benchmark_runtime: None,
+             repetitions: self.repetitions,
+             harness_version: CAMPAIGN_HARNESS_VERSION.to_owned(),
+             schedule_version: CAMPAIGN_SCHEDULE_VERSION.to_owned(),
+@@ -249,6 +252,9 @@ pub(crate) struct CampaignPlan {
+     pub(crate) candidates: Vec<CampaignCandidate>,
+     /// Per-task plans in frozen order.
+     pub(crate) task_plans: Vec<CampaignTaskPlan>,
++    /// Optional schema-v4 benchmark lane/runtime identity frozen for this campaign.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,
+     /// Repetitions per candidate and task.
+     pub(crate) repetitions: u32,
+     /// Campaign harness version.
+@@ -269,6 +275,37 @@ impl CampaignPlan {
+         &self.plan_digest
+     }
+ 
++    /// Derives a new frozen plan with one explicit benchmark lane/runtime identity.
++    ///
++    /// This must be called before [`CampaignRun::prepare`]. The runtime identity
++    /// becomes part of the plan digest and every derived execution identity.
++    #[allow(dead_code)]
++    pub(crate) fn with_benchmark_runtime(
++        mut self,
++        runtime: BenchmarkRuntimeIdentity,
++    ) -> Result<Self, String> {
++        if runtime.lane == BenchmarkLane::RawModel {
++            return Err(
++                "ADR0156 task campaigns execute through agent/production harnesses and cannot be registered as raw_model"
++                    .to_owned(),
++            );
++        }
++        self.schema_version = CAMPAIGN_SCHEMA_VERSION;
++        let runtime_harness_version = runtime.harness.harness_version.clone();
++        for task_plan in &mut self.task_plans {
++            task_plan.runtime_harness_version = runtime_harness_version.clone();
++        }
++        self.benchmark_runtime = Some(runtime);
++        self.plan_digest = self.compute_digest();
++        Ok(self)
++    }
++
++    /// Returns the benchmark lane/runtime identity frozen into this campaign.
++    #[allow(dead_code)]
++    pub(crate) fn benchmark_runtime(&self) -> Option<&BenchmarkRuntimeIdentity> {
++        self.benchmark_runtime.as_ref()
++    }
++
+     fn compute_digest(&self) -> String {
+         let mut hash = FNV_OFFSET;
+         hash = mix(hash, self.campaign_id.as_bytes());
+@@ -289,6 +326,9 @@ impl CampaignPlan {
+         hash = mix(hash, self.schedule_version.as_bytes());
+         hash = mix(hash, self.sampling_profile.as_bytes());
+         hash = mix(hash, self.seed_policy.as_bytes());
++        if let Some(runtime) = self.benchmark_runtime.as_ref() {
++            hash = mix(hash, serde_json::to_string(runtime).unwrap_or_default().as_bytes());
++        }
+         for candidate in &self.candidates {
+             hash = mix(hash, candidate.representation.backend_id.as_bytes());
+             hash = mix(hash, candidate.representation.model_id.as_bytes());
+@@ -366,6 +406,7 @@ impl CampaignPlan {
+             fixture_instance_id: task_plan.fixture.instance_id.clone(),
+             sampling_profile: self.sampling_profile.clone(),
+             seed_policy: self.seed_policy.clone(),
++            benchmark_runtime: self.benchmark_runtime.clone(),
+         })
+     }
+ 
+@@ -536,6 +577,9 @@ impl CampaignPlan {
+         if self.backend_runtime_version != prior.backend_runtime_version {
+             changed.push("backend_runtime_version");
+         }
++        if self.benchmark_runtime != prior.benchmark_runtime {
++            changed.push("benchmark_runtime");
++        }
+         if self.hardware != prior.hardware {
+             changed.push("hardware");
+         }
+@@ -786,6 +830,18 @@ impl CampaignRun {
+             if record.identity.execution.as_ref() != Some(&expected_identity) {
+                 return Err(CampaignRejection::IdentityMismatch);
+             }
++            if record.identity.runtime != self.plan.benchmark_runtime {
++                return Err(CampaignRejection::IdentityMismatch);
++            }
++            let expected_task_plan = self
++                .plan
++                .task_plan(&evidence.scheduled.task_id)
++                .map_err(|_| CampaignRejection::IdentityMismatch)?;
++            if record.identity.runtime_harness_version
++                != expected_task_plan.runtime_harness_version
++            {
++                return Err(CampaignRejection::IdentityMismatch);
++            }
+             if record.identity.model.model_id != evidence.scheduled.model_id
+                 || record.identity.task_id != evidence.scheduled.task_id
+             {
+@@ -855,7 +911,10 @@ impl CampaignRun {
+             .iter()
+             .cloned()
+             .collect::<BTreeSet<_>>();
+-        let current_contract = self.plan.schema_version == CAMPAIGN_SCHEMA_VERSION
++        let current_contract = (MIN_SUPPORTED_CAMPAIGN_SCHEMA_VERSION
++            ..=CAMPAIGN_SCHEMA_VERSION)
++            .contains(&self.plan.schema_version)
++            && (self.plan.schema_version >= 3 || self.plan.benchmark_runtime.is_none())
+             && self.plan.plan_digest == self.plan.compute_digest()
+             && self.plan.harness_version == CAMPAIGN_HARNESS_VERSION
+             && self.plan.schedule_version == CAMPAIGN_SCHEDULE_VERSION
+@@ -969,6 +1028,12 @@ impl CampaignRun {
+         if self.plan.comparison_class != CampaignComparisonClass::ModelComparison {
+             return Vec::new();
+         }
++        if matches!(
++            self.plan.benchmark_runtime.as_ref().map(|runtime| runtime.lane),
++            Some(BenchmarkLane::AgentHarness) | Some(BenchmarkLane::CodingAgent)
++        ) {
++            return Vec::new();
++        }
+         if !self.report().evidence_complete {
+             return Vec::new();
+         }
+@@ -1052,8 +1117,9 @@ fn is_full_git_sha(value: &str) -> bool {
+ mod tests {
+     use super::*;
+     use crate::agent_benchmark::{
+-        BENCHMARK_TASKS, BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics,
+-        BenchmarkModelIdentity, BenchmarkToolBudget,
++        BENCHMARK_SCHEMA_VERSION, BENCHMARK_TASKS, BenchmarkAgentRuntimeIdentity,
++        BenchmarkHardwareIdentity, BenchmarkHarnessIdentity, BenchmarkIdentity, BenchmarkLane,
++        BenchmarkMetrics, BenchmarkModelIdentity, BenchmarkRuntimeIdentity, BenchmarkToolBudget,
+     };
+     use crate::agent_benchmark_campaign::{
+         CampaignCandidateSource, CampaignTaskHarness, campaign_task_harness,
+@@ -1152,13 +1218,18 @@ mod tests {
+     fn record_for(plan: &CampaignPlan, model_id: &str, task_id: &str) -> BenchmarkRecord {
+         let task = benchmark_task(task_id).expect("known task");
+         BenchmarkRecord {
+-            schema_version: 3,
++            schema_version: BENCHMARK_SCHEMA_VERSION,
+             recorded_unix_ms: 1,
+             identity: BenchmarkIdentity {
+                 corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
+                 task_id: task_id.to_owned(),
+                 harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+-                runtime_harness_version: "runtime-harness-v1".to_owned(),
++                runtime_harness_version: plan
++                    .task_plan(task_id)
++                    .expect("task plan")
++                    .runtime_harness_version
++                    .clone(),
++                runtime: plan.benchmark_runtime.clone(),
+                 model: BenchmarkModelIdentity {
+                     backend_id: "ollama-compatible".to_owned(),
+                     model_id: model_id.to_owned(),
+@@ -1279,6 +1350,71 @@ mod tests {
+         }
+     }
+ 
++    fn coding_runtime(runtime_id: &str) -> BenchmarkRuntimeIdentity {
++        let mut harness = BenchmarkHarnessIdentity::new("acp-coding-agent", "harness-v1");
++        harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
++        harness.acp_protocol_version = TelemetryValue::Measured(1);
++        harness.mcp_tool_contract = TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
++        harness.permission_profile =
++            TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
++        BenchmarkRuntimeIdentity::coding_agent(
++            harness,
++            BenchmarkAgentRuntimeIdentity {
++                runtime_id: runtime_id.to_owned(),
++                runtime_version: TelemetryValue::Measured("1.0".to_owned()),
++            },
++        )
++    }
++
++    #[test]
++    fn benchmark_runtime_registration_changes_campaign_identity_and_execution_identity() {
++        let legacy = frozen(&["model-a"], &["read_question_v1"]);
++        let classified = legacy
++            .clone()
++            .with_benchmark_runtime(coding_runtime("goose"))
++            .expect("coding runtime registration");
++        assert_ne!(legacy.plan_digest(), classified.plan_digest());
++        assert_eq!(
++            classified.benchmark_runtime().map(|runtime| runtime.lane),
++            Some(BenchmarkLane::CodingAgent)
++        );
++        let execution = classified
++            .execution_identity("read_question_v1")
++            .expect("execution identity");
++        assert_eq!(execution.benchmark_runtime, classified.benchmark_runtime);
++    }
++
++    #[test]
++    fn agent_inclusive_campaign_evidence_never_qualifies_as_model_only_routing_evidence() {
++        let plan = frozen(&["model-a"], &["read_question_v1"])
++            .with_benchmark_runtime(coding_runtime("goose"))
++            .expect("coding runtime registration");
++        let mut run = started(plan.clone(), &["model-a"]);
++        pass(&mut run, &plan);
++        assert!(run.qualified_records().is_empty());
++    }
++
++    #[test]
++    fn campaign_rejects_a_record_with_a_different_benchmark_runtime() {
++        let plan = frozen(&["model-a"], &["read_question_v1"])
++            .with_benchmark_runtime(coding_runtime("goose"))
++            .expect("coding runtime registration");
++        let mut run = started(plan.clone(), &["model-a"]);
++        let scheduled = run.next_scheduled().expect("scheduled run");
++        let mut record = record_for(&plan, "model-a", "read_question_v1");
++        record.identity.runtime = None;
++        assert_eq!(
++            run.record(CampaignEvidence {
++                scheduled,
++                outcome: BenchmarkRunOutcome::Passed,
++                failure_kind: None,
++                attempt: 0,
++                record: Some(record),
++            }),
++            Err(CampaignRejection::IdentityMismatch)
++        );
++    }
++
+     #[test]
+     fn the_candidate_contract_never_carries_host_only_evaluation_state() {
+         let plan = frozen(&["model-a"], &["read_question_v1"]);
+diff --git a/crates/editor/src/benchmark_comparison.rs b/crates/editor/src/benchmark_comparison.rs
+index 3459e822f71b378942f78e675382585e100ff26e..983388183dcfa099ff6f855eea70515f04917878 100644
+--- a/crates/editor/src/benchmark_comparison.rs
++++ b/crates/editor/src/benchmark_comparison.rs
+@@ -372,15 +372,28 @@ fn experiment_equivalence(
+             continue;
+         };
+         for record in rest {
+-            if let ComparisonEquivalence::NonEquivalent(changed) =
+-                comparison_equivalence(reference, record)
+-            {
+-                for dimension in changed {
+-                    let dimension = dimension.to_owned();
++            match comparison_equivalence(reference, record) {
++                ComparisonEquivalence::EquivalentModelComparison => {}
++                ComparisonEquivalence::EquivalentAgentHarnessComparison => {
++                    let dimension = "agent_harness_comparison".to_owned();
+                     if !differences.contains(&dimension) {
+                         differences.push(dimension);
+                     }
+                 }
++                ComparisonEquivalence::EquivalentCodingAgentComparison => {
++                    let dimension = "coding_agent_comparison".to_owned();
++                    if !differences.contains(&dimension) {
++                        differences.push(dimension);
++                    }
++                }
++                ComparisonEquivalence::NonEquivalent(changed) => {
++                    for dimension in changed {
++                        let dimension = dimension.to_owned();
++                        if !differences.contains(&dimension) {
++                            differences.push(dimension);
++                        }
++                    }
++                }
+             }
+         }
+     }
+@@ -427,6 +440,7 @@ mod tests {
+             task_id: task.to_owned(),
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             runtime_harness_version: "runtime-harness-v1".to_owned(),
++            runtime: None,
+             model: BenchmarkModelIdentity {
+                 backend_id: "ollama-compatible".to_owned(),
+                 model_id: model.to_owned(),
+diff --git a/crates/editor/src/model_router.rs b/crates/editor/src/model_router.rs
+index 8adc762634d3b40b3bfb202df2a8748e59d761eb..62eb4f3d6568cf323af656e1c19a42a7930ad47f 100644
+--- a/crates/editor/src/model_router.rs
++++ b/crates/editor/src/model_router.rs
+@@ -428,6 +428,7 @@ mod tests {
+                 task_id: task.id.to_owned(),
+                 harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+                 runtime_harness_version: "runtime-harness-v1".to_owned(),
++                runtime: None,
+                 model: BenchmarkModelIdentity {
+                     backend_id: "ollama-compatible".to_owned(),
+                     model_id: model.to_owned(),
+diff --git a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+index 7a7d2dc4b3b91d161d0dfad8b9a3f43187c52259..6bc5d450647c838be42966bc1968c12f6f782130 100644
+--- a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
++++ b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+@@ -62,6 +62,16 @@ The curated catalog is bundled as versioned product data separate from model wei
+ 
+ The initial Ollama-compatible loopback backend can discover its installed model inventory and backend version through its supported local HTTP API. AI Studio keeps exact custom model entry available, clearly distinguishes compatible/unverified selections from benchmark-qualified recommendations, and exposes unknown provider/resource capability data as unavailable. ADR 0144 hosted/enterprise backends remain on the same provider-independent `NativeModelConfig` path; representation metadata unavailable from those providers is not inferred. Discovery never reaches a non-loopback endpoint, and model acquisition remains outside this ADR so no weights are silently downloaded.
+ 
++### ACP benchmark migration
++
++Benchmark record schema v4 adds an optional explicit runtime classification without reinterpreting historical records. Schema v1-v3 records remain valid legacy-harness evidence with no synthesized lane identity. New integrations may register exactly three migration lanes: `raw_model` for direct model/GGUF/runtime measurement, `agent_harness` for a fixed underlying model/runtime exercised through an agent harness, and `coding_agent` for end-to-end coding-agent measurement. Raw Model evidence uses the dedicated `raw_model_generation_v1` task identity and `model_response_completed` criterion rather than reusing one of the seven Agent Benchmark task descriptors. A missing v4 runtime identity continues to mean the existing GameEngine benchmark harness; it is not silently promoted into one of the new lanes.
++
++The explicit runtime identity records harness identity/version, adapter version, agent runtime identity/version when applicable, negotiated ACP protocol version when applicable, MCP/tool-contract identity, and permission profile. ACP runtime identity is copied from the provider-neutral ADR 0166 `AcpRuntimeIdentity`; benchmark code does not depend on Codex, Claude, Goose, or another provider adapter. Existing `BenchmarkModelIdentity` remains authoritative for model/GGUF/backend-runtime representation and is not replaced by agent identity.
++
++Comparison equivalence is lane-aware. Legacy and `raw_model` evidence may qualify a model-only comparison only when the established non-model dimensions match. `agent_harness` comparison additionally requires the same exactly measured underlying model representation and the same measured ACP, MCP/tool, and permission contracts while allowing the harness/agent implementation to be the candidate dimension. `coding_agent` comparison treats the end-to-end agent implementation as the candidate dimension while requiring the same measured MCP/tool and permission contracts. Agent-inclusive equivalence is never consumed as model-only catalog or routing evidence. Different lanes are explicitly non-equivalent.
++
++Model-internal telemetry exposed only below an ACP agent remains truthful: model turns, prompt tokens, and response tokens are `Unavailable` when the adapter cannot observe them. GameEngine MUST NOT infer those values from ACP prompt boundaries, session events, or normalized Agent Host progress. The legacy native AgentRun path keeps its existing recorded-exchange semantics so historical records retain their original meaning.
++
+ ## Dependencies and parallel work
+ 
+ Benchmark storage/UI scaffolding may begin in parallel with ADR 0141. Official write-capable implementation recommendations require ADR 0141 to be available. ADR 0143 telemetry enriches resource measurements but does not block the benchmark architecture. ADR 0150 MUST NOT become the default until this ADR demonstrates a measurable benefit over the single-model baseline.
+diff --git a/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md b/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
+index 1ba526ccc48edc8843ee05de130d76a09f548e99..980c23a2424823d61f6f1e65563985ab7536d0c9 100644
+--- a/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
++++ b/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
+@@ -520,12 +520,28 @@ ADR 0142 redaction and provenance rules.
+ 
+ ## Implementation
+ 
+-The campaign implementation uses schema version 2 and the
++The campaign implementation uses schema version 3 and the
+ `task-repetition-candidate-interleave-v2` schedule identity. The concrete order
+ is task, repetition, then candidate, so the recorded identity and actual
+-thermal/time-order policy agree. Schema version 2 freezes the explicit quality
+-policy, hardware identity, and finite per-run timeout in addition to the
+-previous campaign dimensions.
++thermal/time-order policy agree. Schema version 2 froze the explicit quality
++policy, hardware identity, and finite per-run timeout. Schema version 3 adds an
++optional frozen ADR 0142 benchmark runtime/lane identity to the campaign plan and
++plan digest. Existing schema-v2 campaign checkpoints deserialize with that field
++absent and retain their legacy harness meaning; they are not rewritten into an
++ACP lane. A schema-v2 checkpoint remains resumable only while all of its original
++contract dimensions still match and no schema-v3 runtime identity has been
++attached.
++
++`CampaignPlan::with_benchmark_runtime` derives a new frozen agent-inclusive
++plan before execution and stamps that runtime identity into the per-task
++execution identity. Evidence whose top-level benchmark runtime differs from the
++frozen plan is rejected as an identity mismatch. The existing seven-task ADR
++0156 campaign cannot be relabelled `raw_model`, because every task executes
++through an Agent Host or production task harness. Raw Model records must come
++from a model-only harness; ACP Agent Harness (for example Goose) and Coding Agent
++runtime identities can be frozen into the existing campaign without changing
++the seven-task harness mapping. Agent-inclusive campaign evidence is never
++treated as model-only routing/catalog evidence.
+ 
+ The headless coordinator records a timed-out child as one `Timeout` run failure
+ and continues the remaining schedule. It does not clear the queue. The campaign
+@@ -546,11 +562,12 @@ than duplicating task semantics in the UI. Runtime-interaction and visual task
+ execution MUST call the production ADR 0157 debugging/observation API rather
+ than a benchmark-only control seam.
+ 
+-The first release can reuse the current seven task descriptors and benchmark
+-record schema while adding campaign-plan/progress storage, instantiated fixture
+-identity, and any additional execution-profile identity required to preserve
+-strict equivalence. If a schema extension is needed, it must be versioned and
+-must not reinterpret existing records.
++The ACP benchmark migration keeps the current seven task descriptors and uses
++ADR 0142 benchmark record schema v4 to add optional runtime/lane identity.
++Existing schema v1-v3 records remain readable as legacy-harness records without
++that identity, so the migration does not reinterpret previously collected
++evidence. Campaign-plan/progress storage, instantiated fixture identity, and
++execution-profile identity remain separate frozen dimensions.
+ 
+ Candidate-visible fixture material and host-only evaluator material MUST be
+ separate application-layer resources with separate access policy. The Agent's
+diff --git a/docs/adr/0159-benchmark-model-exchange-observability-and-failure-diagnosis.md b/docs/adr/0159-benchmark-model-exchange-observability-and-failure-diagnosis.md
+index a18e44a524bcb06a688e3cdeb92133b3b802a7ee..afe30e44f824051f7a67f949a258b8bb26e68524 100644
+--- a/docs/adr/0159-benchmark-model-exchange-observability-and-failure-diagnosis.md
++++ b/docs/adr/0159-benchmark-model-exchange-observability-and-failure-diagnosis.md
+@@ -97,13 +97,20 @@ model text out of the comparison identity surface.
+ 
+ ### 3. Failing runs report the metrics they can measure
+ 
+-`agent_run_record` derives `model_turns`, `prompt_tokens`, and `response_tokens`
+-from the recorded exchanges instead of reporting them as `Unavailable`. A run
+-with zero exchanges reports zero turns, which is itself a diagnosis, and is
+-distinct from a run that never recorded whether it had any.
+-
+-`Unavailable` remains correct for values the backend genuinely did not report,
+-and the distinction between "measured as zero" and "not measured" is preserved.
++The legacy native `agent_run_record` derives `model_turns`, `prompt_tokens`, and
++`response_tokens` from the recorded exchanges instead of reporting them as
++`Unavailable`. A native run with zero recorded exchanges reports zero turns,
++which is itself a diagnosis, and is distinct from a run that never recorded
++whether it had any.
++
++ACP-backed runtimes are a separate observability boundary. When an ACP adapter
++cannot observe the coding agent's internal model exchanges, schema-v4 benchmark
++recording MUST leave model turns and token counts `Unavailable`; GameEngine does
++not infer them from ACP prompts, session events, or normalized Agent Host events.
++An ACP adapter may report those metrics as measured only when the agent/runtime
