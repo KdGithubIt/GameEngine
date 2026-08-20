@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/codex_acp_adapter.rs","old":"        let mut runtime = AcpProcessRuntime::new(Box::new(descriptor))?;\n","new":"        let mut runtime = AcpProcessRuntime::new(descriptor)?;\n"}
