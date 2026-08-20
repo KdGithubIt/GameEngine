@@ -12,6 +12,8 @@
 mod acp_agent_host_bridge;
 #[allow(dead_code)]
 mod acp_agent_runtime;
+#[allow(dead_code)]
+mod claude_acp_adapter;
 
 // ADR 0146 defines the provider-neutral managed asset boundary before concrete
 // provider integrations are enabled by AI Studio.
