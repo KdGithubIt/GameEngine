@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                Self::show_conversation_lane(ui, |ui| self.show_transcript(ui));\n",
+  "new": "                Self::show_conversation_lane(ui, true, |ui| self.show_transcript(ui));\n"
+}
