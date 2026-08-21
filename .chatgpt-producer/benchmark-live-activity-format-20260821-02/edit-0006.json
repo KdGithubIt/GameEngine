@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/benchmark_child.rs","old":"        AcpNormalizedEvent::ProtocolDiagnostic { .. } => {\n            \"protocol diagnostic reported\".to_owned()\n        }","new":"        AcpNormalizedEvent::ProtocolDiagnostic { .. } => \"protocol diagnostic reported\".to_owned(),"}
