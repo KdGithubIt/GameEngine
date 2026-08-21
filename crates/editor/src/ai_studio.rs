@@ -1861,6 +1861,7 @@ impl AiStudioPanel {
         self.managed_local_runtime =
             ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
         self.model_backend = ModelBackendPreference::ManagedLocal;
+        self.settings_model_view = ModelBackendPreference::ManagedLocal;
         self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
         let model_id = self
             .managed_local_runtime
@@ -1882,6 +1883,8 @@ impl AiStudioPanel {
         self.external_provider_status =
             ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
         self.visual_external_provider_evidence = false;
+        self.settings_section = SettingsSection::Models;
+        self.settings_open = true;
         Ok(())
     }
 
