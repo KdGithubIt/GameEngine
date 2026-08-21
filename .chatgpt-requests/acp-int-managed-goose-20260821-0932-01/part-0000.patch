@@ -1,0 +1,309 @@
+diff --git a/crates/editor/src/acp_agent_runtime.rs b/crates/editor/src/acp_agent_runtime.rs
+index d02960ead66c615c59966dedc63307f6f0155437..8c8cee9fabed0c62179c1752319311154b398a1f 100644
+--- a/crates/editor/src/acp_agent_runtime.rs
++++ b/crates/editor/src/acp_agent_runtime.rs
+@@ -449,6 +449,22 @@ impl AcpRuntimeRegistry {
+         self.runtimes.insert(descriptor.id.clone(), runtime);
+         Ok(())
+     }
++
++    /// Replaces one machine-local adapter registration after validating the new
++    /// descriptor. Existing open sessions own their session object and are not
++    /// mutated; subsequent sessions use the refreshed runtime configuration.
++    pub(crate) fn replace(
++        &mut self,
++        runtime: Box<dyn AcpAgentRuntime>,
++    ) -> Result<(), AcpRuntimeError> {
++        validate_descriptor(runtime.descriptor())?;
++        let descriptor_id = runtime.descriptor().id.clone();
++        if !self.runtimes.contains_key(&descriptor_id) {
++            return self.register(runtime);
++        }
++        self.runtimes.insert(descriptor_id, runtime);
++        Ok(())
++    }
+ }
+ 
+ impl AcpAgentRegistry for AcpRuntimeRegistry {
+diff --git a/crates/editor/src/acp_agent_runtime/transport.rs b/crates/editor/src/acp_agent_runtime/transport.rs
+index c0c7555e86cea1b0dbf8eebf93feb3962653bea8..837ca56e7bbe1f4fa15247e5408a62bffb441b8b 100644
+--- a/crates/editor/src/acp_agent_runtime/transport.rs
++++ b/crates/editor/src/acp_agent_runtime/transport.rs
+@@ -31,7 +31,7 @@ use std::sync::{
+ };
+ 
+ const GAMEENGINE_ACP_CLIENT_NAME: &str = "gameengine-ai-studio";
+-const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine";
++const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
+ const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
+ 
+ #[derive(Debug)]
+diff --git a/crates/editor/src/acp_integration.rs b/crates/editor/src/acp_integration.rs
+index 04a563745b47189c362f90b26f088372ec6d290b..b707351a8e169e84f0c32eaca0e40d508d42aab7 100644
+--- a/crates/editor/src/acp_integration.rs
++++ b/crates/editor/src/acp_integration.rs
+@@ -33,24 +33,17 @@ impl AcpIntegration {
+         })
+     }
+ 
+-    pub(crate) fn register(
++    pub(crate) fn replace(
+         &mut self,
+         runtime: Box<dyn AcpAgentRuntime>,
+     ) -> Result<(), AcpRuntimeError> {
+-        self.registry.register(runtime)
++        self.registry.replace(runtime)
+     }
+ 
+     pub(crate) fn registry(&self) -> &dyn AcpAgentRegistry {
+         &self.registry
+     }
+ 
+-    pub(crate) fn is_registered(&self, agent_id: &str) -> bool {
+-        self.registry
+-            .descriptors()
+-            .into_iter()
+-            .any(|descriptor| descriptor.id == agent_id)
+-    }
+-
+     pub(crate) fn open_ask_session(
+         &mut self,
+         host: &AgentHost,
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index b52208b5989039094523cc8a1faf2134c677938f..a6a4786d5c2008094cd46e0578c3cd59c8d56053 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -20,6 +20,9 @@ use crate::claude_acp_adapter::{
+ use crate::codex_acp_adapter::{
+     CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
+ };
++use crate::goose_local_acp::{
++    GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,
++};
+ use crate::agent_benchmark::{
+     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
+     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
+@@ -1294,6 +1297,9 @@ impl AiStudioPanel {
+         execution_router
+             .set_acp_route("agent:claude-code", CLAUDE_ACP_AGENT_ID)
+             .map_err(|error| error.to_string())?;
++        execution_router
++            .set_acp_route("model:managed_local", GOOSE_LOCAL_ACP_DESCRIPTOR_ID)
++            .map_err(|error| error.to_string())?;
+         execution_router
+             .set_legacy_route("agent:generic-external")
+             .map_err(|error| error.to_string())?;
+@@ -4158,6 +4164,11 @@ impl AiStudioPanel {
+         }
+ 
+         ensure_build_scope(&mut self.proposal_draft);
++        if build_executor_requires_external_process(self.selected_ai()) {
++            self.proposal_draft
++                .requested_capabilities
++                .insert(AgentCapability::ExternalAgentProcess);
++        }
+     }
+ 
+     fn model_routing_status(&mut self) -> String {
+@@ -4638,6 +4649,17 @@ impl AiStudioPanel {
+ 
+     fn selected_execution_driver(&mut self) -> Result<AiExecutionDriver, String> {
+         let selection = self.selected_ai();
++        if self.benchmark_child_active()
++            && matches!(
++                selection,
++                SelectedAi::Model(ModelBackendPreference::ManagedLocal)
++            )
++        {
++            // ADR 0156 campaign v2 freezes Managed Local as a model-backend/native-harness
++            // candidate. Keep that existing lane unchanged until the benchmark migration
++            // explicitly selects the new coding-agent lane and budgets its process authority.
++            return Ok(AiExecutionDriver::Legacy);
++        }
+         let logical_ai_id = ai_entry_id(selection, &self.managed_model_id);
+         let route_key = match selection {
+             SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
+@@ -4648,6 +4670,9 @@ impl AiStudioPanel {
+         let configured_agent = match selection {
+             SelectedAi::Agent(ExternalAgentProviderKind::Codex) => Some(CODEX_ACP_DESCRIPTOR_ID),
+             SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode) => Some(CLAUDE_ACP_AGENT_ID),
++            SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
++                Some(GOOSE_LOCAL_ACP_DESCRIPTOR_ID)
++            }
+             _ => None,
+         };
+         if let Some(agent_id) = configured_agent {
+@@ -4661,19 +4686,21 @@ impl AiStudioPanel {
+     }
+ 
+     fn ensure_acp_runtime(&mut self, agent_id: &str) -> Result<(), String> {
+-        if self.acp.is_registered(agent_id) {
+-            return Ok(());
+-        }
+         let placement = self.external_agent_placement();
+         match agent_id {
+             CODEX_ACP_DESCRIPTOR_ID => {
+                 let runtime = CodexAcpRuntime::discover(
+                     placement,
+-                    CodexAcpSessionPreferences::default(),
++                    CodexAcpSessionPreferences {
++                        model: None,
++                        reasoning_effort: Self::codex_reasoning_effort(self.quality_preference)
++                            .map(str::to_owned),
++                        fast_mode: None,
++                    },
+                 )
+                 .map_err(|error| error.to_string())?;
+                 self.acp
+-                    .register(Box::new(runtime))
++                    .replace(Box::new(runtime))
+                     .map_err(|error| error.to_string())
+             }
+             CLAUDE_ACP_AGENT_ID => {
+@@ -4682,13 +4709,32 @@ impl AiStudioPanel {
+                 let runtime = AcpProcessRuntime::new(registration.descriptor)
+                     .map_err(|error| error.to_string())?;
+                 self.acp
+-                    .register(Box::new(runtime))
++                    .replace(Box::new(runtime))
++                    .map_err(|error| error.to_string())
++            }
++            GOOSE_LOCAL_ACP_DESCRIPTOR_ID => {
++                let managed_model = self.described_managed_model_config()?;
++                let config = GooseLocalAcpConfig::new(managed_model)
++                    .map_err(|error| error.to_string())?;
++                let runtime = GooseLocalAcpRuntime::discover(config)
++                    .map_err(|error| error.to_string())?;
++                self.acp
++                    .replace(Box::new(runtime))
+                     .map_err(|error| error.to_string())
+             }
+             _ => Err(format!("ACP agent `{agent_id}` is not configured by AI Studio")),
+         }
+     }
+ 
++    fn codex_reasoning_effort(quality: QualityPreference) -> Option<&'static str> {
++        match quality {
++            QualityPreference::Auto => None,
++            QualityPreference::Fast => Some("low"),
++            QualityPreference::Balanced => Some("medium"),
++            QualityPreference::Deep => Some("high"),
++        }
++    }
++
+     fn start_acp_question(&mut self, agent_id: &str) {
+         let session_id = self.selected_session.clone();
+         let turns = match self.host.session(&session_id) {
+@@ -9186,6 +9232,13 @@ fn snapshot_lines(ui: &mut egui::Ui, label: &str, values: &[String]) {
+ /// operations that satisfy the user's goal. This fallback only declares the
+ /// kinds of governed work that a Build request may need; each operation keeps
+ /// its existing permission, revision, stale-file, and completion checks.
++fn build_executor_requires_external_process(selection: SelectedAi) -> bool {
++    matches!(
++        selection,
++        SelectedAi::Agent(_) | SelectedAi::Model(ModelBackendPreference::ManagedLocal)
++    )
++}
++
+ fn ensure_build_scope(proposal: &mut AgentProposal) {
+     let has_explicit_scope = !proposal.planned_project_changes.is_empty()
+         || !proposal.planned_code_changes.is_empty()
+@@ -9261,6 +9314,39 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn external_build_executors_budget_process_authority() {
++        assert!(build_executor_requires_external_process(SelectedAi::Agent(
++            ExternalAgentProviderKind::Codex
++        )));
++        assert!(build_executor_requires_external_process(SelectedAi::Model(
++            ModelBackendPreference::ManagedLocal
++        )));
++        assert!(!build_executor_requires_external_process(SelectedAi::Model(
++            ModelBackendPreference::Local
++        )));
++    }
++
++    #[test]
++    fn codex_effort_uses_existing_quality_preference() {
++        assert_eq!(
++            AiStudioPanel::codex_reasoning_effort(QualityPreference::Auto),
++            None
++        );
++        assert_eq!(
++            AiStudioPanel::codex_reasoning_effort(QualityPreference::Fast),
++            Some("low")
++        );
++        assert_eq!(
++            AiStudioPanel::codex_reasoning_effort(QualityPreference::Balanced),
++            Some("medium")
++        );
++        assert_eq!(
++            AiStudioPanel::codex_reasoning_effort(QualityPreference::Deep),
++            Some("high")
++        );
++    }
++
+     #[test]
+     fn language_independent_build_scope_covers_governed_work_without_keywords() {
+         let mut proposal = AgentProposal::default();
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index 5f321838cda9cfcfe980e2445c9edb1465c68724..ce6f2afe38821e624bf40e01ed8c5c9b5b481506 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -46,30 +46,21 @@ pub(crate) struct GooseLocalRuntimeIdentity {
+ #[derive(Debug, Clone)]
+ pub(crate) struct GooseLocalAcpConfig {
+     pub(crate) managed_model: ManagedLocalModelConfig,
+-    pub(crate) workspace_root: PathBuf,
+ }
+ 
+ impl GooseLocalAcpConfig {
+-    /// Validates the stable model and workspace boundary used by this adapter.
+-    pub(crate) fn new(
+-        managed_model: ManagedLocalModelConfig,
+-        workspace_root: PathBuf,
+-    ) -> Result<Self, AcpRuntimeError> {
+-        if !workspace_root.is_absolute() || !workspace_root.is_dir() {
+-            return Err(AcpRuntimeError::InvalidDescriptor(
+-                "Goose ACP workspace root must be an existing absolute directory".to_owned(),
+-            ));
+-        }
++    /// Validates the frozen Managed Local identity used by this adapter.
++    ///
++    /// Session working-directory authority belongs to Agent Host/Bridge: Ask
++    /// uses the project root while Build uses the isolated Agent Code Workspace.
++    pub(crate) fn new(managed_model: ManagedLocalModelConfig) -> Result<Self, AcpRuntimeError> {
+         if !managed_model.state_root.is_absolute() {
+             return Err(AcpRuntimeError::InvalidDescriptor(
+                 "Managed Local state root must be absolute before Goose ACP can isolate its machine-local configuration"
+                     .to_owned(),
+             ));
+         }
+-        Ok(Self {
+-            managed_model,
+-            workspace_root,
+-        })
++        Ok(Self { managed_model })
+     }
+ }
+ 
+@@ -140,12 +131,11 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
+         &mut self,
+         request: AcpSessionOpenRequest,
+     ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
+-        if request.working_directory != self.config.workspace_root {
+-            return Err(AcpRuntimeError::InvalidSessionBinding(format!(
+-                "Goose ACP working directory `{}` does not match frozen workspace `{}`",
+-                request.working_directory.display(),
+-                self.config.workspace_root.display()
+-            )));
++        if !request.working_directory.is_absolute() || !request.working_directory.is_dir() {
++            return Err(AcpRuntimeError::InvalidSessionBinding(
++                "Goose ACP working directory must be an existing absolute directory supplied by Agent Host"
++                    .to_owned(),
++            ));
+         }
+ 
+         let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)
