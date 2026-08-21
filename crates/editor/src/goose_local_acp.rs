@@ -169,7 +169,10 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
 
         let mut descriptor = self.descriptor.clone();
         descriptor.environment = goose_environment(&lease, &ephemeral);
-        let mut runtime = AcpProcessRuntime::new(descriptor)?;
+        let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(
+            descriptor,
+            &["goose", "toolCall", "toolName"],
+        )?;
         match runtime.open_session(request) {
             Ok(inner) => Ok(Box::new(GooseLocalAcpSession {
                 inner,

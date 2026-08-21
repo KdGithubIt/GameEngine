@@ -119,15 +119,32 @@ debug representation must be redacted.
 
 ### 6. ACP permission requests do not create authority
 
-ACP permission requests normalize into `AcpPermissionRequest`. Before resolving
-one, the adapter must classify the operation into an existing `AgentCapability`.
-Provider option names do not create new GameEngine capabilities or approval
-scopes.
+ACP permission requests normalize into `AcpPermissionRequest`. ACP tool-call
+instance IDs are correlation identifiers only and never authorize an operation.
+ACP `ToolKind` remains a coarse category; it is not a stable GameEngine tool
+identity.
 
-Agent Host resolves its existing permission policy first. Only then may the ACP
-session receive `AcpPermissionResolution` selecting a compatible agent-provided
-option or cancelling the request. A request that cannot be safely classified
-fails closed.
+For GameEngine MCP calls, the ACP adapter may retain a provider-declared stable
+tool name from trusted provider metadata attached to the matching tool-call
+instance. The common transport normalizes that name back to the exact registered
+Editor MCP inventory before Agent Host may resolve it. A claimed GameEngine MCP
+name that is absent from the registered inventory fails closed. The resulting
+read/write classification comes from the shared MCP tool contract rather than
+from the ACP display title, opaque call ID, or a provider option name.
+
+Non-MCP operations still classify into an existing `AgentCapability`. Provider
+option names do not create new GameEngine capabilities or approval scopes.
+Read-only ACP sessions may automatically select one-shot approval only for an
+exact registered non-mutating GameEngine MCP tool; run-bound sessions may do so
+only for an exact registered GameEngine MCP tool under the existing
+AgentRun-bound MCP authority. The MCP credential, exact run identity, work claim,
+and canonical authoring checks remain authoritative at execution time.
+
+Host policy/classification rejection is distinct from an explicit user denial.
+When the agent offers a reject option, a host-side rejection selects that option
+and records a host diagnostic; `Cancelled` is reserved for an actual user
+denial/cancellation or for a protocol request that offers no safe reject
+representation. A request that cannot be safely classified always fails closed.
 
 ### 7. ACP updates are normalized before entering Agent Host
 
@@ -149,6 +166,14 @@ Only Agent Host may mark a run complete through the existing completion report
 and `AgentHost::complete_run`. An ACP adapter cannot mark acceptance,
 authoring/source validation, Play, frame capture, visual evaluation, or
 interaction gates successful merely because the agent says it is done.
+
+When an ACP provider returns control while a run is still `Executing` or
+`Repairing`, Agent Host must either admit the run to managed validation because
+all provider-side completion gates are satisfied, or terminate the run as
+failed with the unsatisfied gate recorded. A run already in `AwaitingUser`
+remains user-blocked. No timeout is used to manufacture completion, and an
+`end_turn` with failed or unresolved gates must not leave the outer AI Studio
+run permanently executing.
 
 ### 9. Provider adapters register at one seam
 
