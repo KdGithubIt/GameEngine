@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/benchmark_child.rs","old":"        let inspection = benchmark_proposal(\"project_inspection_v1\").expect(\"inspection proposal\");","new":"        let inspection = benchmark_proposal(\"project_inspection_v1\", None).expect(\"inspection proposal\");"}
