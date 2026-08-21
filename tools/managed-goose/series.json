@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "distribution_id": "gameengine-managed-goose-v1.45.0-ge-midturn-1",
-  "patch_series_revision": "ge-midturn-1",
-  "release_tag": "managed-goose-v1.45.0-ge-midturn-1",
+  "distribution_id": "gameengine-managed-goose-v1.45.0-ge-midturn-2",
+  "patch_series_revision": "ge-midturn-2",
+  "release_tag": "managed-goose-v1.45.0-ge-midturn-2",
   "upstream": {
     "repository": "https://github.com/aaif-goose/goose",
     "version": "v1.45.0",
@@ -27,18 +27,18 @@
     "target": "x86_64-pc-windows-msvc",
     "package": "goose-cli",
     "binary": "goose",
-    "expected_version_output_fragment": "1.45.0+gameengine.ge-midturn-1"
+    "expected_version_output_fragment": "1.45.0+gameengine.ge-midturn-2"
   },
   "patches": [
     {
       "path": "tools/managed-goose/patches/0001-gameengine-distribution-identity.patch",
-      "sha256": "13137e4baca0d3b9d79128105cbf010aeb63423bf6ea45fe0433cf01571d24ef",
+      "sha256": "b0d404b1f5b2889d349a4676194fad5b67e5669ab42ac3e971500f83f1938e8d",
       "allowed_paths": [
         "crates/goose-cli/src/cli.rs"
       ],
       "origin": {
         "type": "gameengine",
-        "reason": "Give patched Goose a runtime-visible distribution identity distinct from the official v1.45.0 binary."
+        "reason": "Give patched Goose a runtime-visible distribution identity distinct from the official v1.45.0 binary and earlier GameEngine patch revisions."
       }
     },
     {
