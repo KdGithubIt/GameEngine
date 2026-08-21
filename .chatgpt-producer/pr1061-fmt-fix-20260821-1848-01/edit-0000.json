@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/acp_agent_runtime/transport.rs",
+  "old": "    if binding.mcp.access\n        == crate::acp_agent_runtime::AcpMcpAccessLevel::AgentRunBoundReadWrite\n        && let Some(run_id) = binding.gameengine_run_id.as_deref()\n    {\n        headers.push(HttpHeader::new(GAMEENGINE_AGENT_RUN_ID_HEADER, run_id));\n    }",
+  "new": "    if binding.mcp.access == crate::acp_agent_runtime::AcpMcpAccessLevel::AgentRunBoundReadWrite\n        && let Some(run_id) = binding.gameengine_run_id.as_deref()\n    {\n        headers.push(HttpHeader::new(GAMEENGINE_AGENT_RUN_ID_HEADER, run_id));\n    }"
+}
