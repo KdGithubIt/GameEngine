@@ -1,0 +1,86 @@
+diff --git a/crates/editor/src/acp_integration.rs b/crates/editor/src/acp_integration.rs
+index 058e54405ddbf5253b3503f10b8edddcedd6bf23..14d637c5298ec114ad21862e3cc286a74e6a308c 100644
+--- a/crates/editor/src/acp_integration.rs
++++ b/crates/editor/src/acp_integration.rs
+@@ -70,12 +70,8 @@ impl AcpIntegration {
+         session: Box<dyn AcpAgentSession>,
+         expected_session_id: &str,
+     ) -> Result<String, AcpBridgeError> {
+-        self.bridge.attach_opened_ask_session(
+-            host,
+-            descriptor_id,
+-            session,
+-            expected_session_id,
+-        )
++        self.bridge
++            .attach_opened_ask_session(host, descriptor_id, session, expected_session_id)
+     }
+ 
+     pub(crate) fn attach_opened_run_session(
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 6ea4292940ecd4da7378a6b4e0ef870c916267de..21f15812e0867ca91340ca503ca2518f65615f2b 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -42,7 +42,7 @@ use crate::external_agent_provider::{
+     sign_in_url, translate_provider_line, wsl_environment_forwarding,
+ };
+ use crate::goose_local_acp::{
+-    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig,
++    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,
+ };
+ use crate::hosted_model_backend;
+ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+@@ -6807,10 +6807,7 @@ impl AiStudioPanel {
+     fn stop_active_run(&mut self) {
+         let run_id = self.active_run_id.clone();
+         if self.acp_startup.as_ref().is_some_and(|pending| {
+-            matches!(
+-                &pending.continuation,
+-                AcpStartupContinuation::Build { .. }
+-            )
++            matches!(&pending.continuation, AcpStartupContinuation::Build { .. })
+         }) && let Some(pending) = self.acp_startup.take()
+         {
+             pending.task.cancel();
+diff --git a/crates/editor/src/ai_studio/acp_startup.rs b/crates/editor/src/ai_studio/acp_startup.rs
+index 6eb476c7cf9aaa37995adf8034e13cc4cc783f40..465d506e9f86f82f1c17a68ca8040bd2013b45b4 100644
+--- a/crates/editor/src/ai_studio/acp_startup.rs
++++ b/crates/editor/src/ai_studio/acp_startup.rs
+@@ -168,11 +168,7 @@ impl AcpSessionStartupTask {
+         match self.result.try_recv() {
+             Ok(result) => Some(result),
+             Err(mpsc::TryRecvError::Empty) => None,
+-            Err(mpsc::TryRecvError::Disconnected)
+-                if self.cancelled.load(Ordering::Acquire) =>
+-            {
+-                None
+-            }
++            Err(mpsc::TryRecvError::Disconnected) if self.cancelled.load(Ordering::Acquire) => None,
+             Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                 "ACP startup worker disconnected unexpectedly.".to_owned(),
+             )),
+@@ -302,21 +298,14 @@ mod tests {
+             arguments: Vec::new(),
+             environment: BTreeMap::new(),
+             capabilities: AcpCapabilities::default(),
+-            runtime_identity: AcpRuntimeIdentity::stable(
+-                "test-agent",
+-                Some("1.0".to_owned()),
+-            ),
++            runtime_identity: AcpRuntimeIdentity::stable("test-agent", Some("1.0".to_owned())),
+         }
+     }
+ 
+     fn request() -> AcpSessionOpenRequest {
+         AcpSessionOpenRequest::new(
+-            AcpSessionBinding::read_only(
+-                "session-test",
+-                "http://127.0.0.1:1/mcp",
+-                "token",
+-            )
+-            .expect("binding"),
++            AcpSessionBinding::read_only("session-test", "http://127.0.0.1:1/mcp", "token")
++                .expect("binding"),
+             std::env::current_dir().expect("current dir"),
+         )
+         .expect("request")
