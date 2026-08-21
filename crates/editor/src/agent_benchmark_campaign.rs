@@ -175,9 +175,7 @@ pub(crate) fn campaign_task_agent_policy(task_id: &str) -> Result<CampaignTaskAg
 ///
 /// This is shared by campaign freeze and the UI so unsupported tasks are rejected
 /// before execution without duplicating the authority policy.
-pub(crate) fn campaign_task_agent_inclusive_runtime_support(
-    task_id: &str,
-) -> Result<(), String> {
+pub(crate) fn campaign_task_agent_inclusive_runtime_support(task_id: &str) -> Result<(), String> {
     if campaign_task_harness(task_id)? == CampaignTaskHarness::NativeReadQuestion {
         return Err(
             "agent-inclusive ACP campaigns cannot relabel the Native read-question provenance harness"
@@ -569,11 +567,9 @@ mod tests {
         let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
             &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
         );
-        let policy = campaign_task_agent_policy_for_runtime(
-            "code_implementation_v1",
-            Some(&runtime),
-        )
-        .expect("ACP code policy");
+        let policy =
+            campaign_task_agent_policy_for_runtime("code_implementation_v1", Some(&runtime))
+                .expect("ACP code policy");
         assert_eq!(
             policy.requested_capabilities,
             BTreeSet::from([
@@ -592,16 +588,12 @@ mod tests {
         let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
             &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
         );
-        let proposal_policy = campaign_task_agent_policy_for_runtime(
-            "code_implementation_v1",
-            Some(&runtime),
-        )
-        .expect("ACP code policy");
-        let budget = campaign_task_tool_budget_for_runtime(
-            "code_implementation_v1",
-            Some(&runtime),
-        )
-        .expect("ACP code budget");
+        let proposal_policy =
+            campaign_task_agent_policy_for_runtime("code_implementation_v1", Some(&runtime))
+                .expect("ACP code policy");
+        let budget =
+            campaign_task_tool_budget_for_runtime("code_implementation_v1", Some(&runtime))
+                .expect("ACP code budget");
         let budget_capabilities = budget
             .permission_budget
             .iter()
@@ -627,11 +619,8 @@ mod tests {
         let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
             &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
         );
-        let policy = campaign_task_agent_policy_for_runtime(
-            "validation_repair_v1",
-            Some(&runtime),
-        )
-        .expect("ACP validation repair policy");
+        let policy = campaign_task_agent_policy_for_runtime("validation_repair_v1", Some(&runtime))
+            .expect("ACP validation repair policy");
         assert_eq!(
             policy.requested_capabilities,
             BTreeSet::from([
@@ -643,14 +632,19 @@ mod tests {
             policy.work_claims,
             BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
         );
-        let budget = campaign_task_tool_budget_for_runtime(
-            "validation_repair_v1",
-            Some(&runtime),
-        )
-        .expect("ACP validation repair budget");
+        let budget = campaign_task_tool_budget_for_runtime("validation_repair_v1", Some(&runtime))
+            .expect("ACP validation repair budget");
         assert!(budget.repair_budget > 0);
-        assert!(budget.permission_budget.contains(&"code_workspace_apply".to_owned()));
-        assert!(budget.permission_budget.contains(&"external_agent_process".to_owned()));
+        assert!(
+            budget
+                .permission_budget
+                .contains(&"code_workspace_apply".to_owned())
+        );
+        assert!(
+            budget
+                .permission_budget
+                .contains(&"external_agent_process".to_owned())
+        );
     }
 
     #[test]
@@ -659,12 +653,10 @@ mod tests {
             &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
         );
         assert!(
-            campaign_task_agent_policy_for_runtime("read_question_v1", Some(&runtime))
-                .is_err()
+            campaign_task_agent_policy_for_runtime("read_question_v1", Some(&runtime)).is_err()
         );
         assert!(
-            campaign_task_agent_policy_for_runtime("visual_evaluation_v1", Some(&runtime))
-                .is_err()
+            campaign_task_agent_policy_for_runtime("visual_evaluation_v1", Some(&runtime)).is_err()
         );
     }
 }

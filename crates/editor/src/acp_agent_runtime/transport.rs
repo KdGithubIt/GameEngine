@@ -1,20 +1,20 @@
 use super::{
-    validate_descriptor, AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession, AcpCapabilities,
-    AcpNormalizedEvent, AcpPermissionOption, AcpPermissionOptionKind, AcpPermissionOutcome,
-    AcpPermissionRequest, AcpPermissionResolution, AcpRuntimeError, AcpRuntimeIdentity,
-    AcpSessionBinding, AcpSessionOpenMode, AcpSessionOpenRequest, AcpToolCallStatus,
-    ACP_STABLE_PROTOCOL_VERSION,
+    ACP_STABLE_PROTOCOL_VERSION, AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession,
+    AcpCapabilities, AcpNormalizedEvent, AcpPermissionOption, AcpPermissionOptionKind,
+    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpRuntimeError,
+    AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenMode, AcpSessionOpenRequest,
+    AcpToolCallStatus, validate_descriptor,
 };
 use crate::agent_host::AgentCapability;
 use agent_client_protocol::schema::{
     ProtocolVersion,
     v1::{
         AgentCapabilities, CancelNotification, CloseSessionRequest, ContentBlock, ContentChunk,
-        HttpHeader, Implementation, InitializeRequest, LoadSessionRequest, McpServer, McpServerHttp,
-        NewSessionRequest, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-        RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-        SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
-        SetSessionConfigOptionRequest, StopReason, ToolCallStatus, ToolKind,
+        HttpHeader, Implementation, InitializeRequest, LoadSessionRequest, McpServer,
+        McpServerHttp, NewSessionRequest, PermissionOptionKind, PromptRequest,
+        RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+        ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification,
+        SessionUpdate, SetSessionConfigOptionRequest, StopReason, ToolCallStatus, ToolKind,
     },
 };
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client};
@@ -84,7 +84,8 @@ impl AcpProcessRuntime {
         }
         if !descriptor.capabilities.extensions.is_empty() {
             return Err(AcpRuntimeError::Unsupported(
-                "ACP extension requirements are not enabled by the stable core transport".to_owned(),
+                "ACP extension requirements are not enabled by the stable core transport"
+                    .to_owned(),
             ));
         }
         Ok(Self { descriptor })
@@ -271,8 +272,7 @@ impl AcpAgentSession for AcpProcessSession {
                 "ACP session config value must be non-empty and unpadded".to_owned(),
             ));
         }
-        if !self.capabilities.session_config_options
-            || !self.config_option_ids.contains(option_id)
+        if !self.capabilities.session_config_options || !self.config_option_ids.contains(option_id)
         {
             return Err(AcpRuntimeError::Unsupported(format!(
                 "agent did not advertise ACP session config option `{option_id}`"
@@ -284,9 +284,9 @@ impl AcpAgentSession for AcpProcessSession {
             value: value.to_owned(),
             response: response_tx,
         })?;
-        response_rx.recv().map_err(|_| {
-            self.connection_error("ACP session config response channel is closed")
-        })?
+        response_rx
+            .recv()
+            .map_err(|_| self.connection_error("ACP session config response channel is closed"))?
     }
 
     fn send_prompt(&mut self, prompt: &str) -> Result<(), AcpRuntimeError> {
@@ -551,7 +551,8 @@ async fn run_command_loop(
                                 send_event(
                                     &prompt_events,
                                     AcpNormalizedEvent::TurnFinished {
-                                        stop_reason: stop_reason_label(response.stop_reason).to_owned(),
+                                        stop_reason: stop_reason_label(response.stop_reason)
+                                            .to_owned(),
                                     },
                                 )?;
                             }
@@ -713,11 +714,11 @@ fn build_agent_config(descriptor: &AcpAgentDescriptor) -> Result<AcpAgentConfig,
         })
         .collect::<Result<BTreeMap<_, _>, AcpRuntimeError>>()?;
 
-    Ok(AcpAgentConfig::new(PathBuf::from(
-        descriptor.executable.clone(),
-    ))
-    .args(arguments)
-    .envs(environment))
+    Ok(
+        AcpAgentConfig::new(PathBuf::from(descriptor.executable.clone()))
+            .args(arguments)
+            .envs(environment),
+    )
 }
 
 fn normalize_capabilities(capabilities: &AgentCapabilities) -> AcpCapabilities {
@@ -739,14 +740,26 @@ fn validate_required_capabilities(
     negotiated: &AcpCapabilities,
 ) -> Result<(), AcpRuntimeError> {
     let checks = [
-        (required.session_load, negotiated.session_load, "session/load"),
+        (
+            required.session_load,
+            negotiated.session_load,
+            "session/load",
+        ),
         (
             required.session_resume,
             negotiated.session_resume,
             "session/resume",
         ),
-        (required.session_list, negotiated.session_list, "session/list"),
-        (required.session_close, negotiated.session_close, "session/close"),
+        (
+            required.session_list,
+            negotiated.session_list,
+            "session/list",
+        ),
+        (
+            required.session_close,
+            negotiated.session_close,
+            "session/close",
+        ),
         (
             required.session_config_options,
             negotiated.session_config_options,
@@ -796,7 +809,9 @@ fn validate_runtime_identity(
     expected: &AcpRuntimeIdentity,
     actual: AcpRuntimeIdentity,
 ) -> Result<AcpRuntimeIdentity, AcpRuntimeError> {
-    if expected.protocol_version != actual.protocol_version || expected.agent_name != actual.agent_name {
+    if expected.protocol_version != actual.protocol_version
+        || expected.agent_name != actual.agent_name
+    {
         return Err(AcpRuntimeError::Protocol(format!(
             "ACP runtime identity mismatch: expected protocol v{} agent `{}`, got protocol v{} agent `{}`",
             expected.protocol_version,
@@ -903,11 +918,13 @@ fn handle_session_notification(
             let mut tools = tool_calls.lock().map_err(|_| {
                 AcpRuntimeError::Transport("ACP tool state lock is poisoned".to_owned())
             })?;
-            let tracked = tools.entry(tool_call_id.clone()).or_insert_with(|| TrackedToolCall {
-                title: "ACP tool call".to_owned(),
-                kind: ToolKind::Other,
-                status: AcpToolCallStatus::Pending,
-            });
+            let tracked = tools
+                .entry(tool_call_id.clone())
+                .or_insert_with(|| TrackedToolCall {
+                    title: "ACP tool call".to_owned(),
+                    kind: ToolKind::Other,
+                    status: AcpToolCallStatus::Pending,
+                });
             if let Some(title) = update.fields.title {
                 tracked.title = title;
             }
@@ -928,13 +945,20 @@ fn handle_session_notification(
         SessionUpdate::Plan(plan) => send_normalized(
             events,
             AcpNormalizedEvent::Plan {
-                entries: plan.entries.into_iter().map(|entry| entry.content).collect(),
+                entries: plan
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.content)
+                    .collect(),
             },
         ),
         SessionUpdate::SessionInfoUpdate(info) => {
-            let title = serde_json::to_value(&info)
-                .ok()
-                .and_then(|value| value.get("title").and_then(|title| title.as_str()).map(str::to_owned));
+            let title = serde_json::to_value(&info).ok().and_then(|value| {
+                value
+                    .get("title")
+                    .and_then(|title| title.as_str())
+                    .map(str::to_owned)
+            });
             send_normalized(events, AcpNormalizedEvent::SessionInfo { title })
         }
         SessionUpdate::CurrentModeUpdate(_) => send_normalized(
@@ -1045,7 +1069,9 @@ async fn handle_permission_request(
     let (resolution_tx, resolution_rx) = oneshot::channel();
     pending_permissions
         .lock()
-        .map_err(|_| AcpRuntimeError::Transport("ACP permission state lock is poisoned".to_owned()))?
+        .map_err(|_| {
+            AcpRuntimeError::Transport("ACP permission state lock is poisoned".to_owned())
+        })?
         .insert(request_id.clone(), resolution_tx);
 
     send_normalized(
@@ -1060,10 +1086,14 @@ async fn handle_permission_request(
         }),
     )?;
 
-    let outcome = resolution_rx.await.unwrap_or(AcpPermissionOutcome::Cancelled);
+    let outcome = resolution_rx
+        .await
+        .unwrap_or(AcpPermissionOutcome::Cancelled);
     pending_permissions
         .lock()
-        .map_err(|_| AcpRuntimeError::Transport("ACP permission state lock is poisoned".to_owned()))?
+        .map_err(|_| {
+            AcpRuntimeError::Transport("ACP permission state lock is poisoned".to_owned())
+        })?
         .remove(&request_id);
 
     match outcome {
@@ -1071,7 +1101,10 @@ async fn handle_permission_request(
             RequestPermissionOutcome::Cancelled,
         )),
         AcpPermissionOutcome::SelectedOption(option_id) => {
-            if !valid_option_ids.iter().any(|candidate| candidate == &option_id) {
+            if !valid_option_ids
+                .iter()
+                .any(|candidate| candidate == &option_id)
+            {
                 return Err(AcpRuntimeError::Protocol(format!(
                     "permission resolution selected unknown ACP option `{option_id}`"
                 )));
@@ -1086,7 +1119,9 @@ async fn handle_permission_request(
 fn classify_tool_kind(kind: ToolKind) -> Option<AgentCapability> {
     match kind {
         ToolKind::Read => Some(AgentCapability::RawWorkspaceFilesystem),
-        ToolKind::Edit | ToolKind::Delete | ToolKind::Move => Some(AgentCapability::CodeWorkspaceApply),
+        ToolKind::Edit | ToolKind::Delete | ToolKind::Move => {
+            Some(AgentCapability::CodeWorkspaceApply)
+        }
         ToolKind::Execute => Some(AgentCapability::ArbitraryCommandExecution),
         ToolKind::Fetch => Some(AgentCapability::NetworkAccess),
         ToolKind::Search | ToolKind::Think | ToolKind::SwitchMode | ToolKind::Other => None,
@@ -1138,9 +1173,9 @@ fn send_event(
     events: &mpsc::Sender<AcpNormalizedEvent>,
     event: AcpNormalizedEvent,
 ) -> agent_client_protocol::Result<()> {
-    events
-        .send(event)
-        .map_err(|_| agent_client_protocol::Error::internal_error().data("ACP event receiver is closed"))
+    events.send(event).map_err(|_| {
+        agent_client_protocol::Error::internal_error().data("ACP event receiver is closed")
+    })
 }
 
 fn sdk_internal_error(error: AcpRuntimeError) -> agent_client_protocol::Error {
@@ -1214,7 +1249,10 @@ mod tests {
         };
         let config = build_agent_config(&descriptor).expect("descriptor should build ACP config");
         assert_eq!(config.arguments(), &["--acp"]);
-        assert_eq!(config.environment().get("TEST_KEY"), Some(&"value".to_owned()));
+        assert_eq!(
+            config.environment().get("TEST_KEY"),
+            Some(&"value".to_owned())
+        );
     }
 
     #[test]

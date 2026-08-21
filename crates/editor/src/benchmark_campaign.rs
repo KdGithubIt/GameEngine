@@ -303,10 +303,8 @@ impl CampaignPlan {
         self.schema_version = CAMPAIGN_SCHEMA_VERSION;
         let runtime_harness_version = runtime.harness.harness_version.clone();
         for task_plan in &mut self.task_plans {
-            task_plan.tool_budget = campaign_task_tool_budget_for_runtime(
-                &task_plan.task_id,
-                Some(&runtime),
-            )?;
+            task_plan.tool_budget =
+                campaign_task_tool_budget_for_runtime(&task_plan.task_id, Some(&runtime))?;
             task_plan.runtime_harness_version = runtime_harness_version.clone();
         }
         self.benchmark_runtime = Some(runtime);
@@ -341,7 +339,12 @@ impl CampaignPlan {
         hash = mix(hash, self.sampling_profile.as_bytes());
         hash = mix(hash, self.seed_policy.as_bytes());
         if let Some(runtime) = self.benchmark_runtime.as_ref() {
-            hash = mix(hash, serde_json::to_string(runtime).unwrap_or_default().as_bytes());
+            hash = mix(
+                hash,
+                serde_json::to_string(runtime)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
         }
         for candidate in &self.candidates {
             hash = mix(hash, candidate.representation.backend_id.as_bytes());
@@ -851,8 +854,7 @@ impl CampaignRun {
                 .plan
                 .task_plan(&evidence.scheduled.task_id)
                 .map_err(|_| CampaignRejection::IdentityMismatch)?;
-            if record.identity.runtime_harness_version
-                != expected_task_plan.runtime_harness_version
+            if record.identity.runtime_harness_version != expected_task_plan.runtime_harness_version
             {
                 return Err(CampaignRejection::IdentityMismatch);
             }
@@ -925,8 +927,7 @@ impl CampaignRun {
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let current_contract = (MIN_SUPPORTED_CAMPAIGN_SCHEMA_VERSION
-            ..=CAMPAIGN_SCHEMA_VERSION)
+        let current_contract = (MIN_SUPPORTED_CAMPAIGN_SCHEMA_VERSION..=CAMPAIGN_SCHEMA_VERSION)
             .contains(&self.plan.schema_version)
             && (self.plan.schema_version >= 3 || self.plan.benchmark_runtime.is_none())
             && self.plan.plan_digest == self.plan.compute_digest()
@@ -1043,7 +1044,10 @@ impl CampaignRun {
             return Vec::new();
         }
         if matches!(
-            self.plan.benchmark_runtime.as_ref().map(|runtime| runtime.lane),
+            self.plan
+                .benchmark_runtime
+                .as_ref()
+                .map(|runtime| runtime.lane),
             Some(BenchmarkLane::AgentHarness) | Some(BenchmarkLane::CodingAgent)
         ) {
             return Vec::new();
@@ -1218,9 +1222,7 @@ mod tests {
 
         let plan = draft.freeze().expect("ACP campaign freezes");
         assert_eq!(plan.benchmark_runtime(), Some(&runtime));
-        let task_plan = plan
-            .task_plan("code_implementation_v1")
-            .expect("task plan");
+        let task_plan = plan.task_plan("code_implementation_v1").expect("task plan");
         assert!(
             task_plan
                 .tool_budget
@@ -1242,13 +1244,13 @@ mod tests {
     fn legacy_native_policy_remains_an_explicit_runtime_free_plan() {
         let plan = frozen(&["model-a"], &["code_implementation_v1"]);
         assert!(plan.benchmark_runtime().is_none());
-        let task_plan = plan
-            .task_plan("code_implementation_v1")
-            .expect("task plan");
-        assert!(!task_plan
-            .tool_budget
-            .permission_budget
-            .contains(&"external_agent_process".to_owned()));
+        let task_plan = plan.task_plan("code_implementation_v1").expect("task plan");
+        assert!(
+            !task_plan
+                .tool_budget
+                .permission_budget
+                .contains(&"external_agent_process".to_owned())
+        );
     }
 
     #[test]

@@ -6,9 +6,8 @@
 
 use crate::acp_agent_runtime::{AcpAgentDescriptor, AcpCapabilities, AcpRuntimeIdentity};
 use crate::external_agent_provider::{
-    ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement,
-    claude_credential_present, command_output_with_environment, placed_launch_command,
-    wsl_environment_forwarding,
+    ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement, claude_credential_present,
+    command_output_with_environment, placed_launch_command, wsl_environment_forwarding,
 };
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -225,10 +224,7 @@ where
                 mcp_http: true,
                 ..AcpCapabilities::default()
             },
-            runtime_identity: AcpRuntimeIdentity::stable(
-                CLAUDE_ACP_PACKAGE,
-                Some(adapter_version),
-            ),
+            runtime_identity: AcpRuntimeIdentity::stable(CLAUDE_ACP_PACKAGE, Some(adapter_version)),
         },
         claude_code_version,
     })
@@ -311,9 +307,7 @@ mod tests {
             [cli, version] if cli == "--cli" && version == "--version" => {
                 Ok((true, "2.1.237 (Claude Code)\n".to_owned()))
             }
-            [cli, auth, status]
-                if cli == "--cli" && auth == "auth" && status == "status" =>
-            {
+            [cli, auth, status] if cli == "--cli" && auth == "auth" && status == "status" => {
                 Ok((true, r#"{"loggedIn":true}"#.to_owned()))
             }
             _ => Err(io::Error::new(
@@ -358,7 +352,12 @@ mod tests {
                 .get(OsStr::new(CLAUDE_CODE_EXECUTABLE_ENV)),
             Some(&OsString::from("/opt/claude/claude"))
         );
-        assert!(registration.descriptor.environment.contains_key(OsStr::new("WSLENV")));
+        assert!(
+            registration
+                .descriptor
+                .environment
+                .contains_key(OsStr::new("WSLENV"))
+        );
     }
 
     #[test]

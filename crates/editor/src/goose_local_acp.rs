@@ -143,13 +143,12 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
         let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)
             .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;
         validate_managed_lease_identity(&lease, &self.config.managed_model)?;
-        let ephemeral = GooseEphemeralConfig::create(&self.config.managed_model, &lease).map_err(
-            |error| {
+        let ephemeral =
+            GooseEphemeralConfig::create(&self.config.managed_model, &lease).map_err(|error| {
                 AcpRuntimeError::Transport(format!(
                     "could not create isolated Goose config: {error}"
                 ))
-            },
-        )?;
+            })?;
 
         let mut descriptor = self.descriptor.clone();
         descriptor.environment = goose_environment(&lease, &ephemeral);
@@ -282,7 +281,10 @@ fn goose_environment(
     ephemeral: &GooseEphemeralConfig,
 ) -> BTreeMap<OsString, OsString> {
     BTreeMap::from([
-        (OsString::from("GOOSE_PROVIDER"), OsString::from(GOOSE_PROVIDER_ID)),
+        (
+            OsString::from("GOOSE_PROVIDER"),
+            OsString::from(GOOSE_PROVIDER_ID),
+        ),
         (
             OsString::from("GOOSE_MODEL"),
             OsString::from(&lease.identity().model_id),
@@ -477,7 +479,9 @@ fn command_output_with_timeout(
 fn command_output_text(output: &Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    format!("{} {}", stdout.trim(), stderr.trim()).trim().to_owned()
+    format!("{} {}", stdout.trim(), stderr.trim())
+        .trim()
+        .to_owned()
 }
 
 fn first_nonempty_output_line(output: &Output) -> Option<String> {
@@ -491,14 +495,16 @@ fn first_nonempty_output_line(output: &Output) -> Option<String> {
 
 fn extract_semver(output: &str) -> Option<String> {
     output
-        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '.' || character == '-'))
+        .split(|character: char| {
+            !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
+        })
         .map(|token| token.trim_start_matches('v'))
         .find(|token| {
             let mut parts = token.split('.');
             let valid = (0..3).all(|_| {
-                parts
-                    .next()
-                    .is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+                parts.next().is_some_and(|part| {
+                    !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())
+                })
             });
             valid && parts.next().is_none()
         })

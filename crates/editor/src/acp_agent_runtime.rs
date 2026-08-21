@@ -290,9 +290,7 @@ impl AcpSessionOpenRequest {
             AcpSessionOpenMode::Load { acp_session_id }
             | AcpSessionOpenMode::Resume { acp_session_id } => Some(acp_session_id),
         };
-        if existing_session_id
-            .is_some_and(|session_id| session_id.trim().is_empty())
-        {
+        if existing_session_id.is_some_and(|session_id| session_id.trim().is_empty()) {
             return Err(AcpRuntimeError::InvalidSessionBinding(
                 "ACP load/resume session ID must not be empty".to_owned(),
             ));
@@ -356,18 +354,31 @@ pub(crate) enum AcpToolCallStatus {
 /// ACP updates normalized before entering the Agent Host timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AcpNormalizedEvent {
-    AgentMessage { text: String },
-    Progress { step: String, detail: String },
-    Plan { entries: Vec<String> },
+    AgentMessage {
+        text: String,
+    },
+    Progress {
+        step: String,
+        detail: String,
+    },
+    Plan {
+        entries: Vec<String>,
+    },
     ToolCall {
         tool_call_id: String,
         title: String,
         status: AcpToolCallStatus,
     },
     PermissionRequest(AcpPermissionRequest),
-    SessionInfo { title: Option<String> },
-    TurnFinished { stop_reason: String },
-    ProtocolDiagnostic { message: String },
+    SessionInfo {
+        title: Option<String>,
+    },
+    TurnFinished {
+        stop_reason: String,
+    },
+    ProtocolDiagnostic {
+        message: String,
+    },
 }
 
 impl AcpNormalizedEvent {
@@ -521,11 +532,15 @@ pub(crate) enum AcpRuntimeError {
 impl fmt::Display for AcpRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidDescriptor(message) => write!(formatter, "invalid ACP descriptor: {message}"),
+            Self::InvalidDescriptor(message) => {
+                write!(formatter, "invalid ACP descriptor: {message}")
+            }
             Self::InvalidSessionBinding(message) => {
                 write!(formatter, "invalid ACP session binding: {message}")
             }
-            Self::DuplicateAgentId(id) => write!(formatter, "ACP agent `{id}` is already registered"),
+            Self::DuplicateAgentId(id) => {
+                write!(formatter, "ACP agent `{id}` is already registered")
+            }
             Self::Unsupported(message) => write!(formatter, "unsupported ACP operation: {message}"),
             Self::Transport(message) => write!(formatter, "ACP transport error: {message}"),
             Self::Protocol(message) => write!(formatter, "ACP protocol error: {message}"),
@@ -608,9 +623,12 @@ mod tests {
 
     #[test]
     fn mcp_debug_redacts_credentials() {
-        let connection =
-            AcpMcpConnection::new("http://127.0.0.1:1/mcp", "secret", AcpMcpAccessLevel::ReadOnly)
-                .expect("MCP connection should be valid");
+        let connection = AcpMcpConnection::new(
+            "http://127.0.0.1:1/mcp",
+            "secret",
+            AcpMcpAccessLevel::ReadOnly,
+        )
+        .expect("MCP connection should be valid");
         let debug = format!("{connection:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("secret"));

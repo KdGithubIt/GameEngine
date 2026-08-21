@@ -357,7 +357,8 @@ impl AiStudioPanel {
                     )
                     .clicked()
                 {
-                    self.benchmark_campaign.set_execution_environment(environment);
+                    self.benchmark_campaign
+                        .set_execution_environment(environment);
                 }
             }
         });
@@ -525,7 +526,10 @@ impl AiStudioPanel {
                 }
             }
             if let Some(reason) = unsupported {
-                ui.small(format!("{} unavailable with Goose ACP: {reason}", task.label));
+                ui.small(format!(
+                    "{} unavailable with Goose ACP: {reason}",
+                    task.label
+                ));
             }
         }
         ui.horizontal_wrapped(|ui| {
@@ -613,8 +617,7 @@ impl AiStudioPanel {
         });
         if let Some(plan) = self.benchmark_campaign.plan.as_ref() {
             let runtime = plan.runtime_identity();
-            let (lane, harness, agent_runtime) =
-                frozen_harness_identity(plan.benchmark_runtime());
+            let (lane, harness, agent_runtime) = frozen_harness_identity(plan.benchmark_runtime());
             let models = plan
                 .candidates
                 .iter()
@@ -865,13 +868,15 @@ impl AiStudioPanel {
                             )
                         })?;
                 }
-                let config = GooseLocalAcpConfig::new(first_config)
-                    .map_err(|error| error.to_string())?;
+                let config =
+                    GooseLocalAcpConfig::new(first_config).map_err(|error| error.to_string())?;
                 let goose = GooseLocalAcpRuntime::discover(config)
                     .map_err(|error| format!("Goose ACP Agent Harness unavailable: {error}"))?;
-                Ok(Some(BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
-                    &goose.runtime_identity().acp,
-                )))
+                Ok(Some(
+                    BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+                        &goose.runtime_identity().acp,
+                    ),
+                ))
             }
         }
     }
@@ -1418,9 +1423,7 @@ fn managed_model_is_campaign_candidate(model: &ManagedModelRegistration) -> bool
     model.has_exact_representation_identity()
 }
 
-fn frozen_harness_identity(
-    runtime: Option<&BenchmarkRuntimeIdentity>,
-) -> (String, String, String) {
+fn frozen_harness_identity(runtime: Option<&BenchmarkRuntimeIdentity>) -> (String, String, String) {
     let Some(runtime) = runtime else {
         return (
             "Legacy Native".to_owned(),

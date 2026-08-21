@@ -14,16 +14,6 @@ mod settings_ui;
 use crate::acp_agent_host_bridge::AcpBridgePoll;
 use crate::acp_agent_runtime::{AcpNormalizedEvent, AcpProcessRuntime};
 use crate::acp_integration::AcpIntegration;
-use crate::claude_acp_adapter::{
-    CLAUDE_ACP_AGENT_ID, ClaudeAcpConfig, discover_claude_acp,
-};
-use crate::codex_acp_adapter::{
-    CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
-};
-use crate::goose_local_acp::{
-    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig,
-    GooseLocalAcpRuntime,
-};
 use crate::agent_benchmark::{
     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
@@ -39,6 +29,10 @@ use crate::agent_host::{
 };
 use crate::ai_studio_theme as theme;
 use crate::benchmark_experiment::BenchmarkRunFailureKind;
+use crate::claude_acp_adapter::{CLAUDE_ACP_AGENT_ID, ClaudeAcpConfig, discover_claude_acp};
+use crate::codex_acp_adapter::{
+    CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
+};
 use crate::external_agent_provider::{
     ExternalAgentDiagnostics, ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement,
     ExternalAgentProbeTask, ExternalAgentProviderKind, ExternalAgentProviderReport,
@@ -47,6 +41,9 @@ use crate::external_agent_provider::{
     ExternalAgentSetupTask, build_launch_plan, build_question_launch_plan, build_question_prompt,
     probe_editor_mcp_endpoint, probe_provider, probe_wsl_loopback_reachability, setup_command_text,
     sign_in_url, translate_provider_line, wsl_environment_forwarding,
+};
+use crate::goose_local_acp::{
+    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,
 };
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
@@ -85,8 +82,8 @@ use crate::runtime_debug::{
 use eframe::egui;
 use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
-use serde::{Deserialize, Serialize};
 use execution_routing::{AiExecutionDriver, AiExecutionRouter};
+use serde::{Deserialize, Serialize};
 use settings_ui::{ProviderReadiness, SettingsSection};
 use std::ffi::OsString;
 use std::fs;
@@ -4716,15 +4713,17 @@ impl AiStudioPanel {
             }
             GOOSE_LOCAL_ACP_DESCRIPTOR_ID => {
                 let managed_model = self.described_managed_model_config()?;
-                let config = GooseLocalAcpConfig::new(managed_model)
-                    .map_err(|error| error.to_string())?;
-                let runtime = GooseLocalAcpRuntime::discover(config)
-                    .map_err(|error| error.to_string())?;
+                let config =
+                    GooseLocalAcpConfig::new(managed_model).map_err(|error| error.to_string())?;
+                let runtime =
+                    GooseLocalAcpRuntime::discover(config).map_err(|error| error.to_string())?;
                 self.acp
                     .replace(Box::new(runtime))
                     .map_err(|error| error.to_string())
             }
-            _ => Err(format!("ACP agent `{agent_id}` is not configured by AI Studio")),
+            _ => Err(format!(
+                "ACP agent `{agent_id}` is not configured by AI Studio"
+            )),
         }
     }
 
@@ -4758,10 +4757,7 @@ impl AiStudioPanel {
             }
         };
         let prompt = build_question_prompt(&turns);
-        let acp_session_id = match self
-            .acp
-            .open_ask_session(&self.host, agent_id, &session_id)
-        {
+        let acp_session_id = match self.acp.open_ask_session(&self.host, agent_id, &session_id) {
             Ok(session_id) => session_id,
             Err(error) => {
                 self.status = Some(format!("Could not open ACP Ask session: {error}"));
@@ -4867,7 +4863,9 @@ impl AiStudioPanel {
                     return;
                 }
                 if let Err(error) = close_result {
-                    self.status = Some(format!("ACP Ask answered but session close failed: {error}"));
+                    self.status = Some(format!(
+                        "ACP Ask answered but session close failed: {error}"
+                    ));
                 } else {
                     self.status = Some(format!(
                         "{} answered read-only through ACP in {elapsed_ms} ms.",
@@ -7154,15 +7152,11 @@ impl AiStudioPanel {
         };
         self.managed_candidate_input_recipe.clear();
         let repair_context = self.host.run(run_id).ok().and_then(|run| {
-            (run.state == AgentRunState::Repairing).then(|| {
-                managed_repair_context(run, self.managed_runtime_observation.as_ref())
-            })
+            (run.state == AgentRunState::Repairing)
+                .then(|| managed_repair_context(run, self.managed_runtime_observation.as_ref()))
         });
-        let prompt = external_agent_provider_prompt(
-            &proposal_json,
-            repair_context.as_deref(),
-            None,
-        );
+        let prompt =
+            external_agent_provider_prompt(&proposal_json, repair_context.as_deref(), None);
         let gameengine_session_id = self.selected_session.clone();
         let acp_session_id = match self.acp.open_run_session(
             &mut self.host,
@@ -7184,10 +7178,7 @@ impl AiStudioPanel {
                 let message = format!("Could not read negotiated ACP runtime identity: {error}");
                 self.fail_run(run_id, message.clone());
                 if self.benchmark_child_active() {
-                    self.write_benchmark_child_failure(
-                        BenchmarkRunFailureKind::Harness,
-                        message,
-                    );
+                    self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, message);
                 }
                 return;
             }
@@ -7612,9 +7603,8 @@ impl AiStudioPanel {
                 self.finish_acp_provider_execution(&run_id, &acp_session_id);
             }
             AcpBridgePoll::AskEvent(_) => {
-                self.status = Some(
-                    "Run-bound ACP session produced an Ask-only bridge result.".to_owned(),
-                );
+                self.status =
+                    Some("Run-bound ACP session produced an Ask-only bridge result.".to_owned());
             }
         }
     }
@@ -7641,11 +7631,10 @@ impl AiStudioPanel {
         self.managed_runtime_plan_completed = false;
         self.managed_runtime_debug_observation = None;
         self.managed_repair_requested = false;
-        match self.acp.begin_managed_validation(
-            &mut self.host,
-            acp_session_id,
-            has_code_changes,
-        ) {
+        match self
+            .acp
+            .begin_managed_validation(&mut self.host, acp_session_id, has_code_changes)
+        {
             Ok(()) => {
                 self.active_acp_run_session = None;
                 self.pending_acp_permission = None;
@@ -9394,9 +9383,9 @@ mod tests {
         assert!(build_executor_requires_external_process(SelectedAi::Model(
             ModelBackendPreference::ManagedLocal
         )));
-        assert!(!build_executor_requires_external_process(SelectedAi::Model(
-            ModelBackendPreference::Local
-        )));
+        assert!(!build_executor_requires_external_process(
+            SelectedAi::Model(ModelBackendPreference::Local)
+        ));
     }
 
     #[test]

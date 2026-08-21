@@ -142,11 +142,8 @@ impl CodexAcpRuntime {
                     .unwrap_or_else(|| "Codex ACP setup is unavailable".to_owned()),
             ));
         }
-        let (executable, arguments) = placed_launch_command(
-            &placement,
-            OsString::from(CODEX_ACP_EXECUTABLE),
-            Vec::new(),
-        );
+        let (executable, arguments) =
+            placed_launch_command(&placement, OsString::from(CODEX_ACP_EXECUTABLE), Vec::new());
         Ok(Self {
             descriptor: AcpAgentDescriptor {
                 id: CODEX_ACP_DESCRIPTOR_ID.to_owned(),
@@ -209,30 +206,27 @@ pub(crate) fn codex_acp_policy(binding: &AcpSessionBinding) -> CodexAcpPolicy {
 }
 
 /// Probes the selected execution environment for the exact pinned adapter.
-pub(crate) fn probe_codex_acp(
-    placement: &ExternalAgentExecutionPlacement,
-) -> CodexAcpProbe {
-    let availability = match command_output(
-        placement,
-        OsStr::new(CODEX_ACP_EXECUTABLE),
-        ["--version"],
-    ) {
-        Ok((true, output)) if output_reports_exact_version(&output) => CodexAcpAvailability::Available,
-        Ok((true, output)) => CodexAcpAvailability::VersionMismatch {
-            expected: CODEX_ACP_PACKAGE_VERSION.to_owned(),
-            observed: extract_version(&output),
-        },
-        Ok((false, output)) => {
-            let detail = output.trim();
-            CodexAcpAvailability::ProbeFailed(if detail.is_empty() {
-                "`codex-acp --version` exited unsuccessfully".to_owned()
-            } else {
-                detail.to_owned()
-            })
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => CodexAcpAvailability::Missing,
-        Err(error) => CodexAcpAvailability::ProbeFailed(error.to_string()),
-    };
+pub(crate) fn probe_codex_acp(placement: &ExternalAgentExecutionPlacement) -> CodexAcpProbe {
+    let availability =
+        match command_output(placement, OsStr::new(CODEX_ACP_EXECUTABLE), ["--version"]) {
+            Ok((true, output)) if output_reports_exact_version(&output) => {
+                CodexAcpAvailability::Available
+            }
+            Ok((true, output)) => CodexAcpAvailability::VersionMismatch {
+                expected: CODEX_ACP_PACKAGE_VERSION.to_owned(),
+                observed: extract_version(&output),
+            },
+            Ok((false, output)) => {
+                let detail = output.trim();
+                CodexAcpAvailability::ProbeFailed(if detail.is_empty() {
+                    "`codex-acp --version` exited unsuccessfully".to_owned()
+                } else {
+                    detail.to_owned()
+                })
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => CodexAcpAvailability::Missing,
+            Err(error) => CodexAcpAvailability::ProbeFailed(error.to_string()),
+        };
     CodexAcpProbe {
         availability,
         installer_available: installer_is_available(placement),
@@ -272,11 +266,8 @@ pub(crate) fn codex_acp_server_command(
     placement: &ExternalAgentExecutionPlacement,
     binding: &AcpSessionBinding,
 ) -> CodexAcpCommand {
-    let (program, arguments) = placed_launch_command(
-        placement,
-        OsString::from(CODEX_ACP_EXECUTABLE),
-        Vec::new(),
-    );
+    let (program, arguments) =
+        placed_launch_command(placement, OsString::from(CODEX_ACP_EXECUTABLE), Vec::new());
     let mut environment = vec![(
         OsString::from(INITIAL_AGENT_MODE_ENV),
         OsString::from(codex_acp_policy(binding).mode_id),
@@ -351,14 +342,16 @@ fn output_reports_exact_version(output: &str) -> bool {
 
 fn extract_version(output: &str) -> Option<String> {
     output
-        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '.' || character == '-'))
+        .split(|character: char| {
+            !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
+        })
         .map(|token| token.trim_start_matches('v'))
         .find(|token| {
             let mut parts = token.split('.');
             let valid = (0..3).all(|_| {
-                parts
-                    .next()
-                    .is_some_and(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+                parts.next().is_some_and(|part| {
+                    !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())
+                })
             });
             valid && parts.next().is_none()
         })
@@ -370,22 +363,13 @@ mod tests {
     use super::*;
 
     fn read_only_binding() -> AcpSessionBinding {
-        AcpSessionBinding::read_only(
-            "session-1",
-            "http://127.0.0.1:4000/mcp",
-            "secret",
-        )
-        .expect("read-only binding")
+        AcpSessionBinding::read_only("session-1", "http://127.0.0.1:4000/mcp", "secret")
+            .expect("read-only binding")
     }
 
     fn run_bound_binding() -> AcpSessionBinding {
-        AcpSessionBinding::run_bound(
-            "session-1",
-            "run-1",
-            "http://127.0.0.1:4000/mcp",
-            "secret",
-        )
-        .expect("run-bound binding")
+        AcpSessionBinding::run_bound("session-1", "run-1", "http://127.0.0.1:4000/mcp", "secret")
+            .expect("run-bound binding")
     }
 
     #[test]
@@ -400,8 +384,14 @@ mod tests {
 
     #[test]
     fn gameengine_access_never_maps_to_full_access() {
-        assert_eq!(codex_acp_policy(&read_only_binding()).mode_id, READ_ONLY_MODE_ID);
-        assert_eq!(codex_acp_policy(&run_bound_binding()).mode_id, AGENT_MODE_ID);
+        assert_eq!(
+            codex_acp_policy(&read_only_binding()).mode_id,
+            READ_ONLY_MODE_ID
+        );
+        assert_eq!(
+            codex_acp_policy(&run_bound_binding()).mode_id,
+            AGENT_MODE_ID
+        );
     }
 
     #[test]
@@ -429,11 +419,16 @@ mod tests {
     #[test]
     fn install_command_pins_only_the_codex_acp_package() {
         let plan = codex_acp_install_command(&ExternalAgentExecutionPlacement::windows_native());
-        assert!(plan.arguments.iter().any(|argument| {
-            argument.to_string_lossy() == CODEX_ACP_INSTALL_PACKAGE
-        }));
-        assert!(!plan.arguments.iter().any(|argument| {
-            argument.to_string_lossy() == "@openai/codex@0.148.0"
-        }));
+        assert!(
+            plan.arguments
+                .iter()
+                .any(|argument| { argument.to_string_lossy() == CODEX_ACP_INSTALL_PACKAGE })
+        );
+        assert!(
+            !plan
+                .arguments
+                .iter()
+                .any(|argument| { argument.to_string_lossy() == "@openai/codex@0.148.0" })
+        );
     }
 }

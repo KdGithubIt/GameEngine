@@ -670,12 +670,13 @@ mod tests {
     #[test]
     fn child_spec_preserves_the_frozen_acp_runtime_identity() {
         let root = tempfile::tempdir().expect("root");
-        let runtime = crate::agent_benchmark::BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
-            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
-                "goose",
-                Some("1.2.3".to_owned()),
-            ),
-        );
+        let runtime =
+            crate::agent_benchmark::BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+                &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                    "goose",
+                    Some("1.2.3".to_owned()),
+                ),
+            );
         let spec = BenchmarkChildRunSpec {
             schema_version: BENCHMARK_CHILD_SCHEMA_VERSION,
             experiment_id: "experiment".to_owned(),

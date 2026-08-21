@@ -100,9 +100,14 @@ impl fmt::Display for AiExecutionRoutingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidLogicalAiId(id) => write!(formatter, "invalid logical AI identity `{id}`"),
-            Self::InvalidRouteKey(key) => write!(formatter, "invalid AI execution route key `{key}`"),
+            Self::InvalidRouteKey(key) => {
+                write!(formatter, "invalid AI execution route key `{key}`")
+            }
             Self::InvalidAcpAgentId(id) => write!(formatter, "invalid ACP agent ID `{id}`"),
-            Self::AcpAgentUnavailable { logical_ai_id, agent_id } => write!(
+            Self::AcpAgentUnavailable {
+                logical_ai_id,
+                agent_id,
+            } => write!(
                 formatter,
                 "ACP execution for `{logical_ai_id}` requires registered agent `{agent_id}`, but that ACP adapter is unavailable. Register it or explicitly select the Legacy route; GameEngine will not silently fall back."
             ),
@@ -180,7 +185,10 @@ mod tests {
         let error = router
             .resolve("agent:codex", "agent:codex")
             .expect_err("missing descriptor");
-        assert!(matches!(error, AiExecutionRoutingError::AcpAgentUnavailable { .. }));
+        assert!(matches!(
+            error,
+            AiExecutionRoutingError::AcpAgentUnavailable { .. }
+        ));
     }
 
     #[test]
@@ -189,14 +197,16 @@ mod tests {
         router
             .set_acp_route("model:managed_local", "goose.managed-local")
             .expect("route");
-        router.sync_registry(&DescriptorRegistry { descriptors: Vec::new() });
+        router.sync_registry(&DescriptorRegistry {
+            descriptors: Vec::new(),
+        });
         let error = router
-            .resolve(
-                "model:managed_local:model-a",
-                "model:managed_local",
-            )
+            .resolve("model:managed_local:model-a", "model:managed_local")
             .expect_err("missing Goose must fail closed");
-        assert!(matches!(error, AiExecutionRoutingError::AcpAgentUnavailable { .. }));
+        assert!(matches!(
+            error,
+            AiExecutionRoutingError::AcpAgentUnavailable { .. }
+        ));
     }
 
     #[test]
@@ -210,10 +220,7 @@ mod tests {
         };
         router.sync_registry(&registry);
         let resolution = router
-            .resolve(
-                "model:managed_local:model-a",
-                "model:managed_local",
-            )
+            .resolve("model:managed_local:model-a", "model:managed_local")
             .expect("registered route");
         assert_eq!(
             resolution.driver,

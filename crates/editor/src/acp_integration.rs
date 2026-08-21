@@ -25,8 +25,7 @@ impl AcpIntegration {
         run_bound_token: impl Into<String>,
         read_only_token: impl Into<String>,
     ) -> Result<Self, AcpBridgeError> {
-        let credentials =
-            AcpEditorMcpCredentials::new(endpoint, run_bound_token, read_only_token)?;
+        let credentials = AcpEditorMcpCredentials::new(endpoint, run_bound_token, read_only_token)?;
         Ok(Self {
             registry: AcpRuntimeRegistry::default(),
             bridge: AcpAgentHostBridge::new(credentials, working_directory)?,
@@ -108,13 +107,8 @@ impl AcpIntegration {
         status: CompletionStatus,
         message: impl Into<String>,
     ) -> Result<bool, AcpBridgeError> {
-        self.bridge.record_provider_completion_gate(
-            host,
-            acp_session_id,
-            gate,
-            status,
-            message,
-        )
+        self.bridge
+            .record_provider_completion_gate(host, acp_session_id, gate, status, message)
     }
 
     pub(crate) fn begin_managed_validation(

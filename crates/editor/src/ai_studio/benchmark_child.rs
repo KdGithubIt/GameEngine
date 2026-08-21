@@ -565,9 +565,7 @@ impl AiStudioPanel {
     }
 }
 
-fn benchmark_runtime_from_spec(
-    spec: &BenchmarkChildRunSpec,
-) -> Option<&BenchmarkRuntimeIdentity> {
+fn benchmark_runtime_from_spec(spec: &BenchmarkChildRunSpec) -> Option<&BenchmarkRuntimeIdentity> {
     spec.benchmark_runtime()
 }
 
@@ -588,8 +586,7 @@ fn validate_benchmark_runtime_spec(spec: &BenchmarkChildRunSpec) -> Result<(), S
     }
     if spec.backend_id != MANAGED_BACKEND_ID {
         return Err(
-            "first-release ACP agent_harness campaigns require GameEngine Managed Local"
-                .to_owned(),
+            "first-release ACP agent_harness campaigns require GameEngine Managed Local".to_owned(),
         );
     }
     if spec.task_id == "read_question_v1" {
@@ -703,7 +700,8 @@ mod tests {
             BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
         );
 
-        let inspection = benchmark_proposal("project_inspection_v1", None).expect("inspection proposal");
+        let inspection =
+            benchmark_proposal("project_inspection_v1", None).expect("inspection proposal");
         assert!(inspection.requested_capabilities.is_empty());
         assert!(inspection.work_claims.is_empty());
         assert_eq!(
@@ -726,8 +724,8 @@ mod tests {
             "runtime_interaction_v1",
             "visual_evaluation_v1",
         ] {
-            let policy = campaign_task_agent_policy_for_runtime(task_id, None)
-                .expect("task agent policy");
+            let policy =
+                campaign_task_agent_policy_for_runtime(task_id, None).expect("task agent policy");
             assert!(
                 !policy
                     .requested_capabilities
@@ -764,7 +762,8 @@ mod tests {
                     execution_profile: "warm".to_owned(),
                     execution_environment: "windows_native".to_owned(),
                     fixture_id: "fixture".to_owned(),
-                    fixture_version: crate::benchmark_experiment::BENCHMARK_FIXTURE_VERSION.to_owned(),
+                    fixture_version: crate::benchmark_experiment::BENCHMARK_FIXTURE_VERSION
+                        .to_owned(),
                     fixture_instance_id: "fixture-instance".to_owned(),
                     sampling_profile: "sampling".to_owned(),
                     seed_policy: "seed".to_owned(),
@@ -783,27 +782,30 @@ mod tests {
                 Some("1.0.0".to_owned()),
             ),
         );
-        assert!(validate_benchmark_runtime_spec(&runtime_validation_spec(
-            "validation_repair_v1",
-            Some(runtime.clone()),
-        ))
-        .is_ok());
-        for task_id in ["read_question_v1", "visual_evaluation_v1"] {
-            assert!(validate_benchmark_runtime_spec(&runtime_validation_spec(
-                task_id,
+        assert!(
+            validate_benchmark_runtime_spec(&runtime_validation_spec(
+                "validation_repair_v1",
                 Some(runtime.clone()),
             ))
-            .is_err());
+            .is_ok()
+        );
+        for task_id in ["read_question_v1", "visual_evaluation_v1"] {
+            assert!(
+                validate_benchmark_runtime_spec(&runtime_validation_spec(
+                    task_id,
+                    Some(runtime.clone()),
+                ))
+                .is_err()
+            );
         }
     }
 
     #[test]
     fn explicit_legacy_managed_child_remains_valid_without_acp_identity() {
-        assert!(validate_benchmark_runtime_spec(&runtime_validation_spec(
-            "read_question_v1",
-            None,
-        ))
-        .is_ok());
+        assert!(
+            validate_benchmark_runtime_spec(&runtime_validation_spec("read_question_v1", None,))
+                .is_ok()
+        );
     }
 
     #[test]

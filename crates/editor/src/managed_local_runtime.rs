@@ -448,13 +448,12 @@ fn managed_endpoint_lease_key(config: &ManagedLocalModelConfig) -> String {
     )
 }
 
-fn managed_endpoint_lease_registry(
-) -> &'static Mutex<BTreeMap<String, ManagedEndpointLeaseState>> {
+fn managed_endpoint_lease_registry() -> &'static Mutex<BTreeMap<String, ManagedEndpointLeaseState>>
+{
     MANAGED_ENDPOINT_LEASES.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn lock_managed_endpoint_leases(
-) -> Result<
+fn lock_managed_endpoint_leases() -> Result<
     std::sync::MutexGuard<'static, BTreeMap<String, ManagedEndpointLeaseState>>,
     ManagedLocalRuntimeError,
 > {
@@ -492,9 +491,9 @@ fn managed_endpoint_has_active_lease(
     config: &ManagedLocalModelConfig,
 ) -> Result<bool, ManagedLocalRuntimeError> {
     let leases = lock_managed_endpoint_leases()?;
-    Ok(leases.values().any(|state| {
-        state.holders > 0 && state.state_root == config.state_root
-    }))
+    Ok(leases
+        .values()
+        .any(|state| state.holders > 0 && state.state_root == config.state_root))
 }
 
 fn managed_environment_has_active_lease(
@@ -503,9 +502,7 @@ fn managed_environment_has_active_lease(
 ) -> Result<bool, ManagedLocalRuntimeError> {
     let leases = lock_managed_endpoint_leases()?;
     Ok(leases.values().any(|state| {
-        state.holders > 0
-            && state.state_root == state_root
-            && state.environment == environment
+        state.holders > 0 && state.state_root == state_root && state.environment == environment
     }))
 }
 
@@ -1529,20 +1526,20 @@ impl ManagedLocalRuntime {
         {
             let mut leases = lock_managed_endpoint_leases()?;
             if leases.iter().any(|(existing_key, state)| {
-                existing_key != &key
-                    && state.holders > 0
-                    && state.state_root == config.state_root
+                existing_key != &key && state.holders > 0 && state.state_root == config.state_root
             }) {
                 return Err(ManagedLocalRuntimeError::new(
                     ManagedDiagnosticLayer::ManagedProcessStartup,
                     "managed llama.cpp is leased by another model/runtime identity",
                 ));
             }
-            let state = leases.entry(key.clone()).or_insert_with(|| ManagedEndpointLeaseState {
-                holders: 0,
-                state_root: config.state_root.clone(),
-                environment: config.environment,
-            });
+            let state = leases
+                .entry(key.clone())
+                .or_insert_with(|| ManagedEndpointLeaseState {
+                    holders: 0,
+                    state_root: config.state_root.clone(),
+                    environment: config.environment,
+                });
             state.holders = state.holders.saturating_add(1);
         }
 

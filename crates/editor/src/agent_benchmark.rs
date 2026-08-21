@@ -177,10 +177,8 @@ impl BenchmarkRuntimeIdentity {
     pub(crate) fn gameengine_acp_agent_harness(
         identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
     ) -> Self {
-        let mut harness = BenchmarkHarnessIdentity::new(
-            ACP_AGENT_HARNESS_ID,
-            ACP_AGENT_HARNESS_VERSION,
-        );
+        let mut harness =
+            BenchmarkHarnessIdentity::new(ACP_AGENT_HARNESS_ID, ACP_AGENT_HARNESS_VERSION);
         harness.mcp_tool_contract = TelemetryValue::Measured(
             crate::acp_agent_runtime::ACP_GAMEENGINE_MCP_TOOL_CONTRACT.to_owned(),
         );
@@ -252,7 +250,10 @@ impl BenchmarkRuntimeIdentity {
         if agent_runtime.runtime_id != identity.agent_name {
             return false;
         }
-        match (&agent_runtime.runtime_version, identity.agent_version.as_deref()) {
+        match (
+            &agent_runtime.runtime_version,
+            identity.agent_version.as_deref(),
+        ) {
             (TelemetryValue::Measured(expected), Some(actual)) => expected == actual,
             (TelemetryValue::Unavailable, None) => true,
             _ => false,
@@ -805,7 +806,10 @@ pub(crate) fn comparison_equivalence(
     if left.identity.quality != right.identity.quality
         || left.identity.workload_policy_version != right.identity.workload_policy_version
         || !matches!(left.identity.observed_workload, TelemetryValue::Measured(_))
-        || !matches!(right.identity.observed_workload, TelemetryValue::Measured(_))
+        || !matches!(
+            right.identity.observed_workload,
+            TelemetryValue::Measured(_)
+        )
         || left.identity.observed_workload != right.identity.observed_workload
     {
         differences.push("quality_or_workload");
@@ -838,12 +842,11 @@ pub(crate) fn comparison_equivalence(
             }
             ComparisonEquivalence::EquivalentModelComparison
         }
-        (Some(left_runtime), Some(right_runtime))
-            if left_runtime.lane == right_runtime.lane =>
-        {
+        (Some(left_runtime), Some(right_runtime)) if left_runtime.lane == right_runtime.lane => {
             match left_runtime.lane {
                 BenchmarkLane::RawModel => {
-                    if left.identity.runtime_harness_version != right.identity.runtime_harness_version
+                    if left.identity.runtime_harness_version
+                        != right.identity.runtime_harness_version
                         || left_runtime != right_runtime
                     {
                         differences.push("harness_version");
@@ -2077,8 +2080,7 @@ mod tests {
     fn agent_harness_identity(agent_name: &str) -> BenchmarkRuntimeIdentity {
         let mut harness = BenchmarkHarnessIdentity::new("acp-agent-harness", "harness-v1");
         harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
-        harness.mcp_tool_contract =
-            TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
+        harness.mcp_tool_contract = TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
         harness.permission_profile =
             TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
         let acp = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
@@ -2091,8 +2093,7 @@ mod tests {
     fn coding_agent_identity(agent_name: &str) -> BenchmarkRuntimeIdentity {
         let mut harness = BenchmarkHarnessIdentity::new("coding-agent-adapter", "harness-v1");
         harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
-        harness.mcp_tool_contract =
-            TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
+        harness.mcp_tool_contract = TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
         harness.permission_profile =
             TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
         BenchmarkRuntimeIdentity::coding_agent(
@@ -2219,10 +2220,8 @@ mod tests {
 
     #[test]
     fn acp_runtime_identity_match_is_exact_and_fail_closed() {
-        let expected_identity = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
-            "goose",
-            Some("1.2.3".to_owned()),
-        );
+        let expected_identity =
+            crate::acp_agent_runtime::AcpRuntimeIdentity::stable("goose", Some("1.2.3".to_owned()));
         let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(&expected_identity);
         assert!(runtime.matches_acp_runtime(&expected_identity));
         assert!(!runtime.matches_acp_runtime(
