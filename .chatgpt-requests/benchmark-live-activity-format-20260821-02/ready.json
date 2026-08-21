@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "benchmark-live-activity-format-20260821-02",
+  "target_branch": "chatgpt/gameengine-benchmark-live-activity-20260821",
+  "expected_head_sha": "6d05872fa5bf81fdb975abb58754554e2da0b0e1",
+  "baseline_main_sha": "579e136ad0e45ae65e2a8aeac17419ecac018b3e",
+  "patch_sha256": "cdb902d2f27cb18a061c415497ac7b51841dcb43e53cd205e7aa362a2d94b2cc",
+  "patch_bytes": 5756,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Format benchmark live activity",
+  "pr_title": "GameEngine: show live benchmark campaign activity",
+  "pr_body": "## Summary\n\n- add a bounded Live activity viewer beneath the existing campaign Progress matrix\n- surface credential-safe Goose ACP activity from the active benchmark child plus managed llama-server tail output\n- resolve Windows/WSL managed backend diagnostics inside ManagedLocalRuntime and keep WSL reads off the UI thread\n- keep live diagnostics ephemeral so BenchmarkRecord, campaign checkpoint, Progress, and Report semantics stay unchanged\n\n## Validation\n\nWindows affected validation and an explicit running-campaign Editor visual capture are required.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR 0156 Benchmark Running -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
