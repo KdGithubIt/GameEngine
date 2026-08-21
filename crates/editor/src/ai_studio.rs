@@ -4,6 +4,7 @@
 //! lifecycle, permissions, persistence, provider process management, and code
 //! workspace rules live in the GUI-free `agent_host` module.
 
+mod acp_startup;
 mod benchmark_campaign_ui;
 mod benchmark_child;
 mod benchmark_experiment_ui;
@@ -12,7 +13,7 @@ mod execution_routing;
 mod settings_ui;
 
 use crate::acp_agent_host_bridge::AcpBridgePoll;
-use crate::acp_agent_runtime::{AcpNormalizedEvent, AcpProcessRuntime};
+use crate::acp_agent_runtime::AcpNormalizedEvent;
 use crate::acp_integration::AcpIntegration;
 use crate::agent_benchmark::{
     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
@@ -29,10 +30,8 @@ use crate::agent_host::{
 };
 use crate::ai_studio_theme as theme;
 use crate::benchmark_experiment::BenchmarkRunFailureKind;
-use crate::claude_acp_adapter::{CLAUDE_ACP_AGENT_ID, ClaudeAcpConfig, discover_claude_acp};
-use crate::codex_acp_adapter::{
-    CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
-};
+use crate::claude_acp_adapter::{CLAUDE_ACP_AGENT_ID, ClaudeAcpConfig};
+use crate::codex_acp_adapter::{CODEX_ACP_DESCRIPTOR_ID, CodexAcpSessionPreferences};
 use crate::external_agent_provider::{
     ExternalAgentDiagnostics, ExternalAgentExecutionEnvironment, ExternalAgentExecutionPlacement,
     ExternalAgentProbeTask, ExternalAgentProviderKind, ExternalAgentProviderReport,
@@ -79,6 +78,7 @@ use crate::runtime_debug::{
     RuntimeDebugExecutionReport, RuntimeDebugObservation, RuntimeDebugPlan, RuntimeDebugPredicate,
     RuntimeDebugScheduledInput, RuntimeDebugWaitResult,
 };
+use acp_startup::{AcpRuntimeStartupConfig, AcpSessionStartupTask};
 use eframe::egui;
 use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
@@ -974,6 +974,38 @@ struct AcpQuestionState {
     started_at: std::time::Instant,
 }
 
+enum AcpStartupContinuation {
+    Ask {
+        agent_id: String,
+        gameengine_session_id: String,
+        prompt: String,
+    },
+    Build {
+        agent_id: String,
+        gameengine_session_id: String,
+        run_id: String,
+        prompt: String,
+        workspace: CodeWorkspace,
+    },
+}
+
+impl AcpStartupContinuation {
+    fn ask_session_id(&self) -> Option<&str> {
+        match self {
+            Self::Ask {
+                gameengine_session_id,
+                ..
+            } => Some(gameengine_session_id),
+            Self::Build { .. } => None,
+        }
+    }
+}
+
+struct PendingAcpStartup {
+    task: AcpSessionStartupTask,
+    continuation: AcpStartupContinuation,
+}
+
 struct AcpPendingPermission {
     acp_session_id: String,
     request_id: String,
@@ -1090,6 +1122,7 @@ pub struct AiStudioPanel {
     selected_ai_family: SelectedAiFamily,
     execution_router: AiExecutionRouter,
     acp: AcpIntegration,
+    acp_startup: Option<PendingAcpStartup>,
     acp_question: Option<AcpQuestionState>,
     active_acp_agent_id: Option<String>,
     active_acp_run_session: Option<String>,
@@ -1333,6 +1366,7 @@ impl AiStudioPanel {
             selected_ai_family,
             execution_router,
             acp,
+            acp_startup: None,
             acp_question: None,
             active_acp_agent_id: None,
             active_acp_run_session: None,
@@ -1548,6 +1582,35 @@ impl AiStudioPanel {
             adapter.device,
         );
         self.benchmark_hardware_probe_attempted = true;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Seeds a compact pending Managed Local ACP Ask for screenshot validation.
+    pub fn prepare_acp_startup_visual_validation(&mut self) {
+        self.conversation_mode = ConversationMode::Ask;
+        self.selected_ai_family = SelectedAiFamily::Model;
+        self.model_backend = ModelBackendPreference::ManagedLocal;
+        self.managed_model_id = "visual-managed-local".to_owned();
+        self.settings_open = false;
+        self.proposal_open = false;
+        self.message_draft.clear();
+        let session_id = self.selected_session.clone();
+        let _ = self.host.append_message(
+            &session_id,
+            ConversationRole::User,
+            "Inspect the current project state and summarize what you find.",
+        );
+        self.acp_startup = Some(PendingAcpStartup {
+            task: AcpSessionStartupTask::visual_pending(
+                "Starting Managed Local and connecting ACP…",
+            ),
+            continuation: AcpStartupContinuation::Ask {
+                agent_id: GOOSE_LOCAL_ACP_DESCRIPTOR_ID.to_owned(),
+                gameengine_session_id: session_id,
+                prompt: "visual validation pending ACP Ask".to_owned(),
+            },
+        });
+        self.status = Some("Starting Managed Local and connecting ACP…".to_owned());
     }
 
     #[cfg(feature = "visual-validation")]
@@ -2352,6 +2415,7 @@ impl AiStudioPanel {
         self.poll_native_question(context);
         self.request_external_provider_probe_once();
         self.poll_external_provider_probe(context);
+        self.poll_acp_startup(context);
         self.poll_acp_question(context);
         self.poll_external_question(context);
         self.poll_external_setup(context);
@@ -3796,7 +3860,15 @@ impl AiStudioPanel {
                     || self
                         .pending_question_permission
                         .as_ref()
-                        .is_some_and(|pending| pending.session_id == self.selected_session);
+                        .is_some_and(|pending| pending.session_id == self.selected_session)
+                    || self.acp_question.as_ref().is_some_and(|question| {
+                        question.gameengine_session_id == self.selected_session
+                    })
+                    || self
+                        .acp_startup
+                        .as_ref()
+                        .and_then(|pending| pending.continuation.ask_session_id())
+                        .is_some_and(|session_id| session_id == self.selected_session);
                 let delete_block_reason = if has_active_run {
                     Some("Stop the session's active run before deleting it.")
                 } else if question_busy {
@@ -3936,8 +4008,25 @@ impl AiStudioPanel {
         let can_send = !self.message_draft.trim().is_empty()
             && self.native_question.is_none()
             && self.external_question.is_none()
+            && self.acp_startup.is_none()
+            && self.acp_question.is_none()
             && self.pending_question_permission.is_none()
             && commit_blocked.is_none();
+        let acp_startup_ask = self
+            .acp_startup
+            .as_ref()
+            .and_then(|pending| pending.continuation.ask_session_id())
+            .is_some();
+        let acp_startup_status = self.acp_startup.as_ref().map(|_| {
+            self.status
+                .clone()
+                .unwrap_or_else(|| "Starting agent…".to_owned())
+        });
+        let acp_question_status = self.acp_question.as_ref().map(|_| {
+            self.status
+                .clone()
+                .unwrap_or_else(|| "Waiting for agent…".to_owned())
+        });
         let mut stop_answer_requested = false;
         ui.horizontal(|ui| {
             if ui
@@ -3945,6 +4034,22 @@ impl AiStudioPanel {
                 .clicked()
             {
                 self.submit_message();
+            }
+            if let Some(status) = acp_startup_status.as_deref() {
+                ui.spinner();
+                ui.small(status);
+                if acp_startup_ask && ui.button("Stop answering").clicked() {
+                    stop_answer_requested = true;
+                }
+                return;
+            }
+            if let Some(status) = acp_question_status.as_deref() {
+                ui.spinner();
+                ui.small(status);
+                if ui.button("Stop answering").clicked() {
+                    stop_answer_requested = true;
+                }
+                return;
             }
             if self.native_question.is_some() {
                 ui.spinner();
@@ -3991,9 +4096,41 @@ impl AiStudioPanel {
                 }
             }
         });
-        if stop_answer_requested {
+        if stop_answer_requested && !self.cancel_acp_answer() {
             self.cancel_external_question();
         }
+    }
+
+    /// Stops an ACP Ask during background startup or after session attachment.
+    ///
+    /// A worker that finishes after pending startup is cancelled owns cleanup
+    /// of the late session, so cancelling never attaches authority after the
+    /// user has stopped the answer.
+    fn cancel_acp_answer(&mut self) -> bool {
+        if self
+            .acp_startup
+            .as_ref()
+            .and_then(|pending| pending.continuation.ask_session_id())
+            .is_some()
+        {
+            if let Some(pending) = self.acp_startup.take() {
+                pending.task.cancel();
+            }
+            self.status = Some("Stopped the ACP answer startup.".to_owned());
+            return true;
+        }
+        let Some(question) = self.acp_question.take() else {
+            return false;
+        };
+        match self.acp.cancel_session(&question.acp_session_id) {
+            Ok(()) => {
+                self.status = Some("Stopped the ACP answer.".to_owned());
+            }
+            Err(error) => {
+                self.status = Some(format!("Could not stop ACP answer: {error}"));
+            }
+        }
+        true
     }
 
     /// Stops a provider-served answer without recording a transcript entry.
@@ -4054,6 +4191,12 @@ impl AiStudioPanel {
     /// refuses. The same predicate guards submission itself, so no other path
     /// can answer a turn on an AI the composer is not displaying.
     fn send_blocked(&mut self) -> Option<String> {
+        if self.acp_startup.is_some() {
+            return Some("Agent startup is already in progress.".to_owned());
+        }
+        if self.acp_question.is_some() {
+            return Some("The selected agent is already answering a question.".to_owned());
+        }
         if self.native_run_awaits_user() {
             return None;
         }
@@ -4685,70 +4828,38 @@ impl AiStudioPanel {
             }
             _ => logical_ai_id.clone(),
         };
-        let configured_agent = match selection {
-            SelectedAi::Agent(ExternalAgentProviderKind::Codex) => Some(CODEX_ACP_DESCRIPTOR_ID),
-            SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode) => Some(CLAUDE_ACP_AGENT_ID),
-            SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
-                Some(GOOSE_LOCAL_ACP_DESCRIPTOR_ID)
-            }
-            _ => None,
-        };
-        if let Some(agent_id) = configured_agent {
-            self.ensure_acp_runtime(agent_id)?;
-        }
-        self.execution_router.sync_registry(self.acp.registry());
         self.execution_router
-            .resolve(logical_ai_id, route_key)
+            .resolve_configured(logical_ai_id, route_key)
             .map(|resolution| resolution.driver)
             .map_err(|error| error.to_string())
     }
 
-    fn ensure_acp_runtime(&mut self, agent_id: &str) -> Result<(), String> {
+    fn acp_runtime_startup_config(
+        &mut self,
+        agent_id: &str,
+    ) -> Result<AcpRuntimeStartupConfig, String> {
         let placement = self.external_agent_placement();
         match agent_id {
-            CODEX_ACP_DESCRIPTOR_ID => {
-                let runtime = CodexAcpRuntime::discover(
-                    placement,
-                    CodexAcpSessionPreferences {
-                        model: None,
-                        reasoning_effort: Self::codex_reasoning_effort(self.quality_preference)
-                            .map(str::to_owned),
-                        fast_mode: None,
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-                self.acp
-                    .replace(Box::new(runtime))
-                    .map_err(|error| error.to_string())
-            }
-            CLAUDE_ACP_AGENT_ID => {
-                let registration = discover_claude_acp(&ClaudeAcpConfig::default(), &placement)
-                    .map_err(|error| error.to_string())?;
-                let runtime = AcpProcessRuntime::new(registration.descriptor)
-                    .map_err(|error| error.to_string())?;
-                self.acp
-                    .replace(Box::new(runtime))
-                    .map_err(|error| error.to_string())
-            }
+            CODEX_ACP_DESCRIPTOR_ID => Ok(AcpRuntimeStartupConfig::Codex {
+                placement,
+                preferences: CodexAcpSessionPreferences {
+                    model: None,
+                    reasoning_effort: Self::codex_reasoning_effort(self.quality_preference)
+                        .map(str::to_owned),
+                    fast_mode: None,
+                },
+            }),
+            CLAUDE_ACP_AGENT_ID => Ok(AcpRuntimeStartupConfig::Claude {
+                placement,
+                config: ClaudeAcpConfig::default(),
+            }),
             GOOSE_LOCAL_ACP_DESCRIPTOR_ID => {
                 let managed_model = self.described_managed_model_config()?;
                 let config =
                     GooseLocalAcpConfig::new(managed_model).map_err(|error| error.to_string())?;
-                let runtime = match GooseLocalAcpRuntime::discover(config) {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        self.settings_open = true;
-                        self.settings_section = SettingsSection::Models;
-                        let message = format!(
-                            "Managed Local ACP cannot start until Goose is ready. Use Install Goose in Settings > Models > Managed Local AI, then retry. {error}"
-                        );
-                        self.status = Some(message.clone());
-                        return Err(message);
-                    }
-                };
-                self.acp
-                    .replace(Box::new(runtime))
-                    .map_err(|error| error.to_string())
+                Ok(AcpRuntimeStartupConfig::Goose {
+                    config: Box::new(config),
+                })
             }
             _ => Err(format!(
                 "ACP agent `{agent_id}` is not configured by AI Studio"
@@ -4786,31 +4897,261 @@ impl AiStudioPanel {
             }
         };
         let prompt = build_question_prompt(&turns);
-        let acp_session_id = match self.acp.open_ask_session(&self.host, agent_id, &session_id) {
-            Ok(session_id) => session_id,
+        let config = match self.acp_runtime_startup_config(agent_id) {
+            Ok(config) => config,
             Err(error) => {
-                self.status = Some(format!("Could not open ACP Ask session: {error}"));
+                self.status = Some(error);
                 return;
             }
         };
-        if let Err(error) = self
-            .acp
-            .send_prompt(&mut self.host, &acp_session_id, &prompt)
-        {
-            let _ = self.acp.close_session(&acp_session_id);
-            self.status = Some(format!("Could not send ACP Ask prompt: {error}"));
+        let request = match self.acp.prepare_ask_session(&self.host, &session_id) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = Some(format!("Could not prepare ACP Ask session: {error}"));
+                return;
+            }
+        };
+        let status = config.starting_status().to_owned();
+        match AcpSessionStartupTask::spawn(config, request) {
+            Ok(task) => {
+                self.acp_startup = Some(PendingAcpStartup {
+                    task,
+                    continuation: AcpStartupContinuation::Ask {
+                        agent_id: agent_id.to_owned(),
+                        gameengine_session_id: session_id,
+                        prompt,
+                    },
+                });
+                self.status = Some(status);
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    fn poll_acp_startup(&mut self, context: &egui::Context) {
+        let Some(pending) = self.acp_startup.as_ref() else {
+            return;
+        };
+        if let Some(progress) = pending.task.latest_progress() {
+            self.status = Some(progress);
+        }
+        let Some(result) = pending.task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(50));
+            return;
+        };
+        let pending = self
+            .acp_startup
+            .take()
+            .expect("polled ACP startup must still exist");
+        let continuation = pending.continuation;
+        let mut started = match result {
+            Ok(started) => started,
+            Err(error) => {
+                match &continuation {
+                    AcpStartupContinuation::Ask {
+                        agent_id,
+                        gameengine_session_id,
+                        ..
+                    } => {
+                        if agent_id == GOOSE_LOCAL_ACP_DESCRIPTOR_ID {
+                            self.settings_open = true;
+                            self.settings_section = SettingsSection::Models;
+                        }
+                        let diagnostic = format!("ACP Ask startup failed: {error}");
+                        self.status = Some(diagnostic.clone());
+                        let _ = self.host.append_message(
+                            gameengine_session_id,
+                            ConversationRole::System,
+                            diagnostic,
+                        );
+                    }
+                    AcpStartupContinuation::Build {
+                        agent_id, run_id, ..
+                    } => {
+                        if agent_id == GOOSE_LOCAL_ACP_DESCRIPTOR_ID {
+                            self.settings_open = true;
+                            self.settings_section = SettingsSection::Models;
+                        }
+                        if self
+                            .host
+                            .run(run_id)
+                            .is_ok_and(|run| !run.state.is_terminal())
+                        {
+                            self.fail_run(run_id, format!("ACP Build startup failed: {error}"));
+                        }
+                    }
+                }
+                return;
+            }
+        };
+        let expected_agent_id = match &continuation {
+            AcpStartupContinuation::Ask { agent_id, .. }
+            | AcpStartupContinuation::Build { agent_id, .. } => agent_id,
+        };
+        let descriptor_id = started.runtime.descriptor().id.clone();
+        if &descriptor_id != expected_agent_id {
+            let _ = started.session.cancel();
+            let _ = started.session.close();
+            let diagnostic = format!(
+                "ACP startup returned `{descriptor_id}` while `{expected_agent_id}` was requested."
+            );
+            match &continuation {
+                AcpStartupContinuation::Ask {
+                    gameengine_session_id,
+                    ..
+                } => {
+                    let _ = self.host.append_message(
+                        gameengine_session_id,
+                        ConversationRole::System,
+                        diagnostic.clone(),
+                    );
+                    self.status = Some(diagnostic);
+                }
+                AcpStartupContinuation::Build { run_id, .. } => {
+                    self.fail_run(run_id, diagnostic);
+                }
+            }
             return;
         }
-        self.acp_question = Some(AcpQuestionState {
-            acp_session_id,
-            gameengine_session_id: session_id,
-            answer: String::new(),
-            started_at: std::time::Instant::now(),
-        });
-        self.status = Some(format!(
-            "{} is answering through the common ACP runtime with read-only Editor MCP authority.",
-            self.external_provider_kind.label()
-        ));
+        if let Err(error) = self.acp.replace(started.runtime) {
+            let _ = started.session.cancel();
+            let _ = started.session.close();
+            let diagnostic = format!("Could not register started ACP runtime: {error}");
+            match &continuation {
+                AcpStartupContinuation::Ask {
+                    gameengine_session_id,
+                    ..
+                } => {
+                    let _ = self.host.append_message(
+                        gameengine_session_id,
+                        ConversationRole::System,
+                        diagnostic.clone(),
+                    );
+                    self.status = Some(diagnostic);
+                }
+                AcpStartupContinuation::Build { run_id, .. } => {
+                    self.fail_run(run_id, diagnostic);
+                }
+            }
+            return;
+        }
+        self.execution_router.sync_registry(self.acp.registry());
+        match continuation {
+            AcpStartupContinuation::Ask {
+                gameengine_session_id,
+                prompt,
+                ..
+            } => {
+                let acp_session_id = match self.acp.attach_opened_ask_session(
+                    &self.host,
+                    descriptor_id,
+                    started.session,
+                    &gameengine_session_id,
+                ) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        self.status = Some(format!("Could not attach ACP Ask session: {error}"));
+                        return;
+                    }
+                };
+                if let Err(error) = self
+                    .acp
+                    .send_prompt(&mut self.host, &acp_session_id, &prompt)
+                {
+                    let _ = self.acp.close_session(&acp_session_id);
+                    self.status = Some(format!("Could not send ACP Ask prompt: {error}"));
+                    return;
+                }
+                self.acp_question = Some(AcpQuestionState {
+                    acp_session_id,
+                    gameengine_session_id,
+                    answer: String::new(),
+                    started_at: std::time::Instant::now(),
+                });
+                self.status = Some("Waiting for agent…".to_owned());
+            }
+            AcpStartupContinuation::Build {
+                gameengine_session_id,
+                run_id,
+                prompt,
+                workspace,
+                ..
+            } => {
+                if !self
+                    .host
+                    .run(&run_id)
+                    .is_ok_and(|run| !run.state.is_terminal())
+                {
+                    let _ = started.session.cancel();
+                    let _ = started.session.close();
+                    return;
+                }
+                let acp_session_id = match self.acp.attach_opened_run_session(
+                    &mut self.host,
+                    descriptor_id,
+                    started.session,
+                    &gameengine_session_id,
+                    &run_id,
+                ) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        self.fail_run(
+                            &run_id,
+                            format!("Could not attach ACP Build session: {error}"),
+                        );
+                        return;
+                    }
+                };
+                let runtime_identity = match self.acp.runtime_identity(&acp_session_id) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        let _ = self.acp.close_session(&acp_session_id);
+                        let message =
+                            format!("Could not read negotiated ACP runtime identity: {error}");
+                        self.fail_run(&run_id, message.clone());
+                        if self.benchmark_child_active() {
+                            self.write_benchmark_child_failure(
+                                BenchmarkRunFailureKind::Harness,
+                                message,
+                            );
+                        }
+                        return;
+                    }
+                };
+                if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity)
+                {
+                    let _ = self.acp.close_session(&acp_session_id);
+                    let message = format!("ACP benchmark runtime mismatch: {error}");
+                    self.fail_run(&run_id, message.clone());
+                    if self.benchmark_child_active() {
+                        self.write_benchmark_child_failure(
+                            BenchmarkRunFailureKind::Harness,
+                            message,
+                        );
+                    }
+                    return;
+                }
+                if let Err(error) = self
+                    .acp
+                    .send_prompt(&mut self.host, &acp_session_id, &prompt)
+                {
+                    let _ = self.acp.close_session(&acp_session_id);
+                    self.fail_run(&run_id, format!("Could not send ACP Build prompt: {error}"));
+                    return;
+                }
+                self.code_workspace = Some(workspace);
+                self.active_acp_run_session = Some(acp_session_id);
+                if let Err(error) = self.host.transition_run(
+                    &run_id,
+                    AgentRunState::Executing,
+                    "ACP external agent runtime started in the isolated code workspace.",
+                ) {
+                    self.status = Some(error.to_string());
+                } else {
+                    self.status = Some("Waiting for agent…".to_owned());
+                }
+            }
+        }
     }
 
     fn poll_acp_question(&mut self, context: &egui::Context) {
@@ -4867,8 +5208,7 @@ impl AiStudioPanel {
                 context.request_repaint_after(std::time::Duration::from_millis(100));
             }
             AcpBridgePoll::AskEvent(AcpNormalizedEvent::PromptFailed { .. }) => {
-                // Prompt failures are consumed by AcpAgentHostBridge::fail_runtime
-                // before an AskEvent can cross this composition boundary.
+                // This terminal event is consumed by the bridge before reaching AI Studio.
             }
             AcpBridgePoll::AskEvent(AcpNormalizedEvent::ProtocolDiagnostic { message }) => {
                 self.status = Some(message);
@@ -6585,6 +6925,12 @@ impl AiStudioPanel {
     /// §3), so the sequence lives here rather than inside either control.
     fn stop_active_run(&mut self) {
         let run_id = self.active_run_id.clone();
+        if self.acp_startup.as_ref().is_some_and(|pending| {
+            matches!(&pending.continuation, AcpStartupContinuation::Build { .. })
+        }) && let Some(pending) = self.acp_startup.take()
+        {
+            pending.task.cancel();
+        }
         if let Some(task) = self.native_question.as_ref() {
             task.interrupt();
         }
@@ -7191,61 +7537,49 @@ impl AiStudioPanel {
         });
         let prompt =
             external_agent_provider_prompt(&proposal_json, repair_context.as_deref(), None);
+        if self.acp_startup.is_some() {
+            self.fail_run(run_id, "ACP startup is already in progress.".to_owned());
+            return;
+        }
         let gameengine_session_id = self.selected_session.clone();
-        let acp_session_id = match self.acp.open_run_session(
-            &mut self.host,
-            &agent_id,
+        let config = match self.acp_runtime_startup_config(&agent_id) {
+            Ok(config) => config,
+            Err(error) => {
+                self.fail_run(run_id, error);
+                return;
+            }
+        };
+        let request = match self.acp.prepare_run_session(
+            &self.host,
             &gameengine_session_id,
             run_id,
             workspace.root().to_path_buf(),
         ) {
-            Ok(acp_session_id) => acp_session_id,
+            Ok(request) => request,
             Err(error) => {
-                self.fail_run(run_id, format!("Could not open ACP Build session: {error}"));
+                self.fail_run(
+                    run_id,
+                    format!("Could not prepare ACP Build session: {error}"),
+                );
                 return;
             }
         };
-        let runtime_identity = match self.acp.runtime_identity(&acp_session_id) {
-            Ok(identity) => identity,
-            Err(error) => {
-                let _ = self.acp.close_session(&acp_session_id);
-                let message = format!("Could not read negotiated ACP runtime identity: {error}");
-                self.fail_run(run_id, message.clone());
-                if self.benchmark_child_active() {
-                    self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, message);
-                }
-                return;
+        let status = config.starting_status().to_owned();
+        match AcpSessionStartupTask::spawn(config, request) {
+            Ok(task) => {
+                self.acp_startup = Some(PendingAcpStartup {
+                    task,
+                    continuation: AcpStartupContinuation::Build {
+                        agent_id,
+                        gameengine_session_id,
+                        run_id: run_id.to_owned(),
+                        prompt,
+                        workspace,
+                    },
+                });
+                self.status = Some(status);
             }
-        };
-        if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {
-            let _ = self.acp.close_session(&acp_session_id);
-            let message = format!("ACP benchmark runtime mismatch: {error}");
-            self.fail_run(run_id, message.clone());
-            if self.benchmark_child_active() {
-                self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, message);
-            }
-            return;
-        }
-        if let Err(error) = self
-            .acp
-            .send_prompt(&mut self.host, &acp_session_id, &prompt)
-        {
-            let _ = self.acp.close_session(&acp_session_id);
-            self.status = Some(format!("Could not send ACP Build prompt: {error}"));
-            return;
-        }
-        self.code_workspace = Some(workspace);
-        self.active_acp_run_session = Some(acp_session_id);
-        if let Err(error) = self.host.transition_run(
-            run_id,
-            AgentRunState::Executing,
-            "ACP external agent runtime started in the isolated code workspace.",
-        ) {
-            self.status = Some(error.to_string());
-        } else {
-            self.status = Some(format!(
-                "ACP external agent `{agent_id}` started through the common Agent Host bridge."
-            ));
+            Err(error) => self.fail_run(run_id, error),
         }
     }
 

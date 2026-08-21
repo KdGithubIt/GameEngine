@@ -4,10 +4,10 @@
 //! for permissions, work claims, canonical authoring, validation and completion.
 
 use crate::acp_agent_runtime::{
-    AcpAgentRegistry, AcpAgentSession, AcpMcpAccessLevel, AcpNormalizedEvent,
-    AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution,
-    AcpPermissionTarget, AcpRuntimeError, AcpRuntimeIdentity, AcpSessionBinding,
-    AcpSessionOpenRequest, AcpToolCallStatus,
+    AcpAgentSession, AcpMcpAccessLevel, AcpNormalizedEvent, AcpPermissionOptionKind,
+    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpPermissionTarget,
+    AcpRuntimeError, AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenRequest,
+    AcpToolCallStatus,
 };
 use crate::agent_host::{
     AgentCapability, AgentEventKind, AgentHost, AgentHostError, AgentRunState, AgentWorkClaim,
@@ -105,7 +105,6 @@ pub(crate) enum AcpBridgeError {
     Runtime(AcpRuntimeError),
     InvalidMcpCredentials,
     InvalidWorkingDirectory,
-    AgentNotRegistered(String),
     SessionNotFound(String),
     DuplicateSession(String),
     InvalidSessionId,
@@ -132,7 +131,6 @@ impl fmt::Display for AcpBridgeError {
             Self::InvalidWorkingDirectory => {
                 write!(formatter, "ACP working directory must be absolute")
             }
-            Self::AgentNotRegistered(id) => write!(formatter, "ACP agent `{id}` is not registered"),
             Self::SessionNotFound(id) => write!(formatter, "ACP session `{id}` was not found"),
             Self::DuplicateSession(id) => {
                 write!(formatter, "ACP session `{id}` is already attached")
@@ -214,37 +212,28 @@ impl AcpAgentHostBridge {
         })
     }
 
-    pub(crate) fn open_ask_session(
-        &mut self,
+    pub(crate) fn prepare_ask_session(
+        &self,
         host: &AgentHost,
-        registry: &mut dyn AcpAgentRegistry,
-        agent_id: &str,
         gameengine_session_id: &str,
-    ) -> Result<String, AcpBridgeError> {
+    ) -> Result<AcpSessionOpenRequest, AcpBridgeError> {
         host.session(gameengine_session_id)?;
         let binding = AcpSessionBinding::read_only(
             gameengine_session_id,
             self.mcp.endpoint.clone(),
             self.mcp.read_only_token.clone(),
         )?;
-        self.open_registered(
-            registry,
-            agent_id,
-            binding,
-            self.working_directory.clone(),
-            None,
-        )
+        AcpSessionOpenRequest::new(binding, self.working_directory.clone())
+            .map_err(AcpBridgeError::from)
     }
 
-    pub(crate) fn open_run_session(
-        &mut self,
-        host: &mut AgentHost,
-        registry: &mut dyn AcpAgentRegistry,
-        agent_id: &str,
+    pub(crate) fn prepare_run_session(
+        &self,
+        host: &AgentHost,
         gameengine_session_id: &str,
         run_id: &str,
         working_directory: PathBuf,
-    ) -> Result<String, AcpBridgeError> {
+    ) -> Result<AcpSessionOpenRequest, AcpBridgeError> {
         if !host
             .session(gameengine_session_id)?
             .runs
@@ -262,12 +251,46 @@ impl AcpAgentHostBridge {
             self.mcp.endpoint.clone(),
             self.mcp.run_bound_token.clone(),
         )?;
-        let acp_id = self.open_registered(
-            registry,
-            agent_id,
-            binding,
-            working_directory,
-            Some(run_id.to_owned()),
+        AcpSessionOpenRequest::new(binding, working_directory).map_err(AcpBridgeError::from)
+    }
+
+    pub(crate) fn attach_opened_ask_session(
+        &mut self,
+        host: &AgentHost,
+        descriptor_id: String,
+        session: Box<dyn AcpAgentSession>,
+        expected_session_id: &str,
+    ) -> Result<String, AcpBridgeError> {
+        host.session(expected_session_id)?;
+        self.attach_opened_session(descriptor_id, session, expected_session_id, None)
+    }
+
+    pub(crate) fn attach_opened_run_session(
+        &mut self,
+        host: &mut AgentHost,
+        descriptor_id: String,
+        session: Box<dyn AcpAgentSession>,
+        expected_session_id: &str,
+        expected_run_id: &str,
+    ) -> Result<String, AcpBridgeError> {
+        if !host
+            .session(expected_session_id)?
+            .runs
+            .iter()
+            .any(|run| run.id == expected_run_id)
+        {
+            return Err(AcpBridgeError::RunSessionMismatch(
+                expected_run_id.to_owned(),
+            ));
+        }
+        if host.run(expected_run_id)?.state.is_terminal() {
+            return Err(AcpBridgeError::TerminalRun(expected_run_id.to_owned()));
+        }
+        let acp_id = self.attach_opened_session(
+            descriptor_id,
+            session,
+            expected_session_id,
+            Some(expected_run_id.to_owned()),
         )?;
         if let Err(error) = self.record_identity(host, &acp_id) {
             let _ = self.close_session(&acp_id);
@@ -276,24 +299,13 @@ impl AcpAgentHostBridge {
         Ok(acp_id)
     }
 
-    fn open_registered(
+    fn attach_opened_session(
         &mut self,
-        registry: &mut dyn AcpAgentRegistry,
-        agent_id: &str,
-        binding: AcpSessionBinding,
-        working_directory: PathBuf,
+        descriptor_id: String,
+        mut session: Box<dyn AcpAgentSession>,
+        expected_session_id: &str,
         expected_run_id: Option<String>,
     ) -> Result<String, AcpBridgeError> {
-        let expected_session_id = binding.gameengine_session_id.clone();
-        let request = AcpSessionOpenRequest::new(binding, working_directory)?;
-        let (descriptor_id, mut session) = {
-            let runtime = registry
-                .runtime_mut(agent_id)
-                .ok_or_else(|| AcpBridgeError::AgentNotRegistered(agent_id.to_owned()))?;
-            let descriptor_id = runtime.descriptor().id.clone();
-            let session = runtime.open_session(request)?;
-            (descriptor_id, session)
-        };
         let identity = session.runtime_identity().clone();
         let acp_id = session.acp_session_id().to_owned();
         if acp_id.trim().is_empty() {
@@ -933,6 +945,18 @@ impl AcpAgentHostBridge {
         Ok(())
     }
 
+    pub(crate) fn cancel_session(&mut self, acp_id: &str) -> Result<(), AcpBridgeError> {
+        let mut attached = self
+            .sessions
+            .remove(acp_id)
+            .ok_or_else(|| AcpBridgeError::SessionNotFound(acp_id.to_owned()))?;
+        let cancel_result = attached.session.cancel();
+        let close_result = attached.session.close();
+        cancel_result?;
+        close_result?;
+        Ok(())
+    }
+
     pub(crate) fn close_session(&mut self, acp_id: &str) -> Result<(), AcpBridgeError> {
         let mut attached = self
             .sessions
@@ -1087,7 +1111,6 @@ mod tests {
     use super::*;
     use crate::acp_agent_runtime::{
         AcpAgentDescriptor, AcpAgentRuntime, AcpCapabilities, AcpPermissionOption,
-        AcpRuntimeRegistry,
     };
     use std::ffi::OsString;
 
@@ -1296,24 +1319,25 @@ mod tests {
             .start_run_authorized(&gameengine_session_id, proposal_version, "test")
             .expect("run");
 
-        let mut registry = AcpRuntimeRegistry::default();
-        registry
-            .register(Box::new(PromptFailingRuntime::new()))
-            .expect("test runtime");
         let credentials =
             AcpEditorMcpCredentials::new("http://127.0.0.1:1/mcp", "run-token", "read-token")
                 .expect("credentials");
         let mut bridge = AcpAgentHostBridge::new(credentials, project).expect("bridge");
+        let request = bridge
+            .prepare_run_session(&host, &gameengine_session_id, &run_id, workspace)
+            .expect("run-bound ACP request");
+        let mut runtime = PromptFailingRuntime::new();
+        let descriptor_id = runtime.descriptor().id.clone();
+        let session = runtime.open_session(request).expect("ACP session");
         let acp_session_id = bridge
-            .open_run_session(
+            .attach_opened_run_session(
                 &mut host,
-                &mut registry,
-                "prompt-failing-test",
+                descriptor_id,
+                session,
                 &gameengine_session_id,
                 &run_id,
-                workspace,
             )
-            .expect("ACP session");
+            .expect("attached ACP session");
         bridge
             .send_prompt(&mut host, &acp_session_id, "use a tool")
             .expect("prompt accepted");
