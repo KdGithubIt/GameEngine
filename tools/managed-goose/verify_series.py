@@ -67,6 +67,7 @@ def main() -> int:
     seen_paths: set[str] = set()
     observed_paths: list[str] = []
     canonical: dict[str, bytes] = {}
+    hash_mismatches: list[str] = []
 
     for index, entry in enumerate(patches, start=1):
         rel = entry.get("path", "")
@@ -81,7 +82,9 @@ def main() -> int:
         canonical[rel] = data
         observed_hash = sha256(data)
         if observed_hash != expected_hash:
-            fail(f"{rel}: sha256 {observed_hash} != manifest {expected_hash}")
+            hash_mismatches.append(
+                f"{rel}: sha256 {observed_hash} != manifest {expected_hash}"
+            )
 
         try:
             text = data.decode("utf-8")
@@ -121,6 +124,11 @@ def main() -> int:
         adapted_marker = f"Adapted-To: {upstream.get('version')} ({upstream_sha})"
         if adapted_marker not in text:
             fail(f"{rel}: missing exact upstream adaptation marker")
+
+    if hash_mismatches:
+        for mismatch in hash_mismatches:
+            print(f"managed-goose hash mismatch: {mismatch}", file=sys.stderr)
+        fail(f"{len(hash_mismatches)} patch hash(es) differ from canonical Git blobs")
 
     if observed_paths != sorted(observed_paths):
         fail("patches must be ordered lexicographically by path")
