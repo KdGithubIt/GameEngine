@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        }\n    }\n\n}\n\nfn engine_commit_changed",
+  "new": "        }\n    }\n}\n\nfn engine_commit_changed"
+}
