@@ -93,6 +93,20 @@ impl AiStudioPanel {
             .is_some_and(|child| child.spec.uses_acp_runtime())
     }
 
+    /// Mirrors only credential-safe ACP activity into the run-scoped child log.
+    ///
+    /// The ACP transport owns raw protocol I/O, which may contain ephemeral MCP
+    /// credentials and is therefore never copied into benchmark diagnostics.
+    /// The campaign parent already captures this child process's stderr per run,
+    /// so normalized event categories provide enough liveness evidence without
+    /// creating another persistence or authorization surface.
+    pub(super) fn report_benchmark_acp_live_event(&self, event: &AcpNormalizedEvent) {
+        if !self.benchmark_child_uses_acp_runtime() {
+            return;
+        }
+        eprintln!("[benchmark.acp] {}", benchmark_acp_live_summary(event));
+    }
+
     pub(super) fn validate_benchmark_acp_runtime_identity(
         &self,
         identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
@@ -562,6 +576,25 @@ impl AiStudioPanel {
                 self.status = Some(message);
             }
         }
+    }
+}
+
+fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
+    match event {
+        AcpNormalizedEvent::AgentMessage { .. } => "agent message received".to_owned(),
+        AcpNormalizedEvent::Progress { .. } => "progress update".to_owned(),
+        AcpNormalizedEvent::Plan { entries } => {
+            format!("plan updated ({} entries)", entries.len())
+        }
+        AcpNormalizedEvent::ToolCall { status, .. } => {
+            format!("tool call is {status:?}")
+        }
+        AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
+        AcpNormalizedEvent::ProtocolDiagnostic { .. } => "protocol diagnostic reported".to_owned(),
+        AcpNormalizedEvent::TurnFinished { stop_reason } => {
+            format!("turn finished: {stop_reason:?}")
+        }
+        AcpNormalizedEvent::PermissionRequest(_) => "permission requested".to_owned(),
     }
 }
 
