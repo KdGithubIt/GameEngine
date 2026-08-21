@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "        if !matches!(\n            run.state,\n            AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled\n        ) {\n            return;\n        }\n        let Some(identity) = self.native_run_benchmark_context.clone() else {",
+  "new": "        if !matches!(\n            run.state,\n            AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled\n        ) {\n            return;\n        }\n        if self.benchmark_child_uses_acp_runtime()\n            && let Some(message) = run\n                .events\n                .iter()\n                .filter(|event| event.kind == AgentEventKind::Failure)\n                .find_map(|event| benchmark_context_overflow_message(&event.message))\n        {\n            self.write_benchmark_child_failure(BenchmarkRunFailureKind::Backend, message);\n            return;\n        }\n        let Some(identity) = self.native_run_benchmark_context.clone() else {"
+}
