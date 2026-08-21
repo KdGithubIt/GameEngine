@@ -2338,7 +2338,10 @@ impl ManagedLocalRuntime {
                 Err(ManagedLocalRuntimeError::new(
                     ManagedDiagnosticLayer::ManagedProcessStartup,
                     if message.is_empty() {
-                        format!("managed WSL llama-server log tail exited as {}", output.status)
+                        format!(
+                            "managed WSL llama-server log tail exited as {}",
+                            output.status
+                        )
                     } else {
                         format!("managed WSL llama-server log tail failed: {message}")
                     },
