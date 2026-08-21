@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "        AcpNormalizedEvent::SessionInfo { .. } => \"session metadata updated\".to_owned(),\n        AcpNormalizedEvent::ProtocolDiagnostic { .. } => \"protocol diagnostic reported\".to_owned(),\n        AcpNormalizedEvent::TurnFinished { stop_reason } => {",
+  "new": "        AcpNormalizedEvent::SessionInfo { .. } => \"session metadata updated\".to_owned(),\n        AcpNormalizedEvent::PromptFailed { .. } => \"prompt failed\".to_owned(),\n        AcpNormalizedEvent::ProtocolDiagnostic { .. } => \"protocol diagnostic reported\".to_owned(),\n        AcpNormalizedEvent::TurnFinished { stop_reason } => {"
+}
