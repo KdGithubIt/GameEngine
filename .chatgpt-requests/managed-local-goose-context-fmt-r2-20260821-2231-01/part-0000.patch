@@ -1,0 +1,41 @@
+diff --git a/crates/editor/src/acp_agent_host_bridge.rs b/crates/editor/src/acp_agent_host_bridge.rs
+index c934e03001d63b1d4c5065f7cad0d60e88622759..8aee9d0f9f7ae21358d1dd49e370d5ae22294846 100644
+--- a/crates/editor/src/acp_agent_host_bridge.rs
++++ b/crates/editor/src/acp_agent_host_bridge.rs
+@@ -1300,12 +1300,9 @@ mod tests {
+         registry
+             .register(Box::new(PromptFailingRuntime::new()))
+             .expect("test runtime");
+-        let credentials = AcpEditorMcpCredentials::new(
+-            "http://127.0.0.1:1/mcp",
+-            "run-token",
+-            "read-token",
+-        )
+-        .expect("credentials");
++        let credentials =
++            AcpEditorMcpCredentials::new("http://127.0.0.1:1/mcp", "run-token", "read-token")
++                .expect("credentials");
+         let mut bridge = AcpAgentHostBridge::new(credentials, project).expect("bridge");
+         let acp_session_id = bridge
+             .open_run_session(
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index ab2be585a53f8df29581bb8c19ca4ae147e12cda..c0dd1ab4d459418c7e714cee09aa79e26b97e816 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -193,13 +193,12 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
+         validate_managed_lease_identity(&lease, &self.config.managed_model)?;
+         let token_budget = GooseManagedTokenBudget::from_config(&self.config.managed_model);
+         let ephemeral =
+-            GooseEphemeralConfig::create(&self.config.managed_model, &lease, token_budget).map_err(
+-                |error| {
++            GooseEphemeralConfig::create(&self.config.managed_model, &lease, token_budget)
++                .map_err(|error| {
+                     AcpRuntimeError::Transport(format!(
+                         "could not create isolated Goose config: {error}"
+                     ))
+-                },
+-            )?;
++                })?;
+ 
+         let mut descriptor = self.descriptor.clone();
+         descriptor.environment = goose_environment(&lease, &ephemeral, token_budget);
