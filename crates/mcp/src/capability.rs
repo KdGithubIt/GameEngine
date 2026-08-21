@@ -15,14 +15,16 @@ use crate::McpToolDescriptor;
 use engine_authoring::{
     AuthoringCapability, AuthoringCapabilityError, AuthoringCapabilityExposure,
     AuthoringCapabilityId, AuthoringCapabilityIdError, AuthoringCapabilityKind,
-    AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermission, AuthoringPermissionError,
-    AuthoringPermissions,
+    AuthoringCapabilityRegistry, AuthoringCapabilitySummary, AuthoringDomain, AuthoringPermission,
+    AuthoringPermissionError, AuthoringPermissions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
 
-/// Tool name for registry-driven capability discovery.
+/// Tool name for context-efficient registry-driven capability discovery.
+pub const AUTHORING_LIST_TOOL: &str = "authoring.list";
+/// Tool name for full registry-driven capability discovery retained for compatibility.
 pub const AUTHORING_CAPABILITIES_TOOL: &str = "authoring.capabilities";
 /// Tool name for single-capability metadata lookup.
 pub const AUTHORING_DESCRIBE_TOOL: &str = "authoring.describe";
@@ -97,10 +99,17 @@ fn empty_arguments() -> Value {
     json!({})
 }
 
-/// Output for `authoring.capabilities`.
+/// Output for context-efficient `authoring.list` discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CapabilitySummaryListOutput {
+    /// Registry-derived capability summaries in deterministic capability-ID order.
+    pub capabilities: Vec<AuthoringCapabilitySummary>,
+}
+
+/// Full output for `authoring.capabilities`, retained for compatibility.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CapabilityListOutput {
-    /// Registered capabilities in deterministic capability-ID order.
+    /// Registered full capability descriptors in deterministic capability-ID order.
     pub capabilities: Vec<AuthoringCapability>,
 }
 
@@ -251,8 +260,13 @@ impl AuthoringCapabilityMcpTools {
     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
         let mut descriptors = vec![
             descriptor(
+                AUTHORING_LIST_TOOL,
+                "List registered authoring capabilities using compact registry summaries. Use authoring.describe for the selected capability's schema, permission, transaction, and document contract.",
+                empty_object_schema(),
+            ),
+            descriptor(
                 AUTHORING_CAPABILITIES_TOOL,
-                "Discover every registered semantic authoring capability with its schema, permission, and transaction contract.",
+                "Return every full registered capability descriptor for compatibility. Prefer authoring.list followed by authoring.describe for context-efficient discovery.",
                 empty_object_schema(),
             ),
             descriptor(
@@ -278,7 +292,25 @@ impl AuthoringCapabilityMcpTools {
         descriptors
     }
 
-    /// Lists every registered capability.
+    /// Lists compact summaries for every registered capability.
+    ///
+    /// The summary projection comes directly from the canonical registry and
+    /// intentionally omits the detail fields available from [`Self::describe`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CapabilityMcpError`] when read permission is absent.
+    pub fn list(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<CapabilitySummaryListOutput, CapabilityMcpError> {
+        permissions.require(AuthoringPermission::Read)?;
+        Ok(CapabilitySummaryListOutput {
+            capabilities: self.registry.summaries().collect(),
+        })
+    }
+
+    /// Lists every full registered capability for compatibility.
     ///
     /// # Errors
     ///
@@ -508,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_surface_advertises_the_six_adr_operations() {
+    fn generic_surface_advertises_compact_discovery_and_the_adr_operations() {
         let names = AuthoringCapabilityMcpTools::new()
             .tool_descriptors()
             .into_iter()
@@ -518,6 +550,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "authoring.list",
                 "authoring.capabilities",
                 "authoring.describe",
                 "authoring.inspect",
@@ -555,6 +588,60 @@ mod tests {
         assert_eq!(advertised, expected);
         assert!(advertised.contains(&"scene.apply".to_owned()));
         assert!(!advertised.contains(&"scene.inspect".to_owned()));
+    }
+
+    #[test]
+    fn compact_discovery_is_registry_derived_and_materially_smaller() {
+        let tools = AuthoringCapabilityMcpTools::new();
+        let permissions = AuthoringPermissions::read_only();
+        let compact = tools.list(&permissions).expect("compact discovery");
+        let full = tools
+            .capabilities(&permissions)
+            .expect("full compatibility discovery");
+        let expected = tools.registry().summaries().collect::<Vec<_>>();
+
+        assert_eq!(compact.capabilities, expected);
+        assert_eq!(
+            compact
+                .capabilities
+                .iter()
+                .map(|capability| capability.id.clone())
+                .collect::<Vec<_>>(),
+            full.capabilities
+                .iter()
+                .map(|capability| capability.id.clone())
+                .collect::<Vec<_>>()
+        );
+        for (summary, capability) in compact.capabilities.iter().zip(&full.capabilities) {
+            assert_eq!(summary.exposure, capability.exposure);
+        }
+
+        let compact_bytes = serde_json::to_vec(&compact)
+            .expect("compact discovery must serialize")
+            .len();
+        let full_bytes = serde_json::to_vec(&full)
+            .expect("full discovery must serialize")
+            .len();
+        assert!(
+            compact_bytes * 2 <= full_bytes,
+            "compact discovery must be at least 50% smaller: compact={compact_bytes} full={full_bytes}"
+        );
+    }
+
+    #[test]
+    fn describe_returns_the_canonical_full_schema_contract() {
+        let tools = AuthoringCapabilityMcpTools::new();
+        let id = AuthoringCapabilityId::new("scene.apply");
+        let expected = tools.registry().require(&id).expect("scene.apply registry entry");
+        let described = tools
+            .describe(
+                &AuthoringPermissions::read_only(),
+                CapabilityDescribeInput { capability: id },
+            )
+            .expect("detail discovery");
+
+        assert_eq!(described.capability, *expected);
+        assert_eq!(described.tool, "scene.apply");
     }
 
     #[test]
@@ -687,6 +774,15 @@ mod tests {
         let tools = AuthoringCapabilityMcpTools::new();
         let read_only = AuthoringPermissions::read_only();
 
+        let listed = tools
+            .list(&read_only)
+            .expect("read-only sessions may discover compact capability summaries");
+        assert!(
+            listed
+                .capabilities
+                .iter()
+                .any(|capability| capability.id.as_str() == "scene.apply")
+        );
         let described = tools
             .describe(
                 &read_only,

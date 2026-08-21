@@ -102,8 +102,8 @@ pub use behavior_tree::{
 pub use capability::{
     AuthoringCapability, AuthoringCapabilityError, AuthoringCapabilityExposure,
     AuthoringCapabilityId, AuthoringCapabilityIdError, AuthoringCapabilityKind,
-    AuthoringCapabilityRegistry, AuthoringDocumentKind, AuthoringDomain, AuthoringSchemaRef,
-    AuthoringTransactionRequirement, RESERVED_CAPABILITY_NAMESPACE,
+    AuthoringCapabilityRegistry, AuthoringCapabilitySummary, AuthoringDocumentKind, AuthoringDomain,
+    AuthoringSchemaRef, AuthoringTransactionRequirement, RESERVED_CAPABILITY_NAMESPACE,
 };
 pub use command::{AuthoringCommand, Change, CommandResult, PropertyPath, PropertyPathSegment};
 pub use component_metadata::{
