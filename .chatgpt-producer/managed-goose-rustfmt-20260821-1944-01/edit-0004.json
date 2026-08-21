@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        assert_eq!(\n            manager.goose_executable_override().expect(\"read cleared override\"),\n            None\n        );",
+  "new": "        assert_eq!(\n            manager\n                .goose_executable_override()\n                .expect(\"read cleared override\"),\n            None\n        );"
+}
