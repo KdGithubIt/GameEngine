@@ -1,0 +1,120 @@
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index 6cdb535004be4b85f6b7452cee392f7cb7aa4b2c..4f9eb5a6fe28c2046f73da6d68b42de0df62b18f 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -479,11 +479,10 @@ impl AiStudioPanel {
+     #[cfg(feature = "visual-validation")]
+     pub fn prepare_benchmark_campaign_running_visual_validation(&mut self) -> Result<(), String> {
+         self.prepare_benchmark_campaign_completed_visual_validation()?;
+-        let plan = self
+-            .benchmark_campaign
+-            .plan
+-            .clone()
+-            .ok_or_else(|| "Benchmark campaign visual fixture lost its frozen plan.".to_owned())?;
++        let plan =
++            self.benchmark_campaign.plan.clone().ok_or_else(|| {
++                "Benchmark campaign visual fixture lost its frozen plan.".to_owned()
++            })?;
+         let installed = plan
+             .candidates
+             .iter()
+@@ -1037,9 +1036,10 @@ impl AiStudioPanel {
+         if run.state() != CampaignState::Running {
+             return;
+         }
+-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(
+-            CAMPAIGN_LIVE_LOG_REFRESH_MS,
+-        ));
++        ui.ctx()
++            .request_repaint_after(std::time::Duration::from_millis(
++                CAMPAIGN_LIVE_LOG_REFRESH_MS,
++            ));
+         let activity = &self.benchmark_campaign.live_activity;
+         ui.separator();
+         ui.strong("Live activity");
+@@ -1641,11 +1641,9 @@ impl AiStudioPanel {
+             ),
+         ] {
+             match read_recent_campaign_log_lines(&path, CAMPAIGN_LIVE_LOG_LINES_PER_SOURCE) {
+-                Ok(lines) => child_lines.extend(
+-                    lines
+-                        .into_iter()
+-                        .map(|line| format!("{stream} | {line}")),
+-                ),
++                Ok(lines) => {
++                    child_lines.extend(lines.into_iter().map(|line| format!("{stream} | {line}")))
++                }
+                 Err(error) => errors.push(error),
+             }
+         }
+@@ -1668,12 +1666,11 @@ impl AiStudioPanel {
+                         }
+                     }
+                     if self.benchmark_campaign.live_activity.backend_task.is_none() {
+-                        self.benchmark_campaign.live_activity.backend_task = Some(
+-                            CampaignBackendLogTask::spawn(
++                        self.benchmark_campaign.live_activity.backend_task =
++                            Some(CampaignBackendLogTask::spawn(
+                                 self.managed_local_runtime.clone(),
+                                 environment,
+-                            ),
+-                        );
++                            ));
+                     }
+                 }
+                 None => {
+@@ -2018,11 +2015,21 @@ mod tests {
+     #[test]
+     fn live_activity_tracks_new_run_output_without_reclassifying_stale_backend_tail() {
+         let mut activity = CampaignLiveActivity::default();
+-        activity.update(100, Vec::new(), vec!["previous server line".to_owned()], None);
++        activity.update(
++            100,
++            Vec::new(),
++            vec!["previous server line".to_owned()],
++            None,
++        );
+         assert_eq!(activity.last_activity_unix_ms, None);
+ 
+         let child = vec!["stderr | goose ACP progress".to_owned()];
+-        activity.update(200, child.clone(), vec!["previous server line".to_owned()], None);
++        activity.update(
++            200,
++            child.clone(),
++            vec!["previous server line".to_owned()],
++            None,
++        );
+         assert_eq!(activity.last_activity_unix_ms, Some(200));
+ 
+         activity.update(300, child.clone(), vec!["new server line".to_owned()], None);
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index 0b59607ccbb63ff5fb5e79f0091a7e531677e01b..fc80cc6f10a121e2def4a353d4d7d86583b07f0f 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -590,9 +590,7 @@ fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
+             format!("tool call is {status:?}")
+         }
+         AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
+-        AcpNormalizedEvent::ProtocolDiagnostic { .. } => {
+-            "protocol diagnostic reported".to_owned()
+-        }
++        AcpNormalizedEvent::ProtocolDiagnostic { .. } => "protocol diagnostic reported".to_owned(),
+         AcpNormalizedEvent::TurnFinished { stop_reason } => {
+             format!("turn finished: {stop_reason:?}")
+         }
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 030c0503d47a1e397ef47d9c823568c543e9490a..2637bc75d8f0795e5c9196d6438fe0ddc7dba4cc 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -2338,7 +2338,10 @@ impl ManagedLocalRuntime {
+                 Err(ManagedLocalRuntimeError::new(
+                     ManagedDiagnosticLayer::ManagedProcessStartup,
+                     if message.is_empty() {
+-                        format!("managed WSL llama-server log tail exited as {}", output.status)
++                        format!(
++                            "managed WSL llama-server log tail exited as {}",
++                            output.status
++                        )
+                     } else {
+                         format!("managed WSL llama-server log tail failed: {message}")
+                     },
