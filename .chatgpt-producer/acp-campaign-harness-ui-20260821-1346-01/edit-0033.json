@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md",
+  "old": "- inspect exact model/quantization/runtime identity;\n- select full corpus or a task subset;\n",
+  "new": "- inspect exact model/quantization/runtime identity;\n- select the runtime/agent harness before freeze, with Goose ACP Agent Harness\n  recommended for Managed Local and Legacy Native available only by explicit\n  compatibility/comparison selection;\n- inspect the frozen lane, harness, agent/runtime, model, and execution\n  environment after freeze;\n- select full corpus or a task subset;\n"
+}
