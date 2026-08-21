@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/benchmark_child.rs","old":"        let spec = BenchmarkChildRunSpec::read(path)?;\n        match spec.backend_id.as_str() {","new":"        let spec = BenchmarkChildRunSpec::read(path)?;\n        validate_benchmark_runtime_spec(&spec)?;\n        match spec.backend_id.as_str() {"}
