@@ -80,6 +80,34 @@ fn capture_ci_repair_patch() {
         diff.stdout,
     )
     .expect("recovery patch must be writable");
+    std::fs::copy(workspace_root.join("Cargo.lock"), diagnostics.join("Cargo.lock"))
+        .expect("generated Cargo.lock must be capturable");
+
+    let formatted = diagnostics.join("formatted");
+    std::fs::create_dir_all(&formatted).expect("formatted diagnostics directory must be creatable");
+    for relative in [
+        "crates/editor/src/acp_agent_host_bridge.rs",
+        "crates/editor/src/acp_agent_runtime.rs",
+        "crates/editor/src/acp_agent_runtime/transport.rs",
+        "crates/editor/src/acp_integration.rs",
+        "crates/editor/src/agent_benchmark.rs",
+        "crates/editor/src/agent_benchmark_campaign.rs",
+        "crates/editor/src/ai_studio.rs",
+        "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+        "crates/editor/src/ai_studio/benchmark_child.rs",
+        "crates/editor/src/ai_studio/execution_routing.rs",
+        "crates/editor/src/benchmark_campaign.rs",
+        "crates/editor/src/benchmark_process.rs",
+        "crates/editor/src/claude_acp_adapter.rs",
+        "crates/editor/src/codex_acp_adapter.rs",
+        "crates/editor/src/goose_local_acp.rs",
+        "crates/editor/src/lib.rs",
+        "crates/editor/src/managed_local_runtime.rs",
+    ] {
+        let source = workspace_root.join(relative);
+        let destination = formatted.join(relative.replace('/', "__"));
+        std::fs::copy(source, destination).expect("formatted source must be capturable");
+    }
 
     panic!(
         "intentional diagnostic stop after capturing the exact formatting and lockfile patch"
