@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/Cargo.toml","old":"default-run = \"engine-editor\"\nautobins = false\n","new":"default-run = \"engine-editor\"\nautobins = false\nbuild = \"build.rs\"\n"}
