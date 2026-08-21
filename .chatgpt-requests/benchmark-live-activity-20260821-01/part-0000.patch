@@ -1,0 +1,664 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 831fab318e99f01aa584e7056184ed649d5b4871..c036d6ca724388aa8775167b90189d288bd42615 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -7560,6 +7560,7 @@ impl AiStudioPanel {
+                 context.request_repaint_after(std::time::Duration::from_millis(100));
+             }
+             AcpBridgePoll::RecordedEvent { run_id, event, .. } => {
++                self.report_benchmark_acp_live_event(&event);
+                 if let AcpNormalizedEvent::AgentMessage { text } = event {
+                     for line in text.lines() {
+                         let Some(payload) = line.trim().strip_prefix(PROVIDER_EVENT_PREFIX) else {
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index baa3faeef0a645399e37caa7a66036719d3efbd7..6cdb535004be4b85f6b7452cee392f7cb7aa4b2c 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -33,9 +33,76 @@ use crate::managed_local_runtime::{
+ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ use std::fs::File;
++use std::io::{Read, Seek, SeekFrom};
+ use std::path::{Path, PathBuf};
+ use std::process::{Child, Command, Stdio};
+ 
++const CAMPAIGN_LIVE_LOG_REFRESH_MS: u64 = 750;
++const CAMPAIGN_LIVE_LOG_LINES_PER_SOURCE: usize = 8;
++const CAMPAIGN_LIVE_LOG_TAIL_BYTES: u64 = 64 * 1024;
++
++struct CampaignBackendLogTask {
++    receiver: std::sync::mpsc::Receiver<Result<Vec<String>, String>>,
++}
++
++impl CampaignBackendLogTask {
++    fn spawn(runtime: ManagedLocalRuntime, environment: ManagedExecutionEnvironment) -> Self {
++        let (sender, receiver) = std::sync::mpsc::channel();
++        std::thread::spawn(move || {
++            let result = runtime
++                .recent_server_log_lines(environment, CAMPAIGN_LIVE_LOG_LINES_PER_SOURCE)
++                .map_err(|error| error.to_string());
++            let _ = sender.send(result);
++        });
++        Self { receiver }
++    }
++
++    fn poll(&self) -> Option<Result<Vec<String>, String>> {
++        match self.receiver.try_recv() {
++            Ok(result) => Some(result),
++            Err(std::sync::mpsc::TryRecvError::Empty) => None,
++            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
++                Some(Err("managed backend log reader disconnected".to_owned()))
++            }
++        }
++    }
++}
++
++#[derive(Default)]
++struct CampaignLiveActivity {
++    last_refresh_unix_ms: u64,
++    last_activity_unix_ms: Option<u64>,
++    initialized: bool,
++    child_lines: Vec<String>,
++    backend_lines: Vec<String>,
++    backend_task: Option<CampaignBackendLogTask>,
++    error: Option<String>,
++}
++
++impl CampaignLiveActivity {
++    fn update(
++        &mut self,
++        now_unix_ms: u64,
++        child_lines: Vec<String>,
++        backend_lines: Vec<String>,
++        error: Option<String>,
++    ) {
++        let changed = if self.initialized {
++            self.child_lines != child_lines || self.backend_lines != backend_lines
++        } else {
++            !child_lines.is_empty()
++        };
++        self.initialized = true;
++        self.last_refresh_unix_ms = now_unix_ms;
++        if changed {
++            self.last_activity_unix_ms = Some(now_unix_ms);
++        }
++        self.child_lines = child_lines;
++        self.backend_lines = backend_lines;
++        self.error = error;
++    }
++}
++
+ /// A campaign whose schedule is being executed by the headless parent.
+ struct RunningCampaign {
+     process: Child,
+@@ -115,6 +182,7 @@ pub(super) struct BenchmarkCampaignPanel {
+     acquisition_approved: bool,
+     run: Option<CampaignRun>,
+     running: Option<RunningCampaign>,
++    live_activity: CampaignLiveActivity,
+     message: Option<String>,
+ }
+ 
+@@ -143,6 +211,7 @@ impl Default for BenchmarkCampaignPanel {
+             acquisition_approved: false,
+             run: None,
+             running: None,
++            live_activity: CampaignLiveActivity::default(),
+             message: None,
+         }
+     }
+@@ -199,6 +268,7 @@ impl BenchmarkCampaignPanel {
+         self.prior_plan = self.plan.take();
+         self.run = None;
+         self.running = None;
++        self.live_activity = CampaignLiveActivity::default();
+         self.acquisition = None;
+         self.acquisition_approved = false;
+         self.message = None;
+@@ -406,6 +476,44 @@ impl AiStudioPanel {
+         Ok(())
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_benchmark_campaign_running_visual_validation(&mut self) -> Result<(), String> {
++        self.prepare_benchmark_campaign_completed_visual_validation()?;
++        let plan = self
++            .benchmark_campaign
++            .plan
++            .clone()
++            .ok_or_else(|| "Benchmark campaign visual fixture lost its frozen plan.".to_owned())?;
++        let installed = plan
++            .candidates
++            .iter()
++            .map(|candidate| candidate.representation.model_id.clone())
++            .collect::<BTreeSet<_>>();
++        let mut run = CampaignRun::prepare(plan);
++        run.start(None, &installed)
++            .map_err(|rejection| format!("{} ({})", rejection.message(), rejection.code()))?;
++        let now_unix_ms = unix_ms();
++        self.benchmark_campaign.run = Some(run);
++        self.benchmark_campaign.live_activity = CampaignLiveActivity {
++            last_refresh_unix_ms: now_unix_ms,
++            last_activity_unix_ms: Some(now_unix_ms.saturating_sub(700)),
++            initialized: true,
++            child_lines: vec![
++                "stderr | [benchmark.acp] session metadata updated".to_owned(),
++                "stderr | [benchmark.acp] tool call is InProgress".to_owned(),
++            ],
++            backend_lines: vec![
++                "srv update_slots: id 0 | new prompt, n_ctx_slot = 32768".to_owned(),
++                "srv update_slots: prompt processing in progress, n_past = 6144".to_owned(),
++            ],
++            backend_task: None,
++            error: None,
++        };
++        self.benchmark_campaign.message =
++            Some("Campaign started. Recording is now active.".to_owned());
++        Ok(())
++    }
++
+     #[cfg(feature = "visual-validation")]
+     pub fn prepare_benchmark_campaign_reset_visual_validation(&mut self) -> Result<(), String> {
+         self.prepare_benchmark_campaign_completed_visual_validation()?;
+@@ -427,7 +535,9 @@ impl AiStudioPanel {
+                     .is_some_and(|scenario| {
+                         matches!(
+                             scenario.as_str(),
+-                            "ADR 0156 Benchmark Completed" | "ADR 0156 Benchmark Reset"
++                            "ADR 0156 Benchmark Completed"
++                                | "ADR 0156 Benchmark Running"
++                                | "ADR 0156 Benchmark Reset"
+                         )
+                     })
+                 {
+@@ -448,6 +558,7 @@ impl AiStudioPanel {
+                 }
+                 self.show_campaign_download_review(ui);
+                 self.show_campaign_progress_matrix(ui);
++                self.show_campaign_live_activity(ui);
+                 self.show_campaign_report(ui);
+             });
+     }
+@@ -919,6 +1030,77 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn show_campaign_live_activity(&self, ui: &mut egui::Ui) {
++        let Some(run) = self.benchmark_campaign.run.as_ref() else {
++            return;
++        };
++        if run.state() != CampaignState::Running {
++            return;
++        }
++        ui.ctx().request_repaint_after(std::time::Duration::from_millis(
++            CAMPAIGN_LIVE_LOG_REFRESH_MS,
++        ));
++        let activity = &self.benchmark_campaign.live_activity;
++        ui.separator();
++        ui.strong("Live activity");
++        if let Some(next) = run.next_scheduled() {
++            ui.small(format!(
++                "Run {} · {} · {} · repetition {}",
++                next.ordinal, next.model_id, next.task_id, next.repetition
++            ));
++        }
++        match activity.last_activity_unix_ms {
++            Some(timestamp) => {
++                let age_ms = unix_ms().saturating_sub(timestamp);
++                ui.small(format!(
++                    "Last observed activity: Unix {timestamp} ms · {:.1}s ago",
++                    age_ms as f64 / 1_000.0
++                ));
++            }
++            None => {
++                ui.small("Waiting for the first new log line from this run.");
++            }
++        }
++        if let Some(error) = activity.error.as_deref() {
++            ui.small(format!("Live log read warning: {error}"));
++        }
++
++        let child_label = if run.plan().benchmark_runtime().is_some() {
++            "Benchmark child / Goose ACP progress"
++        } else {
++            "Benchmark child"
++        };
++        let backend_environment = run.plan().execution_environment.managed_environment();
++        egui::ScrollArea::vertical()
++            .max_height(160.0)
++            .stick_to_bottom(true)
++            .show(ui, |ui| {
++                if activity.child_lines.is_empty() && activity.backend_lines.is_empty() {
++                    ui.monospace("No log lines observed yet.");
++                    return;
++                }
++                if !activity.child_lines.is_empty() {
++                    ui.small(child_label);
++                    for line in &activity.child_lines {
++                        ui.monospace(line);
++                    }
++                }
++                if !activity.backend_lines.is_empty() {
++                    if !activity.child_lines.is_empty() {
++                        ui.add_space(4.0);
++                    }
++                    if let Some(environment) = backend_environment {
++                        ui.small(format!("Managed llama-server · {}", environment.label()));
++                    } else {
++                        ui.small("Managed llama-server");
++                    }
++                    for line in &activity.backend_lines {
++                        ui.monospace(line);
++                    }
++                }
++            });
++    }
++
+     fn show_campaign_report(&mut self, ui: &mut egui::Ui) {
+         let Some(run) = self.benchmark_campaign.run.as_ref() else {
+             return;
+@@ -1225,6 +1407,7 @@ impl AiStudioPanel {
+         }
+         match self.spawn_campaign_execution(false) {
+             Ok(running) => {
++                self.benchmark_campaign.live_activity = CampaignLiveActivity::default();
+                 self.benchmark_campaign.running = Some(running);
+                 self.benchmark_campaign.message =
+                     Some("Campaign started. Recording is now active.".to_owned());
+@@ -1394,6 +1577,7 @@ impl AiStudioPanel {
+         match run.resume(&probe) {
+             Ok(()) => match self.spawn_campaign_execution(true) {
+                 Ok(running) => {
++                    self.benchmark_campaign.live_activity = CampaignLiveActivity::default();
+                     self.benchmark_campaign.running = Some(running);
+                     self.benchmark_campaign.message = Some(
+                         "Campaign resumed from its persisted completed-run prefix.".to_owned(),
+@@ -1415,8 +1599,108 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn refresh_campaign_live_activity(&mut self) {
++        let now_unix_ms = unix_ms();
++        let last_refresh = self.benchmark_campaign.live_activity.last_refresh_unix_ms;
++        if last_refresh != 0
++            && now_unix_ms.saturating_sub(last_refresh) < CAMPAIGN_LIVE_LOG_REFRESH_MS
++        {
++            return;
++        }
++        let Some((experiment_root, ordinal, backend_id, environment)) = (|| {
++            let running = self.benchmark_campaign.running.as_ref()?;
++            let run = self.benchmark_campaign.run.as_ref()?;
++            let next = run.next_scheduled()?;
++            let backend_id = run
++                .plan()
++                .candidates
++                .iter()
++                .find(|candidate| candidate.representation.model_id == next.model_id)
++                .map(|candidate| candidate.representation.backend_id.clone())?;
++            Some((
++                running.experiment_root.clone(),
++                next.ordinal,
++                backend_id,
++                run.plan().execution_environment.managed_environment(),
++            ))
++        })() else {
++            return;
++        };
++
++        let child_root = experiment_root.join("child");
++        let mut child_lines = Vec::new();
++        let mut errors = Vec::new();
++        for (stream, path) in [
++            (
++                "stdout",
++                child_root.join(format!("run-{ordinal:04}-stdout.log")),
++            ),
++            (
++                "stderr",
++                child_root.join(format!("run-{ordinal:04}-stderr.log")),
++            ),
++        ] {
++            match read_recent_campaign_log_lines(&path, CAMPAIGN_LIVE_LOG_LINES_PER_SOURCE) {
++                Ok(lines) => child_lines.extend(
++                    lines
++                        .into_iter()
++                        .map(|line| format!("{stream} | {line}")),
++                ),
++                Err(error) => errors.push(error),
++            }
++        }
++
++        let mut backend_lines = self.benchmark_campaign.live_activity.backend_lines.clone();
++        if backend_id == MANAGED_BACKEND_ID {
++            match environment {
++                Some(environment) => {
++                    let completed = self
++                        .benchmark_campaign
++                        .live_activity
++                        .backend_task
++                        .as_ref()
++                        .and_then(CampaignBackendLogTask::poll);
++                    if let Some(result) = completed {
++                        self.benchmark_campaign.live_activity.backend_task = None;
++                        match result {
++                            Ok(lines) => backend_lines = lines,
++                            Err(error) => errors.push(error),
++                        }
++                    }
++                    if self.benchmark_campaign.live_activity.backend_task.is_none() {
++                        self.benchmark_campaign.live_activity.backend_task = Some(
++                            CampaignBackendLogTask::spawn(
++                                self.managed_local_runtime.clone(),
++                                environment,
++                            ),
++                        );
++                    }
++                }
++                None => {
++                    self.benchmark_campaign.live_activity.backend_task = None;
++                    backend_lines.clear();
++                    errors.push(
++                        "managed campaign has no frozen execution environment for live logs"
++                            .to_owned(),
++                    );
++                }
++            }
++        } else {
++            self.benchmark_campaign.live_activity.backend_task = None;
++            backend_lines.clear();
++        }
++        let error = (!errors.is_empty()).then(|| errors.join("; "));
++        self.benchmark_campaign.live_activity.update(
++            now_unix_ms,
++            child_lines,
++            backend_lines,
++            error,
++        );
++    }
++
+     /// Admits newly written run results into the campaign state machine.
+     pub(super) fn poll_benchmark_campaign(&mut self) {
++        self.refresh_campaign_live_activity();
+         let Some(running) = self.benchmark_campaign.running.as_mut() else {
+             return;
+         };
+@@ -1619,6 +1903,43 @@ fn result_belongs_to_execution(
+     result.finished_unix_ms >= execution_started_unix_ms
+ }
+ 
++fn read_recent_campaign_log_lines(path: &Path, max_lines: usize) -> Result<Vec<String>, String> {
++    let mut file = match File::open(path) {
++        Ok(file) => file,
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
++        Err(error) => {
++            return Err(format!("could not open `{}`: {error}", path.display()));
++        }
++    };
++    let length = file
++        .metadata()
++        .map_err(|error| format!("could not inspect `{}`: {error}", path.display()))?
++        .len();
++    let start = length.saturating_sub(CAMPAIGN_LIVE_LOG_TAIL_BYTES);
++    if start > 0 {
++        file.seek(SeekFrom::Start(start))
++            .map_err(|error| format!("could not seek `{}`: {error}", path.display()))?;
++    }
++    let mut bytes = Vec::new();
++    file.read_to_end(&mut bytes)
++        .map_err(|error| format!("could not read `{}`: {error}", path.display()))?;
++    if start > 0
++        && let Some(newline) = bytes.iter().position(|byte| *byte == b'\n')
++    {
++        bytes.drain(..=newline);
++    }
++    let text = String::from_utf8_lossy(&bytes);
++    let mut lines = text
++        .lines()
++        .rev()
++        .filter(|line| !line.trim().is_empty())
++        .take(max_lines)
++        .map(str::to_owned)
++        .collect::<Vec<_>>();
++    lines.reverse();
++    Ok(lines)
++}
++
+ fn read_campaign_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
+     let bytes = fs::read(path).map_err(|error| error.to_string())?;
+     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+@@ -1694,6 +2015,35 @@ mod tests {
+         assert!(panel.selected_tasks.contains("read_question_v1"));
+     }
+ 
++    #[test]
++    fn live_activity_tracks_new_run_output_without_reclassifying_stale_backend_tail() {
++        let mut activity = CampaignLiveActivity::default();
++        activity.update(100, Vec::new(), vec!["previous server line".to_owned()], None);
++        assert_eq!(activity.last_activity_unix_ms, None);
++
++        let child = vec!["stderr | goose ACP progress".to_owned()];
++        activity.update(200, child.clone(), vec!["previous server line".to_owned()], None);
++        assert_eq!(activity.last_activity_unix_ms, Some(200));
++
++        activity.update(300, child.clone(), vec!["new server line".to_owned()], None);
++        assert_eq!(activity.last_activity_unix_ms, Some(300));
++        activity.update(400, child, vec!["new server line".to_owned()], None);
++        assert_eq!(activity.last_activity_unix_ms, Some(300));
++    }
++
++    #[test]
++    fn live_log_tail_reads_only_the_newest_lines() {
++        let root = campaign_reset_test_root("live-log-tail");
++        fs::create_dir_all(&root).expect("log root should be created");
++        let path = root.join("run-0000-stderr.log");
++        fs::write(&path, b"one\ntwo\nthree\nfour\n").expect("log should be written");
++        assert_eq!(
++            read_recent_campaign_log_lines(&path, 2).expect("log tail should be readable"),
++            vec!["three".to_owned(), "four".to_owned()]
++        );
++        let _ = fs::remove_dir_all(root);
++    }
++
+     fn campaign_result(finished_unix_ms: u64) -> BenchmarkExperimentResult {
+         BenchmarkExperimentResult {
+             experiment_id: "local-model-campaign-test".to_owned(),
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index c3244e1f63323ac3f4ce84b50defbf29cc2362a7..0b59607ccbb63ff5fb5e79f0091a7e531677e01b 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -93,6 +93,20 @@ impl AiStudioPanel {
+             .is_some_and(|child| child.spec.uses_acp_runtime())
+     }
+ 
++    /// Mirrors only credential-safe ACP activity into the run-scoped child log.
++    ///
++    /// The ACP transport owns raw protocol I/O, which may contain ephemeral MCP
++    /// credentials and is therefore never copied into benchmark diagnostics.
++    /// The campaign parent already captures this child process's stderr per run,
++    /// so normalized event categories provide enough liveness evidence without
++    /// creating another persistence or authorization surface.
++    pub(super) fn report_benchmark_acp_live_event(&self, event: &AcpNormalizedEvent) {
++        if !self.benchmark_child_uses_acp_runtime() {
++            return;
++        }
++        eprintln!("[benchmark.acp] {}", benchmark_acp_live_summary(event));
++    }
++
+     pub(super) fn validate_benchmark_acp_runtime_identity(
+         &self,
+         identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
+@@ -565,6 +579,27 @@ impl AiStudioPanel {
+     }
+ }
+ 
++fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
++    match event {
++        AcpNormalizedEvent::AgentMessage { .. } => "agent message received".to_owned(),
++        AcpNormalizedEvent::Progress { .. } => "progress update".to_owned(),
++        AcpNormalizedEvent::Plan { entries } => {
++            format!("plan updated ({} entries)", entries.len())
++        }
++        AcpNormalizedEvent::ToolCall { status, .. } => {
++            format!("tool call is {status:?}")
++        }
++        AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
++        AcpNormalizedEvent::ProtocolDiagnostic { .. } => {
++            "protocol diagnostic reported".to_owned()
++        }
++        AcpNormalizedEvent::TurnFinished { stop_reason } => {
++            format!("turn finished: {stop_reason:?}")
++        }
++        AcpNormalizedEvent::PermissionRequest(_) => "permission requested".to_owned(),
++    }
++}
++
+ fn benchmark_runtime_from_spec(spec: &BenchmarkChildRunSpec) -> Option<&BenchmarkRuntimeIdentity> {
+     spec.benchmark_runtime()
+ }
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 76656de1c081ff96a0f9bdbed61dfea63a4555c9..ccca0fa2a2fd7f8a761717a21dc46dd1de247ff1 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -101,6 +101,10 @@ impl EditorShell {
+                         ai_studio.prepare_benchmark_campaign_completed_visual_validation()?;
+                         true
+                     }
++                    Some("ADR 0156 Benchmark Running") => {
++                        ai_studio.prepare_benchmark_campaign_running_visual_validation()?;
++                        true
++                    }
+                     Some("ADR 0156 Benchmark Reset") => {
+                         ai_studio.prepare_benchmark_campaign_reset_visual_validation()?;
+                         true
+@@ -136,6 +140,7 @@ impl EditorShell {
+                     | "ADR 0143 Model Resources"
+                     | "ADR 0145 External Agent"
+                     | "ADR 0156 Benchmark Completed"
++                    | "ADR 0156 Benchmark Running"
+                     | "ADR 0156 Benchmark Reset"
+             ) {
+                 // AI Studio scenarios are prepared above and use its detached native viewport.
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index aca7a9de52a96f8f96e3a6621c998ccd85c9f649..030c0503d47a1e397ef47d9c823568c543e9490a 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
+ use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+ use std::fs::{self, File, OpenOptions};
+-use std::io::{self, Read, Write};
++use std::io::{self, Read, Seek, SeekFrom, Write};
+ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Stdio};
+@@ -2297,6 +2297,56 @@ impl ManagedLocalRuntime {
+         self.root.join("state").join("restart-required.txt")
+     }
+ 
++    /// Returns the newest managed llama-server log lines without exposing
++    /// execution-environment-specific paths to AI Studio.
++    pub(crate) fn recent_server_log_lines(
++        &self,
++        environment: ManagedExecutionEnvironment,
++        max_lines: usize,
++    ) -> Result<Vec<String>, ManagedLocalRuntimeError> {
++        if max_lines == 0 {
++            return Ok(Vec::new());
++        }
++        match environment {
++            ManagedExecutionEnvironment::WindowsNative => {
++                let path = self.log_path(environment);
++                match read_recent_local_log_lines(&path, max_lines) {
++                    Ok(lines) => Ok(lines),
++                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
++                    Err(error) => Err(runtime_io(error)),
++                }
++            }
++            ManagedExecutionEnvironment::Wsl2Linux => {
++                let line_count = max_lines.to_string();
++                let log = wsl_server_log_path(environment);
++                let output = managed_wsl_command()
++                    .args(["tail", "-n", line_count.as_str(), log.as_str()])
++                    .output()
++                    .map_err(|error| {
++                        ManagedLocalRuntimeError::new(
++                            ManagedDiagnosticLayer::ManagedProcessStartup,
++                            format!("could not read managed WSL llama-server log: {error}"),
++                        )
++                    })?;
++                if output.status.success() {
++                    return Ok(recent_log_lines(&output.stdout, max_lines));
++                }
++                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
++                if message.contains("No such file or directory") {
++                    return Ok(Vec::new());
++                }
++                Err(ManagedLocalRuntimeError::new(
++                    ManagedDiagnosticLayer::ManagedProcessStartup,
++                    if message.is_empty() {
++                        format!("managed WSL llama-server log tail exited as {}", output.status)
++                    } else {
++                        format!("managed WSL llama-server log tail failed: {message}")
++                    },
++                ))
++            }
++        }
++    }
++
+     fn process_state_path(&self) -> PathBuf {
+         self.root.join("state").join("process.json")
+     }
+@@ -3236,6 +3286,38 @@ fn wsl_server_log_path(environment: ManagedExecutionEnvironment) -> String {
+     )
+ }
+ 
++const RECENT_LOG_TAIL_BYTES: u64 = 64 * 1024;
++
++fn read_recent_local_log_lines(path: &Path, max_lines: usize) -> io::Result<Vec<String>> {
++    let mut file = File::open(path)?;
++    let length = file.metadata()?.len();
++    let start = length.saturating_sub(RECENT_LOG_TAIL_BYTES);
++    if start > 0 {
++        file.seek(SeekFrom::Start(start))?;
++    }
++    let mut bytes = Vec::new();
++    file.read_to_end(&mut bytes)?;
++    if start > 0
++        && let Some(newline) = bytes.iter().position(|byte| *byte == b'\n')
++    {
++        bytes.drain(..=newline);
++    }
++    Ok(recent_log_lines(&bytes, max_lines))
++}
++
++fn recent_log_lines(bytes: &[u8], max_lines: usize) -> Vec<String> {
++    let text = String::from_utf8_lossy(bytes);
++    let mut lines = text
++        .lines()
++        .rev()
++        .filter(|line| !line.trim().is_empty())
++        .take(max_lines)
++        .map(str::to_owned)
++        .collect::<Vec<_>>();
++    lines.reverse();
++    lines
++}
++
+ fn wsl_server_launch_command(
+     server_path: &str,
+     model_path: &Path,
+@@ -4123,6 +4205,14 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn recent_log_lines_keep_only_the_newest_non_empty_entries() {
++        assert_eq!(
++            recent_log_lines(b"one\n\ntwo\nthree\n", 2),
++            vec!["two".to_owned(), "three".to_owned()]
++        );
++    }
++
+     #[test]
+     fn managed_log_path_matches_execution_environment() {
+         let manager = ManagedLocalRuntime {
