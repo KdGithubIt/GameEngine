@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        self.run = None;\n        self.running = None;\n        self.acquisition = None;",
+  "new": "        self.run = None;\n        self.running = None;\n        self.live_activity = CampaignLiveActivity::default();\n        self.acquisition = None;"
+}
