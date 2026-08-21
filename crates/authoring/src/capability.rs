@@ -368,6 +368,38 @@ pub struct AuthoringCapability {
     pub description: String,
 }
 
+/// Context-efficient discovery view of one registered capability.
+///
+/// This summary is derived from [`AuthoringCapability`] and intentionally omits
+/// payload schemas, document contracts, permissions, and transaction metadata.
+/// Structured clients use it to choose a capability before requesting the full
+/// descriptor on demand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthoringCapabilitySummary {
+    /// Stable external capability identifier.
+    pub id: AuthoringCapabilityId,
+    /// Authoring domain that owns the capability.
+    pub domain: AuthoringDomain,
+    /// Semantic shape of the operation.
+    pub kind: AuthoringCapabilityKind,
+    /// How structured clients reach the capability.
+    pub exposure: AuthoringCapabilityExposure,
+    /// Human- and AI-readable description used to choose a capability.
+    pub description: String,
+}
+
+impl From<&AuthoringCapability> for AuthoringCapabilitySummary {
+    fn from(capability: &AuthoringCapability) -> Self {
+        Self {
+            id: capability.id.clone(),
+            domain: capability.domain,
+            kind: capability.kind,
+            exposure: capability.exposure.clone(),
+            description: capability.description.clone(),
+        }
+    }
+}
+
 impl AuthoringCapability {
     /// Requires the capability permission before execution.
     ///
@@ -546,6 +578,14 @@ impl AuthoringCapabilityRegistry {
     /// Returns every capability in deterministic capability-ID order.
     pub fn capabilities(&self) -> impl Iterator<Item = &AuthoringCapability> {
         self.capabilities.values()
+    }
+
+    /// Returns context-efficient summaries in deterministic capability-ID order.
+    ///
+    /// Summaries are always projected from the canonical descriptors, so adapters
+    /// never maintain a second capability catalog for compact discovery.
+    pub fn summaries(&self) -> impl Iterator<Item = AuthoringCapabilitySummary> + '_ {
+        self.capabilities().map(AuthoringCapabilitySummary::from)
     }
 
     /// Returns capabilities owned by one authoring domain.
