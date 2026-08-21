@@ -7560,6 +7560,7 @@ impl AiStudioPanel {
                 context.request_repaint_after(std::time::Duration::from_millis(100));
             }
             AcpBridgePoll::RecordedEvent { run_id, event, .. } => {
+                self.report_benchmark_acp_live_event(&event);
                 if let AcpNormalizedEvent::AgentMessage { text } = event {
                     for line in text.lines() {
                         let Some(payload) = line.trim().strip_prefix(PROVIDER_EVENT_PREFIX) else {

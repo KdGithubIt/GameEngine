@@ -33,8 +33,75 @@ use crate::managed_local_runtime::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+
+const CAMPAIGN_LIVE_LOG_REFRESH_MS: u64 = 750;
+const CAMPAIGN_LIVE_LOG_LINES_PER_SOURCE: usize = 8;
+const CAMPAIGN_LIVE_LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+struct CampaignBackendLogTask {
+    receiver: std::sync::mpsc::Receiver<Result<Vec<String>, String>>,
+}
+
+impl CampaignBackendLogTask {
+    fn spawn(runtime: ManagedLocalRuntime, environment: ManagedExecutionEnvironment) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = runtime
+                .recent_server_log_lines(environment, CAMPAIGN_LIVE_LOG_LINES_PER_SOURCE)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        Self { receiver }
+    }
+
+    fn poll(&self) -> Option<Result<Vec<String>, String>> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err("managed backend log reader disconnected".to_owned()))
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct CampaignLiveActivity {
+    last_refresh_unix_ms: u64,
+    last_activity_unix_ms: Option<u64>,
+    initialized: bool,
+    child_lines: Vec<String>,
+    backend_lines: Vec<String>,
+    backend_task: Option<CampaignBackendLogTask>,
+    error: Option<String>,
+}
+
+impl CampaignLiveActivity {
+    fn update(
+        &mut self,
+        now_unix_ms: u64,
+        child_lines: Vec<String>,
+        backend_lines: Vec<String>,
+        error: Option<String>,
+    ) {
+        let changed = if self.initialized {
+            self.child_lines != child_lines || self.backend_lines != backend_lines
+        } else {
+            !child_lines.is_empty()
+        };
+        self.initialized = true;
+        self.last_refresh_unix_ms = now_unix_ms;
+        if changed {
+            self.last_activity_unix_ms = Some(now_unix_ms);
+        }
+        self.child_lines = child_lines;
+        self.backend_lines = backend_lines;
+        self.error = error;
+    }
+}
 
 /// A campaign whose schedule is being executed by the headless parent.
 struct RunningCampaign {
@@ -115,6 +182,7 @@ pub(super) struct BenchmarkCampaignPanel {
     acquisition_approved: bool,
     run: Option<CampaignRun>,
     running: Option<RunningCampaign>,
+    live_activity: CampaignLiveActivity,
     message: Option<String>,
 }
 
@@ -143,6 +211,7 @@ impl Default for BenchmarkCampaignPanel {
             acquisition_approved: false,
             run: None,
             running: None,
+            live_activity: CampaignLiveActivity::default(),
             message: None,
         }
     }
@@ -199,6 +268,7 @@ impl BenchmarkCampaignPanel {
         self.prior_plan = self.plan.take();
         self.run = None;
         self.running = None;
+        self.live_activity = CampaignLiveActivity::default();
         self.acquisition = None;
         self.acquisition_approved = false;
         self.message = None;
@@ -407,6 +477,44 @@ impl AiStudioPanel {
     }
 
     #[cfg(feature = "visual-validation")]
+    pub fn prepare_benchmark_campaign_running_visual_validation(&mut self) -> Result<(), String> {
+        self.prepare_benchmark_campaign_completed_visual_validation()?;
+        let plan = self
+            .benchmark_campaign
+            .plan
+            .clone()
+            .ok_or_else(|| "Benchmark campaign visual fixture lost its frozen plan.".to_owned())?;
+        let installed = plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.representation.model_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut run = CampaignRun::prepare(plan);
+        run.start(None, &installed)
+            .map_err(|rejection| format!("{} ({})", rejection.message(), rejection.code()))?;
+        let now_unix_ms = unix_ms();
+        self.benchmark_campaign.run = Some(run);
+        self.benchmark_campaign.live_activity = CampaignLiveActivity {
+            last_refresh_unix_ms: now_unix_ms,
+            last_activity_unix_ms: Some(now_unix_ms.saturating_sub(700)),
+            initialized: true,
+            child_lines: vec![
+                "stderr | [benchmark.acp] session metadata updated".to_owned(),
+                "stderr | [benchmark.acp] tool call is InProgress".to_owned(),
+            ],
+            backend_lines: vec![
+                "srv update_slots: id 0 | new prompt, n_ctx_slot = 32768".to_owned(),
+                "srv update_slots: prompt processing in progress, n_past = 6144".to_owned(),
+            ],
+            backend_task: None,
+            error: None,
+        };
+        self.benchmark_campaign.message =
+            Some("Campaign started. Recording is now active.".to_owned());
+        Ok(())
+    }
+
+    #[cfg(feature = "visual-validation")]
     pub fn prepare_benchmark_campaign_reset_visual_validation(&mut self) -> Result<(), String> {
         self.prepare_benchmark_campaign_completed_visual_validation()?;
         self.discard_campaign_plan();
@@ -427,7 +535,9 @@ impl AiStudioPanel {
                     .is_some_and(|scenario| {
                         matches!(
                             scenario.as_str(),
-                            "ADR 0156 Benchmark Completed" | "ADR 0156 Benchmark Reset"
+                            "ADR 0156 Benchmark Completed"
+                                | "ADR 0156 Benchmark Running"
+                                | "ADR 0156 Benchmark Reset"
                         )
                     })
                 {
@@ -448,6 +558,7 @@ impl AiStudioPanel {
                 }
                 self.show_campaign_download_review(ui);
                 self.show_campaign_progress_matrix(ui);
+                self.show_campaign_live_activity(ui);
                 self.show_campaign_report(ui);
             });
     }
@@ -919,6 +1030,77 @@ impl AiStudioPanel {
         }
     }
 
+    fn show_campaign_live_activity(&self, ui: &mut egui::Ui) {
+        let Some(run) = self.benchmark_campaign.run.as_ref() else {
+            return;
+        };
+        if run.state() != CampaignState::Running {
+            return;
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(
+            CAMPAIGN_LIVE_LOG_REFRESH_MS,
+        ));
+        let activity = &self.benchmark_campaign.live_activity;
+        ui.separator();
+        ui.strong("Live activity");
+        if let Some(next) = run.next_scheduled() {
+            ui.small(format!(
+                "Run {} · {} · {} · repetition {}",
+                next.ordinal, next.model_id, next.task_id, next.repetition
+            ));
+        }
+        match activity.last_activity_unix_ms {
+            Some(timestamp) => {
+                let age_ms = unix_ms().saturating_sub(timestamp);
+                ui.small(format!(
+                    "Last observed activity: Unix {timestamp} ms · {:.1}s ago",
+                    age_ms as f64 / 1_000.0
+                ));
+            }
+            None => {
+                ui.small("Waiting for the first new log line from this run.");
+            }
+        }
+        if let Some(error) = activity.error.as_deref() {
+            ui.small(format!("Live log read warning: {error}"));
+        }
+
+        let child_label = if run.plan().benchmark_runtime().is_some() {
+            "Benchmark child / Goose ACP progress"
+        } else {
+            "Benchmark child"
+        };
+        let backend_environment = run.plan().execution_environment.managed_environment();
+        egui::ScrollArea::vertical()
+            .max_height(160.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                if activity.child_lines.is_empty() && activity.backend_lines.is_empty() {
+                    ui.monospace("No log lines observed yet.");
+                    return;
+                }
+                if !activity.child_lines.is_empty() {
+                    ui.small(child_label);
+                    for line in &activity.child_lines {
+                        ui.monospace(line);
+                    }
+                }
+                if !activity.backend_lines.is_empty() {
+                    if !activity.child_lines.is_empty() {
+                        ui.add_space(4.0);
+                    }
+                    if let Some(environment) = backend_environment {
+                        ui.small(format!("Managed llama-server · {}", environment.label()));
+                    } else {
+                        ui.small("Managed llama-server");
+                    }
+                    for line in &activity.backend_lines {
+                        ui.monospace(line);
+                    }
+                }
+            });
+    }
+
     fn show_campaign_report(&mut self, ui: &mut egui::Ui) {
         let Some(run) = self.benchmark_campaign.run.as_ref() else {
             return;
@@ -1225,6 +1407,7 @@ impl AiStudioPanel {
         }
         match self.spawn_campaign_execution(false) {
             Ok(running) => {
+                self.benchmark_campaign.live_activity = CampaignLiveActivity::default();
                 self.benchmark_campaign.running = Some(running);
                 self.benchmark_campaign.message =
                     Some("Campaign started. Recording is now active.".to_owned());
@@ -1394,6 +1577,7 @@ impl AiStudioPanel {
         match run.resume(&probe) {
             Ok(()) => match self.spawn_campaign_execution(true) {
                 Ok(running) => {
+                    self.benchmark_campaign.live_activity = CampaignLiveActivity::default();
                     self.benchmark_campaign.running = Some(running);
                     self.benchmark_campaign.message = Some(
                         "Campaign resumed from its persisted completed-run prefix.".to_owned(),
@@ -1415,8 +1599,108 @@ impl AiStudioPanel {
         }
     }
 
+    fn refresh_campaign_live_activity(&mut self) {
+        let now_unix_ms = unix_ms();
+        let last_refresh = self.benchmark_campaign.live_activity.last_refresh_unix_ms;
+        if last_refresh != 0
+            && now_unix_ms.saturating_sub(last_refresh) < CAMPAIGN_LIVE_LOG_REFRESH_MS
+        {
+            return;
+        }
+        let Some((experiment_root, ordinal, backend_id, environment)) = (|| {
+            let running = self.benchmark_campaign.running.as_ref()?;
+            let run = self.benchmark_campaign.run.as_ref()?;
+            let next = run.next_scheduled()?;
+            let backend_id = run
+                .plan()
+                .candidates
+                .iter()
+                .find(|candidate| candidate.representation.model_id == next.model_id)
+                .map(|candidate| candidate.representation.backend_id.clone())?;
+            Some((
+                running.experiment_root.clone(),
+                next.ordinal,
+                backend_id,
+                run.plan().execution_environment.managed_environment(),
+            ))
+        })() else {
+            return;
+        };
+
+        let child_root = experiment_root.join("child");
+        let mut child_lines = Vec::new();
+        let mut errors = Vec::new();
+        for (stream, path) in [
+            (
+                "stdout",
+                child_root.join(format!("run-{ordinal:04}-stdout.log")),
+            ),
+            (
+                "stderr",
+                child_root.join(format!("run-{ordinal:04}-stderr.log")),
+            ),
+        ] {
+            match read_recent_campaign_log_lines(&path, CAMPAIGN_LIVE_LOG_LINES_PER_SOURCE) {
+                Ok(lines) => child_lines.extend(
+                    lines
+                        .into_iter()
+                        .map(|line| format!("{stream} | {line}")),
+                ),
+                Err(error) => errors.push(error),
+            }
+        }
+
+        let mut backend_lines = self.benchmark_campaign.live_activity.backend_lines.clone();
+        if backend_id == MANAGED_BACKEND_ID {
+            match environment {
+                Some(environment) => {
+                    let completed = self
+                        .benchmark_campaign
+                        .live_activity
+                        .backend_task
+                        .as_ref()
+                        .and_then(CampaignBackendLogTask::poll);
+                    if let Some(result) = completed {
+                        self.benchmark_campaign.live_activity.backend_task = None;
+                        match result {
+                            Ok(lines) => backend_lines = lines,
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                    if self.benchmark_campaign.live_activity.backend_task.is_none() {
+                        self.benchmark_campaign.live_activity.backend_task = Some(
+                            CampaignBackendLogTask::spawn(
+                                self.managed_local_runtime.clone(),
+                                environment,
+                            ),
+                        );
+                    }
+                }
+                None => {
+                    self.benchmark_campaign.live_activity.backend_task = None;
+                    backend_lines.clear();
+                    errors.push(
+                        "managed campaign has no frozen execution environment for live logs"
+                            .to_owned(),
+                    );
+                }
+            }
+        } else {
+            self.benchmark_campaign.live_activity.backend_task = None;
+            backend_lines.clear();
+        }
+        let error = (!errors.is_empty()).then(|| errors.join("; "));
+        self.benchmark_campaign.live_activity.update(
+            now_unix_ms,
+            child_lines,
+            backend_lines,
+            error,
+        );
+    }
+
     /// Admits newly written run results into the campaign state machine.
     pub(super) fn poll_benchmark_campaign(&mut self) {
+        self.refresh_campaign_live_activity();
         let Some(running) = self.benchmark_campaign.running.as_mut() else {
             return;
         };
@@ -1619,6 +1903,43 @@ fn result_belongs_to_execution(
     result.finished_unix_ms >= execution_started_unix_ms
 }
 
+fn read_recent_campaign_log_lines(path: &Path, max_lines: usize) -> Result<Vec<String>, String> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!("could not open `{}`: {error}", path.display()));
+        }
+    };
+    let length = file
+        .metadata()
+        .map_err(|error| format!("could not inspect `{}`: {error}", path.display()))?
+        .len();
+    let start = length.saturating_sub(CAMPAIGN_LIVE_LOG_TAIL_BYTES);
+    if start > 0 {
+        file.seek(SeekFrom::Start(start))
+            .map_err(|error| format!("could not seek `{}`: {error}", path.display()))?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read `{}`: {error}", path.display()))?;
+    if start > 0
+        && let Some(newline) = bytes.iter().position(|byte| *byte == b'\n')
+    {
+        bytes.drain(..=newline);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(max_lines)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    Ok(lines)
+}
+
 fn read_campaign_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
@@ -1692,6 +2013,35 @@ mod tests {
         assert!(!panel.uses_goose_acp());
         panel.selected_tasks.insert("read_question_v1".to_owned());
         assert!(panel.selected_tasks.contains("read_question_v1"));
+    }
+
+    #[test]
+    fn live_activity_tracks_new_run_output_without_reclassifying_stale_backend_tail() {
+        let mut activity = CampaignLiveActivity::default();
+        activity.update(100, Vec::new(), vec!["previous server line".to_owned()], None);
+        assert_eq!(activity.last_activity_unix_ms, None);
+
+        let child = vec!["stderr | goose ACP progress".to_owned()];
+        activity.update(200, child.clone(), vec!["previous server line".to_owned()], None);
+        assert_eq!(activity.last_activity_unix_ms, Some(200));
+
+        activity.update(300, child.clone(), vec!["new server line".to_owned()], None);
+        assert_eq!(activity.last_activity_unix_ms, Some(300));
+        activity.update(400, child, vec!["new server line".to_owned()], None);
+        assert_eq!(activity.last_activity_unix_ms, Some(300));
+    }
+
+    #[test]
+    fn live_log_tail_reads_only_the_newest_lines() {
+        let root = campaign_reset_test_root("live-log-tail");
+        fs::create_dir_all(&root).expect("log root should be created");
+        let path = root.join("run-0000-stderr.log");
+        fs::write(&path, b"one\ntwo\nthree\nfour\n").expect("log should be written");
+        assert_eq!(
+            read_recent_campaign_log_lines(&path, 2).expect("log tail should be readable"),
+            vec!["three".to_owned(), "four".to_owned()]
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     fn campaign_result(finished_unix_ms: u64) -> BenchmarkExperimentResult {
