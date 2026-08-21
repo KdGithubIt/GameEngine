@@ -1,0 +1,6 @@
+{
+  "new": "        assert_eq!(PINNED_GOOSE_VERSION, \"1.45.0+gameengine.ge-midturn-2\");\n",
+  "old": "        assert_eq!(\n            PINNED_GOOSE_VERSION,\n            \"1.45.0+gameengine.ge-midturn-2\"\n        );\n",
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs"
+}
