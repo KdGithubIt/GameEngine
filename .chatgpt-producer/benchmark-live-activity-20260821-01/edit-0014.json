@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "                            \"ADR 0156 Benchmark Completed\" | \"ADR 0156 Benchmark Reset\"",
+  "new": "                            \"ADR 0156 Benchmark Completed\"\n                                | \"ADR 0156 Benchmark Running\"\n                                | \"ADR 0156 Benchmark Reset\""
+}
