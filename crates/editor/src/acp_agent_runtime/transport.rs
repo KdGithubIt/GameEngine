@@ -836,8 +836,7 @@ fn mcp_server(binding: &AcpSessionBinding) -> McpServer {
         "Authorization",
         format!("Bearer {}", binding.mcp.authorization_token()),
     )];
-    if binding.mcp.access
-        == crate::acp_agent_runtime::AcpMcpAccessLevel::AgentRunBoundReadWrite
+    if binding.mcp.access == crate::acp_agent_runtime::AcpMcpAccessLevel::AgentRunBoundReadWrite
         && let Some(run_id) = binding.gameengine_run_id.as_deref()
     {
         headers.push(HttpHeader::new(GAMEENGINE_AGENT_RUN_ID_HEADER, run_id));
