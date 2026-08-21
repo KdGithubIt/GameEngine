@@ -1,0 +1,711 @@
+diff --git a/crates/editor/src/acp_agent_host_bridge.rs b/crates/editor/src/acp_agent_host_bridge.rs
+index b100836750ba157cef50acf9fed87419a03d83c6..f510080c3f54ed00f0675989aa6867c10d0cd1c9 100644
+--- a/crates/editor/src/acp_agent_host_bridge.rs
++++ b/crates/editor/src/acp_agent_host_bridge.rs
+@@ -492,6 +492,13 @@ impl AcpAgentHostBridge {
+         self.attached(acp_id)?.run_id.as_deref().ok_or_else(|| AcpBridgeError::NotRunBound(acp_id.to_owned()))
+     }
+ 
++    pub(crate) fn runtime_identity(
++        &self,
++        acp_id: &str,
++    ) -> Result<&AcpRuntimeIdentity, AcpBridgeError> {
++        Ok(&self.attached(acp_id)?.identity)
++    }
++
+     fn attached(&self, acp_id: &str) -> Result<&AttachedSession, AcpBridgeError> {
+         self.sessions.get(acp_id).ok_or_else(|| AcpBridgeError::SessionNotFound(acp_id.to_owned()))
+     }
+diff --git a/crates/editor/src/acp_agent_runtime.rs b/crates/editor/src/acp_agent_runtime.rs
+index 8c8cee9fabed0c62179c1752319311154b398a1f..9e05758f79d6178abdcfb2fdbf3c5da2b80b135e 100644
+--- a/crates/editor/src/acp_agent_runtime.rs
++++ b/crates/editor/src/acp_agent_runtime.rs
+@@ -16,6 +16,10 @@ use std::path::PathBuf;
+ 
+ /// Stable ACP wire version used by the first GameEngine adapters.
+ pub(crate) const ACP_STABLE_PROTOCOL_VERSION: u16 = 1;
++/// Stable benchmark identity for the Editor MCP contract handed to ACP agents.
++pub(crate) const ACP_GAMEENGINE_MCP_TOOL_CONTRACT: &str = "gameengine_editor-mcp-http-v1";
++/// Stable benchmark identity for run-bound Agent Host permission authority.
++pub(crate) const ACP_RUN_BOUND_PERMISSION_PROFILE: &str = "agent_host-run_bound_read_write-v1";
+ 
+ /// Data-driven description of one ACP-capable agent.
+ ///
+diff --git a/crates/editor/src/acp_integration.rs b/crates/editor/src/acp_integration.rs
+index b707351a8e169e84f0c32eaca0e40d508d42aab7..f9e06291eba74a06bf2c051fe7e16d4f1d72189f 100644
+--- a/crates/editor/src/acp_integration.rs
++++ b/crates/editor/src/acp_integration.rs
+@@ -135,6 +135,13 @@ impl AcpIntegration {
+         self.bridge.cancel_run(host, acp_session_id)
+     }
+ 
++    pub(crate) fn runtime_identity(
++        &self,
++        acp_session_id: &str,
++    ) -> Result<crate::acp_agent_runtime::AcpRuntimeIdentity, AcpBridgeError> {
++        self.bridge.runtime_identity(acp_session_id).cloned()
++    }
++
+     pub(crate) fn close_session(&mut self, acp_session_id: &str) -> Result<(), AcpBridgeError> {
+         self.bridge.close_session(acp_session_id)
+     }
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 60e9cf9812421a70b6718ef127a468cb90fef945..71c88dc6e90a364a6ed8cf87fb5838ab7acf563b 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -20,6 +20,8 @@ pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 4;
+ const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
+ pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
+ pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v2";
++pub(crate) const ACP_AGENT_HARNESS_ID: &str = "gameengine-acp-agent-harness";
++pub(crate) const ACP_AGENT_HARNESS_VERSION: &str = "gameengine-acp-agent-harness-v1";
+ pub(crate) const RAW_MODEL_BENCHMARK_TASK_ID: &str = "raw_model_generation_v1";
+ pub(crate) const RAW_MODEL_COMPLETION_CRITERIA: &[&str] = &["model_response_completed"];
+ pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
+@@ -172,6 +174,22 @@ pub(crate) struct BenchmarkRuntimeIdentity {
+ 
+ #[allow(dead_code)]
+ impl BenchmarkRuntimeIdentity {
++    pub(crate) fn gameengine_acp_agent_harness(
++        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
++    ) -> Self {
++        let mut harness = BenchmarkHarnessIdentity::new(
++            ACP_AGENT_HARNESS_ID,
++            ACP_AGENT_HARNESS_VERSION,
++        );
++        harness.mcp_tool_contract = TelemetryValue::Measured(
++            crate::acp_agent_runtime::ACP_GAMEENGINE_MCP_TOOL_CONTRACT.to_owned(),
++        );
++        harness.permission_profile = TelemetryValue::Measured(
++            crate::acp_agent_runtime::ACP_RUN_BOUND_PERMISSION_PROFILE.to_owned(),
++        );
++        Self::acp_agent_harness(harness, identity)
++    }
++
+     pub(crate) fn raw_model(harness: BenchmarkHarnessIdentity) -> Self {
+         Self {
+             lane: BenchmarkLane::RawModel,
+@@ -217,6 +235,29 @@ impl BenchmarkRuntimeIdentity {
+         harness.acp_protocol_version = TelemetryValue::Measured(identity.protocol_version);
+         Self::coding_agent(harness, BenchmarkAgentRuntimeIdentity::from_acp(identity))
+     }
++
++    pub(crate) fn matches_acp_runtime(
++        &self,
++        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
++    ) -> bool {
++        if self.lane == BenchmarkLane::RawModel
++            || self.harness.acp_protocol_version
++                != TelemetryValue::Measured(identity.protocol_version)
++        {
++            return false;
++        }
++        let Some(agent_runtime) = self.agent_runtime.as_ref() else {
++            return false;
++        };
++        if agent_runtime.runtime_id != identity.agent_name {
++            return false;
++        }
++        match (&agent_runtime.runtime_version, identity.agent_version.as_deref()) {
++            (TelemetryValue::Measured(expected), Some(actual)) => expected == actual,
++            (TelemetryValue::Unavailable, None) => true,
++            _ => false,
++        }
++    }
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index ddf09f0c992a9e610b9d613c342df0add44e793c..5154c48bff15c023f9febe8d7a9df51e4c1a6bbd 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -4,7 +4,8 @@
+ //! Windows-native versus WSL2 evidence cannot be mistaken for model-only evidence.
+ 
+ use crate::agent_benchmark::{
+-    BenchmarkModelIdentity, BenchmarkRecord, BenchmarkTaskKind, BenchmarkToolBudget, benchmark_task,
++    BenchmarkLane, BenchmarkModelIdentity, BenchmarkRecord, BenchmarkRuntimeIdentity,
++    BenchmarkTaskKind, BenchmarkToolBudget, benchmark_task,
+ };
+ use crate::agent_host::{AgentCapability, AgentWorkClaim};
+ use crate::managed_local_runtime::ManagedExecutionEnvironment;
+@@ -170,7 +171,43 @@ pub(crate) fn campaign_task_agent_policy(task_id: &str) -> Result<CampaignTaskAg
+     Ok(policy)
+ }
+ 
++pub(crate) fn campaign_task_agent_policy_for_runtime(
++    task_id: &str,
++    runtime: Option<&BenchmarkRuntimeIdentity>,
++) -> Result<CampaignTaskAgentPolicy, String> {
++    let mut policy = campaign_task_agent_policy(task_id)?;
++    if matches!(
++        runtime.map(|runtime| runtime.lane),
++        Some(BenchmarkLane::AgentHarness | BenchmarkLane::CodingAgent)
++    ) {
++        if campaign_task_harness(task_id)? == CampaignTaskHarness::NativeReadQuestion {
++            return Err(
++                "agent-inclusive ACP campaigns cannot relabel the Native read-question provenance harness"
++                    .to_owned(),
++            );
++        }
++        if task_id == "visual_evaluation_v1" {
++            return Err(
++                "agent-inclusive ACP campaigns cannot run visual_evaluation_v1 until the common ACP session boundary carries host-captured image content"
++                    .to_owned(),
++            );
++        }
++        policy
++            .requested_capabilities
++            .insert(AgentCapability::ExternalAgentProcess);
++    }
++    Ok(policy)
++}
++
+ fn task_tool_budget(task_id: &str) -> Result<BenchmarkToolBudget, String> {
++    campaign_task_tool_budget_for_runtime(task_id, None)
++}
++
++pub(crate) fn campaign_task_tool_budget_for_runtime(
++    task_id: &str,
++    runtime: Option<&BenchmarkRuntimeIdentity>,
++) -> Result<BenchmarkToolBudget, String> {
++    let agent_policy = campaign_task_agent_policy_for_runtime(task_id, runtime)?;
+     if campaign_task_harness(task_id)? == CampaignTaskHarness::NativeReadQuestion {
+         return Ok(BenchmarkToolBudget {
+             max_model_turns: 1,
+@@ -181,7 +218,6 @@ fn task_tool_budget(task_id: &str) -> Result<BenchmarkToolBudget, String> {
+         });
+     }
+     let policy = HarnessPolicy::default();
+-    let agent_policy = campaign_task_agent_policy(task_id)?;
+     let permission_budget = agent_policy
+         .requested_capabilities
+         .into_iter()
+@@ -457,6 +493,7 @@ fn measured_u64(value: &TelemetryValue<u64>) -> Option<u64> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::acp_agent_runtime::AcpRuntimeIdentity;
+     use crate::agent_benchmark::BENCHMARK_TASKS;
+ 
+     #[test]
+@@ -515,4 +552,42 @@ mod tests {
+         assert!(inspection.requested_capabilities.is_empty());
+         assert!(inspection.work_claims.is_empty());
+     }
++
++    #[test]
++    fn acp_agent_harness_adds_only_process_authority_to_supported_tasks() {
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
++        );
++        let policy = campaign_task_agent_policy_for_runtime(
++            "code_implementation_v1",
++            Some(&runtime),
++        )
++        .expect("ACP code policy");
++        assert_eq!(
++            policy.requested_capabilities,
++            BTreeSet::from([
++                AgentCapability::CodeWorkspaceApply,
++                AgentCapability::ExternalAgentProcess,
++            ])
++        );
++        assert_eq!(
++            policy.work_claims,
++            BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
++        );
++    }
++
++    #[test]
++    fn acp_agent_harness_rejects_native_read_and_visual_only_tasks() {
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
++        );
++        assert!(
++            campaign_task_agent_policy_for_runtime("read_question_v1", Some(&runtime))
++                .is_err()
++        );
++        assert!(
++            campaign_task_agent_policy_for_runtime("visual_evaluation_v1", Some(&runtime))
++                .is_err()
++        );
++    }
+ }
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index a6a4786d5c2008094cd46e0578c3cd59c8d56053..81a6c9bfc17e663066ad3728789b75df2d467ed4 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -21,7 +21,8 @@ use crate::codex_acp_adapter::{
+     CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
+ };
+ use crate::goose_local_acp::{
+-    GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,
++    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig,
++    GooseLocalAcpRuntime,
+ };
+ use crate::agent_benchmark::{
+     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
+@@ -4654,10 +4655,11 @@ impl AiStudioPanel {
+                 selection,
+                 SelectedAi::Model(ModelBackendPreference::ManagedLocal)
+             )
++            && !self.benchmark_child_uses_acp_runtime()
+         {
+-            // ADR 0156 campaign v2 freezes Managed Local as a model-backend/native-harness
+-            // candidate. Keep that existing lane unchanged until the benchmark migration
+-            // explicitly selects the new coding-agent lane and budgets its process authority.
++            // Legacy campaign plans continue to measure the existing Native harness.
++            // Only an explicit schema-v3 agent-inclusive runtime identity may switch a
++            // benchmark child onto Goose ACP.
+             return Ok(AiExecutionDriver::Legacy);
+         }
+         let logical_ai_id = ai_entry_id(selection, &self.managed_model_id);
+@@ -5626,7 +5628,7 @@ impl AiStudioPanel {
+             .record_event(
+                 run_id,
+                 AgentEventKind::CodeWorkspacePrepared,
+-                "Prepared isolated managed code workspace for the native AgentRuntime.",
++                "Prepared isolated managed code workspace for AgentRuntime execution.",
+             )
+             .map_err(|error| error.to_string())?;
+         self.code_workspace = Some(workspace);
+@@ -6866,7 +6868,7 @@ impl AiStudioPanel {
+             model_judgement_required: true,
+             ..WorkloadSignals::default()
+         });
+-        let native_benchmark_identity = native_config.as_ref().map(|config| {
++        let mut run_benchmark_identity = native_config.as_ref().map(|config| {
+             let inventory = match config {
+                 NativeModelConfig::Local(_) => self.current_installed_inventory().cloned(),
+                 NativeModelConfig::Managed(config) => {
+@@ -6876,6 +6878,17 @@ impl AiStudioPanel {
+             };
+             (config.backend_id().to_owned(), config.model_id(), inventory)
+         });
++        if run_benchmark_identity.is_none()
++            && acp_agent_id.as_deref() == Some(GOOSE_LOCAL_ACP_DESCRIPTOR_ID)
++            && self.benchmark_child_uses_acp_runtime()
++        {
++            let config = self.described_managed_model_config()?;
++            run_benchmark_identity = Some((
++                MANAGED_BACKEND_ID.to_owned(),
++                config.model_id.clone(),
++                Some(self.managed_benchmark_inventory(&config)),
++            ));
++        }
+         let run_id = self
+             .host
+             .start_run_authorized(
+@@ -6911,7 +6924,7 @@ impl AiStudioPanel {
+             }
+         });
+         self.native_run_benchmark_context =
+-            native_benchmark_identity.map(|(backend_id, model_id, inventory)| {
++            run_benchmark_identity.map(|(backend_id, model_id, inventory)| {
+                 NativeRunBenchmarkContext {
+                     run_id: run_id.clone(),
+                     task_id: self.benchmark_task_id.clone(),
+@@ -6942,9 +6955,7 @@ impl AiStudioPanel {
+         self.native_evaluation_had_image = false;
+         self.managed_playtest_started_at = None;
+         self.last_captured_frame = None;
+-        if mode == AgentRuntimeMode::Native
+-            && self.benchmark_child_requires_initial_validation_failure()
+-        {
++        if self.benchmark_child_requires_initial_validation_failure() {
+             self.prepare_native_workspace(&run_id)?;
+             self.host
+                 .transition_run(
+@@ -7166,6 +7177,22 @@ impl AiStudioPanel {
+                 return;
+             }
+         };
++        let runtime_identity = match self.acp.runtime_identity(&acp_session_id) {
++            Ok(identity) => identity,
++            Err(error) => {
++                let _ = self.acp.close_session(&acp_session_id);
++                self.fail_run(
++                    run_id,
++                    format!("Could not read negotiated ACP runtime identity: {error}"),
++                );
++                return;
++            }
++        };
++        if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {
++            let _ = self.acp.close_session(&acp_session_id);
++            self.fail_run(run_id, format!("ACP benchmark runtime mismatch: {error}"));
++            return;
++        }
+         if let Err(error) = self
+             .acp
+             .send_prompt(&mut self.host, &acp_session_id, &prompt)
+@@ -7488,7 +7515,14 @@ impl AiStudioPanel {
+             Err(error) => {
+                 self.active_acp_run_session = None;
+                 self.pending_acp_permission = None;
+-                self.status = Some(format!("ACP Build session failed: {error}"));
++                let message = format!("ACP Build session failed: {error}");
++                if let Some(run_id) = self.active_run_id.clone()
++                    && self.benchmark_child_active()
++                {
++                    self.fail_run(&run_id, message);
++                } else {
++                    self.status = Some(message);
++                }
+                 return;
+             }
+         };
+@@ -7529,6 +7563,36 @@ impl AiStudioPanel {
+                 capability,
+                 ..
+             } => {
++                if self.benchmark_child_active() {
++                    if !self.benchmark_child_allows(capability) {
++                        let _ = self.acp.resolve_permission(
++                            &mut self.host,
++                            &acp_session_id,
++                            &request_id,
++                            ApprovalScope::Deny,
++                        );
++                        self.refuse_unbudgeted_benchmark_child_permission(capability);
++                        return;
++                    }
++                    match self.acp.resolve_permission(
++                        &mut self.host,
++                        &acp_session_id,
++                        &request_id,
++                        ApprovalScope::Run,
++                    ) {
++                        Ok(()) => {
++                            context.request_repaint_after(std::time::Duration::from_millis(16));
++                        }
++                        Err(error) => self.write_benchmark_child_failure(
++                            BenchmarkRunFailureKind::Harness,
++                            format!(
++                                "Could not resolve frozen ACP benchmark permission `{}`: {error}",
++                                capability.label()
++                            ),
++                        ),
++                    }
++                    return;
++                }
+                 self.pending_acp_permission = Some(AcpPendingPermission {
+                     acp_session_id,
+                     request_id,
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index 1e74b08d1b0a7b46fe918ff848a7367a32af6761..3c5204015c78470f6572eed68788de6cf551a9a7 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -1,7 +1,11 @@
+ use super::*;
+-use crate::agent_benchmark::benchmark_project_inspection_ready;
+-use crate::agent_benchmark_campaign::CampaignExecutionProfile;
+-use crate::agent_benchmark_campaign::campaign_task_agent_policy;
++use crate::agent_benchmark::{
++    BenchmarkLane, BenchmarkModelTelemetry, BenchmarkRuntimeIdentity,
++    agent_run_record_with_runtime, benchmark_project_inspection_ready,
++};
++use crate::agent_benchmark_campaign::{
++    CampaignExecutionProfile, campaign_task_agent_policy_for_runtime,
++};
+ use crate::agent_host::AgentRun;
+ use crate::benchmark_experiment::{
+     BenchmarkExperimentResult, BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
+@@ -27,6 +31,7 @@ impl AiStudioPanel {
+     /// Configures this Editor process as one isolated benchmark child.
+     pub fn configure_benchmark_child(&mut self, path: &Path) -> Result<(), String> {
+         let spec = BenchmarkChildRunSpec::read(path)?;
++        validate_benchmark_runtime_spec(&spec)?;
+         match spec.backend_id.as_str() {
+             "ollama-compatible" => {
+                 self.model_backend = ModelBackendPreference::Local;
+@@ -82,6 +87,33 @@ impl AiStudioPanel {
+         self.benchmark_child.is_some()
+     }
+ 
++    pub(super) fn benchmark_child_uses_acp_runtime(&self) -> bool {
++        self.benchmark_child
++            .as_ref()
++            .and_then(|child| benchmark_runtime_from_spec(&child.spec))
++            .is_some()
++    }
++
++    pub(super) fn validate_benchmark_acp_runtime_identity(
++        &self,
++        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
++    ) -> Result<(), String> {
++        let Some(child) = self.benchmark_child.as_ref() else {
++            return Ok(());
++        };
++        let runtime = benchmark_runtime_from_spec(&child.spec).ok_or_else(|| {
++            "benchmark child reached ACP without a frozen benchmark runtime identity".to_owned()
++        })?;
++        if runtime.matches_acp_runtime(identity) {
++            Ok(())
++        } else {
++            Err(format!(
++                "negotiated ACP runtime identity `{}` {:?} protocol v{} does not match the frozen benchmark runtime",
++                identity.agent_name, identity.agent_version, identity.protocol_version
++            ))
++        }
++    }
++
+     pub(super) fn benchmark_child_requires_initial_validation_failure(&self) -> bool {
+         self.benchmark_child
+             .as_ref()
+@@ -113,8 +145,11 @@ impl AiStudioPanel {
+         let Some(child) = self.benchmark_child.as_ref() else {
+             return false;
+         };
+-        campaign_task_agent_policy(&child.spec.task_id)
+-            .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
++        campaign_task_agent_policy_for_runtime(
++            &child.spec.task_id,
++            benchmark_runtime_from_spec(&child.spec),
++        )
++        .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
+     }
+ 
+     /// Ends this run because it asked for a capability its campaign never froze.
+@@ -274,18 +309,30 @@ impl AiStudioPanel {
+             );
+             return;
+         };
+-        match agent_run_record(
+-            &task_id,
+-            &run,
+-            AgentRunBenchmarkIdentity {
+-                backend_id: &identity.backend_id,
+-                model_id: &identity.model_id,
+-                inventory: identity.inventory.as_ref(),
+-                quality: identity.quality,
+-                workload: identity.workload,
+-                hardware: &identity.hardware,
+-            },
+-        ) {
++        let benchmark_identity = AgentRunBenchmarkIdentity {
++            backend_id: &identity.backend_id,
++            model_id: &identity.model_id,
++            inventory: identity.inventory.as_ref(),
++            quality: identity.quality,
++            workload: identity.workload,
++            hardware: &identity.hardware,
++        };
++        let runtime = self
++            .benchmark_child
++            .as_ref()
++            .and_then(|child| benchmark_runtime_from_spec(&child.spec))
++            .cloned();
++        let record = match runtime {
++            Some(runtime) => agent_run_record_with_runtime(
++                &task_id,
++                &run,
++                benchmark_identity,
++                runtime,
++                BenchmarkModelTelemetry::unavailable(),
++            ),
++            None => agent_run_record(&task_id, &run, benchmark_identity),
++        };
++        match record {
+             Ok(record) => self.write_benchmark_child_record(record, identity.routed),
+             Err(error) => {
+                 self.write_benchmark_child_failure(BenchmarkRunFailureKind::CompletionGate, error)
+@@ -350,7 +397,12 @@ impl AiStudioPanel {
+             self.start_native_question();
+             return Ok(());
+         }
+-        self.proposal_draft = benchmark_proposal(&task_id)?;
++        let benchmark_runtime = self
++            .benchmark_child
++            .as_ref()
++            .and_then(|child| benchmark_runtime_from_spec(&child.spec))
++            .cloned();
++        self.proposal_draft = benchmark_proposal(&task_id, benchmark_runtime.as_ref())?;
+         self.begin_run();
+         if self.active_run_id.is_none() {
+             return Err(self.status.clone().unwrap_or_else(|| {
+@@ -514,9 +566,65 @@ impl AiStudioPanel {
+     }
+ }
+ 
+-fn benchmark_proposal(task_id: &str) -> Result<AgentProposal, String> {
++fn benchmark_runtime_from_spec(
++    spec: &BenchmarkChildRunSpec,
++) -> Option<&BenchmarkRuntimeIdentity> {
++    spec.execution_identity
++        .as_ref()
++        .and_then(|identity| identity.benchmark_runtime.as_ref())
++}
++
++fn validate_benchmark_runtime_spec(spec: &BenchmarkChildRunSpec) -> Result<(), String> {
++    let Some(runtime) = benchmark_runtime_from_spec(spec) else {
++        return Ok(());
++    };
++    if runtime.lane == BenchmarkLane::RawModel {
++        return Err(
++            "ADR0156 Agent Benchmark tasks cannot execute under the raw_model lane".to_owned(),
++        );
++    }
++    if runtime.lane != BenchmarkLane::AgentHarness {
++        return Err(
++            "first-release Managed Local ACP campaigns support only the agent_harness lane"
++                .to_owned(),
++        );
++    }
++    if spec.backend_id != MANAGED_BACKEND_ID {
++        return Err(
++            "first-release ACP agent_harness campaigns require GameEngine Managed Local"
++                .to_owned(),
++        );
++    }
++    if spec.task_id == "read_question_v1" {
++        return Err(
++            "read_question_v1 is owned by the Native provenance harness and cannot be relabelled as ACP agent_harness evidence"
++                .to_owned(),
++        );
++    }
++    if spec.task_id == "visual_evaluation_v1" {
++        return Err(
++            "visual_evaluation_v1 requires host-captured image content that the current common ACP session boundary does not carry"
++                .to_owned(),
++        );
++    }
++    let agent = runtime.agent_runtime.as_ref().ok_or_else(|| {
++        "ACP agent_harness benchmark identity is missing its agent runtime".to_owned()
++    })?;
++    if agent.runtime_id != GOOSE_ACP_AGENT_NAME {
++        return Err(format!(
++            "first-release Managed Local ACP benchmark expected Goose runtime `{GOOSE_ACP_AGENT_NAME}`, got `{}`",
++            agent.runtime_id
++        ));
++    }
++    Ok(())
++}
++
++fn benchmark_proposal(
++    task_id: &str,
++    runtime: Option<&BenchmarkRuntimeIdentity>,
++) -> Result<AgentProposal, String> {
+     let mut proposal = AgentProposal::default();
+-    let agent_policy = campaign_task_agent_policy(task_id)?;
++    let agent_policy = campaign_task_agent_policy_for_runtime(task_id, runtime)?;
+     proposal.requested_capabilities = agent_policy.requested_capabilities;
+     proposal.work_claims = agent_policy.work_claims;
+     proposal.goal = match task_id {
+@@ -579,7 +687,7 @@ mod tests {
+ 
+     #[test]
+     fn benchmark_proposals_include_the_frozen_task_authorization() {
+-        let code = benchmark_proposal("code_implementation_v1").expect("code proposal");
++        let code = benchmark_proposal("code_implementation_v1", None).expect("code proposal");
+         assert_eq!(
+             code.requested_capabilities,
+             BTreeSet::from([AgentCapability::CodeWorkspaceApply])
+@@ -589,7 +697,7 @@ mod tests {
+             BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
+         );
+ 
+-        let inspection = benchmark_proposal("project_inspection_v1").expect("inspection proposal");
++        let inspection = benchmark_proposal("project_inspection_v1", None).expect("inspection proposal");
+         assert!(inspection.requested_capabilities.is_empty());
+         assert!(inspection.work_claims.is_empty());
+         assert_eq!(
+@@ -600,11 +708,9 @@ mod tests {
+ 
+     #[test]
+     fn no_benchmark_task_authorizes_launching_an_external_agent_runtime() {
+-        // A child that reaches the external-agent route measures a provider the
+-        // campaign never froze, and its permission request cannot be approved
+-        // because the child has no operator. Every task budget must therefore
+-        // exclude the capability, which is what keeps the frozen model backend
+-        // the only executor a campaign can produce evidence from.
++        // A legacy child that reaches the external-agent route measures a provider the
++        // campaign never froze, so the legacy policy must continue to exclude process
++        // authority. Agent-inclusive plans opt in through their explicit runtime identity.
+         for task_id in [
+             "read_question_v1",
+             "project_inspection_v1",
+@@ -614,7 +720,8 @@ mod tests {
+             "runtime_interaction_v1",
+             "visual_evaluation_v1",
+         ] {
+-            let policy = campaign_task_agent_policy(task_id).expect("task agent policy");
++            let policy = campaign_task_agent_policy_for_runtime(task_id, None)
++                .expect("task agent policy");
+             assert!(
+                 !policy
+                     .requested_capabilities
+@@ -623,4 +730,26 @@ mod tests {
+             );
+         }
+     }
++
++    #[test]
++    fn acp_benchmark_proposal_uses_the_frozen_agent_inclusive_authority() {
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++                GOOSE_ACP_AGENT_NAME,
++                Some("1.0.0".to_owned()),
++            ),
++        );
++        let proposal = benchmark_proposal("code_implementation_v1", Some(&runtime))
++            .expect("ACP code proposal");
++        assert!(
++            proposal
++                .requested_capabilities
++                .contains(&AgentCapability::ExternalAgentProcess)
++        );
++        assert!(
++            proposal
++                .requested_capabilities
++                .contains(&AgentCapability::CodeWorkspaceApply)
++        );
++    }
+ }
+diff --git a/crates/editor/src/benchmark_campaign.rs b/crates/editor/src/benchmark_campaign.rs
+index a8b9bad5d1ef3d190fc62281d299bd9ba3b6f7cb..800b37e234209eb12f3311296d109000e1bce022 100644
+--- a/crates/editor/src/benchmark_campaign.rs
++++ b/crates/editor/src/benchmark_campaign.rs
+@@ -18,7 +18,7 @@ use crate::agent_benchmark_campaign::{
+     CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION, CAMPAIGN_SCHEMA_VERSION,
+     CampaignCandidate, CampaignComparisonClass, CampaignExecutionEnvironment,
+     CampaignExecutionProfile, CampaignRepresentation, CampaignRuntimeIdentity, CampaignTaskPlan,
+-    CandidateTaskContract, HostOnlyEvaluation,
++    CandidateTaskContract, HostOnlyEvaluation, campaign_task_tool_budget_for_runtime,
+ };
+ use crate::benchmark_experiment::{
+     BENCHMARK_FIXTURE_VERSION, BenchmarkExecutionOrder, BenchmarkExperimentSpec,
+@@ -293,6 +293,10 @@ impl CampaignPlan {
+         self.schema_version = CAMPAIGN_SCHEMA_VERSION;
+         let runtime_harness_version = runtime.harness.harness_version.clone();
+         for task_plan in &mut self.task_plans {
++            task_plan.tool_budget = campaign_task_tool_budget_for_runtime(
++                &task_plan.task_id,
++                Some(&runtime),
++            )?;
+             task_plan.runtime_harness_version = runtime_harness_version.clone();
+         }
+         self.benchmark_runtime = Some(runtime);
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index ce6f2afe38821e624bf40e01ed8c5c9b5b481506..24c87b2e153f5eeeb3ab4aa664cfd0d69dc09cd4 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
+ 
+ /// Descriptor ID registered for the Managed Local Goose adapter.
+ pub(crate) const GOOSE_LOCAL_ACP_DESCRIPTOR_ID: &str = "goose.managed-local";
++/// Stable ACP agent name reported by Goose initialization.
++pub(crate) const GOOSE_ACP_AGENT_NAME: &str = "goose";
+ const GOOSE_EXECUTABLE_ENV: &str = "GAMEENGINE_GOOSE_EXECUTABLE";
+ const GOOSE_PROVIDER_ID: &str = "custom_gameengine_managed_local";
+ const GOOSE_PROVIDER_FILE: &str = "custom_gameengine_managed_local.json";
+@@ -89,7 +91,7 @@ impl GooseLocalAcpRuntime {
+         })?;
+         command_output_with_timeout(&executable, &["acp", "--help"])?;
+ 
+-        let acp_identity = AcpRuntimeIdentity::stable("goose", Some(version));
++        let acp_identity = AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(version));
+         let identity = GooseLocalRuntimeIdentity {
+             acp: acp_identity.clone(),
+             managed_runtime: config.managed_model.benchmark_runtime_identity(),
