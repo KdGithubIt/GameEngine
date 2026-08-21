@@ -980,13 +980,12 @@ fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
     {
         return Err("benchmark schemas v1-v3 cannot carry schema-v4 runtime identity".to_owned());
     }
-    if let Some(execution) = record.identity.execution.as_ref() {
-        if execution.benchmark_runtime != record.identity.runtime {
-            return Err(
-                "campaign benchmark runtime identity must match the record runtime identity"
-                    .to_owned(),
-            );
-        }
+    if let Some(execution) = record.identity.execution.as_ref()
+        && execution.benchmark_runtime != record.identity.runtime
+    {
+        return Err(
+            "campaign benchmark runtime identity must match the record runtime identity".to_owned(),
+        );
     }
     if let Some(runtime) = record.identity.runtime.as_ref() {
         if runtime.harness.harness_id.trim().is_empty()

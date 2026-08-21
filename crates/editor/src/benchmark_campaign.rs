@@ -1470,7 +1470,17 @@ mod tests {
             .with_benchmark_runtime(coding_runtime("goose"))
             .expect("coding runtime registration");
         let mut run = started(plan.clone(), &["model-a"]);
-        pass(&mut run, &plan);
+        let scheduled = run.next_scheduled().expect("scheduled run");
+        let mut record = record_for(&plan, "model-a", "project_inspection_v1");
+        record.metrics.tool_calls = TelemetryValue::Measured(2);
+        run.record(CampaignEvidence {
+            scheduled,
+            outcome: BenchmarkRunOutcome::Passed,
+            failure_kind: None,
+            attempt: 0,
+            record: Some(record),
+        })
+        .expect("valid agent-inclusive evidence must be admitted");
         assert!(run.qualified_records().is_empty());
     }
 
