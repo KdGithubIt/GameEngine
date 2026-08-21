@@ -310,11 +310,15 @@ impl AiStudioPanel {
                     .selected_models
                     .contains(&model.model_id)
             })
-            .ok_or_else(|| "Benchmark campaign visual fixture has no registered model.".to_owned())?;
+            .ok_or_else(|| {
+                "Benchmark campaign visual fixture has no registered model.".to_owned()
+            })?;
         let representation = model
             .exact_representation()
             .map(str::to_owned)
-            .ok_or_else(|| "Benchmark campaign visual fixture has no exact GGUF identity.".to_owned())?;
+            .ok_or_else(|| {
+                "Benchmark campaign visual fixture has no exact GGUF identity.".to_owned()
+            })?;
         let model_id = model.model_id.clone();
 
         self.benchmark_campaign.campaign_id = "managed-local-completed".to_owned();
@@ -1555,7 +1559,6 @@ impl AiStudioPanel {
                 Some(format!("Could not persist campaign checkpoint: {error}"));
         }
     }
-
 }
 
 fn engine_commit_changed(frozen_engine_commit: &str, current_engine_commit: &str) -> bool {
@@ -1869,12 +1872,9 @@ mod tests {
         let mut restored = BenchmarkCampaignPanel::load_checkpoint(&root);
         assert_eq!(restored.control_state(), Some(CampaignState::Completed));
         assert!(!restored.settings_editable());
-        assert!(
-            restored
-                .message
-                .as_deref()
-                .is_some_and(|message| message.contains("Restored a machine-local campaign checkpoint"))
-        );
+        assert!(restored.message.as_deref().is_some_and(|message| {
+            message.contains("Restored a machine-local campaign checkpoint")
+        }));
 
         restored.reset_for_new_campaign(&root);
 
