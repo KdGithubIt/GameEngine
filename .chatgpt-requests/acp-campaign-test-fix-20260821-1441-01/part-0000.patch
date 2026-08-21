@@ -1,0 +1,45 @@
+diff --git a/crates/editor/src/benchmark_campaign.rs b/crates/editor/src/benchmark_campaign.rs
+index 2271cb651af8f9702e118753ccaf48b90fc17e16..b815e3384a1126a62f999b50120453341b5c9bc3 100644
+--- a/crates/editor/src/benchmark_campaign.rs
++++ b/crates/editor/src/benchmark_campaign.rs
+@@ -1446,7 +1446,7 @@ mod tests {
+ 
+     #[test]
+     fn benchmark_runtime_registration_changes_campaign_identity_and_execution_identity() {
+-        let legacy = frozen(&["model-a"], &["read_question_v1"]);
++        let legacy = frozen(&["model-a"], &["project_inspection_v1"]);
+         let classified = legacy
+             .clone()
+             .with_benchmark_runtime(coding_runtime("goose"))
+@@ -1457,14 +1457,14 @@ mod tests {
+             Some(BenchmarkLane::CodingAgent)
+         );
+         let execution = classified
+-            .execution_identity("read_question_v1")
++            .execution_identity("project_inspection_v1")
+             .expect("execution identity");
+         assert_eq!(execution.benchmark_runtime, classified.benchmark_runtime);
+     }
+ 
+     #[test]
+     fn agent_inclusive_campaign_evidence_never_qualifies_as_model_only_routing_evidence() {
+-        let plan = frozen(&["model-a"], &["read_question_v1"])
++        let plan = frozen(&["model-a"], &["project_inspection_v1"])
+             .with_benchmark_runtime(coding_runtime("goose"))
+             .expect("coding runtime registration");
+         let mut run = started(plan.clone(), &["model-a"]);
+@@ -1474,12 +1474,12 @@ mod tests {
+ 
+     #[test]
+     fn campaign_rejects_a_record_with_a_different_benchmark_runtime() {
+-        let plan = frozen(&["model-a"], &["read_question_v1"])
++        let plan = frozen(&["model-a"], &["project_inspection_v1"])
+             .with_benchmark_runtime(coding_runtime("goose"))
+             .expect("coding runtime registration");
+         let mut run = started(plan.clone(), &["model-a"]);
+         let scheduled = run.next_scheduled().expect("scheduled run");
+-        let mut record = record_for(&plan, "model-a", "read_question_v1");
++        let mut record = record_for(&plan, "model-a", "project_inspection_v1");
+         record.identity.runtime = None;
+         assert_eq!(
+             run.record(CampaignEvidence {
