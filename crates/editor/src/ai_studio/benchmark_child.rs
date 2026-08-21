@@ -590,6 +590,7 @@ fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
             format!("tool call is {status:?}")
         }
         AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
+        AcpNormalizedEvent::PromptFailed { .. } => "prompt failed".to_owned(),
         AcpNormalizedEvent::ProtocolDiagnostic { .. } => "protocol diagnostic reported".to_owned(),
         AcpNormalizedEvent::TurnFinished { stop_reason } => {
             format!("turn finished: {stop_reason:?}")
