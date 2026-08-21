@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "                    Some(\"ADR 0145 External Agent\") => {\n                        ai_studio.prepare_external_agent_visual_validation();\n                        true\n                    }\n                    Some(_) => false,",
+  "new": "                    Some(\"ADR 0145 External Agent\") => {\n                        ai_studio.prepare_external_agent_visual_validation();\n                        true\n                    }\n                    Some(\"ADR 0156 Benchmark Completed\") => {\n                        ai_studio.prepare_benchmark_campaign_completed_visual_validation()?;\n                        true\n                    }\n                    Some(\"ADR 0156 Benchmark Reset\") => {\n                        ai_studio.prepare_benchmark_campaign_reset_visual_validation()?;\n                        true\n                    }\n                    Some(_) => false,"
+}
