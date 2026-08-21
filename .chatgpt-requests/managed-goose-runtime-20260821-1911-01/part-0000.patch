@@ -1,0 +1,1115 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 5ce71b9fc2f33e8c0553315c2eba70c25e37f418..2301d8c29d8f5bd43cc8e2d63d2dd5fdc8d67ee0 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -50,9 +50,9 @@ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
+ use crate::managed_local_runtime::{
+     GgufModelCapability, MANAGED_BACKEND_ID, ManagedEnvironmentProbe, ManagedEnvironmentProbeTask,
+-    ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
+-    ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
+-    PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
++    ManagedExecutionEnvironment, ManagedGooseSetupStatus, ManagedLocalModelConfig,
++    ManagedLocalRuntime, ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus,
++    ManagedSetupTask, PINNED_GOOSE_VERSION, PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
+ };
+ use crate::model_router::{MODEL_ROUTER_POLICY_VERSION, ModelRoutingPolicy};
+ use crate::native_agent::{
+@@ -3277,6 +3277,16 @@ impl AiStudioPanel {
+             SelectedAi::Agent(kind) => {
+                 agent_unavailable_for_mode(kind, self.conversation_mode, self.agent_readiness(kind))
+             }
++            SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
++                match self.described_managed_model_config() {
++                    Err(error) => Some(error),
++                    Ok(config) if GooseLocalAcpRuntime::setup_required(&config) => Some(
++                        "Managed Local uses Goose over ACP. Goose is not set up on this machine yet; open Settings > Models > Managed Local AI and choose Install Goose."
++                            .to_owned(),
++                    ),
++                    Ok(_) => None,
++                }
++            }
+             SelectedAi::Model(_) => self.described_native_model_config().err(),
+         }
+     }
+@@ -4274,6 +4284,12 @@ impl AiStudioPanel {
+                     installation.environment.label()
+                 ));
+             }
++            Ok(ManagedSetupResult::GooseInstalled(installation)) => {
++                self.status = Some(format!(
++                    "Managed Local ACP runtime ready: Goose {} · verified {}.",
++                    installation.version, installation.asset_sha256
++                ));
++            }
+             Ok(ManagedSetupResult::WslProvisioned) => {
+                 self.status = Some(
+                     "Dedicated GameEngine-LocalAI WSL environment is provisioned. Install the pinned runtime next."
+@@ -4715,8 +4731,18 @@ impl AiStudioPanel {
+                 let managed_model = self.described_managed_model_config()?;
+                 let config =
+                     GooseLocalAcpConfig::new(managed_model).map_err(|error| error.to_string())?;
+-                let runtime =
+-                    GooseLocalAcpRuntime::discover(config).map_err(|error| error.to_string())?;
++                let runtime = match GooseLocalAcpRuntime::discover(config) {
++                    Ok(runtime) => runtime,
++                    Err(error) => {
++                        self.settings_open = true;
++                        self.settings_section = SettingsSection::Models;
++                        let message = format!(
++                            "Managed Local ACP cannot start until Goose is ready. Use Install Goose in Settings > Models > Managed Local AI, then retry. {error}"
++                        );
++                        self.status = Some(message.clone());
++                        return Err(message);
++                    }
++                };
+                 self.acp
+                     .replace(Box::new(runtime))
+                     .map_err(|error| error.to_string())
+diff --git a/crates/editor/src/ai_studio/settings_ui.rs b/crates/editor/src/ai_studio/settings_ui.rs
+index 6ade0a9a5918706f9b010f38b1a89d7aebd88c4f..45e2d31d77a4e1431210f1a36eea9a781c2f87fa 100644
+--- a/crates/editor/src/ai_studio/settings_ui.rs
++++ b/crates/editor/src/ai_studio/settings_ui.rs
+@@ -677,6 +677,153 @@ impl AiStudioPanel {
+                                 ui.spinner();
+                             }
+                         });
++                        let mut goose_status =
++                            self.managed_local_runtime.managed_goose_setup_status();
++                        if let Some(error) = self.status.as_deref().filter(|status| {
++                            status.contains("Goose setup failed")
++                                || status.contains("Managed Local ACP cannot start")
++                        }) {
++                            goose_status = ManagedGooseSetupStatus::Invalid(error.to_owned());
++                        }
++                        theme::card(ui, |ui| {
++                            ui.horizontal_wrapped(|ui| {
++                                ui.strong("ACP agent runtime");
++                                ui.monospace(format!("Goose {PINNED_GOOSE_VERSION}"));
++                                match &goose_status {
++                                    ManagedGooseSetupStatus::Ready => {
++                                        theme::status_pill(ui, theme::StatusTone::Ready, "Ready");
++                                    }
++                                    ManagedGooseSetupStatus::NotInstalled => {
++                                        theme::status_pill(
++                                            ui,
++                                            theme::StatusTone::Blocked,
++                                            "Not installed",
++                                        );
++                                    }
++                                    ManagedGooseSetupStatus::Invalid(_) => {
++                                        theme::status_pill(
++                                            ui,
++                                            theme::StatusTone::Blocked,
++                                            "Needs repair",
++                                        );
++                                    }
++                                }
++                                if setup_busy {
++                                    ui.spinner();
++                                    ui.small("Setup in progress");
++                                }
++                            });
++                            match &goose_status {
++                                ManagedGooseSetupStatus::Ready => {
++                                    ui.small(
++                                        "GameEngine will use this managed Goose first for AI Studio, Benchmark Campaign, and other Managed Local ACP sessions.",
++                                    );
++                                }
++                                ManagedGooseSetupStatus::NotInstalled => {
++                                    ui.small(
++                                        "Managed Local conversations use Goose over ACP. GameEngine can download and verify the pinned Goose runtime; PATH and environment-variable setup are not required.",
++                                    );
++                                }
++                                ManagedGooseSetupStatus::Invalid(error) => {
++                                    ui.small(format!("Managed Goose needs repair: {error}"));
++                                }
++                            }
++                            if !matches!(&goose_status, ManagedGooseSetupStatus::Ready)
++                                && ui
++                                    .add_enabled(
++                                        !setup_busy,
++                                        egui::Button::new(if matches!(
++                                            &goose_status,
++                                            ManagedGooseSetupStatus::Invalid(_)
++                                        ) {
++                                            "Retry Goose setup"
++                                        } else {
++                                            "Install Goose"
++                                        }),
++                                    )
++                                    .clicked()
++                            {
++                                self.start_managed_setup(
++                                    ManagedSetupOperation::InstallGoose,
++                                    "Downloading, verifying, and activating the pinned Goose ACP runtime...",
++                                );
++                            }
++                            egui::CollapsingHeader::new("Advanced Goose executable override")
++                                .default_open(false)
++                                .show(ui, |ui| {
++                                    let override_path = self
++                                        .managed_local_runtime
++                                        .goose_executable_override()
++                                        .ok()
++                                        .flatten();
++                                    match override_path.as_ref() {
++                                        Some(path) => ui.small(format!(
++                                            "Machine-local override: {}",
++                                            path.display()
++                                        )),
++                                        None => ui.small(
++                                            "No machine-local override. Managed Goose remains the normal path.",
++                                        ),
++                                    };
++                                    ui.horizontal_wrapped(|ui| {
++                                        if ui
++                                            .add_enabled(
++                                                !setup_busy,
++                                                egui::Button::new("Choose Goose executable..."),
++                                            )
++                                            .clicked()
++                                            && let Some(path) = rfd::FileDialog::new()
++                                                .add_filter("Goose executable", &["exe"])
++                                                .pick_file()
++                                        {
++                                            match self
++                                                .managed_local_runtime
++                                                .set_goose_executable_override(Some(path))
++                                            {
++                                                Ok(()) => {
++                                                    self.status = Some(
++                                                        "Saved the machine-local Goose executable override."
++                                                            .to_owned(),
++                                                    );
++                                                }
++                                                Err(error) => {
++                                                    self.status = Some(format!(
++                                                        "Could not save Goose override: {error}"
++                                                    ));
++                                                }
++                                            }
++                                        }
++                                        if override_path.is_some()
++                                            && ui
++                                                .add_enabled(
++                                                    !setup_busy,
++                                                    egui::Button::new("Clear override"),
++                                                )
++                                                .clicked()
++                                        {
++                                            match self
++                                                .managed_local_runtime
++                                                .set_goose_executable_override(None)
++                                            {
++                                                Ok(()) => {
++                                                    self.status = Some(
++                                                        "Cleared the machine-local Goose executable override."
++                                                            .to_owned(),
++                                                    );
++                                                }
++                                                Err(error) => {
++                                                    self.status = Some(format!(
++                                                        "Could not clear Goose override: {error}"
++                                                    ));
++                                                }
++                                            }
++                                        }
++                                    });
++                                    ui.small(
++                                        "Discovery order is GameEngine-managed Goose, this machine-local override, GAMEENGINE_GOOSE_EXECUTABLE, PATH, then legacy home locations.",
++                                    );
++                                });
++                        });
+                         if matches!(setup_status.as_ref(), Some(ManagedSetupStatus::RestartRequired))
+                         {
+                             ui.small(
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index eeef21e06a5c169d9997fdbd13292d2a2d41784c..1c5661e0d4c5001d9bded4e6deac3a48e417ed05 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -76,22 +76,10 @@ pub(crate) struct GooseLocalAcpRuntime {
+ impl GooseLocalAcpRuntime {
+     /// Discovers the machine-local Goose executable and exact ACP identity.
+     pub(crate) fn discover(config: GooseLocalAcpConfig) -> Result<Self, AcpRuntimeError> {
+-        let executable = discover_goose_executable()?;
+-        let version_output = command_output_with_timeout(&executable, &["--version"])?;
+-        let version_text = first_nonempty_output_line(&version_output).ok_or_else(|| {
+-            AcpRuntimeError::Transport(
+-                "Goose executable did not report a version; reinstall or set GAMEENGINE_GOOSE_EXECUTABLE to a working goose binary"
+-                    .to_owned(),
+-            )
+-        })?;
+-        let version = extract_semver(&version_text).ok_or_else(|| {
+-            AcpRuntimeError::Transport(format!(
+-                "Goose executable reported an unparseable version: {version_text}"
+-            ))
+-        })?;
+-        command_output_with_timeout(&executable, &["acp", "--help"])?;
+-
+-        let acp_identity = AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(version));
++        let resolved = discover_goose_executable(&config.managed_model)?;
++        let executable = resolved.executable;
++        let acp_identity =
++            AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(resolved.version));
+         let identity = GooseLocalRuntimeIdentity {
+             acp: acp_identity.clone(),
+             managed_runtime: config.managed_model.benchmark_runtime_identity(),
+@@ -118,6 +106,36 @@ impl GooseLocalAcpRuntime {
+         })
+     }
+ 
++    /// Returns whether Managed Local has no discoverable Goose candidate and needs UI setup.
++    ///
++    /// This is intentionally a filesystem-only presentation check. The full resolver still
++    /// probes `--version` and `acp --help` immediately before a session is registered.
++    pub(crate) fn setup_required(config: &ManagedLocalModelConfig) -> bool {
++        let Ok(manager) = ManagedLocalRuntime::open(config.state_root.clone()) else {
++            return true;
++        };
++        if manager.managed_goose_candidate_available() {
++            return false;
++        }
++        if manager
++            .goose_executable_override()
++            .ok()
++            .flatten()
++            .is_some_and(|path| path.is_file())
++        {
++            return false;
++        }
++        if std::env::var_os(GOOSE_EXECUTABLE_ENV)
++            .map(PathBuf::from)
++            .is_some_and(|path| path.is_file())
++        {
++            return false;
++        }
++        !goose_fallback_candidates()
++            .into_iter()
++            .any(|candidate| candidate.executable.is_file())
++    }
++
+     /// Returns the combined ACP + Managed Local identity used by benchmark evidence.
+     pub(crate) fn runtime_identity(&self) -> &GooseLocalRuntimeIdentity {
+         &self.identity
+@@ -381,44 +399,178 @@ impl Drop for GooseEphemeralConfig {
+     }
+ }
+ 
+-fn discover_goose_executable() -> Result<PathBuf, AcpRuntimeError> {
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum GooseExecutableSource {
++    Managed,
++    MachineOverride,
++    EnvironmentOverride,
++    Path,
++    LegacyHome,
++}
++
++impl GooseExecutableSource {
++    const fn label(self) -> &'static str {
++        match self {
++            Self::Managed => "GameEngine-managed Goose",
++            Self::MachineOverride => "machine-local Goose override",
++            Self::EnvironmentOverride => GOOSE_EXECUTABLE_ENV,
++            Self::Path => "PATH",
++            Self::LegacyHome => "legacy home installation",
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++struct GooseExecutableCandidate {
++    source: GooseExecutableSource,
++    executable: PathBuf,
++    strict: bool,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct ResolvedGooseExecutable {
++    executable: PathBuf,
++    version: String,
++}
++
++fn discover_goose_executable(
++    config: &ManagedLocalModelConfig,
++) -> Result<ResolvedGooseExecutable, AcpRuntimeError> {
++    let manager = ManagedLocalRuntime::open(config.state_root.clone())
++        .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;
++    let mut candidates = Vec::new();
++    let mut diagnostics = Vec::new();
++
++    match manager.managed_goose_executable() {
++        Ok(Some(executable)) => candidates.push(GooseExecutableCandidate {
++            source: GooseExecutableSource::Managed,
++            executable,
++            strict: false,
++        }),
++        Ok(None) => {}
++        Err(error) => diagnostics.push(format!("managed Goose is invalid: {error}")),
++    }
++    match manager.goose_executable_override() {
++        Ok(Some(executable)) => candidates.push(GooseExecutableCandidate {
++            source: GooseExecutableSource::MachineOverride,
++            executable,
++            strict: true,
++        }),
++        Ok(None) => {}
++        Err(error) => {
++            return Err(AcpRuntimeError::Transport(format!(
++                "machine-local Goose override is invalid: {error}"
++            )));
++        }
++    }
+     if let Some(configured) = std::env::var_os(GOOSE_EXECUTABLE_ENV) {
+-        let configured = PathBuf::from(configured);
+-        if configured.is_file() {
+-            return Ok(configured);
++        candidates.push(GooseExecutableCandidate {
++            source: GooseExecutableSource::EnvironmentOverride,
++            executable: PathBuf::from(configured),
++            strict: true,
++        });
++    }
++    candidates.extend(goose_fallback_candidates());
++
++    resolve_goose_candidates(candidates, diagnostics, probe_goose_executable)
++}
++
++fn resolve_goose_candidates(
++    candidates: Vec<GooseExecutableCandidate>,
++    mut diagnostics: Vec<String>,
++    mut probe: impl FnMut(&Path) -> Result<String, AcpRuntimeError>,
++) -> Result<ResolvedGooseExecutable, AcpRuntimeError> {
++    for candidate in candidates {
++        if !candidate.executable.is_file() {
++            let message = format!(
++                "{} points to `{}`, but that file does not exist",
++                candidate.source.label(),
++                candidate.executable.display()
++            );
++            if candidate.strict {
++                return Err(AcpRuntimeError::Transport(message));
++            }
++            diagnostics.push(message);
++            continue;
+         }
+-        return Err(AcpRuntimeError::Transport(format!(
+-            "{GOOSE_EXECUTABLE_ENV} points to `{}` but that file does not exist",
+-            configured.display()
+-        )));
+-    }
+-    for candidate in goose_executable_candidates() {
+-        if candidate.is_file() {
+-            return Ok(candidate);
++        match probe(&candidate.executable) {
++            Ok(version) => {
++                return Ok(ResolvedGooseExecutable {
++                    executable: candidate.executable,
++                    version,
++                });
++            }
++            Err(error) if candidate.strict => {
++                return Err(AcpRuntimeError::Transport(format!(
++                    "{} is not a usable Goose ACP executable: {error}",
++                    candidate.source.label()
++                )));
++            }
++            Err(error) => diagnostics.push(format!(
++                "{} candidate `{}` is not usable: {error}",
++                candidate.source.label(),
++                candidate.executable.display()
++            )),
+         }
+     }
+-    Err(AcpRuntimeError::Transport(
+-        "Goose executable was not found. Install Goose, add it to PATH, or set GAMEENGINE_GOOSE_EXECUTABLE to the machine-local goose executable"
+-            .to_owned(),
+-    ))
++    let detail = if diagnostics.is_empty() {
++        String::new()
++    } else {
++        format!(" Details: {}", diagnostics.join("; "))
++    };
++    Err(AcpRuntimeError::Transport(format!(
++        "Goose ACP runtime is not ready. Open AI Studio Settings > Models > Managed Local AI and choose Install Goose; GameEngine can provision the pinned runtime without PATH or environment-variable setup.{detail}"
++    )))
++}
++
++fn probe_goose_executable(executable: &Path) -> Result<String, AcpRuntimeError> {
++    let version_output = command_output_with_timeout(executable, &["--version"])?;
++    let version_text = first_nonempty_output_line(&version_output).ok_or_else(|| {
++        AcpRuntimeError::Transport(
++            "Goose executable did not report a version".to_owned(),
++        )
++    })?;
++    let version = extract_semver(&version_text).ok_or_else(|| {
++        AcpRuntimeError::Transport(format!(
++            "Goose executable reported an unparseable version: {version_text}"
++        ))
++    })?;
++    command_output_with_timeout(executable, &["acp", "--help"])?;
++    Ok(version)
+ }
+ 
+-fn goose_executable_candidates() -> Vec<PathBuf> {
++fn goose_fallback_candidates() -> Vec<GooseExecutableCandidate> {
+     let executable_name = if cfg!(windows) { "goose.exe" } else { "goose" };
+     let mut candidates = std::env::var_os("PATH")
+         .map(|path| {
+             std::env::split_paths(&path)
+-                .map(|directory| directory.join(executable_name))
++                .map(|directory| GooseExecutableCandidate {
++                    source: GooseExecutableSource::Path,
++                    executable: directory.join(executable_name),
++                    strict: false,
++                })
+                 .collect::<Vec<_>>()
+         })
+         .unwrap_or_default();
+     if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
+         let home = PathBuf::from(home);
+         if cfg!(windows) {
+-            candidates.push(home.join("goose").join("goose.exe"));
+-            candidates.push(home.join(".local").join("bin").join("goose.exe"));
++            candidates.push(GooseExecutableCandidate {
++                source: GooseExecutableSource::LegacyHome,
++                executable: home.join("goose").join("goose.exe"),
++                strict: false,
++            });
++            candidates.push(GooseExecutableCandidate {
++                source: GooseExecutableSource::LegacyHome,
++                executable: home.join(".local").join("bin").join("goose.exe"),
++                strict: false,
++            });
+         } else {
+-            candidates.push(home.join(".local").join("bin").join("goose"));
++            candidates.push(GooseExecutableCandidate {
++                source: GooseExecutableSource::LegacyHome,
++                executable: home.join(".local").join("bin").join("goose"),
++                strict: false,
++            });
+         }
+     }
+     candidates
+@@ -521,6 +673,156 @@ mod tests {
+         assert_eq!(extract_semver("goose unknown"), None);
+     }
+ 
++    fn candidate_fixture(name: &str) -> PathBuf {
++        let root = std::env::temp_dir().join(format!(
++            "gameengine-goose-resolver-{}-{name}",
++            std::process::id()
++        ));
++        fs::create_dir_all(&root).expect("resolver fixture root");
++        let executable = root.join("goose.exe");
++        fs::write(&executable, b"fixture").expect("resolver fixture executable");
++        executable
++    }
++
++    #[test]
++    fn managed_goose_precedes_machine_env_and_path_candidates() {
++        let managed = candidate_fixture("managed");
++        let machine = candidate_fixture("machine");
++        let environment = candidate_fixture("environment");
++        let path = candidate_fixture("path");
++        let resolved = resolve_goose_candidates(
++            vec![
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::Managed,
++                    executable: managed.clone(),
++                    strict: false,
++                },
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::MachineOverride,
++                    executable: machine,
++                    strict: true,
++                },
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::EnvironmentOverride,
++                    executable: environment,
++                    strict: true,
++                },
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::Path,
++                    executable: path,
++                    strict: false,
++                },
++            ],
++            Vec::new(),
++            |_| Ok("1.44.0".to_owned()),
++        )
++        .expect("managed candidate");
++        assert_eq!(resolved.executable, managed);
++    }
++
++    #[test]
++    fn invalid_managed_candidate_can_fall_back_to_machine_override() {
++        let managed = candidate_fixture("invalid-managed");
++        let machine = candidate_fixture("valid-machine");
++        let resolved = resolve_goose_candidates(
++            vec![
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::Managed,
++                    executable: managed.clone(),
++                    strict: false,
++                },
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::MachineOverride,
++                    executable: machine.clone(),
++                    strict: true,
++                },
++            ],
++            Vec::new(),
++            |candidate| {
++                if candidate == managed {
++                    Err(AcpRuntimeError::Transport("not Goose".to_owned()))
++                } else {
++                    Ok("1.44.0".to_owned())
++                }
++            },
++        )
++        .expect("machine override fallback");
++        assert_eq!(resolved.executable, machine);
++    }
++
++    #[test]
++    fn invalid_environment_override_is_not_silently_ignored() {
++        let environment = candidate_fixture("invalid-env");
++        let path = candidate_fixture("path-after-env");
++        let error = resolve_goose_candidates(
++            vec![
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::EnvironmentOverride,
++                    executable: environment.clone(),
++                    strict: true,
++                },
++                GooseExecutableCandidate {
++                    source: GooseExecutableSource::Path,
++                    executable: path,
++                    strict: false,
++                },
++            ],
++            Vec::new(),
++            |candidate| {
++                if candidate == environment {
++                    Err(AcpRuntimeError::Transport("not Goose".to_owned()))
++                } else {
++                    Ok("1.44.0".to_owned())
++                }
++            },
++        )
++        .expect_err("explicit environment override must fail closed");
++        assert!(error.to_string().contains(GOOSE_EXECUTABLE_ENV));
++    }
++
++    #[test]
++    fn environment_override_resolves_when_no_managed_candidate_exists() {
++        let environment = candidate_fixture("valid-env");
++        let resolved = resolve_goose_candidates(
++            vec![GooseExecutableCandidate {
++                source: GooseExecutableSource::EnvironmentOverride,
++                executable: environment.clone(),
++                strict: true,
++            }],
++            Vec::new(),
++            |_| Ok("1.44.0".to_owned()),
++        )
++        .expect("environment override");
++        assert_eq!(resolved.executable, environment);
++    }
++
++    #[test]
++    fn path_candidate_remains_the_non_override_fallback() {
++        let path = candidate_fixture("valid-path");
++        let resolved = resolve_goose_candidates(
++            vec![GooseExecutableCandidate {
++                source: GooseExecutableSource::Path,
++                executable: path.clone(),
++                strict: false,
++            }],
++            Vec::new(),
++            |_| Ok("1.44.0".to_owned()),
++        )
++        .expect("PATH fallback");
++        assert_eq!(resolved.executable, path);
++    }
++
++    #[test]
++    fn no_goose_candidate_reports_in_product_setup_action() {
++        let error = resolve_goose_candidates(Vec::new(), Vec::new(), |_| {
++            unreachable!("there is no candidate to probe")
++        })
++        .expect_err("missing Goose must be reported");
++        let message = error.to_string();
++        assert!(message.contains("Install Goose"));
++        assert!(!message.contains("add it to PATH"));
++    }
++
+     #[test]
+     fn managed_identity_stays_attached_to_goose_identity() {
+         let identity = GooseLocalRuntimeIdentity {
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 1b466c962d943fb59eddc967eba84143bc0fabec..2b9558aef0a64359888130b7444cc0b24a0ff445 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -1,8 +1,9 @@
+-//! GameEngine-managed local inference runtime lifecycle for ADR 0155.
++//! GameEngine-managed local inference and agent-runtime lifecycle for ADR 0155/0166.
+ //!
+ //! This module owns machine-local llama.cpp installation, model registration,
+-//! Windows/WSL execution-environment setup, and demand-driven loopback process
+-//! lifecycle. It deliberately has no authoring or egui dependency.
++//! pinned Goose ACP runtime installation, Windows/WSL execution-environment setup,
++//! and demand-driven loopback process lifecycle. It deliberately has no authoring
++//! or egui dependency.
+ 
+ mod gguf;
+ 
+@@ -24,6 +25,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ pub(crate) const MANAGED_BACKEND_ID: &str = "gameengine-managed-llama-cpp";
+ pub(crate) const PINNED_LLAMA_CPP_TAG: &str = "b10336";
+ pub(crate) const PINNED_LLAMA_CPP_REVISION: &str = "f401bb1";
++/// Goose version pinned for the GameEngine-managed ACP agent runtime.
++pub(crate) const PINNED_GOOSE_VERSION: &str = "1.44.0";
++const PINNED_GOOSE_WINDOWS_ASSET: &str = "goose-x86_64-pc-windows-msvc.zip";
++const PINNED_GOOSE_WINDOWS_SHA256: &str =
++    "50ed0ee034355036b94718b65aad5b7a2ec4fd6d80f6ae4fc7f26e623aa5b193";
++const PINNED_GOOSE_WINDOWS_URL: &str = concat!(
++    "https://github.com/block/goose/releases/download/v1.44.0/",
++    "goose-x86_64-pc-windows-msvc.zip"
++);
++const GOOSE_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
+ pub(crate) const MANAGED_WSL_DISTRIBUTION: &str = "GameEngine-LocalAI";
+ const MANAGED_WSL_BASE_DISTRIBUTION: &str = "Ubuntu-22.04";
+ const MANAGED_WSL_EXPECTED_VERSION_ID: &str = "22.04";
+@@ -194,6 +205,31 @@ pub(crate) struct ManagedRuntimeInstallation {
+     pub(crate) retained_artifact_path: PathBuf,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct ManagedGooseInstallation {
++    schema_version: u32,
++    pub(crate) version: String,
++    pub(crate) asset_name: String,
++    pub(crate) asset_sha256: String,
++    pub(crate) executable_sha256: String,
++    pub(crate) installed_unix_ms: u64,
++    pub(crate) executable_path: PathBuf,
++    pub(crate) retained_artifact_path: PathBuf,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++struct ManagedGooseOverride {
++    schema_version: u32,
++    executable_path: PathBuf,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum ManagedGooseSetupStatus {
++    Ready,
++    NotInstalled,
++    Invalid(String),
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub(crate) struct ManagedModelRegistration {
+     pub(crate) model_id: String,
+@@ -610,6 +646,7 @@ pub(crate) struct ManagedLocalRuntime {
+ #[derive(Debug, Clone)]
+ pub(crate) enum ManagedSetupOperation {
+     InstallRuntime(ManagedExecutionEnvironment),
++    InstallGoose,
+     ProvisionWsl,
+     RegisterModel(PathBuf),
+     /// Pairs a multimodal projector with one registered model.
+@@ -632,6 +669,7 @@ pub(crate) enum ManagedSetupOperation {
+ #[derive(Debug, Clone)]
+ pub(crate) enum ManagedSetupResult {
+     RuntimeInstalled(ManagedRuntimeInstallation),
++    GooseInstalled(ManagedGooseInstallation),
+     WslProvisioned,
+     ModelRegistered(ManagedModelRegistration),
+     ModelPrepared(PathBuf),
+@@ -655,6 +693,15 @@ impl ManagedSetupTask {
+                     ManagedSetupOperation::InstallRuntime(environment) => manager
+                         .install_pinned_runtime(environment)
+                         .map(ManagedSetupResult::RuntimeInstalled),
++                    ManagedSetupOperation::InstallGoose => manager
++                        .install_pinned_goose()
++                        .map(ManagedSetupResult::GooseInstalled)
++                        .map_err(|error| {
++                            ManagedLocalRuntimeError::new(
++                                error.layer(),
++                                format!("Goose setup failed: {error}"),
++                            )
++                        }),
+                     ManagedSetupOperation::ProvisionWsl => manager
+                         .provision_managed_wsl_distribution()
+                         .map(|()| ManagedSetupResult::WslProvisioned),
+@@ -784,6 +831,258 @@ impl ManagedLocalRuntime {
+         &self.root
+     }
+ 
++    /// Returns the lightweight setup state shown by AI Studio.
++    ///
++    /// Full executable SHA-256 and ACP capability verification happens in the shared resolver
++    /// before launch; the frame loop never hashes the Goose binary repeatedly.
++    pub(crate) fn managed_goose_setup_status(&self) -> ManagedGooseSetupStatus {
++        match self.managed_goose_installation() {
++            Ok(None) => ManagedGooseSetupStatus::NotInstalled,
++            Ok(Some(_)) if self.managed_goose_candidate_available() => {
++                ManagedGooseSetupStatus::Ready
++            }
++            Ok(Some(_)) => ManagedGooseSetupStatus::Invalid(
++                "the managed Goose installation is stale or incomplete".to_owned(),
++            ),
++            Err(error) => ManagedGooseSetupStatus::Invalid(error.to_string()),
++        }
++    }
++
++    /// Returns whether the managed installation metadata names a present pinned executable.
++    ///
++    /// This lightweight check is safe for the composer frame loop. Full SHA-256 verification
++    /// remains mandatory in [`ManagedLocalRuntime::managed_goose_executable`] before launch.
++    pub(crate) fn managed_goose_candidate_available(&self) -> bool {
++        matches!(
++            self.managed_goose_installation(),
++            Ok(Some(installation))
++                if installation.schema_version == GOOSE_RUNTIME_STATE_SCHEMA_VERSION
++                    && installation.version == PINNED_GOOSE_VERSION
++                    && installation.asset_name == PINNED_GOOSE_WINDOWS_ASSET
++                    && installation.asset_sha256 == PINNED_GOOSE_WINDOWS_SHA256
++                    && installation.executable_path.is_file()
++        )
++    }
++
++    /// Returns the verified GameEngine-managed Goose executable, when installed.
++    pub(crate) fn managed_goose_executable(
++        &self,
++    ) -> Result<Option<PathBuf>, ManagedLocalRuntimeError> {
++        let Some(installation) = self.managed_goose_installation()? else {
++            return Ok(None);
++        };
++        if installation.schema_version != GOOSE_RUNTIME_STATE_SCHEMA_VERSION
++            || installation.version != PINNED_GOOSE_VERSION
++            || installation.asset_name != PINNED_GOOSE_WINDOWS_ASSET
++            || installation.asset_sha256 != PINNED_GOOSE_WINDOWS_SHA256
++        {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++                "managed Goose installation does not match the pinned GameEngine runtime",
++            ));
++        }
++        if !installation.executable_path.is_file() {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++                format!(
++                    "managed Goose executable is missing: {}",
++                    installation.executable_path.display()
++                ),
++            ));
++        }
++        if !installation.retained_artifact_path.is_file() {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++                format!(
++                    "managed Goose retained artifact is missing: {}",
++                    installation.retained_artifact_path.display()
++                ),
++            ));
++        }
++        verify_file_sha256(
++            &installation.executable_path,
++            &installation.executable_sha256,
++            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++        )?;
++        Ok(Some(installation.executable_path))
++    }
++
++    /// Returns the persisted machine-local Goose executable override.
++    pub(crate) fn goose_executable_override(
++        &self,
++    ) -> Result<Option<PathBuf>, ManagedLocalRuntimeError> {
++        let override_state: Option<ManagedGooseOverride> =
++            read_optional_json(&self.goose_override_path()).map_err(runtime_io)?;
++        let Some(override_state) = override_state else {
++            return Ok(None);
++        };
++        if override_state.schema_version != GOOSE_RUNTIME_STATE_SCHEMA_VERSION {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++                "machine-local Goose override uses an unsupported schema version",
++            ));
++        }
++        Ok(Some(override_state.executable_path))
++    }
++
++    /// Sets or clears the machine-local Goose executable override.
++    pub(crate) fn set_goose_executable_override(
++        &self,
++        executable: Option<PathBuf>,
++    ) -> Result<(), ManagedLocalRuntimeError> {
++        let path = self.goose_override_path();
++        let Some(executable) = executable else {
++            return match fs::remove_file(path) {
++                Ok(()) => Ok(()),
++                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
++                Err(error) => Err(runtime_io(error)),
++            };
++        };
++        if !executable.is_absolute() || !executable.is_file() {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++                "machine-local Goose override must name an existing absolute executable path",
++            ));
++        }
++        write_json(
++            &path,
++            &ManagedGooseOverride {
++                schema_version: GOOSE_RUNTIME_STATE_SCHEMA_VERSION,
++                executable_path: executable,
++            },
++        )
++        .map_err(runtime_io)
++    }
++
++    /// Downloads, verifies, stages, and activates the pinned Goose ACP runtime.
++    pub(crate) fn install_pinned_goose(
++        &self,
++    ) -> Result<ManagedGooseInstallation, ManagedLocalRuntimeError> {
++        if !cfg!(target_os = "windows") {
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::OperatingSystemPrerequisite,
++                "managed Goose provisioning is currently available only from the Windows-hosted Editor",
++            ));
++        }
++        if let Some(installation) = self.managed_goose_installation()?
++            && installation.schema_version == GOOSE_RUNTIME_STATE_SCHEMA_VERSION
++            && installation.version == PINNED_GOOSE_VERSION
++            && installation.asset_sha256 == PINNED_GOOSE_WINDOWS_SHA256
++            && self.managed_goose_executable()?.is_some()
++        {
++            return Ok(installation);
++        }
++
++        let runtime_root = self.goose_runtime_root();
++        let final_root = runtime_root.join(format!("v{PINNED_GOOSE_VERSION}"));
++        let staging_root = runtime_root.join(format!("v{PINNED_GOOSE_VERSION}.staging"));
++        let rollback_root = runtime_root.join(format!("v{PINNED_GOOSE_VERSION}.rollback"));
++        let download = self
++            .root
++            .join("downloads")
++            .join(format!("goose-v{PINNED_GOOSE_VERSION}-windows-x86_64.zip"));
++        if download.is_file()
++            && verify_file_sha256(
++                &download,
++                PINNED_GOOSE_WINDOWS_SHA256,
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++            )
++            .is_err()
++        {
++            fs::remove_file(&download).map_err(runtime_io)?;
++        }
++        if !download.is_file() {
++            download_https_file(PINNED_GOOSE_WINDOWS_URL, &download)?;
++        }
++        verify_file_sha256(
++            &download,
++            PINNED_GOOSE_WINDOWS_SHA256,
++            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++        )?;
++
++        if staging_root.exists() {
++            fs::remove_dir_all(&staging_root).map_err(runtime_io)?;
++        }
++        fs::create_dir_all(&staging_root).map_err(runtime_io)?;
++        expand_zip(&download, &staging_root)?;
++        let staged_executable = staging_root.join("goose-package").join("goose.exe");
++        if !staged_executable.is_file() {
++            let _ = fs::remove_dir_all(&staging_root);
++            return Err(ManagedLocalRuntimeError::new(
++                ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++                "verified Goose archive does not contain goose-package/goose.exe",
++            ));
++        }
++        let executable_sha256 = sha256_via_platform(&staged_executable)?;
++        let artifact_dir = staging_root.join("artifacts");
++        fs::create_dir_all(&artifact_dir).map_err(runtime_io)?;
++        let staged_artifact = artifact_dir.join(PINNED_GOOSE_WINDOWS_ASSET);
++        fs::copy(&download, &staged_artifact).map_err(runtime_io)?;
++        verify_file_sha256(
++            &staged_artifact,
++            PINNED_GOOSE_WINDOWS_SHA256,
++            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
++        )?;
++
++        let installation = ManagedGooseInstallation {
++            schema_version: GOOSE_RUNTIME_STATE_SCHEMA_VERSION,
++            version: PINNED_GOOSE_VERSION.to_owned(),
++            asset_name: PINNED_GOOSE_WINDOWS_ASSET.to_owned(),
++            asset_sha256: PINNED_GOOSE_WINDOWS_SHA256.to_owned(),
++            executable_sha256,
++            installed_unix_ms: now_unix_ms(),
++            executable_path: final_root.join("goose-package").join("goose.exe"),
++            retained_artifact_path: final_root
++                .join("artifacts")
++                .join(PINNED_GOOSE_WINDOWS_ASSET),
++        };
++        write_json(&staging_root.join("installation.json"), &installation)
++            .map_err(runtime_io)?;
++
++        if rollback_root.exists() {
++            fs::remove_dir_all(&rollback_root).map_err(runtime_io)?;
++        }
++        if final_root.exists() {
++            fs::rename(&final_root, &rollback_root).map_err(runtime_io)?;
++        }
++        if let Err(error) = fs::rename(&staging_root, &final_root) {
++            if rollback_root.exists() {
++                let _ = fs::rename(&rollback_root, &final_root);
++            }
++            return Err(runtime_io(error));
++        }
++        if let Err(error) = write_json(&self.goose_active_path(), &installation) {
++            let _ = fs::remove_dir_all(&final_root);
++            if rollback_root.exists() {
++                let _ = fs::rename(&rollback_root, &final_root);
++            }
++            return Err(runtime_io(error));
++        }
++        if rollback_root.exists() {
++            fs::remove_dir_all(&rollback_root).map_err(runtime_io)?;
++        }
++        let _verified_executable = self.managed_goose_executable()?;
++        Ok(installation)
++    }
++
++    fn managed_goose_installation(
++        &self,
++    ) -> Result<Option<ManagedGooseInstallation>, ManagedLocalRuntimeError> {
++        read_optional_json(&self.goose_active_path()).map_err(runtime_io)
++    }
++
++    fn goose_runtime_root(&self) -> PathBuf {
++        self.root.join("agent-runtime").join("goose")
++    }
++
++    fn goose_active_path(&self) -> PathBuf {
++        self.goose_runtime_root().join("active.json")
++    }
++
++    fn goose_override_path(&self) -> PathBuf {
++        self.goose_runtime_root().join("override.json")
++    }
++
+     pub(crate) fn setup_status(
+         &self,
+         environment: ManagedExecutionEnvironment,
+@@ -3035,6 +3334,71 @@ mod tests {
+         assert_eq!(ManagedExecutionEnvironment::ALL.len(), 2);
+     }
+ 
++    #[test]
++    fn managed_goose_installation_is_discoverable_and_integrity_checked() {
++        let root = temp_root("goose-installation");
++        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
++        let final_root = manager
++            .goose_runtime_root()
++            .join(format!("v{PINNED_GOOSE_VERSION}"));
++        let executable = final_root.join("goose-package").join("goose.exe");
++        fs::create_dir_all(executable.parent().expect("executable parent"))
++            .expect("goose parent");
++        fs::write(&executable, b"managed-goose-fixture").expect("goose fixture");
++        let executable_sha256 = sha256_via_platform(&executable).expect("fixture sha256");
++        let retained_artifact = final_root.join(PINNED_GOOSE_WINDOWS_ASSET);
++        fs::write(&retained_artifact, b"managed-goose-archive-fixture")
++            .expect("retained Goose fixture");
++        let installation = ManagedGooseInstallation {
++            schema_version: GOOSE_RUNTIME_STATE_SCHEMA_VERSION,
++            version: PINNED_GOOSE_VERSION.to_owned(),
++            asset_name: PINNED_GOOSE_WINDOWS_ASSET.to_owned(),
++            asset_sha256: PINNED_GOOSE_WINDOWS_SHA256.to_owned(),
++            executable_sha256,
++            installed_unix_ms: now_unix_ms(),
++            executable_path: executable.clone(),
++            retained_artifact_path: retained_artifact.clone(),
++        };
++        write_json(&manager.goose_active_path(), &installation).expect("active Goose state");
++        assert_eq!(
++            manager.managed_goose_setup_status(),
++            ManagedGooseSetupStatus::Ready
++        );
++        assert_eq!(
++            manager
++                .managed_goose_executable()
++                .expect("managed Goose lookup"),
++            Some(executable.clone())
++        );
++        fs::write(&executable, b"corrupt").expect("corrupt fixture");
++        assert!(manager.managed_goose_executable().is_err());
++        let _ = fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn machine_local_goose_override_round_trips_without_environment_variables() {
++        let root = temp_root("goose-override");
++        let manager = ManagedLocalRuntime::open(root.join("state")).expect("manager");
++        let executable = root.join("custom-goose.exe");
++        fs::create_dir_all(&root).expect("fixture root");
++        fs::write(&executable, b"custom-goose-fixture").expect("override fixture");
++        manager
++            .set_goose_executable_override(Some(executable.clone()))
++            .expect("save override");
++        assert_eq!(
++            manager.goose_executable_override().expect("read override"),
++            Some(executable)
++        );
++        manager
++            .set_goose_executable_override(None)
++            .expect("clear override");
++        assert_eq!(
++            manager.goose_executable_override().expect("read cleared override"),
++            None
++        );
++        let _ = fs::remove_dir_all(root);
++    }
++
+     #[test]
+     fn malformed_digest_is_rejected_before_comparison() {
+         assert!(!is_sha256_hex("abc"));
+diff --git a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+index e779352320a08b434de9de1d65a37e91ab908524..b563e292e7ba7991c60b4d5e6f94e8fe98afc6e7 100644
+--- a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
++++ b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+@@ -202,6 +202,30 @@ freeze rejects them again if reached programmatically.
+ `validation_repair_v1` remains supported through the existing initial validation
+ failure -> ACP repair -> managed revalidation path.
+ 
++### Managed Local Goose executable lifecycle
++
++Managed Local's ACP route treats Goose as a GameEngine-owned machine-local runtime
++dependency rather than as a prerequisite the user must install manually. The
++existing ADR 0155 Managed Local state root and runtime-artifact policy own the
++pinned Windows Goose archive, verified archive digest, staged activation, active
++installation record, and executable digest. The normal UI installs or repairs
++that runtime without executing a remote installer script and without requiring
++PATH or environment-variable changes.
++
++All Managed Local Goose consumers use the same resolver. Its order is the
++GameEngine-managed installation, an explicit persisted machine-local executable
++override, `GAMEENGINE_GOOSE_EXECUTABLE`, PATH, then legacy home locations retained
++for compatibility. Explicit overrides fail closed when invalid; a corrupt managed
++installation may still yield to a valid explicit override. Every selected
++candidate must report a parseable Goose version and support `goose acp` before it
++becomes an ACP descriptor.
++
++AI Studio and Benchmark Campaign both resolve through `GooseLocalAcpRuntime`; no
++AI-Studio-only executable path exists. A missing or broken Goose runtime is an
++ACP setup failure and never authorizes a Legacy Native fallback. This lifecycle
++changes only machine-local adapter availability and does not transfer Agent Host,
++permission, MCP credential, completion, or persistence authority to Goose.
++
+ ## Consequences
+ 
+ - New ACP agents are registry entries rather than central architecture variants.
