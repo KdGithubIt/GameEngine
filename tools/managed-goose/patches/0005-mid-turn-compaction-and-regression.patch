@@ -1,0 +1,327 @@
+From: GameEngine automation
+Subject: [PATCH 5/5] compact proactively after tool results and cover the same-turn loop
+
+Upstream-Origin: aaif-goose/goose PR #11075
+Upstream-Commit: 0786603fe8187ac52ed826bb07a48956976865f5
+GameEngine-Addition: executable mid-turn regression coverage
+Adapted-To: v1.45.0 (4dc0420f5704a92806c6628c8f0a3497d7a88759)
+
+diff --git a/crates/goose/src/agents/agent.rs b/crates/goose/src/agents/agent.rs
+--- a/crates/goose/src/agents/agent.rs
++++ b/crates/goose/src/agents/agent.rs
+@@ -2974,6 +2974,61 @@ impl Agent {
+                 }
+                 conversation.extend(messages_to_add);
+
++                // The turn-start check cannot see tool output, so a turn that
++                // begins under the threshold can run to the context limit
++                // without ever being re-examined. Re-check here, once the tool
++                // responses have been appended: compacting between a request
++                // and its response would orphan the request. Skipped when the
++                // turn is ending, since the next turn starts with a check, and
++                // after a recovery compaction, which already shrank the context.
++                if !exit_chat && !did_recovery_compact_this_iteration {
++                    let session_now = session_manager
++                        .get_session(&session_config.id, true)
++                        .await?;
++                    let over_threshold = check_if_compaction_needed(
++                        self.provider().await?.as_ref(),
++                        &conversation,
++                        None,
++                        &session_now,
++                    )
++                    .await?;
++
++                    if over_threshold {
++                        yield AgentEvent::Message(
++                            Message::assistant().with_system_notification(
++                                SystemNotificationType::ProgressMessage,
++                                COMPACTION_PROGRESS_TEXT,
++                            )
++                        );
++                        match compact_messages(
++                            self.provider().await?.as_ref(),
++                            &model_config,
++                            &session_config.id,
++                            &conversation,
++                            false,
++                        )
++                        .await
++                        {
++                            Ok(compaction) => {
++                                session_manager
++                                    .replace_conversation(
++                                        &session_config.id,
++                                        &compaction.conversation,
++                                    )
++                                    .await?;
++                                self.update_session_metrics(
++                                    &session_config.id,
++                                    session_config.schedule_id.clone(),
++                                    &compaction.usage,
++                                    Some(compaction.retained_context_tokens),
++                                )
++                                .await?;
++                                conversation = compaction.conversation;
++                                yield AgentEvent::HistoryReplaced(conversation.clone());
++                            }
++                            Err(e) => {
++                                error!("Mid-turn compaction failed: {}", e);
++                            }
++                        }
++                    }
++                }
++
+                 if exit_chat && self.has_pending_steers(&session_config.id).await {
+                     exit_chat = false;
+                 }
+diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
+--- a/crates/goose/tests/compaction.rs
++++ b/crates/goose/tests/compaction.rs
+@@ -8,10 +8,10 @@ use goose::session::session_manager::SessionType;
+ use goose::session::Session;
+ use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
+ use goose_providers::errors::ProviderError;
+ use goose_providers::model::ModelConfig;
+-use rmcp::model::Tool;
+-use std::sync::atomic::{AtomicBool, Ordering};
+-use std::sync::Arc;
++use rmcp::model::{CallToolRequestParams, Tool};
++use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
++use std::sync::{Arc, Mutex};
+ use tempfile::TempDir;
+
+ struct MockCompactionProvider {
+@@ -697,3 +697,192 @@ async fn test_context_limit_recovery_compaction() -> Result<()> {
+
+     Ok(())
+ }
++
++#[derive(Default)]
++struct MidTurnToolLoopProvider {
++    regular_calls: AtomicUsize,
++    compaction_calls: AtomicUsize,
++    regular_input_tokens: Mutex<Vec<i32>>,
++}
++
++impl MidTurnToolLoopProvider {
++    fn is_compaction_request(messages: &[Message]) -> bool {
++        messages.iter().any(|message| {
++            message.content.iter().any(|content| match content {
++                MessageContent::Text(text) => text.text.to_lowercase().contains("summarize"),
++                _ => false,
++            })
++        })
++    }
++
++    fn has_compacted_history(messages: &[Message]) -> bool {
++        messages
++            .iter()
++            .any(|message| message.as_concat_text().contains("<mid-turn compact summary>"))
++    }
++
++    fn visible_tool_response_count(messages: &[Message]) -> usize {
++        messages
++            .iter()
++            .flat_map(|message| message.content.iter())
++            .filter(|content| matches!(content, MessageContent::ToolResponse(_)))
++            .count()
++    }
++}
++
++#[async_trait]
++impl Provider for MidTurnToolLoopProvider {
++    async fn stream(
++        &self,
++        _model_config: &ModelConfig,
++        _system_prompt: &str,
++        messages: &[Message],
++        _tools: &[Tool],
++    ) -> Result<MessageStream, ProviderError> {
++        if Self::is_compaction_request(messages) {
++            self.compaction_calls.fetch_add(1, Ordering::SeqCst);
++            let usage = ProviderUsage::new(
++                "mid-turn-mock".to_string(),
++                Usage::new(Some(2_000), Some(100), Some(2_100)),
++            );
++            return Ok(stream_from_single_message(
++                Message::assistant().with_text("<mid-turn compact summary>"),
++                usage,
++            ));
++        }
++
++        let call_index = self.regular_calls.fetch_add(1, Ordering::SeqCst);
++        let compacted = Self::has_compacted_history(messages);
++        let tool_responses = Self::visible_tool_response_count(messages);
++        let input_tokens = if compacted {
++            4_000
++        } else {
++            6_000 + (tool_responses as i32 * 6_000)
++        };
++        self.regular_input_tokens
++            .lock()
++            .expect("input token capture mutex poisoned")
++            .push(input_tokens);
++
++        if input_tokens > 20_000 {
++            return Err(ProviderError::ExecutionError(
++                "proactive mid-turn compaction did not run before the hard limit".to_string(),
++            ));
++        }
++
++        let message = if compacted {
++            Message::assistant().with_text("done after mid-turn compaction")
++        } else {
++            Message::assistant().with_tool_request(
++                format!("midturn-tool-{call_index}"),
++                Ok(CallToolRequestParams::new("missing_midturn_tool")),
++            )
++        };
++        let usage = ProviderUsage::new(
++            "mid-turn-mock".to_string(),
++            Usage::new(
++                Some(input_tokens),
++                Some(100),
++                Some(input_tokens + 100),
++            ),
++        );
++        Ok(stream_from_single_message(message, usage))
++    }
++
++    fn get_name(&self) -> &str {
++        "mid-turn-tool-loop"
++    }
++
++    async fn get_context_limit(
++        &self,
++        _model_config: &ModelConfig,
++    ) -> Result<usize, ProviderError> {
++        Ok(20_000)
++    }
++}
++
++#[tokio::test]
++async fn test_mid_turn_tool_loop_compacts_after_tool_result_and_continues_same_turn() -> Result<()> {
++    let temp_dir = TempDir::new()?;
++    let agent = Agent::new();
++    let session =
++        setup_test_session(&agent, &temp_dir, "mid-turn-tool-loop", Vec::new()).await?;
++    let provider = Arc::new(MidTurnToolLoopProvider::default());
++    let model_config = ModelConfig {
++        model_name: "mid-turn-mock".to_string(),
++        context_limit: Some(20_000),
++        temperature: None,
++        max_tokens: Some(4_096),
++        toolshim: false,
++        toolshim_model: None,
++        request_params: None,
++        reasoning: None,
++        request_headers: None,
++    };
++    agent
++        .update_provider(provider.clone(), model_config, &session.id)
++        .await?;
++
++    let session_config = SessionConfig {
++        id: session.id.clone(),
++        schedule_id: None,
++        max_turns: None,
++        retry_config: None,
++    };
++    let reply_stream = agent
++        .reply(
++            Message::user().with_text("keep using tools until the task is done"),
++            session_config,
++            None,
++        )
++        .await?;
++    tokio::pin!(reply_stream);
++
++    let mut saw_third_request_before_compaction = false;
++    let mut saw_third_response_before_compaction = false;
++    let mut compacted_history = None;
++    let mut saw_final_response = false;
++
++    while let Some(event) = reply_stream.next().await {
++        match event? {
++            AgentEvent::Message(message) => {
++                for content in &message.content {
++                    match content {
++                        MessageContent::ToolRequest(request)
++                            if request.id == "midturn-tool-2" =>
++                        {
++                            assert_eq!(
++                                provider.compaction_calls.load(Ordering::SeqCst),
++                                0,
++                                "must not compact while an assistant tool request is pending"
++                            );
++                            saw_third_request_before_compaction = true;
++                        }
++                        MessageContent::ToolResponse(response)
++                            if response.id == "midturn-tool-2" =>
++                        {
++                            saw_third_response_before_compaction = true;
++                        }
++                        MessageContent::Text(text)
++                            if text.text.contains("done after mid-turn compaction") =>
++                        {
++                            saw_final_response = true;
++                        }
++                        _ => {}
++                    }
++                }
++            }
++            AgentEvent::HistoryReplaced(history) => {
++                assert!(
++                    saw_third_response_before_compaction,
++                    "proactive compaction must occur only after the matching tool result lands"
++                );
++                compacted_history = Some(history);
++            }
++            _ => {}
++        }
++    }
++
++    assert!(saw_third_request_before_compaction);
++    assert!(saw_third_response_before_compaction);
++    assert_eq!(provider.compaction_calls.load(Ordering::SeqCst), 1);
++    assert!(
++        saw_final_response,
++        "the same reply stream must continue after proactive compaction"
++    );
++
++    let history = compacted_history.expect("mid-turn compaction should replace history");
++    for tool_id in ["midturn-tool-0", "midturn-tool-1", "midturn-tool-2"] {
++        let request_count = history
++            .messages()
++            .iter()
++            .flat_map(|message| message.content.iter())
++            .filter(|content| {
++                matches!(content, MessageContent::ToolRequest(request) if request.id == tool_id)
++            })
++            .count();
++        let response_count = history
++            .messages()
++            .iter()
++            .flat_map(|message| message.content.iter())
++            .filter(|content| {
++                matches!(content, MessageContent::ToolResponse(response) if response.id == tool_id)
++            })
++            .count();
++        assert_eq!(request_count, 1, "tool request {tool_id} must remain paired");
++        assert_eq!(response_count, 1, "tool response {tool_id} must remain paired");
++    }
++
++    let inputs = provider
++        .regular_input_tokens
++        .lock()
++        .expect("input token capture mutex poisoned")
++        .clone();
++    assert_eq!(inputs[..3], [6_000, 12_000, 18_000]);
++    assert!(
++        inputs.last().copied().unwrap_or(i32::MAX) < 18_000,
++        "provider input must shrink after compaction: {inputs:?}"
++    );
++
++    Ok(())
++}
