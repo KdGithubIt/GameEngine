@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "use crate::managed_local_runtime::{ManagedAcquisitionPlan, ManagedModelRegistration};\n",
+  "new": "use crate::managed_local_runtime::{\n    ManagedAcquisitionPlan, ManagedIntegrityCheck, ManagedModelRegistration,\n};\n"
+}
