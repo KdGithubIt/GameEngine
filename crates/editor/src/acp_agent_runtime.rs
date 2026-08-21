@@ -456,7 +456,9 @@ impl AcpContextTelemetry {
             number(breakdown.tool_definitions),
             number(breakdown.tool_results),
             largest_tool,
-            self.compaction_threshold.as_deref().unwrap_or("unavailable"),
+            self.compaction_threshold
+                .as_deref()
+                .unwrap_or("unavailable"),
             state(self.compaction_triggered),
             number(self.compaction_before_tokens),
             number(self.compaction_after_tokens),
@@ -524,9 +526,9 @@ impl AcpNormalizedEvent {
             | Self::SessionInfo { .. }
             | Self::TurnFinished { .. } => AgentEventKind::SemanticProgress,
             Self::ToolCall { .. } => AgentEventKind::ToolAction,
-            Self::Usage { .. }
-            | Self::ContextTelemetry(_)
-            | Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,
+            Self::Usage { .. } | Self::ContextTelemetry(_) | Self::ProtocolDiagnostic { .. } => {
+                AgentEventKind::ProviderOutput
+            }
             Self::PermissionRequest(_) => AgentEventKind::PermissionRequested,
             Self::PromptFailed { .. } => AgentEventKind::Failure,
         }

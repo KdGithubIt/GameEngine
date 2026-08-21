@@ -229,20 +229,15 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
 
         let compaction_threshold = goose_compaction_threshold();
         let mut descriptor = self.descriptor.clone();
-        descriptor.environment = goose_environment(
-            &lease,
-            &ephemeral,
-            token_budget,
-            &compaction_threshold,
-        );
+        descriptor.environment =
+            goose_environment(&lease, &ephemeral, token_budget, &compaction_threshold);
         let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(
             descriptor,
             &["goose", "toolCall", "toolName"],
         )?;
         match runtime.open_session(request) {
             Ok(inner) => {
-                let context_telemetry =
-                    goose_context_telemetry(token_budget, compaction_threshold);
+                let context_telemetry = goose_context_telemetry(token_budget, compaction_threshold);
                 Ok(Box::new(GooseLocalAcpSession {
                     inner,
                     lease: Some(lease),
@@ -449,16 +444,18 @@ fn goose_context_telemetry(
 }
 
 pub(crate) fn parse_goose_context_overflow(message: &str) -> Option<AcpProviderContextFailure> {
-    fn number_between(message: &str, prefix: &str, suffix: &str) -> Option<u64> {
-        let value = message.split_once(prefix)?.1.split_once(suffix)?.0.trim();
-        (!value.is_empty() && value.chars().all(|character| character.is_ascii_digit()))
-            .then(|| value.parse::<u64>().ok())
-            .flatten()
+    fn ascii_u64(value: &str) -> Option<u64> {
+        let value = value.trim();
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        value.parse::<u64>().ok()
     }
 
-    let requested_tokens = number_between(message, "request (", " tokens) exceeds")?;
-    let available_context_tokens =
-        number_between(message, "available context size (", " tokens)")?;
+    let (requested_side, available_side) =
+        message.split_once(" tokens) exceeds the available context size (")?;
+    let requested_tokens = ascii_u64(requested_side.rsplit_once("request (")?.1)?;
+    let available_context_tokens = ascii_u64(available_side.split_once(" tokens)")?.0)?;
     Some(AcpProviderContextFailure {
         requested_tokens,
         available_context_tokens,

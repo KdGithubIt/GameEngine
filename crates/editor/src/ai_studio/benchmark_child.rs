@@ -612,9 +612,7 @@ fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
         AcpNormalizedEvent::Usage {
             used_tokens,
             context_limit_tokens,
-        } => format!(
-            "context usage {used_tokens}/{context_limit_tokens} tokens (agent-reported)"
-        ),
+        } => format!("context usage {used_tokens}/{context_limit_tokens} tokens (agent-reported)"),
         AcpNormalizedEvent::ContextTelemetry(telemetry) => telemetry.diagnostic_summary(),
         AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
         AcpNormalizedEvent::PromptFailed { .. } => "prompt failed".to_owned(),

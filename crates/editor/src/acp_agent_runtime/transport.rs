@@ -1032,8 +1032,9 @@ fn handle_session_notification(
                 return send_normalized(
                     events,
                     AcpNormalizedEvent::ProtocolDiagnostic {
-                        message: "ACP usage update did not contain numeric used/context-limit fields"
-                            .to_owned(),
+                        message:
+                            "ACP usage update did not contain numeric used/context-limit fields"
+                                .to_owned(),
                     },
                 );
             };
@@ -1044,7 +1045,7 @@ fn handle_session_notification(
                     context_limit_tokens,
                 },
             )
-        },
+        }
         _ => send_normalized(
             events,
             AcpNormalizedEvent::ProtocolDiagnostic {
@@ -1184,10 +1185,7 @@ fn acp_tool_result_payload_bytes<T: serde::Serialize>(fields: &T) -> Option<u64>
 
 fn acp_usage_tokens<T: serde::Serialize>(usage: &T) -> Option<(u64, u64)> {
     let value = serde_json::to_value(usage).ok()?;
-    Some((
-        value.get("used")?.as_u64()?,
-        value.get("size")?.as_u64()?,
-    ))
+    Some((value.get("used")?.as_u64()?, value.get("size")?.as_u64()?))
 }
 
 fn extract_tool_name_metadata<T: serde::Serialize>(value: &T, path: &[String]) -> Option<String> {
