@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_integration.rs","old":"        self.bridge.attach_opened_ask_session(\n            host,\n            descriptor_id,\n            session,\n            expected_session_id,\n        )","new":"        self.bridge\n            .attach_opened_ask_session(host, descriptor_id, session, expected_session_id)"}
