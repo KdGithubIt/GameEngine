@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "                self.show_campaign_download_review(ui);\n                self.show_campaign_progress_matrix(ui);\n                self.show_campaign_report(ui);",
+  "new": "                self.show_campaign_download_review(ui);\n                self.show_campaign_progress_matrix(ui);\n                self.show_campaign_live_activity(ui);\n                self.show_campaign_report(ui);"
+}
