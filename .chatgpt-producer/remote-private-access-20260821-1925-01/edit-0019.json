@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/remote_publication.rs","old":"\nimpl RemotePublicationMode {\n    pub(crate) const fn label(self) -> &'static str {\n        match self {\n            Self::Manual => \"Manual private network\",\n            Self::TailscaleServe => \"Tailscale Serve\",\n        }\n    }\n}\n","new":"\n"}
