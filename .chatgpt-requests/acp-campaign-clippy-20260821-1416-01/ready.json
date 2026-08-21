@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-campaign-clippy-20260821-1416-01",
+  "target_branch": "chatgpt/gameengine-acp-integration",
+  "expected_head_sha": "efdffc95fcd180f43fa45baa88697fac9ce57658",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "e0483b8d9d21f22f4191fee352824ec2a58f009e55ebf8e08ae4429cf450c3ce",
+  "patch_bytes": 859,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ACP campaign Clippy failure",
+  "pr_title": "GameEngine: integrate ACP external agent runtime",
+  "pr_body": "## Summary\n\n- integrate common ACP transport, AgentHost bridge, Claude/Codex/Goose adapters\n- route first-class AI Studio agent Ask and Build plus normal Managed Local sessions through ACP\n- make Goose ACP Agent Harness the normal/recommended Managed Local Benchmark Campaign path\n- expose an explicit Runtime / Harness selector and freeze its provider-neutral ACP runtime identity through campaign, experiment, child, execution, and terminal record\n- retain Legacy Native only as an explicit compatibility/comparison harness and fail closed instead of silently falling back from ACP\n- reject ACP read-question and visual-evaluation evidence before execution while preserving validation-repair and runtime-aware AgentHost permission authority\n- keep ACP-unobservable model turn/token telemetry unavailable\n- derive the campaign harness default so Clippy -D warnings accepts the selector implementation\n\n## Validation\n\nDispatcher Windows Validation is authoritative for the integrated head.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
