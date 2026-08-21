@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use execution_routing::{AiExecutionDriver, AiExecutionRouter};","new":"use acp_startup::{AcpRuntimeStartupConfig, AcpSessionStartupTask};\nuse execution_routing::{AiExecutionDriver, AiExecutionRouter};"}
