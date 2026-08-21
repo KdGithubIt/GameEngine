@@ -45,7 +45,7 @@ diff --git a/crates/goose-providers/src/http_status.rs b/crates/goose-providers/
                  ProviderError::ContextLengthExceeded(payload_str)
              } else {
                  ProviderError::RequestFailed(format!("Bad request (400): {}", payload_str))
-@@ -430,4 +451,60 @@ mod tests {
+@@ -430,4 +451,59 @@ mod tests {
              );
          }
      }
