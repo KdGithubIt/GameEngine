@@ -1,0 +1,485 @@
+diff --git a/crates/authoring/src/capability.rs b/crates/authoring/src/capability.rs
+index b507136cc34bf600df6c40ba9df0ed71750fcf2c..83c7a2f37798da2f0574106b7ee5676467d5d785 100644
+--- a/crates/authoring/src/capability.rs
++++ b/crates/authoring/src/capability.rs
+@@ -368,6 +368,38 @@ pub struct AuthoringCapability {
+     pub description: String,
+ }
+ 
++/// Context-efficient discovery view of one registered capability.
++///
++/// This summary is derived from [`AuthoringCapability`] and intentionally omits
++/// payload schemas, document contracts, permissions, and transaction metadata.
++/// Structured clients use it to choose a capability before requesting the full
++/// descriptor on demand.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AuthoringCapabilitySummary {
++    /// Stable external capability identifier.
++    pub id: AuthoringCapabilityId,
++    /// Authoring domain that owns the capability.
++    pub domain: AuthoringDomain,
++    /// Semantic shape of the operation.
++    pub kind: AuthoringCapabilityKind,
++    /// How structured clients reach the capability.
++    pub exposure: AuthoringCapabilityExposure,
++    /// Human- and AI-readable description used to choose a capability.
++    pub description: String,
++}
++
++impl From<&AuthoringCapability> for AuthoringCapabilitySummary {
++    fn from(capability: &AuthoringCapability) -> Self {
++        Self {
++            id: capability.id.clone(),
++            domain: capability.domain,
++            kind: capability.kind,
++            exposure: capability.exposure.clone(),
++            description: capability.description.clone(),
++        }
++    }
++}
++
+ impl AuthoringCapability {
+     /// Requires the capability permission before execution.
+     ///
+@@ -548,6 +580,14 @@ impl AuthoringCapabilityRegistry {
+         self.capabilities.values()
+     }
+ 
++    /// Returns context-efficient summaries in deterministic capability-ID order.
++    ///
++    /// Summaries are always projected from the canonical descriptors, so adapters
++    /// never maintain a second capability catalog for compact discovery.
++    pub fn summaries(&self) -> impl Iterator<Item = AuthoringCapabilitySummary> + '_ {
++        self.capabilities().map(AuthoringCapabilitySummary::from)
++    }
++
+     /// Returns capabilities owned by one authoring domain.
+     pub fn domain(&self, domain: AuthoringDomain) -> impl Iterator<Item = &AuthoringCapability> {
+         self.capabilities()
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index 085f6a767d5d2d55104e900c24f886429208b1b5..13324704e66d2140051132dd94547c2689ac8728 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -102,8 +102,8 @@ pub use behavior_tree::{
+ pub use capability::{
+     AuthoringCapability, AuthoringCapabilityError, AuthoringCapabilityExposure,
+     AuthoringCapabilityId, AuthoringCapabilityIdError, AuthoringCapabilityKind,
+-    AuthoringCapabilityRegistry, AuthoringDocumentKind, AuthoringDomain, AuthoringSchemaRef,
+-    AuthoringTransactionRequirement, RESERVED_CAPABILITY_NAMESPACE,
++    AuthoringCapabilityRegistry, AuthoringCapabilitySummary, AuthoringDocumentKind, AuthoringDomain,
++    AuthoringSchemaRef, AuthoringTransactionRequirement, RESERVED_CAPABILITY_NAMESPACE,
+ };
+ pub use command::{AuthoringCommand, Change, CommandResult, PropertyPath, PropertyPathSegment};
+ pub use component_metadata::{
+diff --git a/crates/cli/src/capability_cli.rs b/crates/cli/src/capability_cli.rs
+index 5bb5b6b439fb073e256215afe5d07d8055a7b21f..3c6b92cda5641311e7c638614253c8e1c2348433 100644
+--- a/crates/cli/src/capability_cli.rs
++++ b/crates/cli/src/capability_cli.rs
+@@ -12,7 +12,7 @@
+ use super::{CliError, CliRunResult, to_json};
+ use engine_authoring::{
+     AuthoringCapability, AuthoringCapabilityId, AuthoringCapabilityKind,
+-    AuthoringCapabilityRegistry, Diagnostic,
++    AuthoringCapabilityRegistry, AuthoringCapabilitySummary, Diagnostic,
+ };
+ use serde::Serialize;
+ 
+@@ -55,6 +55,11 @@ impl Verb {
+     }
+ }
+ 
++#[derive(Debug, Serialize)]
++struct CapabilitySummaryListOutput {
++    capabilities: Vec<AuthoringCapabilitySummary>,
++}
++
+ #[derive(Debug, Serialize)]
+ struct CapabilityListOutput<'a> {
+     capabilities: Vec<&'a AuthoringCapability>,
+@@ -68,6 +73,7 @@ struct CapabilityDescribeOutput<'a> {
+ 
+ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
+     match args {
++        [domain, command] if domain == "authoring" && command == "list" => Some(list()),
+         [domain, command] if domain == "authoring" && command == "capabilities" => {
+             Some(capabilities())
+         }
+@@ -89,6 +95,14 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
+     }
+ }
+ 
++fn list() -> Result<CliRunResult, CliError> {
++    let registry = AuthoringCapabilityRegistry::builtin();
++    let output = CapabilitySummaryListOutput {
++        capabilities: registry.summaries().collect(),
++    };
++    Ok(CliRunResult::success(to_json(&output)?))
++}
++
+ fn capabilities() -> Result<CliRunResult, CliError> {
+     let registry = AuthoringCapabilityRegistry::builtin();
+     let output = CapabilityListOutput {
+@@ -249,6 +263,33 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn list_command_reports_canonical_compact_summaries() {
++        let result = run_cli_with_status(["authoring".to_owned(), "list".to_owned()])
++            .expect("compact capability discovery");
++        let json: Value = serde_json::from_str(&result.output).expect("JSON output");
++        let expected = serde_json::to_value(CapabilitySummaryListOutput {
++            capabilities: AuthoringCapabilityRegistry::builtin().summaries().collect(),
++        })
++        .expect("canonical compact summaries must serialize");
++
++        assert_eq!(result.exit_code, 0);
++        assert_eq!(json, expected);
++        assert!(json["capabilities"].as_array().is_some_and(|items| {
++            items.iter().all(|item| {
++                item.get("id").is_some()
++                    && item.get("domain").is_some()
++                    && item.get("kind").is_some()
++                    && item.get("exposure").is_some()
++                    && item.get("description").is_some()
++                    && item.get("input").is_none()
++                    && item.get("output").is_none()
++                    && item.get("permission").is_none()
++                    && item.get("transaction").is_none()
++            })
++        }));
++    }
++
+     #[test]
+     fn capabilities_command_reports_the_canonical_registry() {
+         let result = run_cli_with_status(["authoring".to_owned(), "capabilities".to_owned()])
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+index 1602b5ac7b06a6431c81367ac4c99f35bcb0e95c..06c790412861a450c03157d256ef5e5bb114cebf 100644
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -620,7 +620,7 @@ fn ai_agent_capture_frame(inbox_path: &str) -> Result<CliRunResult, CliError> {
+ }
+ 
+ fn help_text() -> &'static str {
+-    "Usage:\n  engine-cli authoring capabilities\n  engine-cli authoring describe <capability-id>\n  engine-cli authoring inspect|validate|preview|apply <capability-id> [capability arguments]\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli graph inspect <graph.json>\n  engine-cli graph validate <graph.json>\n  engine-cli graph preview <graph.json> <commands.json>\n  engine-cli graph apply <graph.json> <commands.json>\n  engine-cli graph layout inspect <graph.json> <graph.view.json>\n  engine-cli graph layout validate <graph.json> <graph.view.json>\n  engine-cli graph layout preview <graph.json> <graph.view.json> <commands.json>\n  engine-cli graph layout apply <graph.json> <graph.view.json> <commands.json>\n  engine-cli ui inspect <ui.json>\n  engine-cli ui validate <ui.json>\n  engine-cli ui preview <ui.json> <commands.json>\n  engine-cli ui apply <ui.json> <commands.json>\n  engine-cli material inspect <project-root> <asset-relative-path>\n  engine-cli material validate <project-root> <asset-relative-path>\n  engine-cli material preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli material apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli project_settings inspect <project-root>\n  engine-cli project_settings validate <project-root>\n  engine-cli project_settings preview <project-root> <replacement.json>\n  engine-cli project_settings apply <project-root> <replacement.json>\n  engine-cli animation_set inspect <project-root> <asset-relative-path>\n  engine-cli animation_set validate <project-root> <asset-relative-path>\n  engine-cli animation_set preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli animation_set apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_atlas inspect <project-root> <asset-relative-path>\n  engine-cli sprite_atlas validate <project-root> <asset-relative-path>\n  engine-cli sprite_atlas preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_atlas apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_animation inspect <project-root> <asset-relative-path>\n  engine-cli sprite_animation validate <project-root> <asset-relative-path>\n  engine-cli sprite_animation preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_animation apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_set inspect <project-root> <asset-relative-path>\n  engine-cli tile_set validate <project-root> <asset-relative-path>\n  engine-cli tile_set preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_set apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_map inspect <project-root> <asset-relative-path>\n  engine-cli tile_map validate <project-root> <asset-relative-path>\n  engine-cli tile_map preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_map apply <project-root> <asset-relative-path> <replacement.json>
++    "Usage:\n  engine-cli authoring list\n  engine-cli authoring capabilities\n  engine-cli authoring describe <capability-id>\n  engine-cli authoring inspect|validate|preview|apply <capability-id> [capability arguments]\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli graph inspect <graph.json>\n  engine-cli graph validate <graph.json>\n  engine-cli graph preview <graph.json> <commands.json>\n  engine-cli graph apply <graph.json> <commands.json>\n  engine-cli graph layout inspect <graph.json> <graph.view.json>\n  engine-cli graph layout validate <graph.json> <graph.view.json>\n  engine-cli graph layout preview <graph.json> <graph.view.json> <commands.json>\n  engine-cli graph layout apply <graph.json> <graph.view.json> <commands.json>\n  engine-cli ui inspect <ui.json>\n  engine-cli ui validate <ui.json>\n  engine-cli ui preview <ui.json> <commands.json>\n  engine-cli ui apply <ui.json> <commands.json>\n  engine-cli material inspect <project-root> <asset-relative-path>\n  engine-cli material validate <project-root> <asset-relative-path>\n  engine-cli material preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli material apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli project_settings inspect <project-root>\n  engine-cli project_settings validate <project-root>\n  engine-cli project_settings preview <project-root> <replacement.json>\n  engine-cli project_settings apply <project-root> <replacement.json>\n  engine-cli animation_set inspect <project-root> <asset-relative-path>\n  engine-cli animation_set validate <project-root> <asset-relative-path>\n  engine-cli animation_set preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli animation_set apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_atlas inspect <project-root> <asset-relative-path>\n  engine-cli sprite_atlas validate <project-root> <asset-relative-path>\n  engine-cli sprite_atlas preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_atlas apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_animation inspect <project-root> <asset-relative-path>\n  engine-cli sprite_animation validate <project-root> <asset-relative-path>\n  engine-cli sprite_animation preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli sprite_animation apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_set inspect <project-root> <asset-relative-path>\n  engine-cli tile_set validate <project-root> <asset-relative-path>\n  engine-cli tile_set preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_set apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_map inspect <project-root> <asset-relative-path>\n  engine-cli tile_map validate <project-root> <asset-relative-path>\n  engine-cli tile_map preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli tile_map apply <project-root> <asset-relative-path> <replacement.json>
+   engine-cli timeline inspect <project-root> <asset-relative-path>
+   engine-cli timeline validate <project-root> <asset-relative-path>
+   engine-cli timeline preview <project-root> <asset-relative-path> <replacement.json>
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+index 52fe750108d1de445fb698cc997964a8160fe8a8..0e8220bd97de0035c1b9ca9704ce031a6d4f5f7f 100644
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -8,8 +8,8 @@ use engine_authoring::{
+ };
+ use engine_mcp::{
+     AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL, AUTHORING_DESCRIBE_TOOL,
+-    AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL, AssetInspectInput,
+-    AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
++    AUTHORING_INSPECT_TOOL, AUTHORING_LIST_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
++    AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
+     BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, CapabilityDescribeInput,
+     CapabilityInvokeInput, EntityFindInput, EntityInspectInput, GraphMutationInput,
+     GraphViewMutationInput, McpToolError, PrefabCreateInput, PrefabInstantiateInput,
+@@ -114,6 +114,14 @@ impl EditorApp {
+         let capability_tools = AuthoringCapabilityMcpTools::new();
+ 
+         match name {
++            AUTHORING_LIST_TOOL => {
++                require_empty_arguments(arguments)?;
++                to_value(
++                    capability_tools
++                        .list(&permissions)
++                        .map_err(McpToolError::from)?,
++                )
++            }
+             AUTHORING_CAPABILITIES_TOOL => {
+                 require_empty_arguments(arguments)?;
+                 to_value(
+diff --git a/crates/mcp-host/src/headless.rs b/crates/mcp-host/src/headless.rs
+index 887959e4a638fe3dbc3277309b678e39ee18afa1..b5e1892411f175a592f0329a1bc99fae8178568b 100644
+--- a/crates/mcp-host/src/headless.rs
++++ b/crates/mcp-host/src/headless.rs
+@@ -417,6 +417,14 @@ impl HeadlessAuthoringHost {
+         let behavior_tools = BehaviorTreeMcpTools::new();
+ 
+         match name {
++            "authoring.list" => {
++                require_empty(arguments)?;
++                to_value(
++                    capability_tools
++                        .list(&permissions)
++                        .map_err(capability_failure)?,
++                )
++            }
+             "authoring.capabilities" => {
+                 require_empty(arguments)?;
+                 to_value(
+@@ -1536,12 +1544,33 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn compact_authoring_discovery_is_executable_through_headless_host() {
++        let (_directory, path) = project();
++        let mut host =
++            HeadlessAuthoringHost::open_read_only(&path, HeadlessProjectSelection::default())
++                .expect("read-only host");
++
++        let listed = host
++            .handle_tool_call("authoring.list", json!({}))
++            .expect("compact discovery must execute through the advertised headless tool");
++        let capabilities = listed["capabilities"]
++            .as_array()
++            .expect("compact discovery capabilities");
++
++        assert!(!capabilities.is_empty());
++        assert!(capabilities.iter().any(|capability| {
++            capability["id"] == "scene.apply" && capability.get("input").is_none()
++        }));
++    }
++
+     #[test]
+     fn host_inventory_is_exactly_engine_mcp_inventory() {
+         let names = authoring_tool_descriptors()
+             .into_iter()
+             .map(|tool| tool.name)
+             .collect::<Vec<_>>();
++        assert!(names.contains(&"authoring.list".into()));
+         assert!(names.contains(&"scene.apply".into()));
+         assert!(names.contains(&"material.apply".into()));
+         assert!(names.contains(&"behavior_tree.apply".into()));
+diff --git a/crates/mcp/src/capability.rs b/crates/mcp/src/capability.rs
+index 9ec923558e57ff136dd2f353a3a0145a0586245d..2c70af3c32b391de5f30b9014046c6f11fc0f295 100644
+--- a/crates/mcp/src/capability.rs
++++ b/crates/mcp/src/capability.rs
+@@ -15,14 +15,16 @@ use crate::McpToolDescriptor;
+ use engine_authoring::{
+     AuthoringCapability, AuthoringCapabilityError, AuthoringCapabilityExposure,
+     AuthoringCapabilityId, AuthoringCapabilityIdError, AuthoringCapabilityKind,
+-    AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermission, AuthoringPermissionError,
+-    AuthoringPermissions,
++    AuthoringCapabilityRegistry, AuthoringCapabilitySummary, AuthoringDomain, AuthoringPermission,
++    AuthoringPermissionError, AuthoringPermissions,
+ };
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+ use std::fmt;
+ 
+-/// Tool name for registry-driven capability discovery.
++/// Tool name for context-efficient registry-driven capability discovery.
++pub const AUTHORING_LIST_TOOL: &str = "authoring.list";
++/// Tool name for full registry-driven capability discovery retained for compatibility.
+ pub const AUTHORING_CAPABILITIES_TOOL: &str = "authoring.capabilities";
+ /// Tool name for single-capability metadata lookup.
+ pub const AUTHORING_DESCRIBE_TOOL: &str = "authoring.describe";
+@@ -97,10 +99,17 @@ fn empty_arguments() -> Value {
+     json!({})
+ }
+ 
+-/// Output for `authoring.capabilities`.
++/// Output for context-efficient `authoring.list` discovery.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub struct CapabilitySummaryListOutput {
++    /// Registry-derived capability summaries in deterministic capability-ID order.
++    pub capabilities: Vec<AuthoringCapabilitySummary>,
++}
++
++/// Full output for `authoring.capabilities`, retained for compatibility.
+ #[derive(Debug, Clone, PartialEq, Serialize)]
+ pub struct CapabilityListOutput {
+-    /// Registered capabilities in deterministic capability-ID order.
++    /// Registered full capability descriptors in deterministic capability-ID order.
+     pub capabilities: Vec<AuthoringCapability>,
+ }
+ 
+@@ -250,9 +259,14 @@ impl AuthoringCapabilityMcpTools {
+     /// enumerations advertised for each generic verb.
+     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
+         let mut descriptors = vec![
++            descriptor(
++                AUTHORING_LIST_TOOL,
++                "List registered authoring capabilities using compact registry summaries. Use authoring.describe for the selected capability's schema, permission, transaction, and document contract.",
++                empty_object_schema(),
++            ),
+             descriptor(
+                 AUTHORING_CAPABILITIES_TOOL,
+-                "Discover every registered semantic authoring capability with its schema, permission, and transaction contract.",
++                "Return every full registered capability descriptor for compatibility. Prefer authoring.list followed by authoring.describe for context-efficient discovery.",
+                 empty_object_schema(),
+             ),
+             descriptor(
+@@ -278,7 +292,25 @@ impl AuthoringCapabilityMcpTools {
+         descriptors
+     }
+ 
+-    /// Lists every registered capability.
++    /// Lists compact summaries for every registered capability.
++    ///
++    /// The summary projection comes directly from the canonical registry and
++    /// intentionally omits the detail fields available from [`Self::describe`].
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CapabilityMcpError`] when read permission is absent.
++    pub fn list(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<CapabilitySummaryListOutput, CapabilityMcpError> {
++        permissions.require(AuthoringPermission::Read)?;
++        Ok(CapabilitySummaryListOutput {
++            capabilities: self.registry.summaries().collect(),
++        })
++    }
++
++    /// Lists every full registered capability for compatibility.
+     ///
+     /// # Errors
+     ///
+@@ -508,7 +540,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn generic_surface_advertises_the_six_adr_operations() {
++    fn generic_surface_advertises_compact_discovery_and_the_adr_operations() {
+         let names = AuthoringCapabilityMcpTools::new()
+             .tool_descriptors()
+             .into_iter()
+@@ -518,6 +550,7 @@ mod tests {
+         assert_eq!(
+             names,
+             vec![
++                "authoring.list",
+                 "authoring.capabilities",
+                 "authoring.describe",
+                 "authoring.inspect",
+@@ -557,6 +590,60 @@ mod tests {
+         assert!(!advertised.contains(&"scene.inspect".to_owned()));
+     }
+ 
++    #[test]
++    fn compact_discovery_is_registry_derived_and_materially_smaller() {
++        let tools = AuthoringCapabilityMcpTools::new();
++        let permissions = AuthoringPermissions::read_only();
++        let compact = tools.list(&permissions).expect("compact discovery");
++        let full = tools
++            .capabilities(&permissions)
++            .expect("full compatibility discovery");
++        let expected = tools.registry().summaries().collect::<Vec<_>>();
++
++        assert_eq!(compact.capabilities, expected);
++        assert_eq!(
++            compact
++                .capabilities
++                .iter()
++                .map(|capability| capability.id.clone())
++                .collect::<Vec<_>>(),
++            full.capabilities
++                .iter()
++                .map(|capability| capability.id.clone())
++                .collect::<Vec<_>>()
++        );
++        for (summary, capability) in compact.capabilities.iter().zip(&full.capabilities) {
++            assert_eq!(summary.exposure, capability.exposure);
++        }
++
++        let compact_bytes = serde_json::to_vec(&compact)
++            .expect("compact discovery must serialize")
++            .len();
++        let full_bytes = serde_json::to_vec(&full)
++            .expect("full discovery must serialize")
++            .len();
++        assert!(
++            compact_bytes * 2 <= full_bytes,
++            "compact discovery must be at least 50% smaller: compact={compact_bytes} full={full_bytes}"
++        );
++    }
++
++    #[test]
++    fn describe_returns_the_canonical_full_schema_contract() {
++        let tools = AuthoringCapabilityMcpTools::new();
++        let id = AuthoringCapabilityId::new("scene.apply");
++        let expected = tools.registry().require(&id).expect("scene.apply registry entry");
++        let described = tools
++            .describe(
++                &AuthoringPermissions::read_only(),
++                CapabilityDescribeInput { capability: id },
++            )
++            .expect("detail discovery");
++
++        assert_eq!(described.capability, *expected);
++        assert_eq!(described.tool, "scene.apply");
++    }
++
+     #[test]
+     fn every_registered_capability_is_covered_by_an_adapter_tool() {
+         let registry = AuthoringCapabilityRegistry::builtin();
+@@ -687,6 +774,15 @@ mod tests {
+         let tools = AuthoringCapabilityMcpTools::new();
+         let read_only = AuthoringPermissions::read_only();
+ 
++        let listed = tools
++            .list(&read_only)
++            .expect("read-only sessions may discover compact capability summaries");
++        assert!(
++            listed
++                .capabilities
++                .iter()
++                .any(|capability| capability.id.as_str() == "scene.apply")
++        );
+         let described = tools
+             .describe(
+                 &read_only,
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+index 33453400d35c732a5b3d64c873da13fda77146f0..e05ee06929dbb768ca82049ef63b501519b6e27f 100644
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -29,10 +29,10 @@ pub use ai_agent::{
+ pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
+ pub use capability::{
+     AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL, AUTHORING_DESCRIBE_TOOL,
+-    AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
++    AUTHORING_INSPECT_TOOL, AUTHORING_LIST_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
+     AuthoringCapabilityMcpTools, AuthoringInvocationPlan, AuthoringVerb, CapabilityCoverage,
+     CapabilityDescribeInput, CapabilityDescribeOutput, CapabilityInvokeInput, CapabilityListOutput,
+-    CapabilityMcpError, capability_coverage, uncovered_capabilities,
++    CapabilityMcpError, CapabilitySummaryListOutput, capability_coverage, uncovered_capabilities,
+ };
+ pub use generic_authoring::{
+     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput, GraphViewMutationInput,
+diff --git a/docs/adr/0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md b/docs/adr/0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md
+index d3e9bd2bddf3d0a3e0a5563c019ca75b315698f3..527907861a5cf81aaee841c9d4facebe13966092 100644
+--- a/docs/adr/0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md
++++ b/docs/adr/0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md
+@@ -88,6 +88,7 @@ The exact transport spelling may evolve, but the generic contract MUST support
+ operations equivalent to:
+ 
+ ```text
++authoring.list
+ authoring.capabilities
+ authoring.describe
+ authoring.inspect
+@@ -96,10 +97,21 @@ authoring.preview
+ authoring.apply
+ ```
+ 
++`authoring.list` is the preferred context-efficient discovery operation. It
++returns only registry-derived selection metadata such as stable ID, domain,
++kind, exposure, and description. Once a client selects an operation,
++`authoring.describe` returns that capability's full schema, permission,
++transaction, and document contract. `authoring.capabilities` retains the full
++registry response as a compatibility surface for existing clients; new agent
++flows SHOULD use `authoring.list` -> `authoring.describe` instead of loading
++every schema eagerly.
++
+ Tool descriptors, input schemas, capability descriptions, and permission
+ requirements for this generic surface MUST be derived from the authoring-owned
+-registry or the shared schemas referenced by it. MCP MUST NOT maintain a second
+-handwritten capability catalog that can disagree with the authoring registry.
++registry or the shared schemas referenced by it. Compact summaries MUST also be
++projected from the same registry rather than maintained as an adapter-specific
++catalog. MCP MUST NOT maintain a second handwritten capability catalog that can
++disagree with the authoring registry.
+ 
+ Existing domain-specific MCP and CLI commands remain valid compatibility and
+ ergonomic surfaces. They MAY delegate to the same registered capability rather
