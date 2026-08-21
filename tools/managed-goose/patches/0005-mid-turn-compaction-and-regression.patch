@@ -115,9 +115,11 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
 +    }
 +
 +    fn has_compacted_history(messages: &[Message]) -> bool {
-+        messages
-+            .iter()
-+            .any(|message| message.as_concat_text().contains("<mid-turn compact summary>"))
++        messages.iter().any(|message| {
++            message
++                .as_concat_text()
++                .contains("<mid-turn compact summary>")
++        })
 +    }
 +
 +    fn visible_tool_response_count(messages: &[Message]) -> usize {
@@ -179,11 +181,7 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
 +        };
 +        let usage = ProviderUsage::new(
 +            "mid-turn-mock".to_string(),
-+            Usage::new(
-+                Some(input_tokens),
-+                Some(100),
-+                Some(input_tokens + 100),
-+            ),
++            Usage::new(Some(input_tokens), Some(100), Some(input_tokens + 100)),
 +        );
 +        Ok(stream_from_single_message(message, usage))
 +    }
@@ -192,20 +190,17 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
 +        "mid-turn-tool-loop"
 +    }
 +
-+    async fn get_context_limit(
-+        &self,
-+        _model_config: &ModelConfig,
-+    ) -> Result<usize, ProviderError> {
++    async fn get_context_limit(&self, _model_config: &ModelConfig) -> Result<usize, ProviderError> {
 +        Ok(20_000)
 +    }
 +}
 +
 +#[tokio::test]
-+async fn test_mid_turn_tool_loop_compacts_after_tool_result_and_continues_same_turn() -> Result<()> {
++async fn test_mid_turn_tool_loop_compacts_after_tool_result_and_continues_same_turn() -> Result<()>
++{
 +    let temp_dir = TempDir::new()?;
 +    let agent = Agent::new();
-+    let session =
-+        setup_test_session(&agent, &temp_dir, "mid-turn-tool-loop", Vec::new()).await?;
++    let session = setup_test_session(&agent, &temp_dir, "mid-turn-tool-loop", Vec::new()).await?;
 +    let provider = Arc::new(MidTurnToolLoopProvider::default());
 +    let model_config = ModelConfig {
 +        model_name: "mid-turn-mock".to_string(),
@@ -247,9 +242,7 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
 +            AgentEvent::Message(message) => {
 +                for content in &message.content {
 +                    match content {
-+                        MessageContent::ToolRequest(request)
-+                            if request.id == "midturn-tool-2" =>
-+                        {
++                        MessageContent::ToolRequest(request) if request.id == "midturn-tool-2" => {
 +                            assert_eq!(
 +                                provider.compaction_calls.load(Ordering::SeqCst),
 +                                0,
@@ -308,8 +301,14 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
 +                matches!(content, MessageContent::ToolResponse(response) if response.id == tool_id)
 +            })
 +            .count();
-+        assert_eq!(request_count, 1, "tool request {tool_id} must remain paired");
-+        assert_eq!(response_count, 1, "tool response {tool_id} must remain paired");
++        assert_eq!(
++            request_count, 1,
++            "tool request {tool_id} must remain paired"
++        );
++        assert_eq!(
++            response_count, 1,
++            "tool response {tool_id} must remain paired"
++        );
 +    }
 +
 +    let inputs = provider
