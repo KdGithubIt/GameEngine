@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        egui::CollapsingHeader::new(\"Benchmark campaign\")\n            .default_open(cfg!(feature = \"visual-validation\"))\n            .show(ui, |ui| {\n                ui.small(",
+  "new": "        egui::CollapsingHeader::new(\"Benchmark campaign\")\n            .default_open(cfg!(feature = \"visual-validation\"))\n            .show(ui, |ui| {\n                #[cfg(feature = \"visual-validation\")]\n                if std::env::var(\"GAMEENGINE_VISUAL_AUTHORING_TOOL\")\n                    .ok()\n                    .is_some_and(|scenario| {\n                        matches!(\n                            scenario.as_str(),\n                            \"ADR 0156 Benchmark Completed\" | \"ADR 0156 Benchmark Reset\"\n                        )\n                    })\n                {\n                    ui.scroll_to_cursor(Some(egui::Align::TOP));\n                }\n                ui.small("
+}
