@@ -20,6 +20,9 @@ use crate::claude_acp_adapter::{
 use crate::codex_acp_adapter::{
     CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
 };
+use crate::goose_local_acp::{
+    GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,
+};
 use crate::agent_benchmark::{
     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
@@ -1293,6 +1296,9 @@ impl AiStudioPanel {
             .map_err(|error| error.to_string())?;
         execution_router
             .set_acp_route("agent:claude-code", CLAUDE_ACP_AGENT_ID)
+            .map_err(|error| error.to_string())?;
+        execution_router
+            .set_acp_route("model:managed_local", GOOSE_LOCAL_ACP_DESCRIPTOR_ID)
             .map_err(|error| error.to_string())?;
         execution_router
             .set_legacy_route("agent:generic-external")
@@ -4158,6 +4164,11 @@ impl AiStudioPanel {
         }
 
         ensure_build_scope(&mut self.proposal_draft);
+        if build_executor_requires_external_process(self.selected_ai()) {
+            self.proposal_draft
+                .requested_capabilities
+                .insert(AgentCapability::ExternalAgentProcess);
+        }
     }
 
     fn model_routing_status(&mut self) -> String {
@@ -4638,6 +4649,17 @@ impl AiStudioPanel {
 
     fn selected_execution_driver(&mut self) -> Result<AiExecutionDriver, String> {
         let selection = self.selected_ai();
+        if self.benchmark_child_active()
+            && matches!(
+                selection,
+                SelectedAi::Model(ModelBackendPreference::ManagedLocal)
+            )
+        {
+            // ADR 0156 campaign v2 freezes Managed Local as a model-backend/native-harness
+            // candidate. Keep that existing lane unchanged until the benchmark migration
+            // explicitly selects the new coding-agent lane and budgets its process authority.
+            return Ok(AiExecutionDriver::Legacy);
+        }
         let logical_ai_id = ai_entry_id(selection, &self.managed_model_id);
         let route_key = match selection {
             SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
@@ -4648,6 +4670,9 @@ impl AiStudioPanel {
         let configured_agent = match selection {
             SelectedAi::Agent(ExternalAgentProviderKind::Codex) => Some(CODEX_ACP_DESCRIPTOR_ID),
             SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode) => Some(CLAUDE_ACP_AGENT_ID),
+            SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
+                Some(GOOSE_LOCAL_ACP_DESCRIPTOR_ID)
+            }
             _ => None,
         };
         if let Some(agent_id) = configured_agent {
@@ -4661,19 +4686,21 @@ impl AiStudioPanel {
     }
 
     fn ensure_acp_runtime(&mut self, agent_id: &str) -> Result<(), String> {
-        if self.acp.is_registered(agent_id) {
-            return Ok(());
-        }
         let placement = self.external_agent_placement();
         match agent_id {
             CODEX_ACP_DESCRIPTOR_ID => {
                 let runtime = CodexAcpRuntime::discover(
                     placement,
-                    CodexAcpSessionPreferences::default(),
+                    CodexAcpSessionPreferences {
+                        model: None,
+                        reasoning_effort: Self::codex_reasoning_effort(self.quality_preference)
+                            .map(str::to_owned),
+                        fast_mode: None,
+                    },
                 )
                 .map_err(|error| error.to_string())?;
                 self.acp
-                    .register(Box::new(runtime))
+                    .replace(Box::new(runtime))
                     .map_err(|error| error.to_string())
             }
             CLAUDE_ACP_AGENT_ID => {
@@ -4682,10 +4709,29 @@ impl AiStudioPanel {
                 let runtime = AcpProcessRuntime::new(registration.descriptor)
                     .map_err(|error| error.to_string())?;
                 self.acp
-                    .register(Box::new(runtime))
+                    .replace(Box::new(runtime))
+                    .map_err(|error| error.to_string())
+            }
+            GOOSE_LOCAL_ACP_DESCRIPTOR_ID => {
+                let managed_model = self.described_managed_model_config()?;
+                let config = GooseLocalAcpConfig::new(managed_model)
+                    .map_err(|error| error.to_string())?;
+                let runtime = GooseLocalAcpRuntime::discover(config)
+                    .map_err(|error| error.to_string())?;
+                self.acp
+                    .replace(Box::new(runtime))
                     .map_err(|error| error.to_string())
             }
             _ => Err(format!("ACP agent `{agent_id}` is not configured by AI Studio")),
+        }
+    }
+
+    fn codex_reasoning_effort(quality: QualityPreference) -> Option<&'static str> {
+        match quality {
+            QualityPreference::Auto => None,
+            QualityPreference::Fast => Some("low"),
+            QualityPreference::Balanced => Some("medium"),
+            QualityPreference::Deep => Some("high"),
         }
     }
 
@@ -9186,6 +9232,13 @@ fn snapshot_lines(ui: &mut egui::Ui, label: &str, values: &[String]) {
 /// operations that satisfy the user's goal. This fallback only declares the
 /// kinds of governed work that a Build request may need; each operation keeps
 /// its existing permission, revision, stale-file, and completion checks.
+fn build_executor_requires_external_process(selection: SelectedAi) -> bool {
+    matches!(
+        selection,
+        SelectedAi::Agent(_) | SelectedAi::Model(ModelBackendPreference::ManagedLocal)
+    )
+}
+
 fn ensure_build_scope(proposal: &mut AgentProposal) {
     let has_explicit_scope = !proposal.planned_project_changes.is_empty()
         || !proposal.planned_code_changes.is_empty()
@@ -9258,6 +9311,39 @@ mod tests {
         assert_eq!(
             split_direct_args("--flag value ; echo nope"),
             ["--flag", "value", ";", "echo", "nope"]
+        );
+    }
+
+    #[test]
+    fn external_build_executors_budget_process_authority() {
+        assert!(build_executor_requires_external_process(SelectedAi::Agent(
+            ExternalAgentProviderKind::Codex
+        )));
+        assert!(build_executor_requires_external_process(SelectedAi::Model(
+            ModelBackendPreference::ManagedLocal
+        )));
+        assert!(!build_executor_requires_external_process(SelectedAi::Model(
+            ModelBackendPreference::Local
+        )));
+    }
+
+    #[test]
+    fn codex_effort_uses_existing_quality_preference() {
+        assert_eq!(
+            AiStudioPanel::codex_reasoning_effort(QualityPreference::Auto),
+            None
+        );
+        assert_eq!(
+            AiStudioPanel::codex_reasoning_effort(QualityPreference::Fast),
+            Some("low")
+        );
+        assert_eq!(
+            AiStudioPanel::codex_reasoning_effort(QualityPreference::Balanced),
+            Some("medium")
+        );
+        assert_eq!(
+            AiStudioPanel::codex_reasoning_effort(QualityPreference::Deep),
+            Some("high")
         );
     }
 

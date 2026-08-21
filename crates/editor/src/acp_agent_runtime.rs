@@ -449,6 +449,22 @@ impl AcpRuntimeRegistry {
         self.runtimes.insert(descriptor.id.clone(), runtime);
         Ok(())
     }
+
+    /// Replaces one machine-local adapter registration after validating the new
+    /// descriptor. Existing open sessions own their session object and are not
+    /// mutated; subsequent sessions use the refreshed runtime configuration.
+    pub(crate) fn replace(
+        &mut self,
+        runtime: Box<dyn AcpAgentRuntime>,
+    ) -> Result<(), AcpRuntimeError> {
+        validate_descriptor(runtime.descriptor())?;
+        let descriptor_id = runtime.descriptor().id.clone();
+        if !self.runtimes.contains_key(&descriptor_id) {
+            return self.register(runtime);
+        }
+        self.runtimes.insert(descriptor_id, runtime);
+        Ok(())
+    }
 }
 
 impl AcpAgentRegistry for AcpRuntimeRegistry {

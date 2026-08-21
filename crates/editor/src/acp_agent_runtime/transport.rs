@@ -31,7 +31,7 @@ use std::sync::{
 };
 
 const GAMEENGINE_ACP_CLIENT_NAME: &str = "gameengine-ai-studio";
-const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine";
+const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
 const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
 
 #[derive(Debug)]

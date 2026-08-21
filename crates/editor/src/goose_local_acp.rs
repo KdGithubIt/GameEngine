@@ -46,30 +46,21 @@ pub(crate) struct GooseLocalRuntimeIdentity {
 #[derive(Debug, Clone)]
 pub(crate) struct GooseLocalAcpConfig {
     pub(crate) managed_model: ManagedLocalModelConfig,
-    pub(crate) workspace_root: PathBuf,
 }
 
 impl GooseLocalAcpConfig {
-    /// Validates the stable model and workspace boundary used by this adapter.
-    pub(crate) fn new(
-        managed_model: ManagedLocalModelConfig,
-        workspace_root: PathBuf,
-    ) -> Result<Self, AcpRuntimeError> {
-        if !workspace_root.is_absolute() || !workspace_root.is_dir() {
-            return Err(AcpRuntimeError::InvalidDescriptor(
-                "Goose ACP workspace root must be an existing absolute directory".to_owned(),
-            ));
-        }
+    /// Validates the frozen Managed Local identity used by this adapter.
+    ///
+    /// Session working-directory authority belongs to Agent Host/Bridge: Ask
+    /// uses the project root while Build uses the isolated Agent Code Workspace.
+    pub(crate) fn new(managed_model: ManagedLocalModelConfig) -> Result<Self, AcpRuntimeError> {
         if !managed_model.state_root.is_absolute() {
             return Err(AcpRuntimeError::InvalidDescriptor(
                 "Managed Local state root must be absolute before Goose ACP can isolate its machine-local configuration"
                     .to_owned(),
             ));
         }
-        Ok(Self {
-            managed_model,
-            workspace_root,
-        })
+        Ok(Self { managed_model })
     }
 }
 
@@ -140,12 +131,11 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
         &mut self,
         request: AcpSessionOpenRequest,
     ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
-        if request.working_directory != self.config.workspace_root {
-            return Err(AcpRuntimeError::InvalidSessionBinding(format!(
-                "Goose ACP working directory `{}` does not match frozen workspace `{}`",
-                request.working_directory.display(),
-                self.config.workspace_root.display()
-            )));
+        if !request.working_directory.is_absolute() || !request.working_directory.is_dir() {
+            return Err(AcpRuntimeError::InvalidSessionBinding(
+                "Goose ACP working directory must be an existing absolute directory supplied by Agent Host"
+                    .to_owned(),
+            ));
         }
 
         let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)

@@ -33,22 +33,15 @@ impl AcpIntegration {
         })
     }
 
-    pub(crate) fn register(
+    pub(crate) fn replace(
         &mut self,
         runtime: Box<dyn AcpAgentRuntime>,
     ) -> Result<(), AcpRuntimeError> {
-        self.registry.register(runtime)
+        self.registry.replace(runtime)
     }
 
     pub(crate) fn registry(&self) -> &dyn AcpAgentRegistry {
         &self.registry
-    }
-
-    pub(crate) fn is_registered(&self, agent_id: &str) -> bool {
-        self.registry
-            .descriptors()
-            .into_iter()
-            .any(|descriptor| descriptor.id == agent_id)
     }
 
     pub(crate) fn open_ask_session(
