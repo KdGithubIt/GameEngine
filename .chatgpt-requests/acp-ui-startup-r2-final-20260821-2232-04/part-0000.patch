@@ -1,0 +1,279 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 21f15812e0867ca91340ca503ca2518f65615f2b..9cba2c83bc15558641e1617533beb68e1e58a25f 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -989,6 +989,18 @@ enum AcpStartupContinuation {
+     },
+ }
+ 
++impl AcpStartupContinuation {
++    fn ask_session_id(&self) -> Option<&str> {
++        match self {
++            Self::Ask {
++                gameengine_session_id,
++                ..
++            } => Some(gameengine_session_id),
++            Self::Build { .. } => None,
++        }
++    }
++}
++
+ struct PendingAcpStartup {
+     task: AcpSessionStartupTask,
+     continuation: AcpStartupContinuation,
+@@ -1572,6 +1584,35 @@ impl AiStudioPanel {
+         self.benchmark_hardware_probe_attempted = true;
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    /// Seeds a compact pending Managed Local ACP Ask for screenshot validation.
++    pub fn prepare_acp_startup_visual_validation(&mut self) {
++        self.conversation_mode = ConversationMode::Ask;
++        self.selected_ai_family = SelectedAiFamily::Model;
++        self.model_backend = ModelBackendPreference::ManagedLocal;
++        self.managed_model_id = "visual-managed-local".to_owned();
++        self.settings_open = false;
++        self.proposal_open = false;
++        self.message_draft.clear();
++        let session_id = self.selected_session.clone();
++        let _ = self.host.append_message(
++            &session_id,
++            ConversationRole::User,
++            "Inspect the current project state and summarize what you find.",
++        );
++        self.acp_startup = Some(PendingAcpStartup {
++            task: AcpSessionStartupTask::visual_pending(
++                "Starting Managed Local and connecting ACP…",
++            ),
++            continuation: AcpStartupContinuation::Ask {
++                agent_id: GOOSE_LOCAL_ACP_DESCRIPTOR_ID.to_owned(),
++                gameengine_session_id: session_id,
++                prompt: "visual validation pending ACP Ask".to_owned(),
++            },
++        });
++        self.status = Some("Starting Managed Local and connecting ACP…".to_owned());
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Selects a deterministic hosted-backend state for screenshot validation.
+     pub fn prepare_hosted_backend_visual_validation(&mut self) {
+@@ -3819,7 +3860,15 @@ impl AiStudioPanel {
+                     || self
+                         .pending_question_permission
+                         .as_ref()
+-                        .is_some_and(|pending| pending.session_id == self.selected_session);
++                        .is_some_and(|pending| pending.session_id == self.selected_session)
++                    || self.acp_question.as_ref().is_some_and(|question| {
++                        question.gameengine_session_id == self.selected_session
++                    })
++                    || self
++                        .acp_startup
++                        .as_ref()
++                        .and_then(|pending| pending.continuation.ask_session_id())
++                        .is_some_and(|session_id| session_id == self.selected_session);
+                 let delete_block_reason = if has_active_run {
+                     Some("Stop the session's active run before deleting it.")
+                 } else if question_busy {
+@@ -3959,8 +4008,25 @@ impl AiStudioPanel {
+         let can_send = !self.message_draft.trim().is_empty()
+             && self.native_question.is_none()
+             && self.external_question.is_none()
++            && self.acp_startup.is_none()
++            && self.acp_question.is_none()
+             && self.pending_question_permission.is_none()
+             && commit_blocked.is_none();
++        let acp_startup_ask = self
++            .acp_startup
++            .as_ref()
++            .and_then(|pending| pending.continuation.ask_session_id())
++            .is_some();
++        let acp_startup_status = self.acp_startup.as_ref().map(|_| {
++            self.status
++                .clone()
++                .unwrap_or_else(|| "Starting agent…".to_owned())
++        });
++        let acp_question_status = self.acp_question.as_ref().map(|_| {
++            self.status
++                .clone()
++                .unwrap_or_else(|| "Waiting for agent…".to_owned())
++        });
+         let mut stop_answer_requested = false;
+         ui.horizontal(|ui| {
+             if ui
+@@ -3969,6 +4035,22 @@ impl AiStudioPanel {
+             {
+                 self.submit_message();
+             }
++            if let Some(status) = acp_startup_status.as_deref() {
++                ui.spinner();
++                ui.small(status);
++                if acp_startup_ask && ui.button("Stop answering").clicked() {
++                    stop_answer_requested = true;
++                }
++                return;
++            }
++            if let Some(status) = acp_question_status.as_deref() {
++                ui.spinner();
++                ui.small(status);
++                if ui.button("Stop answering").clicked() {
++                    stop_answer_requested = true;
++                }
++                return;
++            }
+             if self.native_question.is_some() {
+                 ui.spinner();
+                 ui.small("Reading current GameEngine/project evidence…");
+@@ -4014,11 +4096,43 @@ impl AiStudioPanel {
+                 }
+             }
+         });
+-        if stop_answer_requested {
++        if stop_answer_requested && !self.cancel_acp_answer() {
+             self.cancel_external_question();
+         }
+     }
+ 
++    /// Stops an ACP Ask during background startup or after session attachment.
++    ///
++    /// A worker that finishes after pending startup is cancelled owns cleanup
++    /// of the late session, so cancelling never attaches authority after the
++    /// user has stopped the answer.
++    fn cancel_acp_answer(&mut self) -> bool {
++        if self
++            .acp_startup
++            .as_ref()
++            .and_then(|pending| pending.continuation.ask_session_id())
++            .is_some()
++        {
++            if let Some(pending) = self.acp_startup.take() {
++                pending.task.cancel();
++            }
++            self.status = Some("Stopped the ACP answer startup.".to_owned());
++            return true;
++        }
++        let Some(question) = self.acp_question.take() else {
++            return false;
++        };
++        match self.acp.cancel_session(&question.acp_session_id) {
++            Ok(()) => {
++                self.status = Some("Stopped the ACP answer.".to_owned());
++            }
++            Err(error) => {
++                self.status = Some(format!("Could not stop ACP answer: {error}"));
++            }
++        }
++        true
++    }
++
+     /// Stops a provider-served answer without recording a transcript entry.
+     ///
+     /// The user asked for the answer to stop, so the terminated process is not
+@@ -4743,7 +4857,9 @@ impl AiStudioPanel {
+                 let managed_model = self.described_managed_model_config()?;
+                 let config =
+                     GooseLocalAcpConfig::new(managed_model).map_err(|error| error.to_string())?;
+-                Ok(AcpRuntimeStartupConfig::Goose { config })
++                Ok(AcpRuntimeStartupConfig::Goose {
++                    config: Box::new(config),
++                })
+             }
+             _ => Err(format!(
+                 "ACP agent `{agent_id}` is not configured by AI Studio"
+diff --git a/crates/editor/src/ai_studio/acp_startup.rs b/crates/editor/src/ai_studio/acp_startup.rs
+index 465d506e9f86f82f1c17a68ca8040bd2013b45b4..62401a240b35d164afca44be51ae3655588a2d3f 100644
+--- a/crates/editor/src/ai_studio/acp_startup.rs
++++ b/crates/editor/src/ai_studio/acp_startup.rs
+@@ -25,7 +25,7 @@ pub(super) enum AcpRuntimeStartupConfig {
+         config: ClaudeAcpConfig,
+     },
+     Goose {
+-        config: GooseLocalAcpConfig,
++        config: Box<GooseLocalAcpConfig>,
+     },
+ }
+ 
+@@ -60,7 +60,7 @@ impl AcpRuntimeStartupConfig {
+                     .map(|runtime| Box::new(runtime) as Box<dyn AcpAgentRuntime>)
+                     .map_err(|error| format!("Could not start Claude ACP: {error}"))
+             }
+-            Self::Goose { config } => GooseLocalAcpRuntime::discover(config)
++            Self::Goose { config } => GooseLocalAcpRuntime::discover(*config)
+                 .map(|runtime| Box::new(runtime) as Box<dyn AcpAgentRuntime>)
+                 .map_err(|error| format!("Could not start Goose: {error}")),
+         }
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 76656de1c081ff96a0f9bdbed61dfea63a4555c9..397eb2f36f81c95398a07adacdffba735073bf39 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -109,7 +109,9 @@ impl EditorShell {
+                     None => {
+                         let touches_ai_studio = visual_validation_touches_ai_studio();
+                         if touches_ai_studio {
+-                            if visual_validation_touches_managed_local_runtime() {
++                            if visual_validation_touches_acp_startup() {
++                                ai_studio.prepare_acp_startup_visual_validation();
++                            } else if visual_validation_touches_managed_local_runtime() {
+                                 ai_studio.prepare_managed_local_visual_validation()?;
+                             } else {
+                                 ai_studio.prepare_hosted_backend_visual_validation();
+@@ -600,6 +602,24 @@ fn visual_validation_touches_ai_studio() -> bool {
+         .is_some_and(|output| !output.stdout.is_empty())
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn visual_validation_touches_acp_startup() -> bool {
++    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
++    let base = format!("origin/{base_ref}...HEAD");
++    std::process::Command::new("git")
++        .args([
++            "diff",
++            "--name-only",
++            &base,
++            "--",
++            "crates/editor/src/ai_studio/acp_startup.rs",
++        ])
++        .output()
++        .ok()
++        .filter(|output| output.status.success())
++        .is_some_and(|output| !output.stdout.is_empty())
++}
++
+ #[cfg(feature = "visual-validation")]
+ fn visual_validation_touches_managed_local_runtime() -> bool {
+     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+diff --git a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+index df17d7df7aa0bf8d88052208a04bc2db7b58f0c0..23d377927737afc27d41ec9d5acde3f569c67755 100644
+--- a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
++++ b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+@@ -187,6 +187,16 @@ arguments, environment placement, and provider diagnostics. They do not own
+ authoring semantics, GameEngine permission policy, work-claim policy,
+ completion gates, or canonical project persistence.
+ 
++AI Studio presentation code must not synchronously perform adapter discovery,
++provider process launch, Managed Local endpoint startup or health waits, ACP
++initialization, or ACP session negotiation from the egui frame. Presentation
++code prepares immutable Agent Host binding authority, starts a background
++startup task, and polls it. A completed session is attached only after the
++original GameEngine session or run is revalidated. If the user cancels while
++startup is pending, a late session is cancelled and closed rather than attached.
++Synchronous `AcpAgentRuntime::open_session` remains an adapter-internal contract;
++presentation code does not call it directly.
++
+ ### 10. Managed Local Agent Harness benchmarks normally use Goose ACP
+ 
+ The Benchmark Campaign surface distinguishes the model being measured from the
+@@ -270,8 +280,12 @@ Focused tests cover:
+ - arbitrary descriptor IDs without a central provider enum;
+ - duplicate descriptor rejection;
+ - read-only versus AgentRun-bound MCP bindings;
+-- credential redaction; and
+-- ACP turn-finished projection to semantic progress rather than host completion.
++- credential redaction;
++- ACP turn-finished projection to semantic progress rather than host completion;
++- delayed adapter discovery and session opening remaining pollable without a
++  presentation-thread wait; and
++- cancellation during pending session opening preventing late attachment and
++  closing the returned session.
+ 
+ Concrete adapter slices add transport/protocol tests when they begin ACP I/O.
+ 
