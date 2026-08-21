@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"pub(crate) enum ManagedSetupOperation {\n    InstallRuntime(ManagedExecutionEnvironment),\n    ProvisionWsl,\n","new":"pub(crate) enum ManagedSetupOperation {\n    InstallRuntime(ManagedExecutionEnvironment),\n    InstallGoose,\n    ProvisionWsl,\n"}
