@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "    fn runtime_validation_spec(\n        task_id: &str,\n        runtime: Option<BenchmarkRuntimeIdentity>,\n    ) -> BenchmarkChildRunSpec {",
+  "new": "    #[test]\n    fn managed_acp_context_overflow_is_classified_as_backend_metadata() {\n        assert_eq!(\n            benchmark_context_overflow_message(\n                \"ACP runtime/session failed: Bad request (400): request (16366 tokens) exceeds the available context size (8192 tokens)\"\n            ),\n            Some(\"Managed Local context overflow: requested_tokens=16366, available_context_tokens=8192\".to_owned())\n        );\n        assert_eq!(\n            benchmark_context_overflow_message(\"completion gate failed after a long prompt\"),\n            None\n        );\n    }\n\n    fn runtime_validation_spec(\n        task_id: &str,\n        runtime: Option<BenchmarkRuntimeIdentity>,\n    ) -> BenchmarkChildRunSpec {"
+}
