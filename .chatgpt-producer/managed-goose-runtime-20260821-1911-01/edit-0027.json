@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"        verify_file_sha256(\n            &installation.retained_artifact_path,\n            PINNED_GOOSE_WINDOWS_SHA256,\n            ManagedDiagnosticLayer::RuntimeArtifactIntegrity,\n        )?;\n        verify_file_sha256(\n","new":"        verify_file_sha256(\n"}
