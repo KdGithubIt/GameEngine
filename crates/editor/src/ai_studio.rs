@@ -4866,6 +4866,10 @@ impl AiStudioPanel {
                 }
                 context.request_repaint_after(std::time::Duration::from_millis(100));
             }
+            AcpBridgePoll::AskEvent(AcpNormalizedEvent::PromptFailed { .. }) => {
+                // Prompt failures are consumed by AcpAgentHostBridge::fail_runtime
+                // before an AskEvent can cross this composition boundary.
+            }
             AcpBridgePoll::AskEvent(AcpNormalizedEvent::ProtocolDiagnostic { message }) => {
                 self.status = Some(message);
                 context.request_repaint_after(std::time::Duration::from_millis(100));

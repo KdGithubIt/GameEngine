@@ -375,6 +375,9 @@ impl AcpAgentHostBridge {
         let Some(event) = event else {
             return Ok(AcpBridgePoll::Idle);
         };
+        if let Some(error) = terminal_prompt_error(&event) {
+            return self.fail_runtime(host, acp_id, error);
+        }
         match self.attached(acp_id)?.run_id.clone() {
             Some(run_id) => self.record_run_event(host, acp_id, &run_id, event),
             None => self.record_ask_event(host, acp_id, event),
@@ -528,6 +531,9 @@ impl AcpAgentHostBridge {
                         reason,
                     });
                 }
+            }
+            AcpNormalizedEvent::PromptFailed { message } => {
+                return self.fail_runtime(host, acp_id, AcpRuntimeError::Transport(message));
             }
             AcpNormalizedEvent::ProtocolDiagnostic { message } => host.record_event(
                 run_id,
@@ -1014,6 +1020,13 @@ fn host_rejection_outcome(request: &AcpPermissionRequest) -> AcpPermissionOutcom
         .unwrap_or(AcpPermissionOutcome::Cancelled)
 }
 
+fn terminal_prompt_error(event: &AcpNormalizedEvent) -> Option<AcpRuntimeError> {
+    let AcpNormalizedEvent::PromptFailed { message } = event else {
+        return None;
+    };
+    Some(AcpRuntimeError::Transport(message.clone()))
+}
+
 fn provider_turn_failure_reason(
     state: AgentRunState,
     stop_reason: &str,
@@ -1072,7 +1085,11 @@ fn gate_satisfied(status: CompletionStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp_agent_runtime::AcpPermissionOption;
+    use crate::acp_agent_runtime::{
+        AcpAgentDescriptor, AcpAgentRuntime, AcpCapabilities, AcpPermissionOption,
+        AcpRuntimeRegistry,
+    };
+    use std::ffi::OsString;
 
     fn permission_request(options: Vec<AcpPermissionOption>) -> AcpPermissionRequest {
         AcpPermissionRequest {
@@ -1144,5 +1161,173 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn prompt_rpc_failure_is_terminal_but_diagnostic_is_not() {
+        let failure = AcpNormalizedEvent::PromptFailed {
+            message: "context length exceeded after truncated tool arguments".to_owned(),
+        };
+        assert_eq!(failure.host_event_kind(), AgentEventKind::Failure);
+        assert!(matches!(
+            terminal_prompt_error(&failure),
+            Some(AcpRuntimeError::Transport(message))
+                if message.contains("context length exceeded")
+        ));
+
+        let diagnostic = AcpNormalizedEvent::ProtocolDiagnostic {
+            message: "unknown optional ACP notification".to_owned(),
+        };
+        assert!(terminal_prompt_error(&diagnostic).is_none());
+    }
+
+    struct PromptFailingRuntime {
+        descriptor: AcpAgentDescriptor,
+    }
+
+    impl PromptFailingRuntime {
+        fn new() -> Self {
+            Self {
+                descriptor: AcpAgentDescriptor {
+                    id: "prompt-failing-test".to_owned(),
+                    executable: OsString::from("prompt-failing-test"),
+                    arguments: Vec::new(),
+                    environment: BTreeMap::new(),
+                    capabilities: AcpCapabilities::default(),
+                    runtime_identity: AcpRuntimeIdentity::stable(
+                        "prompt-failing-test",
+                        Some("1.0.0".to_owned()),
+                    ),
+                },
+            }
+        }
+    }
+
+    impl AcpAgentRuntime for PromptFailingRuntime {
+        fn descriptor(&self) -> &AcpAgentDescriptor {
+            &self.descriptor
+        }
+
+        fn open_session(
+            &mut self,
+            request: AcpSessionOpenRequest,
+        ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
+            Ok(Box::new(PromptFailingSession {
+                binding: request.binding,
+                capabilities: self.descriptor.capabilities.clone(),
+                runtime_identity: self.descriptor.runtime_identity.clone(),
+                event: Some(AcpNormalizedEvent::PromptFailed {
+                    message: "context length exceeded after finish_reason=length truncated tool arguments"
+                        .to_owned(),
+                }),
+            }))
+        }
+    }
+
+    struct PromptFailingSession {
+        binding: AcpSessionBinding,
+        capabilities: AcpCapabilities,
+        runtime_identity: AcpRuntimeIdentity,
+        event: Option<AcpNormalizedEvent>,
+    }
+
+    impl AcpAgentSession for PromptFailingSession {
+        fn acp_session_id(&self) -> &str {
+            "acp-prompt-failure-test"
+        }
+
+        fn binding(&self) -> &AcpSessionBinding {
+            &self.binding
+        }
+
+        fn capabilities(&self) -> &AcpCapabilities {
+            &self.capabilities
+        }
+
+        fn runtime_identity(&self) -> &AcpRuntimeIdentity {
+            &self.runtime_identity
+        }
+
+        fn send_prompt(&mut self, _prompt: &str) -> Result<(), AcpRuntimeError> {
+            Ok(())
+        }
+
+        fn try_next_event(&mut self) -> Result<Option<AcpNormalizedEvent>, AcpRuntimeError> {
+            Ok(self.event.take())
+        }
+
+        fn resolve_permission(
+            &mut self,
+            _resolution: AcpPermissionResolution,
+        ) -> Result<(), AcpRuntimeError> {
+            Ok(())
+        }
+
+        fn cancel(&mut self) -> Result<(), AcpRuntimeError> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<(), AcpRuntimeError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn truncated_prompt_failure_fails_run_and_closes_session() {
+        let root = std::env::temp_dir().join(format!(
+            "gameengine-acp-prompt-failure-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        let storage = root.join("state");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&project).expect("project fixture");
+        std::fs::create_dir_all(&workspace).expect("workspace fixture");
+
+        let mut host = AgentHost::open(project.clone(), storage).expect("Agent Host");
+        let gameengine_session_id = host.create_session("Prompt failure").expect("session");
+        let proposal_version = host
+            .session(&gameengine_session_id)
+            .expect("session")
+            .proposal
+            .version;
+        let run_id = host
+            .start_run_authorized(&gameengine_session_id, proposal_version, "test")
+            .expect("run");
+
+        let mut registry = AcpRuntimeRegistry::default();
+        registry
+            .register(Box::new(PromptFailingRuntime::new()))
+            .expect("test runtime");
+        let credentials =
+            AcpEditorMcpCredentials::new("http://127.0.0.1:1/mcp", "run-token", "read-token")
+                .expect("credentials");
+        let mut bridge = AcpAgentHostBridge::new(credentials, project).expect("bridge");
+        let acp_session_id = bridge
+            .open_run_session(
+                &mut host,
+                &mut registry,
+                "prompt-failing-test",
+                &gameengine_session_id,
+                &run_id,
+                workspace,
+            )
+            .expect("ACP session");
+        bridge
+            .send_prompt(&mut host, &acp_session_id, "use a tool")
+            .expect("prompt accepted");
+
+        let error = bridge
+            .poll_session(&mut host, &acp_session_id)
+            .expect_err("truncated prompt failure must terminate the run");
+        assert!(error.to_string().contains("context length exceeded"));
+        assert_eq!(host.run(&run_id).expect("run").state, AgentRunState::Failed);
+        assert!(matches!(
+            bridge.poll_session(&mut host, &acp_session_id),
+            Err(AcpBridgeError::SessionNotFound(id)) if id == acp_session_id
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

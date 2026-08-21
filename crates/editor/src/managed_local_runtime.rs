@@ -4070,6 +4070,17 @@ mod tests {
     }
 
     #[test]
+    fn windows_launch_uses_the_exact_managed_physical_context() {
+        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+        let arguments = windows_server_arguments(model, None, 18443, 8_192);
+        let context_flag = arguments
+            .iter()
+            .position(|argument| argument == "--ctx-size")
+            .expect("managed context flag");
+        assert_eq!(arguments.get(context_flag + 1), Some(&"8192".to_owned()));
+    }
+
+    #[test]
     fn windows_launch_contract_leaves_gpu_layers_to_memory_fitter() {
         let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
         let arguments = windows_server_arguments(model, None, 18443, 12_288);

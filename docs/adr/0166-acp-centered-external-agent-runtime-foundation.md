@@ -251,6 +251,35 @@ ACP setup failure and never authorizes a Legacy Native fallback. This lifecycle
 changes only machine-local adapter availability and does not transfer Agent Host,
 permission, MCP credential, completion, or persistence authority to Goose.
 
+### Managed Local Goose context contract
+
+For GameEngine-managed local inference, `managed_context_tokens` is the single
+authoritative physical context value. The same value is used to launch
+`llama-server --ctx-size`, written into the ephemeral Goose custom-provider
+model definition, and exported to the isolated Goose process as
+`GOOSE_CONTEXT_LIMIT`. Canonical Goose model metadata must not enlarge that
+value for a Managed Local session.
+
+GameEngine also exports `GOOSE_MAX_TOKENS` from the same budget. The response cap
+is one eighth of the managed context, which is 1,024 tokens at the 8,192-token
+managed floor and 4,096 at the 32,768-token ceiling. This cap bounds one provider
+generation, including reasoning tokens when the provider accounts for them in
+the completion budget; it does not move conversation history, summarize tool
+results, or otherwise duplicate Goose's Agent Harness responsibilities.
+
+Goose retains ownership of auto-compaction and same-turn tool-loop context
+management. A provider/prompt RPC failure caused by context exhaustion, output
+truncation, or an incomplete tool call is nevertheless terminal at the
+GameEngine ACP boundary: it is not downgraded to a diagnostic, the incomplete
+tool call is not executed by GameEngine, and Agent Host fails a run (or ends an
+Ask with an error) instead of leaving the outer session executing or retrying the
+same oversized prompt.
+
+The managed runtime remains pinned to Goose 1.44.0 for this contract. Upstream
+context-limit precedence and mid-tool-loop compaction fixes are not assumed to
+be present until a later explicit dependency update validates ACP compatibility,
+permission behavior, Windows artifacts/digests, and the Managed Local adapter.
+
 ## Consequences
 
 - New ACP agents are registry entries rather than central architecture variants.
@@ -271,7 +300,9 @@ Focused tests cover:
 - duplicate descriptor rejection;
 - read-only versus AgentRun-bound MCP bindings;
 - credential redaction; and
-- ACP turn-finished projection to semantic progress rather than host completion.
+- ACP turn-finished projection to semantic progress rather than host completion;
+- Managed Local Goose physical/provider/environment context-budget consistency; and
+- terminal ACP prompt failure classification distinct from nonterminal protocol diagnostics.
 
 Concrete adapter slices add transport/protocol tests when they begin ACP I/O.
 
