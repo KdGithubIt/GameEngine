@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/remote_publication.rs","old":"    AdministratorRequired,\n    UnsupportedCli,\n    ExistingConfigurationConflict,","new":"    AdministratorRequired,\n    UnsupportedCli,\n    OriginUnavailable,\n    ExistingConfigurationConflict,"}
