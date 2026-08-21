@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "    fn show_campaign_tasks(&mut self, ui: &mut egui::Ui) {\n        let frozen = self.benchmark_campaign.plan.is_some();",
+  "new": "    fn show_campaign_tasks(&mut self, ui: &mut egui::Ui) {\n        let frozen = !self.benchmark_campaign.settings_editable();"
+}
