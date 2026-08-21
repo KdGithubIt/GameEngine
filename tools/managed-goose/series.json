@@ -32,7 +32,7 @@
   "patches": [
     {
       "path": "tools/managed-goose/patches/0001-gameengine-distribution-identity.patch",
-      "sha256": "5d988614314064c56aa7026fab86b54fe557b137ab556138915cfc28e5237df9",
+      "sha256": "13137e4baca0d3b9d79128105cbf010aeb63423bf6ea45fe0433cf01571d24ef",
       "allowed_paths": [
         "crates/goose-cli/src/cli.rs"
       ],
@@ -43,7 +43,7 @@
     },
     {
       "path": "tools/managed-goose/patches/0002-structured-context-overflow.patch",
-      "sha256": "cdc33a1838afe69257f8446e146f77af790c58cd6b6fc4e9ba4fc0698477d845",
+      "sha256": "23a18b5fa17891d7e2d94b5ef8916090fcda4887244ae8b60ea58b03fdc4462c",
       "allowed_paths": [
         "crates/goose-providers/src/http_status.rs"
       ],
