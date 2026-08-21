@@ -22,6 +22,14 @@ missing there. The PR's state-machine hunk is intentionally not carried because
 that architecture does not exist in the stable baseline; the equivalent legacy
 Agent-loop hunk is carried instead.
 
+The stable baseline also predates the `output_token_limit_reached` metadata
+contract introduced upstream by `bb539f7d6f950b3d3b17a540c7dc954f3f03c554`
+(`#10831`). The managed series therefore backports only the provider-core parts
+required by GameEngine's OpenAI-compatible llama-server path: the metadata flag,
+`finish_reason = "length"` detection, and the guard that prevents a
+length-terminated tool call from being executed. Upstream CLI, desktop, ACP
+presentation, Anthropic, and OpenAI Responses changes remain out of scope.
+
 ## Patch policy
 
 `series.json` is canonical. Every patch has:
@@ -36,9 +44,10 @@ The series includes:
 1. a GameEngine distribution identity so `goose --version` is visibly different
    from official Goose;
 2. structured context-overflow 400 classification;
-3. bounded retry when a compaction summary is truncated at the output limit;
-4. propagation of the streaming output-limit flag through `collect_stream`; and
-5. proactive mid-turn compaction after a tool result, plus executable regression
+3. the output-token-limit metadata/decoder contract required by stable v1.45.0;
+4. bounded retry when a compaction summary is truncated at the output limit;
+5. propagation of the streaming output-limit flag through `collect_stream`; and
+6. proactive mid-turn compaction after a tool result, plus executable regression
    coverage for the same-turn tool loop.
 
 The upstream provider-limit precedence and desktop token-bar commits are not

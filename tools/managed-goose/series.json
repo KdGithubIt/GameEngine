@@ -33,34 +33,75 @@
     {
       "path": "tools/managed-goose/patches/0001-gameengine-distribution-identity.patch",
       "sha256": "13137e4baca0d3b9d79128105cbf010aeb63423bf6ea45fe0433cf01571d24ef",
-      "allowed_paths": ["crates/goose-cli/src/cli.rs"],
-      "origin": {"type": "gameengine", "reason": "Give patched Goose a runtime-visible distribution identity distinct from the official v1.45.0 binary."}
+      "allowed_paths": [
+        "crates/goose-cli/src/cli.rs"
+      ],
+      "origin": {
+        "type": "gameengine",
+        "reason": "Give patched Goose a runtime-visible distribution identity distinct from the official v1.45.0 binary."
+      }
     },
     {
       "path": "tools/managed-goose/patches/0002-structured-context-overflow.patch",
       "sha256": "e6105b975204028efe7bc74618ae7f16db62a13dcd947edecb77040df6e7255b",
-      "allowed_paths": ["crates/goose-providers/src/http_status.rs"],
-      "origin": {"type": "upstream-pr", "pull_request": 11075, "commit": "668c4b36b9395ce70d5d7bec0ffcd2ef5f1d0ae6"},
+      "allowed_paths": [
+        "crates/goose-providers/src/http_status.rs"
+      ],
+      "origin": {
+        "type": "upstream-pr",
+        "pull_request": 11075,
+        "commit": "668c4b36b9395ce70d5d7bec0ffcd2ef5f1d0ae6"
+      },
       "reason": "Structured 400 context-overflow responses must become ContextLengthExceeded so Goose compacts instead of retrying a deterministic overflow."
+    },
+    {
+      "path": "tools/managed-goose/patches/0002a-output-token-limit-contract.patch",
+      "sha256": "6ce53be0a747a3e0e3330a5415f689ef29422a90a5723672c647c779786df37c",
+      "allowed_paths": [
+        "crates/goose-provider-types/src/conversation/message.rs",
+        "crates/goose-provider-types/src/formats/openai.rs"
+      ],
+      "origin": {
+        "type": "upstream-commit-adapted",
+        "pull_request": 10831,
+        "commit": "bb539f7d6f950b3d3b17a540c7dc954f3f03c554",
+        "adaptation": "Backport only the core MessageMetadata flag and non-streaming OpenAI-compatible finish_reason=length decoder/tool-call guard required by GameEngine Managed Local. Omit upstream CLI, desktop, ACP presentation, conversation UI merge, Anthropic, and OpenAI Responses changes."
+      },
+      "reason": "The v1.45.0 baseline predates output_token_limit_reached. Compaction truncation recovery and collect_stream propagation require the metadata contract, and Managed Local's OpenAI-compatible llama-server path must set it when finish_reason is length."
     },
     {
       "path": "tools/managed-goose/patches/0003-compaction-truncation-retry.patch",
       "sha256": "63dfff9f38eb494b97f57011f5580dcaacc2bcb9cd9b19dfcad5c6012832c132",
-      "allowed_paths": ["crates/goose/src/context_mgmt/mod.rs"],
-      "origin": {"type": "upstream-pr", "pull_request": 11075, "commit": "2a7f92e7e938cf4b6157d0749a9c967e68195f7e"},
+      "allowed_paths": [
+        "crates/goose/src/context_mgmt/mod.rs"
+      ],
+      "origin": {
+        "type": "upstream-pr",
+        "pull_request": 11075,
+        "commit": "2a7f92e7e938cf4b6157d0749a9c967e68195f7e"
+      },
       "reason": "A summary cut off at the output limit must be retried on the bounded removal ladder instead of silently adopting truncated history."
     },
     {
       "path": "tools/managed-goose/patches/0004-collect-stream-output-limit.patch",
       "sha256": "4d8bd3b509b805fd5b3b4b36a4cb465cba7fbaef12030c01c8cb0ccf4557b1a1",
-      "allowed_paths": ["crates/goose-provider-types/src/base.rs"],
-      "origin": {"type": "upstream-pr", "pull_request": 11075, "commit": "b839703c8d53875e07f1cbc29b15be927dc41fd4"},
+      "allowed_paths": [
+        "crates/goose-provider-types/src/base.rs"
+      ],
+      "origin": {
+        "type": "upstream-pr",
+        "pull_request": 11075,
+        "commit": "b839703c8d53875e07f1cbc29b15be927dc41fd4"
+      },
       "reason": "Preserve output_token_limit_reached across streamed chunks. Managed Local currently disables provider streaming, but this is the correctness prerequisite for the truncation recovery whenever streaming is enabled."
     },
     {
       "path": "tools/managed-goose/patches/0005-mid-turn-compaction-and-regression.patch",
       "sha256": "0bebe8b6394cf8c50fb956a7d7e65a119ddd698d95419eb662330933b628e547",
-      "allowed_paths": ["crates/goose/src/agents/agent.rs", "crates/goose/tests/compaction.rs"],
+      "allowed_paths": [
+        "crates/goose/src/agents/agent.rs",
+        "crates/goose/tests/compaction.rs"
+      ],
       "origin": {
         "type": "upstream-pr-adapted",
         "pull_request": 11075,
