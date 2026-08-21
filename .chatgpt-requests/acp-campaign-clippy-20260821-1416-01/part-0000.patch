@@ -1,0 +1,25 @@
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index bf3826e9edcf65ea419d5404bba1112f9361f549..27b66cc3b6adf46c93d5b685e3b730d7c6ca7b33 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -58,18 +58,13 @@ struct CampaignCheckpoint {
+     run: CampaignRun,
+ }
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+ enum CampaignHarnessSelection {
+     GooseAcpAgentHarness,
++    #[default]
+     LegacyNativeHarness,
+ }
+ 
+-impl Default for CampaignHarnessSelection {
+-    fn default() -> Self {
+-        Self::LegacyNativeHarness
+-    }
+-}
+-
+ impl CampaignHarnessSelection {
+     const ALL: [Self; 2] = [Self::GooseAcpAgentHarness, Self::LegacyNativeHarness];
+ 
