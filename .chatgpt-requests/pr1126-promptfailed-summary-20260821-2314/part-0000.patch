@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index fc80cc6f10a121e2def4a353d4d7d86583b07f0f..9313363a853df7a06422de685440ba333a36c865 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -590,6 +590,7 @@ fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
+             format!("tool call is {status:?}")
+         }
+         AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
++        AcpNormalizedEvent::PromptFailed { .. } => "prompt failed".to_owned(),
+         AcpNormalizedEvent::ProtocolDiagnostic { .. } => "protocol diagnostic reported".to_owned(),
+         AcpNormalizedEvent::TurnFinished { stop_reason } => {
+             format!("turn finished: {stop_reason:?}")
