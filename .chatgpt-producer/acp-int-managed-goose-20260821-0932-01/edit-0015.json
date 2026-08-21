@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_integration.rs","old":"    pub(crate) fn is_registered(&self, agent_id: &str) -> bool {\n        self.registry\n            .descriptors()\n            .into_iter()\n            .any(|descriptor| descriptor.id == agent_id)\n    }\n\n","new":""}
