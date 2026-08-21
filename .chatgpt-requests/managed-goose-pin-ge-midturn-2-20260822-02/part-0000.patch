@@ -1,0 +1,28 @@
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 5411fd1081b309db6bb796c8f4147a3707364eef..b2bf31a655d04a5219cb3cff1a7653ea84896aa4 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -1011,10 +1011,7 @@ impl ManagedLocalRuntime {
+         let final_root = runtime_root.join(format!("v{PINNED_GOOSE_VERSION}"));
+         let staging_root = runtime_root.join(format!("v{PINNED_GOOSE_VERSION}.staging"));
+         let rollback_root = runtime_root.join(format!("v{PINNED_GOOSE_VERSION}.rollback"));
+-        let download = self
+-            .root
+-            .join("downloads")
+-            .join(PINNED_GOOSE_WINDOWS_ASSET);
++        let download = self.root.join("downloads").join(PINNED_GOOSE_WINDOWS_ASSET);
+         if download.is_file()
+             && verify_file_sha256(
+                 &download,
+@@ -3528,10 +3525,7 @@ mod tests {
+ 
+     #[test]
+     fn managed_goose_pin_names_the_immutable_patched_release() {
+-        assert_eq!(
+-            PINNED_GOOSE_VERSION,
+-            "1.45.0+gameengine.ge-midturn-2"
+-        );
++        assert_eq!(PINNED_GOOSE_VERSION, "1.45.0+gameengine.ge-midturn-2");
+         assert_eq!(
+             PINNED_GOOSE_WINDOWS_ASSET,
+             "gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip"
