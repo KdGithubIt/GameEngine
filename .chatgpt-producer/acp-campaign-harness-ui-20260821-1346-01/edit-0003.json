@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "            task_ids: tasks.iter().map(|task| (*task).to_owned()).collect(),\n            repetitions: 2,\n",
+  "new": "            task_ids: tasks.iter().map(|task| (*task).to_owned()).collect(),\n            benchmark_runtime: None,\n            repetitions: 2,\n"
+}
