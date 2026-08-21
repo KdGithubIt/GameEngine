@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "    #[cfg(feature = \"visual-validation\")]\n    visual_ai_studio_detached_capture: bool,\n}",
+  "new": "    #[cfg(feature = \"visual-validation\")]\n    visual_ai_studio_detached_capture: bool,\n    #[cfg(feature = \"visual-validation\")]\n    visual_ai_studio_capture_task: Option<VisualAiStudioCaptureTask>,\n}"
+}
