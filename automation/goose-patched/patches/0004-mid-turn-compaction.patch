@@ -1,0 +1,81 @@
+diff --git a/crates/goose/src/agents/agent.rs b/crates/goose/src/agents/agent.rs
+--- a/crates/goose/src/agents/agent.rs
++++ b/crates/goose/src/agents/agent.rs
+@@ -326,6 +326,13 @@ fn agent_visible_message_text(message: &Message) -> String {
+     message.agent_visible_content().as_concat_text()
+ }
+ 
++fn contains_completed_tool_result(messages: &Conversation) -> bool {
++    messages.messages().iter().any(|message| {
++        message
++            .content
++            .iter()
++            .any(|content| matches!(content, MessageContent::ToolResponse(_)))
++    })
++}
++
+ fn attach_turn_usage(
+     messages: &mut Conversation,
+     usage: &ProviderUsage,
+@@ -3281,9 +3288,66 @@ impl Agent {
+                 for msg in &messages_to_add {
+                     session_manager.add_message(&session_config.id, msg).await?;
+                 }
++                let completed_tool_result = contains_completed_tool_result(&messages_to_add);
+                 conversation.extend(messages_to_add);
+ 
++                if completed_tool_result && !exit_chat && !did_recovery_compact_this_iteration {
++                    let session_now = session_manager
++                        .get_session(&session_config.id, true)
++                        .await?;
++                    let over_threshold = check_if_compaction_needed(
++                        self.provider().await?.as_ref(),
++                        &conversation,
++                        None,
++                        &session_now,
++                    )
++                    .await?;
++
++                    if over_threshold {
++                        yield AgentEvent::Message(
++                            Message::assistant().with_system_notification(
++                                SystemNotificationType::ProgressMessage,
++                                COMPACTION_PROGRESS_TEXT,
++                            )
++                        );
++                        match compact_messages(
++                            self.provider().await?.as_ref(),
++                            &model_config,
++                            &session_config.id,
++                            &conversation,
++                            false,
++                        )
++                        .await
++                        {
++                            Ok(compaction) => {
++                                session_manager
++                                    .replace_conversation(
++                                        &session_config.id,
++                                        &compaction.conversation,
++                                    )
++                                    .await?;
++                                self.update_session_metrics(
++                                    &session_config.id,
++                                    session_config.schedule_id.clone(),
++                                    &compaction.usage,
++                                    Some(compaction.retained_context_tokens),
++                                )
++                                .await?;
++                                conversation = compaction.conversation;
++                                yield AgentEvent::HistoryReplaced(conversation.clone());
++                            }
++                            Err(error) => {
++                                error!("Mid-turn compaction failed: {}", error);
++                            }
++                        }
++                    }
++                }
++
+                 if exit_chat && self.has_pending_steers(&session_config.id).await {
+                     exit_chat = false;
+                 }
