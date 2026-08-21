@@ -50,9 +50,9 @@ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::managed_local_runtime::{
     GgufModelCapability, MANAGED_BACKEND_ID, ManagedEnvironmentProbe, ManagedEnvironmentProbeTask,
-    ManagedExecutionEnvironment, ManagedLocalModelConfig, ManagedLocalRuntime,
-    ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus, ManagedSetupTask,
-    PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
+    ManagedExecutionEnvironment, ManagedGooseSetupStatus, ManagedLocalModelConfig,
+    ManagedLocalRuntime, ManagedSetupOperation, ManagedSetupResult, ManagedSetupStatus,
+    ManagedSetupTask, PINNED_GOOSE_VERSION, PINNED_LLAMA_CPP_REVISION, PINNED_LLAMA_CPP_TAG,
 };
 use crate::model_router::{MODEL_ROUTER_POLICY_VERSION, ModelRoutingPolicy};
 use crate::native_agent::{
@@ -1861,6 +1861,7 @@ impl AiStudioPanel {
         self.managed_local_runtime =
             ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
         self.model_backend = ModelBackendPreference::ManagedLocal;
+        self.settings_model_view = ModelBackendPreference::ManagedLocal;
         self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
         let model_id = self
             .managed_local_runtime
@@ -1882,6 +1883,8 @@ impl AiStudioPanel {
         self.external_provider_status =
             ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
         self.visual_external_provider_evidence = false;
+        self.settings_section = SettingsSection::Models;
+        self.settings_open = true;
         Ok(())
     }
 
@@ -3277,6 +3280,16 @@ impl AiStudioPanel {
             SelectedAi::Agent(kind) => {
                 agent_unavailable_for_mode(kind, self.conversation_mode, self.agent_readiness(kind))
             }
+            SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
+                match self.described_managed_model_config() {
+                    Err(error) => Some(error),
+                    Ok(config) if GooseLocalAcpRuntime::setup_required(&config) => Some(
+                        "Managed Local uses Goose over ACP. Goose is not set up on this machine yet; open Settings > Models > Managed Local AI and choose Install Goose."
+                            .to_owned(),
+                    ),
+                    Ok(_) => None,
+                }
+            }
             SelectedAi::Model(_) => self.described_native_model_config().err(),
         }
     }
@@ -4274,6 +4287,12 @@ impl AiStudioPanel {
                     installation.environment.label()
                 ));
             }
+            Ok(ManagedSetupResult::GooseInstalled(installation)) => {
+                self.status = Some(format!(
+                    "Managed Local ACP runtime ready: Goose {} · verified {}.",
+                    installation.version, installation.asset_sha256
+                ));
+            }
             Ok(ManagedSetupResult::WslProvisioned) => {
                 self.status = Some(
                     "Dedicated GameEngine-LocalAI WSL environment is provisioned. Install the pinned runtime next."
@@ -4715,8 +4734,18 @@ impl AiStudioPanel {
                 let managed_model = self.described_managed_model_config()?;
                 let config =
                     GooseLocalAcpConfig::new(managed_model).map_err(|error| error.to_string())?;
-                let runtime =
-                    GooseLocalAcpRuntime::discover(config).map_err(|error| error.to_string())?;
+                let runtime = match GooseLocalAcpRuntime::discover(config) {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        self.settings_open = true;
+                        self.settings_section = SettingsSection::Models;
+                        let message = format!(
+                            "Managed Local ACP cannot start until Goose is ready. Use Install Goose in Settings > Models > Managed Local AI, then retry. {error}"
+                        );
+                        self.status = Some(message.clone());
+                        return Err(message);
+                    }
+                };
                 self.acp
                     .replace(Box::new(runtime))
                     .map_err(|error| error.to_string())
