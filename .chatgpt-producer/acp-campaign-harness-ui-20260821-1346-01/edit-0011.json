@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    fn measured_identity(model: &str) -> BenchmarkIdentity {\n",
+  "new": "    #[test]\n    fn acp_runtime_identity_match_is_exact_and_fail_closed() {\n        let expected_identity = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(\n            \"goose\",\n            Some(\"1.2.3\".to_owned()),\n        );\n        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(&expected_identity);\n        assert!(runtime.matches_acp_runtime(&expected_identity));\n        assert!(!runtime.matches_acp_runtime(\n            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(\n                \"goose\",\n                Some(\"1.2.4\".to_owned()),\n            )\n        ));\n        assert!(!runtime.matches_acp_runtime(\n            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(\n                \"another-agent\",\n                Some(\"1.2.3\".to_owned()),\n            )\n        ));\n    }\n\n    fn measured_identity(model: &str) -> BenchmarkIdentity {\n"
+}
