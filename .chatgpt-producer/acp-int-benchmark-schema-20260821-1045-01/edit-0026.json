@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark_campaign.rs","old":"pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 2;","new":"pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 3;"}
