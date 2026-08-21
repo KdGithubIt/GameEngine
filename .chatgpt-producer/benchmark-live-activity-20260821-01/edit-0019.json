@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "    if start > 0 {\n        if let Some(newline) = bytes.iter().position(|byte| *byte == b'\\n') {\n            bytes.drain(..=newline);\n        }\n    }",
+  "new": "    if start > 0\n        && let Some(newline) = bytes.iter().position(|byte| *byte == b'\\n')\n    {\n        bytes.drain(..=newline);\n    }"
+}
