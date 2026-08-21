@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "managed-goose-pin-ge-midturn-2-20260822-01",
+  "target_branch": "chatgpt/gameengine-managed-goose-pin-ge-midturn-2-20260822",
+  "expected_head_sha": "4d5e699c54a1b37dc88483c99666317228509337",
+  "baseline_main_sha": "4d5e699c54a1b37dc88483c99666317228509337",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json"
+  ],
+  "commit_message": "Pin Managed Local to patched Goose v1.45.0",
+  "pr_title": "editor: pin Managed Local to patched Goose v1.45.0",
+  "pr_body": "## Summary\n\n- pin Managed Local to the immutable `1.45.0+gameengine.ge-midturn-2` GameEngine release\n- install the managed archive's root-level `goose.exe` and verify its published SHA-256\n- preserve SemVer build metadata so the patched runtime has a distinct ACP identity\n- record the managed distribution provenance and telemetry contract in ADR 0166\n\n## Release provenance\n\n- release: `managed-goose-v1.45.0-ge-midturn-2`\n- upstream Goose revision: `4dc0420f5704a92806c6628c8f0a3497d7a88759`\n- GameEngine source revision: `acf9744eb549a7617a44c3a131e5cec6e6a17ff9`\n- Windows archive SHA-256: `b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a`\n\n## Validation\n\n- request Windows affected validation for the editor and documentation changes\n- request Editor visual validation for the longer managed-runtime version label\n\n<!-- gameengine-visual-validation: editor -->"
+}
