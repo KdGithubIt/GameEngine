@@ -83,7 +83,7 @@ diff --git a/crates/goose/src/context_mgmt/mod.rs b/crates/goose/src/context_mgm
              let usage = ProviderUsage::new("mock-model".to_string(), Usage::default());
              Ok(stream_from_single_message(message, usage))
          }
-@@ -765,6 +803,58 @@ mod tests {
+@@ -765,6 +803,62 @@ mod tests {
          }
      }
 
