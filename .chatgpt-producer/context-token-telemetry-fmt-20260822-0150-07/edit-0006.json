@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "    let requested_tokens = number_between(message, \"request (\", \" tokens) exceeds\")?;\n    let available_context_tokens =\n        number_between(message, \"available context size (\", \" tokens)\")?;",
+  "new": "    let requested_tokens = number_between(message, \"request (\", \" tokens) exceeds\")?;\n    let available_context_tokens = number_between(message, \"available context size (\", \" tokens)\")?;"
+}
