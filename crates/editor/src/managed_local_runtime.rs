@@ -100,6 +100,12 @@ const MANAGED_CONTEXT_ALIGNMENT_TOKENS: u32 = 512;
 /// while the previous weights and KV cache are still resident. The fitter then moves blocks onto
 /// the CPU for the whole session, which costs far more than waiting out the teardown.
 const MANAGED_SERVER_RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Allow a force-killed llama-server to exit after the graceful release timeout expires.
+///
+/// A WSL2 llama-server can hang mid-shutdown while releasing the GPU paravirtualization
+/// device, so it never reacts to the plain `kill` sent at the start of release. This second,
+/// shorter wait follows a `kill -9` sent once the graceful timeout is exhausted.
+const MANAGED_SERVER_FORCE_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -2348,9 +2354,16 @@ impl ManagedLocalRuntime {
                 format!("could not stop managed llama-server: {error}"),
             ));
         }
-        let started = Instant::now();
-        while process_is_alive(state)? && started.elapsed() < MANAGED_SERVER_RELEASE_TIMEOUT {
-            thread::sleep(Duration::from_millis(50));
+        wait_while_process_alive(state, MANAGED_SERVER_RELEASE_TIMEOUT)?;
+        if managed_release_should_force_kill(state.environment, process_is_alive(state)?) {
+            // The graceful `kill` above never lands while llama-server is stuck releasing the
+            // WSL2 GPU paravirtualization device, so escalate to SIGKILL before giving up.
+            let _ = managed_wsl_command()
+                .args(["kill", "-9", &state.process_id.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            wait_while_process_alive(state, MANAGED_SERVER_FORCE_KILL_TIMEOUT)?;
         }
         let still_alive = process_is_alive(state)?;
         self.clear_process_state()?;
@@ -3144,6 +3157,29 @@ fn process_is_alive(state: &ManagedProcessState) -> Result<bool, ManagedLocalRun
     }
     let text = command_output_text(&status);
     Ok(status.status.success() && text.contains(&state.process_id.to_string()))
+}
+
+/// Decides whether a stalled release should escalate from a graceful `kill` to `kill -9`.
+///
+/// Only WSL2 escalates: Windows Native release already uses `taskkill.exe /F`, which is a
+/// forced termination, so a second forceful attempt would be redundant.
+fn managed_release_should_force_kill(
+    environment: ManagedExecutionEnvironment,
+    still_alive_after_graceful_kill: bool,
+) -> bool {
+    environment == ManagedExecutionEnvironment::Wsl2Linux && still_alive_after_graceful_kill
+}
+
+/// Polls `process_is_alive` until it reports exit or `timeout` elapses.
+fn wait_while_process_alive(
+    state: &ManagedProcessState,
+    timeout: Duration,
+) -> Result<(), ManagedLocalRuntimeError> {
+    let started = Instant::now();
+    while process_is_alive(state)? && started.elapsed() < timeout {
+        thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 fn reserve_loopback_port() -> Result<u16, ManagedLocalRuntimeError> {
@@ -4134,6 +4170,26 @@ mod tests {
         assert!(!managed_process_exited_before_health(true, false));
         assert!(!managed_process_exited_before_health(false, true));
         assert!(managed_process_exited_before_health(false, false));
+    }
+
+    #[test]
+    fn release_only_escalates_to_force_kill_on_wsl2_after_a_stalled_graceful_kill() {
+        assert!(managed_release_should_force_kill(
+            ManagedExecutionEnvironment::Wsl2Linux,
+            true
+        ));
+        assert!(!managed_release_should_force_kill(
+            ManagedExecutionEnvironment::Wsl2Linux,
+            false
+        ));
+        assert!(!managed_release_should_force_kill(
+            ManagedExecutionEnvironment::WindowsNative,
+            true
+        ));
+        assert!(!managed_release_should_force_kill(
+            ManagedExecutionEnvironment::WindowsNative,
+            false
+        ));
     }
 
     #[test]
