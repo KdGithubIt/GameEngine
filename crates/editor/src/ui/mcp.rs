@@ -8,7 +8,8 @@ use engine_authoring::{
 };
 use engine_mcp::{
     AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL, AUTHORING_DESCRIBE_TOOL,
-    AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL, AssetInspectInput,
+    AUTHORING_INSPECT_TOOL, AUTHORING_LIST_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
+    AssetInspectInput,
     AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
     BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, CapabilityDescribeInput,
     CapabilityInvokeInput, EntityFindInput, EntityInspectInput, GraphMutationInput,
@@ -114,6 +115,14 @@ impl EditorApp {
         let capability_tools = AuthoringCapabilityMcpTools::new();
 
         match name {
+            AUTHORING_LIST_TOOL => {
+                require_empty_arguments(arguments)?;
+                to_value(
+                    capability_tools
+                        .list(&permissions)
+                        .map_err(McpToolError::from)?,
+                )
+            }
             AUTHORING_CAPABILITIES_TOOL => {
                 require_empty_arguments(arguments)?;
                 to_value(

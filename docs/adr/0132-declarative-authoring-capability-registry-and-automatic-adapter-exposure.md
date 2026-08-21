@@ -88,6 +88,7 @@ The exact transport spelling may evolve, but the generic contract MUST support
 operations equivalent to:
 
 ```text
+authoring.list
 authoring.capabilities
 authoring.describe
 authoring.inspect
@@ -96,10 +97,21 @@ authoring.preview
 authoring.apply
 ```
 
+`authoring.list` is the preferred context-efficient discovery operation. It
+returns only registry-derived selection metadata such as stable ID, domain,
+kind, exposure, and description. Once a client selects an operation,
+`authoring.describe` returns that capability's full schema, permission,
+transaction, and document contract. `authoring.capabilities` retains the full
+registry response as a compatibility surface for existing clients; new agent
+flows SHOULD use `authoring.list` -> `authoring.describe` instead of loading
+every schema eagerly.
+
 Tool descriptors, input schemas, capability descriptions, and permission
 requirements for this generic surface MUST be derived from the authoring-owned
-registry or the shared schemas referenced by it. MCP MUST NOT maintain a second
-handwritten capability catalog that can disagree with the authoring registry.
+registry or the shared schemas referenced by it. Compact summaries MUST also be
+projected from the same registry rather than maintained as an adapter-specific
+catalog. MCP MUST NOT maintain a second handwritten capability catalog that can
+disagree with the authoring registry.
 
 Existing domain-specific MCP and CLI commands remain valid compatibility and
 ergonomic surfaces. They MAY delegate to the same registered capability rather
