@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Validate the pinned managed-Goose patch series without network access."""
+"""Validate and materialize the pinned managed-Goose patch series."""
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "tools" / "managed-goose" / "series.json"
@@ -15,19 +18,39 @@ FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 DIFF_HEADER = re.compile(r"^diff --git a/(.+) b/(.+)$", re.MULTILINE)
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     raise SystemExit(f"managed-goose verification failed: {message}")
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def canonical_patch_bytes(rel: str, fallback_path: Path) -> bytes:
+    """Read Git-blob bytes so checkout EOL conversion cannot change provenance."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "show", f"HEAD:{rel}"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return result.stdout
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        if not fallback_path.is_file():
+            fail(f"missing patch: {rel}")
+        return fallback_path.read_bytes()
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--export-dir",
+        type=Path,
+        help="Write verified canonical Git-blob patch bytes below this directory.",
+    )
+    args = parser.parse_args()
+
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1:
         fail("unsupported schema_version")
@@ -43,6 +66,8 @@ def main() -> int:
 
     seen_paths: set[str] = set()
     observed_paths: list[str] = []
+    canonical: dict[str, bytes] = {}
+
     for index, entry in enumerate(patches, start=1):
         rel = entry.get("path", "")
         expected_hash = entry.get("sha256", "")
@@ -52,13 +77,17 @@ def main() -> int:
         observed_paths.append(rel)
 
         patch_path = ROOT / rel
-        if not patch_path.is_file():
-            fail(f"missing patch: {rel}")
-        observed_hash = sha256(patch_path)
+        data = canonical_patch_bytes(rel, patch_path)
+        canonical[rel] = data
+        observed_hash = sha256(data)
         if observed_hash != expected_hash:
             fail(f"{rel}: sha256 {observed_hash} != manifest {expected_hash}")
 
-        text = patch_path.read_text(encoding="utf-8")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            fail(f"{rel}: patch is not UTF-8: {error}")
+
         pairs = DIFF_HEADER.findall(text)
         if not pairs:
             fail(f"{rel}: no diff --git headers found")
@@ -74,8 +103,11 @@ def main() -> int:
                 f"{rel}: changed paths {sorted(set(changed))} do not match "
                 f"allowed_paths {sorted(allowed or [])}"
             )
-        if any(path.startswith(".github/") or path.startswith(".chatgpt-requests/") for path in changed):
-            fail(f"{rel}: patch may not modify GameEngine automation transport paths")
+        if any(
+            path.startswith(".github/") or path.startswith(".chatgpt-requests/")
+            for path in changed
+        ):
+            fail(f"{rel}: patch may not modify automation transport paths")
 
         origin = entry.get("origin", {})
         origin_type = origin.get("type")
@@ -100,12 +132,20 @@ def main() -> int:
         if not excluded.get("reason"):
             fail(f"excluded upstream commit {commit} is missing a reason")
 
+    if args.export_dir:
+        for rel, data in canonical.items():
+            destination = args.export_dir / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(data)
+
     print(
         f"managed-goose series OK: {manifest['distribution_id']} "
         f"upstream={upstream['version']}@{upstream_sha} patches={len(patches)}"
     )
     for entry in patches:
         print(f"  {entry['sha256']}  {entry['path']}")
+    if args.export_dir:
+        print(f"canonical patch bytes exported under {args.export_dir}")
     return 0
 
 
