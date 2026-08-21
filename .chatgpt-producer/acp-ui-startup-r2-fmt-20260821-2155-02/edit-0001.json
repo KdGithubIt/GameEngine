@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/acp_startup.rs","old":"            Err(mpsc::TryRecvError::Disconnected)\n                if self.cancelled.load(Ordering::Acquire) =>\n            {\n                None\n            }","new":"            Err(mpsc::TryRecvError::Disconnected) if self.cancelled.load(Ordering::Acquire) => None,"}
