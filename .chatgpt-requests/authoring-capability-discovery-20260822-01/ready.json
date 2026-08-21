@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "authoring-capability-discovery-20260822-01",
+  "target_branch": "chatgpt/gameengine-authoring-capability-discovery",
+  "expected_head_sha": "67916d4968699594fa8dbf205f9111f1bef7556d",
+  "baseline_main_sha": "67916d4968699594fa8dbf205f9111f1bef7556d",
+  "patch_sha256": "d3070e297ac27d89bfcc88855fcba6ab721782da43230cc7562e0224f2c810b2",
+  "patch_bytes": 27326,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add context-efficient authoring capability discovery",
+  "pr_title": "GameEngine: add context-efficient authoring capability discovery",
+  "pr_body": "## Summary\n\nAdds registry-derived `authoring.list` compact discovery while retaining the full `authoring.capabilities` compatibility response. MCP and CLI share the canonical summary projection, and `authoring.describe` remains the on-demand full contract lookup.\n\n## Validation\n\nUse the repository Windows Validation workflow with impact-based affected planning. No UI changes are included, so Visual Validation is not required."
+}
