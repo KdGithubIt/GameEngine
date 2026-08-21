@@ -187,6 +187,16 @@ arguments, environment placement, and provider diagnostics. They do not own
 authoring semantics, GameEngine permission policy, work-claim policy,
 completion gates, or canonical project persistence.
 
+AI Studio presentation code must not synchronously perform adapter discovery,
+provider process launch, Managed Local endpoint startup or health waits, ACP
+initialization, or ACP session negotiation from the egui frame. Presentation
+code prepares immutable Agent Host binding authority, starts a background
+startup task, and polls it. A completed session is attached only after the
+original GameEngine session or run is revalidated. If the user cancels while
+startup is pending, a late session is cancelled and closed rather than attached.
+Synchronous `AcpAgentRuntime::open_session` remains an adapter-internal contract;
+presentation code does not call it directly.
+
 ### 10. Managed Local Agent Harness benchmarks normally use Goose ACP
 
 The Benchmark Campaign surface distinguishes the model being measured from the
@@ -270,8 +280,12 @@ Focused tests cover:
 - arbitrary descriptor IDs without a central provider enum;
 - duplicate descriptor rejection;
 - read-only versus AgentRun-bound MCP bindings;
-- credential redaction; and
-- ACP turn-finished projection to semantic progress rather than host completion.
+- credential redaction;
+- ACP turn-finished projection to semantic progress rather than host completion;
+- delayed adapter discovery and session opening remaining pollable without a
+  presentation-thread wait; and
+- cancellation during pending session opening preventing late attachment and
+  closing the returned session.
 
 Concrete adapter slices add transport/protocol tests when they begin ACP I/O.
 

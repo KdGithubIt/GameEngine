@@ -989,6 +989,18 @@ enum AcpStartupContinuation {
     },
 }
 
+impl AcpStartupContinuation {
+    fn ask_session_id(&self) -> Option<&str> {
+        match self {
+            Self::Ask {
+                gameengine_session_id,
+                ..
+            } => Some(gameengine_session_id),
+            Self::Build { .. } => None,
+        }
+    }
+}
+
 struct PendingAcpStartup {
     task: AcpSessionStartupTask,
     continuation: AcpStartupContinuation,
@@ -1570,6 +1582,35 @@ impl AiStudioPanel {
             adapter.device,
         );
         self.benchmark_hardware_probe_attempted = true;
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Seeds a compact pending Managed Local ACP Ask for screenshot validation.
+    pub fn prepare_acp_startup_visual_validation(&mut self) {
+        self.conversation_mode = ConversationMode::Ask;
+        self.selected_ai_family = SelectedAiFamily::Model;
+        self.model_backend = ModelBackendPreference::ManagedLocal;
+        self.managed_model_id = "visual-managed-local".to_owned();
+        self.settings_open = false;
+        self.proposal_open = false;
+        self.message_draft.clear();
+        let session_id = self.selected_session.clone();
+        let _ = self.host.append_message(
+            &session_id,
+            ConversationRole::User,
+            "Inspect the current project state and summarize what you find.",
+        );
+        self.acp_startup = Some(PendingAcpStartup {
+            task: AcpSessionStartupTask::visual_pending(
+                "Starting Managed Local and connecting ACP…",
+            ),
+            continuation: AcpStartupContinuation::Ask {
+                agent_id: GOOSE_LOCAL_ACP_DESCRIPTOR_ID.to_owned(),
+                gameengine_session_id: session_id,
+                prompt: "visual validation pending ACP Ask".to_owned(),
+            },
+        });
+        self.status = Some("Starting Managed Local and connecting ACP…".to_owned());
     }
 
     #[cfg(feature = "visual-validation")]
@@ -3819,7 +3860,15 @@ impl AiStudioPanel {
                     || self
                         .pending_question_permission
                         .as_ref()
-                        .is_some_and(|pending| pending.session_id == self.selected_session);
+                        .is_some_and(|pending| pending.session_id == self.selected_session)
+                    || self.acp_question.as_ref().is_some_and(|question| {
+                        question.gameengine_session_id == self.selected_session
+                    })
+                    || self
+                        .acp_startup
+                        .as_ref()
+                        .and_then(|pending| pending.continuation.ask_session_id())
+                        .is_some_and(|session_id| session_id == self.selected_session);
                 let delete_block_reason = if has_active_run {
                     Some("Stop the session's active run before deleting it.")
                 } else if question_busy {
@@ -3959,8 +4008,25 @@ impl AiStudioPanel {
         let can_send = !self.message_draft.trim().is_empty()
             && self.native_question.is_none()
             && self.external_question.is_none()
+            && self.acp_startup.is_none()
+            && self.acp_question.is_none()
             && self.pending_question_permission.is_none()
             && commit_blocked.is_none();
+        let acp_startup_ask = self
+            .acp_startup
+            .as_ref()
+            .and_then(|pending| pending.continuation.ask_session_id())
+            .is_some();
+        let acp_startup_status = self.acp_startup.as_ref().map(|_| {
+            self.status
+                .clone()
+                .unwrap_or_else(|| "Starting agent…".to_owned())
+        });
+        let acp_question_status = self.acp_question.as_ref().map(|_| {
+            self.status
+                .clone()
+                .unwrap_or_else(|| "Waiting for agent…".to_owned())
+        });
         let mut stop_answer_requested = false;
         ui.horizontal(|ui| {
             if ui
@@ -3968,6 +4034,22 @@ impl AiStudioPanel {
                 .clicked()
             {
                 self.submit_message();
+            }
+            if let Some(status) = acp_startup_status.as_deref() {
+                ui.spinner();
+                ui.small(status);
+                if acp_startup_ask && ui.button("Stop answering").clicked() {
+                    stop_answer_requested = true;
+                }
+                return;
+            }
+            if let Some(status) = acp_question_status.as_deref() {
+                ui.spinner();
+                ui.small(status);
+                if ui.button("Stop answering").clicked() {
+                    stop_answer_requested = true;
+                }
+                return;
             }
             if self.native_question.is_some() {
                 ui.spinner();
@@ -4014,9 +4096,41 @@ impl AiStudioPanel {
                 }
             }
         });
-        if stop_answer_requested {
+        if stop_answer_requested && !self.cancel_acp_answer() {
             self.cancel_external_question();
         }
+    }
+
+    /// Stops an ACP Ask during background startup or after session attachment.
+    ///
+    /// A worker that finishes after pending startup is cancelled owns cleanup
+    /// of the late session, so cancelling never attaches authority after the
+    /// user has stopped the answer.
+    fn cancel_acp_answer(&mut self) -> bool {
+        if self
+            .acp_startup
+            .as_ref()
+            .and_then(|pending| pending.continuation.ask_session_id())
+            .is_some()
+        {
+            if let Some(pending) = self.acp_startup.take() {
+                pending.task.cancel();
+            }
+            self.status = Some("Stopped the ACP answer startup.".to_owned());
+            return true;
+        }
+        let Some(question) = self.acp_question.take() else {
+            return false;
+        };
+        match self.acp.cancel_session(&question.acp_session_id) {
+            Ok(()) => {
+                self.status = Some("Stopped the ACP answer.".to_owned());
+            }
+            Err(error) => {
+                self.status = Some(format!("Could not stop ACP answer: {error}"));
+            }
+        }
+        true
     }
 
     /// Stops a provider-served answer without recording a transcript entry.
@@ -4743,7 +4857,9 @@ impl AiStudioPanel {
                 let managed_model = self.described_managed_model_config()?;
                 let config =
                     GooseLocalAcpConfig::new(managed_model).map_err(|error| error.to_string())?;
-                Ok(AcpRuntimeStartupConfig::Goose { config })
+                Ok(AcpRuntimeStartupConfig::Goose {
+                    config: Box::new(config),
+                })
             }
             _ => Err(format!(
                 "ACP agent `{agent_id}` is not configured by AI Studio"

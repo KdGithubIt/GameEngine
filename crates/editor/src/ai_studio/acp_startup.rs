@@ -25,7 +25,7 @@ pub(super) enum AcpRuntimeStartupConfig {
         config: ClaudeAcpConfig,
     },
     Goose {
-        config: GooseLocalAcpConfig,
+        config: Box<GooseLocalAcpConfig>,
     },
 }
 
@@ -60,7 +60,7 @@ impl AcpRuntimeStartupConfig {
                     .map(|runtime| Box::new(runtime) as Box<dyn AcpAgentRuntime>)
                     .map_err(|error| format!("Could not start Claude ACP: {error}"))
             }
-            Self::Goose { config } => GooseLocalAcpRuntime::discover(config)
+            Self::Goose { config } => GooseLocalAcpRuntime::discover(*config)
                 .map(|runtime| Box::new(runtime) as Box<dyn AcpAgentRuntime>)
                 .map_err(|error| format!("Could not start Goose: {error}")),
         }

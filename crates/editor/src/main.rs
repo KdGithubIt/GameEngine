@@ -109,7 +109,9 @@ impl EditorShell {
                     None => {
                         let touches_ai_studio = visual_validation_touches_ai_studio();
                         if touches_ai_studio {
-                            if visual_validation_touches_managed_local_runtime() {
+                            if visual_validation_touches_acp_startup() {
+                                ai_studio.prepare_acp_startup_visual_validation();
+                            } else if visual_validation_touches_managed_local_runtime() {
                                 ai_studio.prepare_managed_local_visual_validation()?;
                             } else {
                                 ai_studio.prepare_hosted_backend_visual_validation();
@@ -593,6 +595,24 @@ fn visual_validation_touches_ai_studio() -> bool {
             &base,
             "--",
             "crates/editor/src/ai_studio.rs",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_validation_touches_acp_startup() -> bool {
+    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+    let base = format!("origin/{base_ref}...HEAD");
+    std::process::Command::new("git")
+        .args([
+            "diff",
+            "--name-only",
+            &base,
+            "--",
+            "crates/editor/src/ai_studio/acp_startup.rs",
         ])
         .output()
         .ok()
