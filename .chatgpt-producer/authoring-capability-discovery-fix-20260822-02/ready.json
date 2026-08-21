@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "authoring-capability-discovery-fix-20260822-02",
+  "target_branch": "chatgpt/gameengine-authoring-capability-discovery",
+  "expected_head_sha": "942c482ab57e7eaa982174c81cf1ef272680b1cc",
+  "baseline_main_sha": "67916d4968699594fa8dbf205f9111f1bef7556d",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json"
+  ],
+  "commit_message": "Complete headless compact capability discovery parity",
+  "pr_title": "GameEngine: add context-efficient authoring capability discovery",
+  "pr_body": "## Summary\n\nAdds registry-derived `authoring.list` compact discovery while retaining the full `authoring.capabilities` compatibility response. MCP, CLI, Editor, and headless MCP execution share the canonical registry projection, and `authoring.describe` remains the on-demand full contract lookup.\n\n## Validation\n\nUse the repository Windows Validation workflow with impact-based affected planning. No UI layout or visual behavior changes are included, so Visual Validation is not required."
+}
