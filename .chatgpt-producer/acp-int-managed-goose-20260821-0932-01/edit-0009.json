@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                        reasoning_effort: codex_reasoning_effort(self.quality_preference)\n                            .map(str::to_owned),","new":"                        reasoning_effort: Self::codex_reasoning_effort(self.quality_preference)\n                            .map(str::to_owned),"}
