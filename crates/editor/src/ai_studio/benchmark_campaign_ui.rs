@@ -181,6 +181,38 @@ impl BenchmarkCampaignPanel {
             && self.harness_selection.is_goose_acp()
     }
 
+    fn settings_editable(&self) -> bool {
+        self.plan.is_none()
+    }
+
+    fn control_state(&self) -> Option<CampaignState> {
+        self.plan.as_ref()?;
+        Some(
+            self.run
+                .as_ref()
+                .map(CampaignRun::state)
+                .unwrap_or(CampaignState::Planned),
+        )
+    }
+
+    fn reset_for_new_campaign(&mut self, checkpoint_root: &Path) {
+        self.prior_plan = self.plan.take();
+        self.run = None;
+        self.running = None;
+        self.acquisition = None;
+        self.acquisition_approved = false;
+        self.message = None;
+
+        let path = campaign_checkpoint_path(checkpoint_root);
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.message = Some(format!("Could not remove campaign checkpoint: {error}"));
+            }
+        }
+    }
+
     pub(super) fn load_checkpoint(root: &Path) -> Self {
         let path = campaign_checkpoint_path(root);
         let Ok(bytes) = fs::read(path) else {
@@ -262,11 +294,145 @@ impl AiStudioPanel {
             .insert(model_id.to_owned());
     }
 
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_benchmark_campaign_completed_visual_validation(&mut self) -> Result<(), String> {
+        self.prepare_managed_local_visual_validation()?;
+        self.settings_open = true;
+        self.settings_section = SettingsSection::Benchmarks;
+
+        let model = self
+            .managed_local_runtime
+            .registered_models()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|model| {
+                self.benchmark_campaign
+                    .selected_models
+                    .contains(&model.model_id)
+            })
+            .ok_or_else(|| {
+                "Benchmark campaign visual fixture has no registered model.".to_owned()
+            })?;
+        let representation = model
+            .exact_representation()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                "Benchmark campaign visual fixture has no exact GGUF identity.".to_owned()
+            })?;
+        let model_id = model.model_id.clone();
+
+        self.benchmark_campaign.campaign_id = "managed-local-completed".to_owned();
+        self.benchmark_campaign.comparison_class = CampaignComparisonClass::ModelComparison;
+        self.benchmark_campaign.execution_profile = CampaignExecutionProfile::Warm;
+        self.benchmark_campaign.execution_environment = CampaignExecutionEnvironment::WindowsNative;
+        self.benchmark_campaign.harness_selection = CampaignHarnessSelection::GooseAcpAgentHarness;
+        self.benchmark_campaign.quality = QualityPreference::Balanced;
+        self.benchmark_campaign.selected_models = BTreeSet::from([model_id.clone()]);
+        self.benchmark_campaign.selected_tasks =
+            BTreeSet::from(["validation_repair_v1".to_owned()]);
+        self.benchmark_campaign.repetitions = 1;
+        self.benchmark_campaign.host_seed = 7;
+        self.benchmark_campaign.run_timeout_seconds = 600;
+        self.benchmark_campaign.prior_plan = None;
+        self.benchmark_campaign.acquisition = None;
+        self.benchmark_campaign.acquisition_approved = false;
+        self.benchmark_campaign.running = None;
+        self.benchmark_campaign.message = None;
+
+        let acp_identity = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+            GOOSE_ACP_AGENT_NAME,
+            Some("visual-validation".to_owned()),
+        );
+        let plan = CampaignPolicy {
+            campaign_id: self.benchmark_campaign.campaign_id.clone(),
+            engine_commit_head: if ENGINE_COMMIT_HEAD.is_empty() {
+                "0123456789abcdef0123456789abcdef01234567".to_owned()
+            } else {
+                ENGINE_COMMIT_HEAD.to_owned()
+            },
+            comparison_class: self.benchmark_campaign.comparison_class,
+            execution_profile: self.benchmark_campaign.execution_profile,
+            execution_environment: self.benchmark_campaign.execution_environment,
+            backend_runtime_version: "llama.cpp-visual-validation".to_owned(),
+            hardware: self.benchmark_hardware.clone(),
+            quality: self.benchmark_campaign.quality,
+            run_timeout_seconds: self.benchmark_campaign.run_timeout_seconds,
+            candidates: vec![CampaignCandidate {
+                representation: CampaignRepresentation {
+                    backend_id: MANAGED_BACKEND_ID.to_owned(),
+                    model_id: model_id.clone(),
+                    model_version: model.content_sha256,
+                    quantization: representation,
+                    representation_size_bytes: model.size_bytes,
+                },
+                source: CampaignCandidateSource::installed(),
+            }],
+            task_ids: vec!["validation_repair_v1".to_owned()],
+            benchmark_runtime: Some(BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+                &acp_identity,
+            )),
+            repetitions: 1,
+            host_seed: self.benchmark_campaign.host_seed,
+        }
+        .freeze()?;
+
+        let mut run = CampaignRun::prepare(plan.clone());
+        run.start(None, &BTreeSet::from([model_id]))
+            .map_err(|rejection| format!("{} ({})", rejection.message(), rejection.code()))?;
+        let scheduled = run
+            .next_scheduled()
+            .ok_or_else(|| "Benchmark campaign visual fixture has no scheduled run.".to_owned())?;
+        run.record(CampaignEvidence {
+            scheduled,
+            outcome: BenchmarkRunOutcome::Failed,
+            failure_kind: None,
+            attempt: 0,
+            record: None,
+        })
+        .map_err(|rejection| format!("{} ({})", rejection.message(), rejection.code()))?;
+        if run.state() != CampaignState::Completed {
+            return Err("Benchmark campaign visual fixture did not reach Completed.".to_owned());
+        }
+
+        let fixture_root = std::env::temp_dir().join(format!(
+            "gameengine-benchmark-campaign-visual-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        fs::create_dir_all(&fixture_root).map_err(|error| error.to_string())?;
+        self.benchmark_experiment_root = fixture_root;
+        self.benchmark_campaign.plan = Some(plan);
+        self.benchmark_campaign.run = Some(run);
+        Ok(())
+    }
+
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_benchmark_campaign_reset_visual_validation(&mut self) -> Result<(), String> {
+        self.prepare_benchmark_campaign_completed_visual_validation()?;
+        self.discard_campaign_plan();
+        if let Some(message) = self.benchmark_campaign.message.clone() {
+            return Err(message);
+        }
+        Ok(())
+    }
+
     /// Draws the campaign launcher, download review, and progress matrix.
     pub(super) fn show_benchmark_campaign(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Benchmark campaign")
             .default_open(cfg!(feature = "visual-validation"))
             .show(ui, |ui| {
+                #[cfg(feature = "visual-validation")]
+                if std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
+                    .ok()
+                    .is_some_and(|scenario| {
+                        matches!(
+                            scenario.as_str(),
+                            "ADR 0156 Benchmark Completed" | "ADR 0156 Benchmark Reset"
+                        )
+                    })
+                {
+                    ui.scroll_to_cursor(Some(egui::Align::TOP));
+                }
                 ui.small(
                     "Freezes an exact candidate set, per-task fixture identity, repetition policy, and one execution environment before the first measured run. Changing any of those starts a new campaign instead of extending this one.",
                 );
@@ -287,7 +453,7 @@ impl AiStudioPanel {
     }
 
     fn show_campaign_identity(&mut self, ui: &mut egui::Ui) {
-        let frozen = self.benchmark_campaign.plan.is_some();
+        let frozen = !self.benchmark_campaign.settings_editable();
         ui.horizontal_wrapped(|ui| {
             ui.label("Campaign");
             ui.add_enabled(
@@ -405,7 +571,7 @@ impl AiStudioPanel {
     }
 
     fn show_campaign_candidates(&mut self, ui: &mut egui::Ui) {
-        let frozen = self.benchmark_campaign.plan.is_some();
+        let frozen = !self.benchmark_campaign.settings_editable();
         ui.strong("Candidates");
         if let Some(environment) = self
             .benchmark_campaign
@@ -502,7 +668,7 @@ impl AiStudioPanel {
     }
 
     fn show_campaign_tasks(&mut self, ui: &mut egui::Ui) {
-        let frozen = self.benchmark_campaign.plan.is_some();
+        let frozen = !self.benchmark_campaign.settings_editable();
         ui.strong("Tasks");
         let goose_acp = self.benchmark_campaign.uses_goose_acp();
         for task in BENCHMARK_TASKS.iter() {
@@ -571,18 +737,12 @@ impl AiStudioPanel {
 
     fn show_campaign_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if self.benchmark_campaign.plan.is_none() {
+            let Some(state) = self.benchmark_campaign.control_state() else {
                 if ui.button("Freeze campaign").clicked() {
                     self.freeze_campaign();
                 }
                 return;
-            }
-            let state = self
-                .benchmark_campaign
-                .run
-                .as_ref()
-                .map(CampaignRun::state)
-                .unwrap_or(CampaignState::Planned);
+            };
             match state {
                 CampaignState::Planned => {
                     let blocked = self.benchmark_campaign.acquisition.is_some()
@@ -612,6 +772,9 @@ impl AiStudioPanel {
                 }
                 CampaignState::Completed => {
                     ui.small("Campaign complete.");
+                    if ui.button("Start new campaign").clicked() {
+                        self.discard_campaign_plan();
+                    }
                 }
             }
         });
@@ -669,13 +832,8 @@ impl AiStudioPanel {
     }
 
     fn discard_campaign_plan(&mut self) {
-        self.benchmark_campaign.prior_plan = self.benchmark_campaign.plan.take();
-        self.benchmark_campaign.run = None;
-        self.benchmark_campaign.running = None;
-        self.benchmark_campaign.acquisition = None;
-        self.benchmark_campaign.acquisition_approved = false;
-        self.benchmark_campaign.message = None;
-        self.clear_campaign_checkpoint();
+        self.benchmark_campaign
+            .reset_for_new_campaign(&self.benchmark_experiment_root);
     }
 
     fn show_campaign_download_review(&mut self, ui: &mut egui::Ui) {
@@ -1401,18 +1559,6 @@ impl AiStudioPanel {
                 Some(format!("Could not persist campaign checkpoint: {error}"));
         }
     }
-
-    fn clear_campaign_checkpoint(&mut self) {
-        let path = campaign_checkpoint_path(&self.benchmark_experiment_root);
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                self.benchmark_campaign.message =
-                    Some(format!("Could not remove campaign checkpoint: {error}"));
-            }
-        }
-    }
 }
 
 fn engine_commit_changed(frozen_engine_commit: &str, current_engine_commit: &str) -> bool {
@@ -1585,5 +1731,158 @@ mod tests {
             &campaign_result(execution_started + 1),
             execution_started
         ));
+    }
+
+    fn test_campaign_plan() -> CampaignPlan {
+        CampaignPolicy {
+            campaign_id: "campaign-reset-test".to_owned(),
+            engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            comparison_class: CampaignComparisonClass::ModelComparison,
+            execution_profile: CampaignExecutionProfile::Warm,
+            execution_environment: CampaignExecutionEnvironment::CompatibleBackend,
+            backend_runtime_version: "runtime-v1".to_owned(),
+            hardware: BenchmarkHardwareIdentity::default(),
+            quality: QualityPreference::Balanced,
+            run_timeout_seconds: 600,
+            candidates: vec![CampaignCandidate {
+                representation: CampaignRepresentation {
+                    backend_id: "ollama-compatible".to_owned(),
+                    model_id: "test-model".to_owned(),
+                    model_version: "test-model-digest".to_owned(),
+                    quantization: "q4".to_owned(),
+                    representation_size_bytes: 1_024,
+                },
+                source: CampaignCandidateSource::installed(),
+            }],
+            task_ids: vec!["project_inspection_v1".to_owned()],
+            benchmark_runtime: None,
+            repetitions: 1,
+            host_seed: 7,
+        }
+        .freeze()
+        .expect("test campaign should freeze")
+    }
+
+    fn completed_campaign_run(plan: &CampaignPlan) -> CampaignRun {
+        let mut run = CampaignRun::prepare(plan.clone());
+        run.start(None, &BTreeSet::from(["test-model".to_owned()]))
+            .expect("installed candidate should start");
+        let scheduled = run
+            .next_scheduled()
+            .expect("test campaign should schedule one run");
+        run.record(CampaignEvidence {
+            scheduled,
+            outcome: BenchmarkRunOutcome::Failed,
+            failure_kind: None,
+            attempt: 0,
+            record: None,
+        })
+        .expect("failed evidence should complete the only scheduled run");
+        assert_eq!(run.state(), CampaignState::Completed);
+        run
+    }
+
+    fn campaign_reset_test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "gameengine-campaign-reset-test-{name}-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ))
+    }
+
+    fn write_test_checkpoint(root: &Path, plan: &CampaignPlan, run: &CampaignRun) {
+        fs::create_dir_all(root).expect("checkpoint root should be created");
+        let checkpoint = CampaignCheckpoint {
+            plan: plan.clone(),
+            run: run.clone(),
+        };
+        fs::write(
+            campaign_checkpoint_path(root),
+            serde_json::to_vec_pretty(&checkpoint).expect("checkpoint should serialize"),
+        )
+        .expect("checkpoint should be written");
+    }
+
+    #[test]
+    fn campaign_control_state_preserves_existing_state_machine_behavior() {
+        let plan = test_campaign_plan();
+        let mut panel = BenchmarkCampaignPanel::default();
+        assert_eq!(panel.control_state(), None);
+        assert!(panel.settings_editable());
+
+        panel.plan = Some(plan.clone());
+        panel.run = Some(CampaignRun::prepare(plan.clone()));
+        assert_eq!(panel.control_state(), Some(CampaignState::Planned));
+        assert!(!panel.settings_editable());
+
+        panel
+            .run
+            .as_mut()
+            .expect("planned run")
+            .start(None, &BTreeSet::from(["test-model".to_owned()]))
+            .expect("installed candidate should start");
+        assert_eq!(panel.control_state(), Some(CampaignState::Running));
+
+        panel.run.as_mut().expect("running run").pause();
+        assert_eq!(panel.control_state(), Some(CampaignState::Paused));
+
+        panel.run = Some(completed_campaign_run(&plan));
+        assert_eq!(panel.control_state(), Some(CampaignState::Completed));
+    }
+
+    #[test]
+    fn completed_campaign_reset_clears_freeze_and_machine_checkpoint() {
+        let root = campaign_reset_test_root("completed");
+        let plan = test_campaign_plan();
+        let run = completed_campaign_run(&plan);
+        write_test_checkpoint(&root, &plan, &run);
+
+        let mut panel = BenchmarkCampaignPanel {
+            plan: Some(plan),
+            run: Some(run),
+            acquisition_approved: true,
+            message: Some("Campaign complete.".to_owned()),
+            ..BenchmarkCampaignPanel::default()
+        };
+        assert_eq!(panel.control_state(), Some(CampaignState::Completed));
+        assert!(!panel.settings_editable());
+        assert!(campaign_checkpoint_path(&root).exists());
+
+        panel.reset_for_new_campaign(&root);
+
+        assert!(panel.plan.is_none());
+        assert!(panel.run.is_none());
+        assert!(panel.running.is_none());
+        assert!(panel.acquisition.is_none());
+        assert!(!panel.acquisition_approved);
+        assert!(panel.message.is_none());
+        assert!(panel.prior_plan.is_some());
+        assert!(panel.settings_editable());
+        assert!(!campaign_checkpoint_path(&root).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restored_completed_checkpoint_can_reset_to_editable_campaign() {
+        let root = campaign_reset_test_root("restored");
+        let plan = test_campaign_plan();
+        let run = completed_campaign_run(&plan);
+        write_test_checkpoint(&root, &plan, &run);
+
+        let mut restored = BenchmarkCampaignPanel::load_checkpoint(&root);
+        assert_eq!(restored.control_state(), Some(CampaignState::Completed));
+        assert!(!restored.settings_editable());
+        assert!(restored.message.as_deref().is_some_and(|message| {
+            message.contains("Restored a machine-local campaign checkpoint")
+        }));
+
+        restored.reset_for_new_campaign(&root);
+
+        assert_eq!(restored.control_state(), None);
+        assert!(restored.plan.is_none());
+        assert!(restored.run.is_none());
+        assert!(restored.settings_editable());
+        assert!(!campaign_checkpoint_path(&root).exists());
+        let _ = fs::remove_dir_all(root);
     }
 }

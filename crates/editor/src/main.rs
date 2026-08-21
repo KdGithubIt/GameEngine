@@ -97,6 +97,14 @@ impl EditorShell {
                         ai_studio.prepare_external_agent_visual_validation();
                         true
                     }
+                    Some("ADR 0156 Benchmark Completed") => {
+                        ai_studio.prepare_benchmark_campaign_completed_visual_validation()?;
+                        true
+                    }
+                    Some("ADR 0156 Benchmark Reset") => {
+                        ai_studio.prepare_benchmark_campaign_reset_visual_validation()?;
+                        true
+                    }
                     Some(_) => false,
                     None => {
                         let touches_ai_studio = visual_validation_touches_ai_studio();
@@ -127,6 +135,8 @@ impl EditorShell {
                 "ADR 0133 Remote AI Studio"
                     | "ADR 0143 Model Resources"
                     | "ADR 0145 External Agent"
+                    | "ADR 0156 Benchmark Completed"
+                    | "ADR 0156 Benchmark Reset"
             ) {
                 // AI Studio scenarios are prepared above and use its detached native viewport.
             } else if requested == "ADR First Release" {
