@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "        (\n            OsString::from(\"GOOSE_PROJECT_TRACKER_ENABLED\"),\n            OsString::from(\"false\"),\n        ),\n    ]);",
+  "new": "        (\n            OsString::from(\"GOOSE_PROJECT_TRACKER_ENABLED\"),\n            OsString::from(\"false\"),\n        ),\n        (\n            OsString::from(GOOSE_AUTO_COMPACT_THRESHOLD_ENV),\n            OsString::from(compaction_threshold),\n        ),\n    ]);"
+}
