@@ -154,11 +154,11 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
 +
 +        let call_index = self.regular_calls.fetch_add(1, Ordering::SeqCst);
 +        let compacted = Self::has_compacted_history(messages);
-+        let tool_responses = Self::visible_tool_response_count(messages);
++        let _tool_responses_seen = Self::visible_tool_response_count(messages);
 +        let input_tokens = if compacted {
 +            4_000
 +        } else {
-+            6_000 + (tool_responses as i32 * 6_000)
++            6_000 + (call_index as i32 * 6_000)
 +        };
 +        self.regular_input_tokens
 +            .lock()
