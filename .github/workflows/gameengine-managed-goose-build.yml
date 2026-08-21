@@ -83,9 +83,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify exact upstream HEAD
+      - name: Normalize upstream checkout and verify exact HEAD
         shell: pwsh
         run: |
+          # Hosted Windows Git may materialize text as CRLF. Goose rustfmt is
+          # checked against the upstream LF blobs, so restore the exact blob
+          # bytes before applying the GameEngine patch series.
+          git -C upstream-goose config core.autocrlf false
+          git -C upstream-goose config core.eol lf
+          git -C upstream-goose reset --hard $env:UPSTREAM_SHA
           $observed = (git -C upstream-goose rev-parse HEAD).Trim().ToLowerInvariant()
           if ($observed -ne $env:UPSTREAM_SHA) {
             throw "Upstream checkout mismatch: observed=$observed expected=$env:UPSTREAM_SHA"
@@ -233,7 +239,7 @@ jobs:
 
   publish-release:
     name: Publish immutable managed-Goose release
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release }}
     needs: build-windows
     runs-on: ubuntu-latest
     timeout-minutes: 15
