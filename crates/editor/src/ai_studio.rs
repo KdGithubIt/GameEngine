@@ -973,6 +973,13 @@ struct AcpQuestionState {
     started_at: std::time::Instant,
 }
 
+struct AcpPendingPermission {
+    acp_session_id: String,
+    request_id: String,
+    run_id: String,
+    capability: AgentCapability,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum AiStudioPresentationMode {
@@ -1083,7 +1090,9 @@ pub struct AiStudioPanel {
     execution_router: AiExecutionRouter,
     acp: AcpIntegration,
     acp_question: Option<AcpQuestionState>,
+    active_acp_agent_id: Option<String>,
     active_acp_run_session: Option<String>,
+    pending_acp_permission: Option<AcpPendingPermission>,
     /// The provider process answering the current Ask turn, if one is running.
     external_question: Option<ExternalAgentQuestionTask>,
     /// Which session a provider-served answer belongs to.
@@ -1321,7 +1330,9 @@ impl AiStudioPanel {
             execution_router,
             acp,
             acp_question: None,
+            active_acp_agent_id: None,
             active_acp_run_session: None,
+            pending_acp_permission: None,
             external_question: None,
             external_question_session: None,
             external_setup: None,
@@ -2341,6 +2352,7 @@ impl AiStudioPanel {
         self.poll_native_mcp(context);
         self.poll_native_agent_runtime(context);
         self.retry_external_work_wait_if_ready();
+        self.poll_acp_run(context);
         self.poll_external_process(context);
         self.poll_managed_validation(context);
         self.request_managed_source_repair_if_ready();
@@ -2496,9 +2508,14 @@ impl AiStudioPanel {
             }
             RemoteOperation::Snapshot { session_id } => {
                 let pending = self
-                    .pending_permission
+                    .pending_acp_permission
                     .as_ref()
-                    .map(|permission| (permission.run_id.as_str(), permission.capability));
+                    .map(|permission| (permission.run_id.as_str(), permission.capability))
+                    .or_else(|| {
+                        self.pending_permission
+                            .as_ref()
+                            .map(|permission| (permission.run_id.as_str(), permission.capability))
+                    });
                 match snapshot_json(&self.host, &self.project_id, &session_id, pending) {
                     Ok(mut snapshot) => {
                         if let Some(object) = snapshot.as_object_mut() {
@@ -2733,6 +2750,26 @@ impl AiStudioPanel {
                 scope,
                 ..
             } => {
+                let approval = match scope {
+                    RemotePermissionScope::Once => ApprovalScope::Once,
+                    RemotePermissionScope::Run => ApprovalScope::Run,
+                    RemotePermissionScope::Project => ApprovalScope::Project,
+                    RemotePermissionScope::Deny => ApprovalScope::Deny,
+                };
+                if let Some(pending) = self.pending_acp_permission.as_ref() {
+                    if pending.run_id != run_id || pending.capability != capability {
+                        return RemoteAiStudioResponse::error(
+                            409,
+                            "permission_stale",
+                            "The ACP permission request no longer matches the active decision.",
+                            false,
+                        );
+                    }
+                    self.resolve_pending_acp_permission(approval);
+                    return RemoteAiStudioResponse::json(
+                        serde_json::json!({"resolved": true, "run_id": run_id}),
+                    );
+                }
                 let Some(pending) = self.pending_permission.as_ref() else {
                     return RemoteAiStudioResponse::error(
                         409,
@@ -2750,12 +2787,6 @@ impl AiStudioPanel {
                     );
                 }
                 let action = pending.action.clone();
-                let approval = match scope {
-                    RemotePermissionScope::Once => ApprovalScope::Once,
-                    RemotePermissionScope::Run => ApprovalScope::Run,
-                    RemotePermissionScope::Project => ApprovalScope::Project,
-                    RemotePermissionScope::Deny => ApprovalScope::Deny,
-                };
                 self.resolve_pending_permission(&run_id, capability, action, approval);
                 RemoteAiStudioResponse::json(
                     serde_json::json!({"resolved": true, "run_id": run_id}),
@@ -2862,6 +2893,14 @@ impl AiStudioPanel {
             )
         }) {
             return Ok(());
+        }
+        if let Some(acp_session_id) = self.active_acp_run_session.take() {
+            self.pending_acp_permission = None;
+            self.active_acp_agent_id = None;
+            return self
+                .acp
+                .cancel_run(&mut self.host, &acp_session_id)
+                .map_err(|error| error.to_string());
         }
         if let Some(process) = self.process.as_mut() {
             process
@@ -4795,6 +4834,7 @@ impl AiStudioPanel {
                 );
             }
             AcpBridgePoll::Recorded { .. }
+            | AcpBridgePoll::RecordedEvent { .. }
             | AcpBridgePoll::PermissionRequired { .. }
             | AcpBridgePoll::ValidationReady { .. } => {
                 self.status = Some(
@@ -6480,6 +6520,16 @@ impl AiStudioPanel {
         }
         self.native_mcp_task = None;
         self.pending_native_mcp_tool = None;
+        let mut acp_cancelled_run = false;
+        if let Some(acp_session_id) = self.active_acp_run_session.take() {
+            match self.acp.cancel_run(&mut self.host, &acp_session_id) {
+                Ok(()) => acp_cancelled_run = true,
+                Err(error) => {
+                    self.status = Some(format!("Could not stop ACP agent session: {error}"));
+                }
+            }
+        }
+        self.pending_acp_permission = None;
         if let Some(process) = self.process.as_mut()
             && let Err(error) = process.cancel()
         {
@@ -6487,7 +6537,8 @@ impl AiStudioPanel {
         }
         self.process = None;
         self.process_purpose = None;
-        if let Some(run_id) = run_id
+        if !acp_cancelled_run
+            && let Some(run_id) = run_id
             && let Err(error) = self.host.cancel_run(&run_id)
         {
             self.status = Some(error.to_string());
@@ -6495,12 +6546,42 @@ impl AiStudioPanel {
         self.native_agent_runtime = None;
         self.active_runtime_mode = None;
         self.active_external_provider = None;
+        self.active_acp_agent_id = None;
         self.active_external_program = None;
         self.active_external_args = None;
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
         self.external_provider_mcp_failure = None;
         self.external_provider_reported_workspace_write = false;
         self.pending_external_work_owner = None;
+    }
+
+    fn resolve_pending_acp_permission(&mut self, scope: ApprovalScope) {
+        let Some(pending) = self.pending_acp_permission.take() else {
+            return;
+        };
+        match self.acp.resolve_permission(
+            &mut self.host,
+            &pending.acp_session_id,
+            &pending.request_id,
+            scope,
+        ) {
+            Ok(()) => {
+                self.status = Some(if scope == ApprovalScope::Deny {
+                    format!("Denied ACP permission for {}.", pending.capability.label())
+                } else {
+                    format!(
+                        "Resolved ACP permission for {} through Agent Host.",
+                        pending.capability.label()
+                    )
+                });
+            }
+            Err(error) => {
+                self.status = Some(format!(
+                    "Could not resolve ACP permission for run `{}`: {error}",
+                    pending.run_id
+                ));
+            }
+        }
     }
 
     fn show_permission_prompt(&mut self, ui: &mut egui::Ui) {
@@ -6519,6 +6600,30 @@ impl AiStudioPanel {
                     ] {
                         if ui.button(label).clicked() {
                             self.resolve_pending_question_permission(scope);
+                        }
+                    }
+                });
+            });
+            return;
+        }
+        if let Some(pending) = self.pending_acp_permission.as_ref() {
+            let capability = pending.capability;
+            ui.separator();
+            ui.group(|ui| {
+                ui.strong("ACP approval required");
+                ui.label(capability.label());
+                ui.small(
+                    "The ACP agent requested provider permission. Agent Host remains authoritative for approval scope and the run-bound MCP writer identity.",
+                );
+                ui.horizontal(|ui| {
+                    for (label, scope) in [
+                        ("Allow once", ApprovalScope::Once),
+                        ("This run", ApprovalScope::Run),
+                        ("This project", ApprovalScope::Project),
+                        ("Deny", ApprovalScope::Deny),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.resolve_pending_acp_permission(scope);
                         }
                     }
                 });
@@ -6574,6 +6679,7 @@ impl AiStudioPanel {
                 });
             }
             let can_apply = self.pending_permission.is_none()
+                && self.pending_acp_permission.is_none()
                 && self.code_workspace.is_some()
                 && self.active_run_id.is_some();
             if ui
@@ -6666,18 +6772,39 @@ impl AiStudioPanel {
     }
 
     fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {
-        let external_provider = self.selected_external_provider()?;
-        let (mode, provider_label, native_config) = if let Some(provider) = external_provider {
-            (
-                AgentRuntimeMode::External,
-                provider.run_label().to_owned(),
-                None,
-            )
-        } else {
-            let config = self.selected_native_model_config()?;
-            let label = config.label();
-            (AgentRuntimeMode::Native, label, Some(config))
-        };
+        let execution_driver = self.selected_execution_driver()?;
+        let (mode, provider_label, native_config, external_provider, acp_agent_id) =
+            match execution_driver {
+                AiExecutionDriver::Acp { agent_id } => {
+                    let provider = match self.selected_ai() {
+                        SelectedAi::Agent(kind) => Some(kind),
+                        SelectedAi::Model(_) => None,
+                    };
+                    (
+                        AgentRuntimeMode::External,
+                        format!("acp:{agent_id}"),
+                        None,
+                        provider,
+                        Some(agent_id),
+                    )
+                }
+                AiExecutionDriver::Legacy => {
+                    let external_provider = self.selected_external_provider()?;
+                    if let Some(provider) = external_provider {
+                        (
+                            AgentRuntimeMode::External,
+                            provider.run_label().to_owned(),
+                            None,
+                            Some(provider),
+                            None,
+                        )
+                    } else {
+                        let config = self.selected_native_model_config()?;
+                        let label = config.label();
+                        (AgentRuntimeMode::Native, label, Some(config), None, None)
+                    }
+                }
+            };
         let native_requires_network = native_config
             .as_ref()
             .is_some_and(NativeModelConfig::requires_network);
@@ -6714,6 +6841,9 @@ impl AiStudioPanel {
         self.active_run_id = Some(run_id.clone());
         self.active_runtime_mode = Some(mode);
         self.active_external_provider = external_provider;
+        self.active_acp_agent_id = acp_agent_id;
+        self.active_acp_run_session = None;
+        self.pending_acp_permission = None;
         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
@@ -6890,7 +7020,7 @@ impl AiStudioPanel {
     fn execute_permission_action(&mut self, run_id: &str, action: PendingPermissionAction) {
         match action {
             PendingPermissionAction::LaunchExternalAgent => {
-                self.launch_external_agent(run_id, ExternalAgentPurpose::BuildOrRepair)
+                self.launch_selected_external_agent(run_id, ExternalAgentPurpose::BuildOrRepair)
             }
             PendingPermissionAction::StartNativeAgent => {
                 if let Err(error) = self.start_native_agent_execution(run_id) {
@@ -6910,6 +7040,106 @@ impl AiStudioPanel {
             PendingPermissionAction::CaptureFrame => {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);
             }
+        }
+    }
+
+    fn launch_selected_external_agent(&mut self, run_id: &str, purpose: ExternalAgentPurpose) {
+        if purpose == ExternalAgentPurpose::BuildOrRepair && self.active_acp_agent_id.is_some() {
+            self.launch_acp_agent(run_id);
+        } else {
+            self.launch_external_agent(run_id, purpose);
+        }
+    }
+
+    fn launch_acp_agent(&mut self, run_id: &str) {
+        let Some(agent_id) = self.active_acp_agent_id.clone() else {
+            self.fail_run(
+                run_id,
+                "ACP execution was selected without a registered agent snapshot.".to_owned(),
+            );
+            return;
+        };
+        let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.fail_run(run_id, format!("Could not resolve code workspace: {error}"));
+                return;
+            }
+        };
+        let workspace = match CodeWorkspace::open_or_create(
+            &self.project_root,
+            workspace_root,
+            baseline_path,
+        ) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                self.fail_run(run_id, format!("Could not prepare code workspace: {error}"));
+                return;
+            }
+        };
+        if let Err(error) = self.host.record_event(
+            run_id,
+            AgentEventKind::CodeWorkspacePrepared,
+            "Prepared isolated managed code workspace for ACP execution.",
+        ) {
+            self.status = Some(error.to_string());
+        }
+        let proposal_json = match self
+            .host
+            .run(run_id)
+            .and_then(|run| serde_json::to_string(&run.proposal_snapshot).map_err(Into::into))
+        {
+            Ok(json) => json,
+            Err(error) => {
+                self.fail_run(run_id, format!("Could not serialize proposal: {error}"));
+                return;
+            }
+        };
+        self.managed_candidate_input_recipe.clear();
+        let repair_context = self.host.run(run_id).ok().and_then(|run| {
+            (run.state == AgentRunState::Repairing).then(|| {
+                managed_repair_context(run, self.managed_runtime_observation.as_ref())
+            })
+        });
+        let prompt = external_agent_provider_prompt(
+            &proposal_json,
+            repair_context.as_deref(),
+            None,
+        );
+        let gameengine_session_id = self.selected_session.clone();
+        let acp_session_id = match self.acp.open_run_session(
+            &mut self.host,
+            &agent_id,
+            &gameengine_session_id,
+            run_id,
+            workspace.root().to_path_buf(),
+        ) {
+            Ok(acp_session_id) => acp_session_id,
+            Err(error) => {
+                self.fail_run(run_id, format!("Could not open ACP Build session: {error}"));
+                return;
+            }
+        };
+        if let Err(error) = self
+            .acp
+            .send_prompt(&mut self.host, &acp_session_id, &prompt)
+        {
+            let _ = self.acp.close_session(&acp_session_id);
+            self.status = Some(format!("Could not send ACP Build prompt: {error}"));
+            return;
+        }
+        self.code_workspace = Some(workspace);
+        self.active_acp_run_session = Some(acp_session_id);
+        if let Err(error) = self.host.transition_run(
+            run_id,
+            AgentRunState::Executing,
+            "ACP external agent runtime started in the isolated code workspace.",
+        ) {
+            self.status = Some(error.to_string());
+        } else {
+            self.status = Some(format!(
+                "ACP external agent `{agent_id}` started through the common Agent Host bridge."
+            ));
         }
     }
 
@@ -7199,6 +7429,123 @@ impl AiStudioPanel {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    fn poll_acp_run(&mut self, context: &egui::Context) {
+        let Some(acp_session_id) = self.active_acp_run_session.clone() else {
+            return;
+        };
+        let poll = match self.acp.poll(&mut self.host, &acp_session_id) {
+            Ok(poll) => poll,
+            Err(error) => {
+                self.active_acp_run_session = None;
+                self.pending_acp_permission = None;
+                self.status = Some(format!("ACP Build session failed: {error}"));
+                return;
+            }
+        };
+        match poll {
+            AcpBridgePoll::Idle => {
+                context.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            AcpBridgePoll::RecordedEvent { run_id, event, .. } => {
+                if let AcpNormalizedEvent::AgentMessage { text } = event {
+                    for line in text.lines() {
+                        let Some(payload) = line.trim().strip_prefix(PROVIDER_EVENT_PREFIX) else {
+                            continue;
+                        };
+                        match serde_json::from_str::<ProviderAgentEvent>(payload) {
+                            Ok(event) => {
+                                if let Err(error) =
+                                    self.record_provider_semantic_event(&run_id, event)
+                                {
+                                    self.status = Some(error);
+                                }
+                            }
+                            Err(error) => {
+                                self.status = Some(format!(
+                                    "ACP agent emitted an invalid semantic AgentEvent: {error}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                context.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            AcpBridgePoll::Recorded { .. } => {
+                context.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            AcpBridgePoll::PermissionRequired {
+                run_id,
+                request_id,
+                capability,
+                ..
+            } => {
+                self.pending_acp_permission = Some(AcpPendingPermission {
+                    acp_session_id,
+                    request_id,
+                    run_id,
+                    capability,
+                });
+            }
+            AcpBridgePoll::ValidationReady { run_id } => {
+                self.finish_acp_provider_execution(&run_id, &acp_session_id);
+            }
+            AcpBridgePoll::AskEvent(_) => {
+                self.status = Some(
+                    "Run-bound ACP session produced an Ask-only bridge result.".to_owned(),
+                );
+            }
+        }
+    }
+
+    fn finish_acp_provider_execution(&mut self, run_id: &str, acp_session_id: &str) {
+        let changes = match self.code_workspace.as_ref() {
+            Some(workspace) => match workspace.collect_changes() {
+                Ok(changes) => changes,
+                Err(error) => {
+                    self.fail_run(run_id, format!("Could not inspect code workspace: {error}"));
+                    return;
+                }
+            },
+            None => Vec::new(),
+        };
+        if let Err(error) = self.host.record_code_checkpoint(run_id, &changes) {
+            self.status = Some(error.to_string());
+        }
+        let has_code_changes = !changes.is_empty();
+        self.pending_code_changes = changes;
+        if !self.managed_candidate_input_recipe.is_empty() {
+            self.managed_input_recipe = std::mem::take(&mut self.managed_candidate_input_recipe);
+        }
+        self.managed_runtime_plan_completed = false;
+        self.managed_runtime_debug_observation = None;
+        self.managed_repair_requested = false;
+        match self.acp.begin_managed_validation(
+            &mut self.host,
+            acp_session_id,
+            has_code_changes,
+        ) {
+            Ok(()) => {
+                self.active_acp_run_session = None;
+                self.pending_acp_permission = None;
+                let close_result = self.acp.close_session(acp_session_id);
+                self.status = Some(match close_result {
+                    Ok(()) => {
+                        "ACP agent returned control with required provider gates satisfied; engine-managed validation is active or has recorded its result."
+                            .to_owned()
+                    }
+                    Err(error) => format!(
+                        "Engine-managed validation started, but the ACP session could not close cleanly: {error}"
+                    ),
+                });
+            }
+            Err(error) => {
+                self.status = Some(format!(
+                    "ACP turn returned control but Agent Host validation is not ready: {error}"
+                ));
             }
         }
     }

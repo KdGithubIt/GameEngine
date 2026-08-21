@@ -75,6 +75,11 @@ pub(crate) enum AcpBridgePoll {
     Idle,
     AskEvent(AcpNormalizedEvent),
     Recorded { run_id: String, kind: AgentEventKind },
+    RecordedEvent {
+        run_id: String,
+        kind: AgentEventKind,
+        event: AcpNormalizedEvent,
+    },
     PermissionRequired {
         run_id: String,
         request_id: String,
@@ -178,7 +183,13 @@ impl AcpAgentHostBridge {
             self.mcp.endpoint.clone(),
             self.mcp.read_only_token.clone(),
         )?;
-        self.open_registered(registry, agent_id, binding, None)
+        self.open_registered(
+            registry,
+            agent_id,
+            binding,
+            self.working_directory.clone(),
+            None,
+        )
     }
 
     pub(crate) fn open_run_session(
@@ -188,6 +199,7 @@ impl AcpAgentHostBridge {
         agent_id: &str,
         gameengine_session_id: &str,
         run_id: &str,
+        working_directory: PathBuf,
     ) -> Result<String, AcpBridgeError> {
         if !host.session(gameengine_session_id)?.runs.iter().any(|run| run.id == run_id) {
             return Err(AcpBridgeError::RunSessionMismatch(run_id.to_owned()));
@@ -201,7 +213,13 @@ impl AcpAgentHostBridge {
             self.mcp.endpoint.clone(),
             self.mcp.run_bound_token.clone(),
         )?;
-        let acp_id = self.open_registered(registry, agent_id, binding, Some(run_id.to_owned()))?;
+        let acp_id = self.open_registered(
+            registry,
+            agent_id,
+            binding,
+            working_directory,
+            Some(run_id.to_owned()),
+        )?;
         if let Err(error) = self.record_identity(host, &acp_id) {
             let _ = self.close_session(&acp_id);
             return Err(error);
@@ -214,10 +232,11 @@ impl AcpAgentHostBridge {
         registry: &mut dyn AcpAgentRegistry,
         agent_id: &str,
         binding: AcpSessionBinding,
+        working_directory: PathBuf,
         expected_run_id: Option<String>,
     ) -> Result<String, AcpBridgeError> {
         let expected_session_id = binding.gameengine_session_id.clone();
-        let request = AcpSessionOpenRequest::new(binding, self.working_directory.clone())?;
+        let request = AcpSessionOpenRequest::new(binding, working_directory)?;
         let (descriptor_id, mut session) = {
             let runtime = registry.runtime_mut(agent_id)
                 .ok_or_else(|| AcpBridgeError::AgentNotRegistered(agent_id.to_owned()))?;
@@ -312,6 +331,7 @@ impl AcpAgentHostBridge {
             return Err(AcpBridgeError::TerminalRun(run_id.to_owned()));
         }
         let kind = event.host_event_kind();
+        let recorded_event = event.clone();
         match event {
             AcpNormalizedEvent::AgentMessage { text } => host.record_event(run_id, AgentEventKind::AssistantMessage, text)?,
             AcpNormalizedEvent::Progress { step, detail } => host.record_semantic_progress(run_id, step, detail)?,
@@ -335,7 +355,11 @@ impl AcpAgentHostBridge {
             }
             AcpNormalizedEvent::ProtocolDiagnostic { message } => host.record_event(run_id, AgentEventKind::ProviderOutput, format!("ACP protocol diagnostic: {message}"))?,
         }
-        Ok(AcpBridgePoll::Recorded { run_id: run_id.to_owned(), kind })
+        Ok(AcpBridgePoll::RecordedEvent {
+            run_id: run_id.to_owned(),
+            kind,
+            event: recorded_event,
+        })
     }
 
     fn record_permission(&mut self, host: &mut AgentHost, acp_id: &str, run_id: &str, request: AcpPermissionRequest) -> Result<AcpBridgePoll, AcpBridgeError> {

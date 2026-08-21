@@ -67,6 +67,7 @@ impl AcpIntegration {
         agent_id: &str,
         gameengine_session_id: &str,
         run_id: &str,
+        working_directory: PathBuf,
     ) -> Result<String, AcpBridgeError> {
         self.bridge.open_run_session(
             host,
@@ -74,6 +75,7 @@ impl AcpIntegration {
             agent_id,
             gameengine_session_id,
             run_id,
+            working_directory,
         )
     }
 
