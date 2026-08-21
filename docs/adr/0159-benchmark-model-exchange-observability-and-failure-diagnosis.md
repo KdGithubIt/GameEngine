@@ -97,13 +97,20 @@ model text out of the comparison identity surface.
 
 ### 3. Failing runs report the metrics they can measure
 
-`agent_run_record` derives `model_turns`, `prompt_tokens`, and `response_tokens`
-from the recorded exchanges instead of reporting them as `Unavailable`. A run
-with zero exchanges reports zero turns, which is itself a diagnosis, and is
-distinct from a run that never recorded whether it had any.
+The legacy native `agent_run_record` derives `model_turns`, `prompt_tokens`, and
+`response_tokens` from the recorded exchanges instead of reporting them as
+`Unavailable`. A native run with zero recorded exchanges reports zero turns,
+which is itself a diagnosis, and is distinct from a run that never recorded
+whether it had any.
 
-`Unavailable` remains correct for values the backend genuinely did not report,
-and the distinction between "measured as zero" and "not measured" is preserved.
+ACP-backed runtimes are a separate observability boundary. When an ACP adapter
+cannot observe the coding agent's internal model exchanges, schema-v4 benchmark
+recording MUST leave model turns and token counts `Unavailable`; GameEngine does
+not infer them from ACP prompts, session events, or normalized Agent Host events.
+An ACP adapter may report those metrics as measured only when the agent/runtime
+itself exposes authoritative telemetry for them. The distinction between
+"measured as zero" and "not measured" is therefore preserved across both the
+legacy native and ACP paths.
 
 ### 4. Both formats are versioned explicitly
 

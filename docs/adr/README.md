@@ -130,8 +130,11 @@ the beginning:
   [0160](0160-external-agent-execution-environment-and-wsl-placement.md),
   [0161](0161-managed-local-multimodal-input-and-projector-registration.md),
   [0162](0162-intent-driven-ai-studio-execution-and-progressive-configuration-disclosure.md),
+  [0163](0163-provider-served-ask-and-in-editor-provider-setup.md),
+  [0164](0164-unified-ai-selection-agent-vocabulary-and-reachable-remote-access.md),
+  [0165](0165-external-agent-and-mcp-reliability-boundaries.md),
   and
-  [0163](0163-provider-served-ask-and-in-editor-provider-setup.md).
+  [0166](0166-acp-centered-external-agent-runtime-foundation.md).
 
 ## Proposed Decisions
 
@@ -321,3 +324,4 @@ implementation contract.
 | [0163](0163-provider-served-ask-and-in-editor-provider-setup.md) | Provider-Served Ask and In-Editor Provider Setup |
 | [0164](0164-unified-ai-selection-agent-vocabulary-and-reachable-remote-access.md) | Unified AI Selection, Agent Vocabulary, and Reachable Remote Access |
 | [0165](0165-external-agent-and-mcp-reliability-boundaries.md) | External Agent and MCP Reliability Boundaries |
+| [0166](0166-acp-centered-external-agent-runtime-foundation.md) | ACP-Centered External Agent Runtime Foundation |

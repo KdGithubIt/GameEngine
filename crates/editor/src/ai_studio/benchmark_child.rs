@@ -1,7 +1,11 @@
 use super::*;
-use crate::agent_benchmark::benchmark_project_inspection_ready;
-use crate::agent_benchmark_campaign::CampaignExecutionProfile;
-use crate::agent_benchmark_campaign::campaign_task_agent_policy;
+use crate::agent_benchmark::{
+    BenchmarkLane, BenchmarkModelTelemetry, BenchmarkRuntimeIdentity,
+    agent_run_record_with_runtime, benchmark_project_inspection_ready,
+};
+use crate::agent_benchmark_campaign::{
+    CampaignExecutionProfile, campaign_task_agent_policy_for_runtime,
+};
 use crate::agent_host::AgentRun;
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
@@ -27,6 +31,7 @@ impl AiStudioPanel {
     /// Configures this Editor process as one isolated benchmark child.
     pub fn configure_benchmark_child(&mut self, path: &Path) -> Result<(), String> {
         let spec = BenchmarkChildRunSpec::read(path)?;
+        validate_benchmark_runtime_spec(&spec)?;
         match spec.backend_id.as_str() {
             "ollama-compatible" => {
                 self.model_backend = ModelBackendPreference::Local;
@@ -82,6 +87,32 @@ impl AiStudioPanel {
         self.benchmark_child.is_some()
     }
 
+    pub(super) fn benchmark_child_uses_acp_runtime(&self) -> bool {
+        self.benchmark_child
+            .as_ref()
+            .is_some_and(|child| child.spec.uses_acp_runtime())
+    }
+
+    pub(super) fn validate_benchmark_acp_runtime_identity(
+        &self,
+        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
+    ) -> Result<(), String> {
+        let Some(child) = self.benchmark_child.as_ref() else {
+            return Ok(());
+        };
+        let runtime = benchmark_runtime_from_spec(&child.spec).ok_or_else(|| {
+            "benchmark child reached ACP without a frozen benchmark runtime identity".to_owned()
+        })?;
+        if runtime.matches_acp_runtime(identity) {
+            Ok(())
+        } else {
+            Err(format!(
+                "negotiated ACP runtime identity `{}` {:?} protocol v{} does not match the frozen benchmark runtime",
+                identity.agent_name, identity.agent_version, identity.protocol_version
+            ))
+        }
+    }
+
     pub(super) fn benchmark_child_requires_initial_validation_failure(&self) -> bool {
         self.benchmark_child
             .as_ref()
@@ -113,8 +144,11 @@ impl AiStudioPanel {
         let Some(child) = self.benchmark_child.as_ref() else {
             return false;
         };
-        campaign_task_agent_policy(&child.spec.task_id)
-            .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
+        benchmark_task_allows_capability(
+            &child.spec.task_id,
+            benchmark_runtime_from_spec(&child.spec),
+            capability,
+        )
     }
 
     /// Ends this run because it asked for a capability its campaign never froze.
@@ -274,18 +308,30 @@ impl AiStudioPanel {
             );
             return;
         };
-        match agent_run_record(
-            &task_id,
-            &run,
-            AgentRunBenchmarkIdentity {
-                backend_id: &identity.backend_id,
-                model_id: &identity.model_id,
-                inventory: identity.inventory.as_ref(),
-                quality: identity.quality,
-                workload: identity.workload,
-                hardware: &identity.hardware,
-            },
-        ) {
+        let benchmark_identity = AgentRunBenchmarkIdentity {
+            backend_id: &identity.backend_id,
+            model_id: &identity.model_id,
+            inventory: identity.inventory.as_ref(),
+            quality: identity.quality,
+            workload: identity.workload,
+            hardware: &identity.hardware,
+        };
+        let runtime = self
+            .benchmark_child
+            .as_ref()
+            .and_then(|child| benchmark_runtime_from_spec(&child.spec))
+            .cloned();
+        let record = match runtime {
+            Some(runtime) => agent_run_record_with_runtime(
+                &task_id,
+                &run,
+                benchmark_identity,
+                runtime,
+                BenchmarkModelTelemetry::unavailable(),
+            ),
+            None => agent_run_record(&task_id, &run, benchmark_identity),
+        };
+        match record {
             Ok(record) => self.write_benchmark_child_record(record, identity.routed),
             Err(error) => {
                 self.write_benchmark_child_failure(BenchmarkRunFailureKind::CompletionGate, error)
@@ -350,7 +396,12 @@ impl AiStudioPanel {
             self.start_native_question();
             return Ok(());
         }
-        self.proposal_draft = benchmark_proposal(&task_id)?;
+        let benchmark_runtime = self
+            .benchmark_child
+            .as_ref()
+            .and_then(|child| benchmark_runtime_from_spec(&child.spec))
+            .cloned();
+        self.proposal_draft = benchmark_proposal(&task_id, benchmark_runtime.as_ref())?;
         self.begin_run();
         if self.active_run_id.is_none() {
             return Err(self.status.clone().unwrap_or_else(|| {
@@ -514,9 +565,69 @@ impl AiStudioPanel {
     }
 }
 
-fn benchmark_proposal(task_id: &str) -> Result<AgentProposal, String> {
+fn benchmark_runtime_from_spec(spec: &BenchmarkChildRunSpec) -> Option<&BenchmarkRuntimeIdentity> {
+    spec.benchmark_runtime()
+}
+
+fn validate_benchmark_runtime_spec(spec: &BenchmarkChildRunSpec) -> Result<(), String> {
+    let Some(runtime) = benchmark_runtime_from_spec(spec) else {
+        return Ok(());
+    };
+    if runtime.lane == BenchmarkLane::RawModel {
+        return Err(
+            "ADR0156 Agent Benchmark tasks cannot execute under the raw_model lane".to_owned(),
+        );
+    }
+    if runtime.lane != BenchmarkLane::AgentHarness {
+        return Err(
+            "first-release Managed Local ACP campaigns support only the agent_harness lane"
+                .to_owned(),
+        );
+    }
+    if spec.backend_id != MANAGED_BACKEND_ID {
+        return Err(
+            "first-release ACP agent_harness campaigns require GameEngine Managed Local".to_owned(),
+        );
+    }
+    if spec.task_id == "read_question_v1" {
+        return Err(
+            "read_question_v1 is owned by the Native provenance harness and cannot be relabelled as ACP agent_harness evidence"
+                .to_owned(),
+        );
+    }
+    if spec.task_id == "visual_evaluation_v1" {
+        return Err(
+            "visual_evaluation_v1 requires host-captured image content that the current common ACP session boundary does not carry"
+                .to_owned(),
+        );
+    }
+    let agent = runtime.agent_runtime.as_ref().ok_or_else(|| {
+        "ACP agent_harness benchmark identity is missing its agent runtime".to_owned()
+    })?;
+    if agent.runtime_id != GOOSE_ACP_AGENT_NAME {
+        return Err(format!(
+            "first-release Managed Local ACP benchmark expected Goose runtime `{GOOSE_ACP_AGENT_NAME}`, got `{}`",
+            agent.runtime_id
+        ));
+    }
+    Ok(())
+}
+
+fn benchmark_task_allows_capability(
+    task_id: &str,
+    runtime: Option<&BenchmarkRuntimeIdentity>,
+    capability: AgentCapability,
+) -> bool {
+    campaign_task_agent_policy_for_runtime(task_id, runtime)
+        .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
+}
+
+fn benchmark_proposal(
+    task_id: &str,
+    runtime: Option<&BenchmarkRuntimeIdentity>,
+) -> Result<AgentProposal, String> {
     let mut proposal = AgentProposal::default();
-    let agent_policy = campaign_task_agent_policy(task_id)?;
+    let agent_policy = campaign_task_agent_policy_for_runtime(task_id, runtime)?;
     proposal.requested_capabilities = agent_policy.requested_capabilities;
     proposal.work_claims = agent_policy.work_claims;
     proposal.goal = match task_id {
@@ -579,7 +690,7 @@ mod tests {
 
     #[test]
     fn benchmark_proposals_include_the_frozen_task_authorization() {
-        let code = benchmark_proposal("code_implementation_v1").expect("code proposal");
+        let code = benchmark_proposal("code_implementation_v1", None).expect("code proposal");
         assert_eq!(
             code.requested_capabilities,
             BTreeSet::from([AgentCapability::CodeWorkspaceApply])
@@ -589,7 +700,8 @@ mod tests {
             BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
         );
 
-        let inspection = benchmark_proposal("project_inspection_v1").expect("inspection proposal");
+        let inspection =
+            benchmark_proposal("project_inspection_v1", None).expect("inspection proposal");
         assert!(inspection.requested_capabilities.is_empty());
         assert!(inspection.work_claims.is_empty());
         assert_eq!(
@@ -600,11 +712,9 @@ mod tests {
 
     #[test]
     fn no_benchmark_task_authorizes_launching_an_external_agent_runtime() {
-        // A child that reaches the external-agent route measures a provider the
-        // campaign never froze, and its permission request cannot be approved
-        // because the child has no operator. Every task budget must therefore
-        // exclude the capability, which is what keeps the frozen model backend
-        // the only executor a campaign can produce evidence from.
+        // A legacy child that reaches the external-agent route measures a provider the
+        // campaign never froze, so the legacy policy must continue to exclude process
+        // authority. Agent-inclusive plans opt in through their explicit runtime identity.
         for task_id in [
             "read_question_v1",
             "project_inspection_v1",
@@ -614,7 +724,8 @@ mod tests {
             "runtime_interaction_v1",
             "visual_evaluation_v1",
         ] {
-            let policy = campaign_task_agent_policy(task_id).expect("task agent policy");
+            let policy =
+                campaign_task_agent_policy_for_runtime(task_id, None).expect("task agent policy");
             assert!(
                 !policy
                     .requested_capabilities
@@ -622,5 +733,125 @@ mod tests {
                 "task `{task_id}` must not authorize an external agent runtime"
             );
         }
+    }
+
+    fn runtime_validation_spec(
+        task_id: &str,
+        runtime: Option<BenchmarkRuntimeIdentity>,
+    ) -> BenchmarkChildRunSpec {
+        BenchmarkChildRunSpec {
+            schema_version: crate::benchmark_process::BENCHMARK_CHILD_SCHEMA_VERSION,
+            experiment_id: "experiment".to_owned(),
+            engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            fixture_version: crate::benchmark_experiment::BENCHMARK_FIXTURE_VERSION.to_owned(),
+            backend_id: MANAGED_BACKEND_ID.to_owned(),
+            managed_execution_environment: Some(ManagedExecutionEnvironment::WindowsNative),
+            endpoint: String::new(),
+            model_id: "gguf:model".to_owned(),
+            task_id: task_id.to_owned(),
+            repetition: 0,
+            ordinal: 0,
+            quality: QualityPreference::Balanced,
+            routing_mode: BenchmarkRoutingMode::SingleModel,
+            result_path: PathBuf::from("result.json"),
+            execution_identity: runtime.map(|benchmark_runtime| {
+                crate::agent_benchmark::BenchmarkExecutionIdentity {
+                    campaign_harness_version: "campaign-harness-v1".to_owned(),
+                    schedule_policy_version: "schedule-v1".to_owned(),
+                    comparison_class: "model_comparison".to_owned(),
+                    execution_profile: "warm".to_owned(),
+                    execution_environment: "windows_native".to_owned(),
+                    fixture_id: "fixture".to_owned(),
+                    fixture_version: crate::benchmark_experiment::BENCHMARK_FIXTURE_VERSION
+                        .to_owned(),
+                    fixture_instance_id: "fixture-instance".to_owned(),
+                    sampling_profile: "sampling".to_owned(),
+                    seed_policy: "seed".to_owned(),
+                    benchmark_runtime: Some(benchmark_runtime),
+                }
+            }),
+            candidate_contract: None,
+        }
+    }
+
+    #[test]
+    fn managed_acp_child_accepts_validation_repair_and_rejects_unsupported_evidence() {
+        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                GOOSE_ACP_AGENT_NAME,
+                Some("1.0.0".to_owned()),
+            ),
+        );
+        assert!(
+            validate_benchmark_runtime_spec(&runtime_validation_spec(
+                "validation_repair_v1",
+                Some(runtime.clone()),
+            ))
+            .is_ok()
+        );
+        for task_id in ["read_question_v1", "visual_evaluation_v1"] {
+            assert!(
+                validate_benchmark_runtime_spec(&runtime_validation_spec(
+                    task_id,
+                    Some(runtime.clone()),
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_legacy_managed_child_remains_valid_without_acp_identity() {
+        assert!(
+            validate_benchmark_runtime_spec(&runtime_validation_spec("read_question_v1", None,))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn headless_acp_auto_approval_refuses_capabilities_outside_the_frozen_policy() {
+        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                GOOSE_ACP_AGENT_NAME,
+                Some("1.0.0".to_owned()),
+            ),
+        );
+        assert!(benchmark_task_allows_capability(
+            "code_implementation_v1",
+            Some(&runtime),
+            AgentCapability::ExternalAgentProcess,
+        ));
+        assert!(benchmark_task_allows_capability(
+            "code_implementation_v1",
+            Some(&runtime),
+            AgentCapability::CodeWorkspaceApply,
+        ));
+        assert!(!benchmark_task_allows_capability(
+            "code_implementation_v1",
+            Some(&runtime),
+            AgentCapability::RuntimeLaunch,
+        ));
+    }
+
+    #[test]
+    fn acp_benchmark_proposal_uses_the_frozen_agent_inclusive_authority() {
+        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                GOOSE_ACP_AGENT_NAME,
+                Some("1.0.0".to_owned()),
+            ),
+        );
+        let proposal = benchmark_proposal("code_implementation_v1", Some(&runtime))
+            .expect("ACP code proposal");
+        assert!(
+            proposal
+                .requested_capabilities
+                .contains(&AgentCapability::ExternalAgentProcess)
+        );
+        assert!(
+            proposal
+                .requested_capabilities
+                .contains(&AgentCapability::CodeWorkspaceApply)
+        );
     }
 }

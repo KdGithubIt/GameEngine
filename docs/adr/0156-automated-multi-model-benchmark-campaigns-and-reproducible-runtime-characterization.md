@@ -476,6 +476,11 @@ AI Studio SHOULD provide a benchmark surface that allows the user to:
 - inspect discovered GGUF files and explicitly choose the representation /
   quantization used by the campaign;
 - inspect exact model/quantization/runtime identity;
+- select the runtime/agent harness before freeze, with Goose ACP Agent Harness
+  recommended for Managed Local and Legacy Native available only by explicit
+  compatibility/comparison selection;
+- inspect the frozen lane, harness, agent/runtime, model, and execution
+  environment after freeze;
 - select full corpus or a task subset;
 - choose repetition count;
 - choose cold/warm execution profile where supported;
@@ -520,12 +525,50 @@ ADR 0142 redaction and provenance rules.
 
 ## Implementation
 
-The campaign implementation uses schema version 2 and the
+The campaign implementation uses schema version 3 and the
 `task-repetition-candidate-interleave-v2` schedule identity. The concrete order
 is task, repetition, then candidate, so the recorded identity and actual
-thermal/time-order policy agree. Schema version 2 freezes the explicit quality
-policy, hardware identity, and finite per-run timeout in addition to the
-previous campaign dimensions.
+thermal/time-order policy agree. Schema version 2 froze the explicit quality
+policy, hardware identity, and finite per-run timeout. Schema version 3 adds an
+optional frozen ADR 0142 benchmark runtime/lane identity to the campaign plan and
+plan digest. Existing schema-v2 campaign checkpoints deserialize with that field
+absent and retain their legacy harness meaning; they are not rewritten into an
+ACP lane. A schema-v2 checkpoint remains resumable only while all of its original
+contract dimensions still match and no schema-v3 runtime identity has been
+attached.
+
+The campaign launcher exposes **Runtime / Harness** before freeze. Managed
+Local selects **Goose ACP Agent Harness** as the normal/recommended choice when
+the user moves into a managed execution environment; **Legacy Native Harness**
+remains an explicit compatibility/comparison choice. Compatible-backend
+campaigns retain Legacy Native. The selector is identity-bearing, not a display
+preference: a Goose choice discovers the actual local Goose ACP runtime and
+places the provider-neutral `BenchmarkRuntimeIdentity` directly in
+`CampaignPolicy`, so `CampaignPolicy::freeze` atomically derives the runtime-aware
+per-task authority and immutable `CampaignPlan`.
+
+That identity is stamped into the per-task experiment execution identity and
+therefore into every `BenchmarkChildRunSpec`. A Managed Local child with the
+frozen ACP identity must select the Goose ACP route; a child without it is the
+explicit Legacy Native lane. Failure to discover or negotiate the frozen ACP
+runtime, or mismatch between the negotiated and frozen identities, is a failed
+run with no ACP `BenchmarkRecord`; it never falls back to Native. Evidence whose
+top-level benchmark runtime differs from the frozen plan is likewise rejected as
+an identity mismatch.
+
+The existing seven-task ADR 0156 campaign cannot be relabelled `raw_model`,
+because every task executes through an Agent Host or production task harness.
+Raw Model records must come from a model-only harness. The common ACP Agent
+Harness currently cannot provide honest evidence for `read_question_v1` or
+`visual_evaluation_v1`; the Goose selector disables/removes them before freeze
+and runtime-aware freeze rejects them again. `validation_repair_v1` remains on
+the governed failure -> ACP repair -> revalidation path. Agent-inclusive
+campaign evidence is never treated as model-only routing/catalog evidence.
+
+The same runtime-aware task policy derives both the immutable
+`AgentProposal.requested_capabilities` and the headless permission budget. The
+budget therefore cannot auto-approve a capability the proposal did not declare,
+and ACP does not weaken Agent Host's existing authority boundary.
 
 The headless coordinator records a timed-out child as one `Timeout` run failure
 and continues the remaining schedule. It does not clear the queue. The campaign
@@ -546,11 +589,12 @@ than duplicating task semantics in the UI. Runtime-interaction and visual task
 execution MUST call the production ADR 0157 debugging/observation API rather
 than a benchmark-only control seam.
 
-The first release can reuse the current seven task descriptors and benchmark
-record schema while adding campaign-plan/progress storage, instantiated fixture
-identity, and any additional execution-profile identity required to preserve
-strict equivalence. If a schema extension is needed, it must be versioned and
-must not reinterpret existing records.
+The ACP benchmark migration keeps the current seven task descriptors and uses
+ADR 0142 benchmark record schema v4 to add optional runtime/lane identity.
+Existing schema v1-v3 records remain readable as legacy-harness records without
+that identity, so the migration does not reinterpret previously collected
+evidence. Campaign-plan/progress storage, instantiated fixture identity, and
+execution-profile identity remain separate frozen dimensions.
 
 Candidate-visible fixture material and host-only evaluator material MUST be
 separate application-layer resources with separate access policy. The Agent's
