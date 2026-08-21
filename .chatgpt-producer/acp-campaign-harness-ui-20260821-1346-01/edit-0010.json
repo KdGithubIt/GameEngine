@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {\n            let _ = self.acp.close_session(&acp_session_id);\n            self.fail_run(run_id, format!(\"ACP benchmark runtime mismatch: {error}\"));\n            return;\n        }\n",
+  "new": "        if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {\n            let _ = self.acp.close_session(&acp_session_id);\n            let message = format!(\"ACP benchmark runtime mismatch: {error}\");\n            self.fail_run(run_id, message.clone());\n            if self.benchmark_child_active() {\n                self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, message);\n            }\n            return;\n        }\n"
+}
