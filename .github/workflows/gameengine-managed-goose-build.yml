@@ -1,0 +1,277 @@
+name: GameEngine Managed Goose Build
+
+run-name: >-
+  Managed Goose ${{ github.event.pull_request.head.sha || github.sha }}
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/gameengine-managed-goose-build.yml"
+      - "tools/managed-goose/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/gameengine-managed-goose-build.yml"
+      - "tools/managed-goose/**"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the immutable managed-Goose GitHub Release after a successful build
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-goose-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  GAMEENGINE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+  UPSTREAM_REPOSITORY: aaif-goose/goose
+  UPSTREAM_SHA: 4dc0420f5704a92806c6628c8f0a3497d7a88759
+  RUST_TOOLCHAIN: 1.94.1
+  RUST_TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  verify-series:
+    name: Verify patch provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out GameEngine revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.GAMEENGINE_REVISION }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify managed-Goose manifest and patch hashes
+        run: python3 tools/managed-goose/verify_series.py
+
+  build-windows:
+    name: Build and test patched Goose (Windows)
+    needs: verify-series
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      distribution_id: ${{ steps.package.outputs.distribution_id }}
+      goose_exe_sha256: ${{ steps.package.outputs.goose_exe_sha256 }}
+      zip_sha256: ${{ steps.package.outputs.zip_sha256 }}
+      zip_name: ${{ steps.package.outputs.zip_name }}
+      release_tag: ${{ steps.package.outputs.release_tag }}
+
+    steps:
+      - name: Check out GameEngine revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.GAMEENGINE_REVISION }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact upstream Goose revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: aaif-goose/goose
+          ref: 4dc0420f5704a92806c6628c8f0a3497d7a88759
+          path: upstream-goose
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact upstream HEAD
+        shell: pwsh
+        run: |
+          $observed = (git -C upstream-goose rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($observed -ne $env:UPSTREAM_SHA) {
+            throw "Upstream checkout mismatch: observed=$observed expected=$env:UPSTREAM_SHA"
+          }
+          python tools/managed-goose/verify_series.py
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component rustfmt,clippy
+          rustup target add --toolchain $env:RUST_TOOLCHAIN $env:RUST_TARGET
+          rustc "+$env:RUST_TOOLCHAIN" --version
+          cargo "+$env:RUST_TOOLCHAIN" --version
+
+      - name: Apply managed patch series
+        shell: pwsh
+        run: |
+          $series = Get-Content tools/managed-goose/series.json -Raw | ConvertFrom-Json
+          foreach ($entry in $series.patches) {
+            $patch = Join-Path $env:GITHUB_WORKSPACE $entry.path
+            Write-Host "Checking $($entry.path)"
+            git -C upstream-goose apply --check --whitespace=error-all $patch
+            if ($LASTEXITCODE -ne 0) {
+              throw "git apply --check failed for $($entry.path)"
+            }
+            git -C upstream-goose apply --whitespace=error-all $patch
+            if ($LASTEXITCODE -ne 0) {
+              throw "git apply failed for $($entry.path)"
+            }
+          }
+          git -C upstream-goose diff --check
+          if ($LASTEXITCODE -ne 0) {
+            throw "Patched upstream tree contains whitespace errors"
+          }
+
+      - name: Rust formatting
+        working-directory: upstream-goose
+        shell: pwsh
+        run: cargo "+$env:RUST_TOOLCHAIN" fmt --all --check
+
+      - name: Goose CLI check
+        working-directory: upstream-goose
+        shell: pwsh
+        run: cargo "+$env:RUST_TOOLCHAIN" check --target $env:RUST_TARGET -p goose-cli --bin goose
+
+      - name: Goose CLI clippy
+        working-directory: upstream-goose
+        shell: pwsh
+        run: cargo "+$env:RUST_TOOLCHAIN" clippy --target $env:RUST_TARGET -p goose-cli --bin goose -- -D warnings
+
+      - name: Structured overflow regression
+        working-directory: upstream-goose
+        shell: pwsh
+        run: cargo "+$env:RUST_TOOLCHAIN" test -p goose-providers --lib bad_request_with_structured_context_code_maps_to_context_length_exceeded
+
+      - name: Stream metadata regression
+        working-directory: upstream-goose
+        shell: pwsh
+        run: cargo "+$env:RUST_TOOLCHAIN" test -p goose-provider-types --lib collect_stream_keeps_output_token_limit_flag_from_a_later_chunk
+
+      - name: Compaction unit regressions
+        working-directory: upstream-goose
+        shell: pwsh
+        run: |
+          cargo "+$env:RUST_TOOLCHAIN" test -p goose --lib compaction_retries_when_the_summary_hits_the_output_token_limit
+          cargo "+$env:RUST_TOOLCHAIN" test -p goose --lib compaction_accepts_a_truncated_summary_once_the_ladder_is_exhausted
+
+      - name: Mid-turn compaction regression suite
+        working-directory: upstream-goose
+        shell: pwsh
+        run: cargo "+$env:RUST_TOOLCHAIN" test -p goose --test compaction
+
+      - name: Build official Windows Goose CLI target
+        working-directory: upstream-goose
+        shell: pwsh
+        run: |
+          cargo "+$env:RUST_TOOLCHAIN" build --release --target $env:RUST_TARGET -p goose-cli --bin goose
+          $binary = "target/$env:RUST_TARGET/release/goose.exe"
+          if (-not (Test-Path $binary)) {
+            throw "Windows goose.exe was not produced at $binary"
+          }
+          Get-Item $binary
+
+      - name: Probe managed distribution identity and ACP command
+        working-directory: upstream-goose
+        shell: pwsh
+        run: |
+          $binary = "target/$env:RUST_TARGET/release/goose.exe"
+          $version = (& $binary --version | Out-String).Trim()
+          Write-Host $version
+          $series = Get-Content ../tools/managed-goose/series.json -Raw | ConvertFrom-Json
+          if (-not $version.Contains($series.build.expected_version_output_fragment)) {
+            throw "Patched Goose version identity is missing. version=$version"
+          }
+          & $binary acp --help | Out-Host
+          if ($LASTEXITCODE -ne 0) {
+            throw "goose acp --help failed"
+          }
+
+      - name: Package deterministic managed-Goose artifact
+        id: package
+        shell: pwsh
+        run: |
+          $series = Get-Content tools/managed-goose/series.json -Raw | ConvertFrom-Json
+          $artifactName = "$($series.distribution_id)-$env:GAMEENGINE_REVISION"
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          python tools/managed-goose/package_managed_goose.py `
+            --exe "upstream-goose/target/$env:RUST_TARGET/release/goose.exe" `
+            --manifest tools/managed-goose/series.json `
+            --output-dir managed-goose-dist `
+            --gameengine-revision $env:GAMEENGINE_REVISION `
+            --workflow-run-url $runUrl `
+            --artifact-name $artifactName `
+            --github-output $env:GITHUB_OUTPUT
+
+      - name: Upload immutable build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            managed-goose-dist/*.zip
+            managed-goose-dist/provenance.json
+            managed-goose-dist/SHA256SUMS.txt
+            managed-goose-dist/series.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish build summary
+        shell: pwsh
+        run: |
+          @"
+          ## Managed Goose build
+          - Distribution: `${{ steps.package.outputs.distribution_id }}`
+          - Upstream: `aaif-goose/goose@$env:UPSTREAM_SHA`
+          - goose.exe SHA-256: `${{ steps.package.outputs.goose_exe_sha256 }}`
+          - ZIP SHA-256: `${{ steps.package.outputs.zip_sha256 }}`
+          - Artifact: `${{ steps.package.outputs.artifact_name }}`
+          "@ | Add-Content $env:GITHUB_STEP_SUMMARY
+
+  publish-release:
+    name: Publish immutable managed-Goose release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    needs: build-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download exact build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-windows.outputs.artifact_name }}
+          path: managed-goose-dist
+
+      - name: Refuse release overwrite
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-windows.outputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; immutable releases are never overwritten." >&2
+            exit 1
+          fi
+
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-windows.outputs.release_tag }}
+          DISTRIBUTION_ID: ${{ needs.build-windows.outputs.distribution_id }}
+          EXE_SHA: ${{ needs.build-windows.outputs.goose_exe_sha256 }}
+          ZIP_SHA: ${{ needs.build-windows.outputs.zip_sha256 }}
+        run: |
+          cat > release-notes.md <<EOF
+          GameEngine-managed patched Goose ACP distribution.
+
+          Upstream: aaif-goose/goose@${UPSTREAM_SHA}
+          Distribution: ${DISTRIBUTION_ID}
+          goose.exe SHA-256: ${EXE_SHA}
+          ZIP SHA-256: ${ZIP_SHA}
+
+          See provenance.json and series.json in the release assets for the exact patch origins.
+          EOF
+          gh release create "$RELEASE_TAG" managed-goose-dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$DISTRIBUTION_ID" \
+            --notes-file release-notes.md
