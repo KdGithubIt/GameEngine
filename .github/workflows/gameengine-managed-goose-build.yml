@@ -74,6 +74,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Configure LF checkout for upstream Goose
+        shell: pwsh
+        run: |
+          # Configure the Git process before actions/checkout materializes the
+          # upstream worktree. Changing core.autocrlf after checkout is too
+          # late: reset --hard is not guaranteed to rewrite unchanged files.
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - name: Check out exact upstream Goose revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -83,15 +92,9 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Normalize upstream checkout and verify exact HEAD
+      - name: Verify exact upstream HEAD
         shell: pwsh
         run: |
-          # Hosted Windows Git may materialize text as CRLF. Goose rustfmt is
-          # checked against the upstream LF blobs, so restore the exact blob
-          # bytes before applying the GameEngine patch series.
-          git -C upstream-goose config core.autocrlf false
-          git -C upstream-goose config core.eol lf
-          git -C upstream-goose reset --hard $env:UPSTREAM_SHA
           $observed = (git -C upstream-goose rev-parse HEAD).Trim().ToLowerInvariant()
           if ($observed -ne $env:UPSTREAM_SHA) {
             throw "Upstream checkout mismatch: observed=$observed expected=$env:UPSTREAM_SHA"
