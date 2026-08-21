@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "    fn discard_campaign_plan(&mut self) {\n        self.benchmark_campaign.prior_plan = self.benchmark_campaign.plan.take();\n        self.benchmark_campaign.run = None;\n        self.benchmark_campaign.running = None;\n        self.benchmark_campaign.acquisition = None;\n        self.benchmark_campaign.acquisition_approved = false;\n        self.benchmark_campaign.message = None;\n        self.clear_campaign_checkpoint();\n    }",
+  "new": "    fn discard_campaign_plan(&mut self) {\n        self.benchmark_campaign\n            .reset_for_new_campaign(&self.benchmark_experiment_root);\n    }"
+}
