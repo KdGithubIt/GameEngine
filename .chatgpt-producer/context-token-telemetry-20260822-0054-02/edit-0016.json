@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "use crate::benchmark_process::BenchmarkChildRunSpec;",
+  "new": "use crate::benchmark_process::BenchmarkChildRunSpec;\nuse crate::goose_local_acp::parse_goose_context_overflow;"
+}
