@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-int-managed-goose-20260821-0932-01",
+  "target_branch": "chatgpt/gameengine-acp-integration",
+  "expected_head_sha": "2dd09564d96c269154815c936588d47072d705f6",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "d4d68ed6bc00df7810a992a1447766fb7b485b1c4190ec1886e1b7fe0c9d8eda",
+  "patch_bytes": 13250,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Route Managed Local AI through Goose ACP",
+  "pr_title": "GameEngine: integrate ACP external agent runtime",
+  "pr_body": "## Summary\n\n- integrate common ACP transport, AgentHost bridge, Claude/Codex/Goose adapters\n- route first-class AI Studio agent Ask and Build through ACP\n- route normal Managed Local AI sessions through the Goose ACP adapter while keeping current ADR 0156 benchmark children on their frozen Native lane until benchmark migration\n- preserve AgentHost-selected project-root/read-only and isolated-workspace/run-bound working directories\n- align the ACP MCP server name with the stable `gameengine_editor` namespace\n- map AI Studio quality to Codex ACP reasoning effort and refresh machine-local runtime registrations when settings change\n- include external runtime process authority in normal Build capability budgets\n\n## Integration\n\nBenchmark migration, Cargo.lock generation, final Windows Validation, and any required final visual checks remain.\n\n## Validation\n\nDispatcher Windows Validation is required; final integrated-head validation remains authoritative.\n"
+}
