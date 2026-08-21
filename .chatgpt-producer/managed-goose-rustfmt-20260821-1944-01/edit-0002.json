@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        write_json(&staging_root.join(\"installation.json\"), &installation)\n            .map_err(runtime_io)?;",
+  "new": "        write_json(&staging_root.join(\"installation.json\"), &installation).map_err(runtime_io)?;"
+}
