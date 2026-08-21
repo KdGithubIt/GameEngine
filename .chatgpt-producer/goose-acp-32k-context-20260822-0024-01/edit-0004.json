@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "        if !managed_model.state_root.is_absolute() {\n            return Err(AcpRuntimeError::InvalidDescriptor(\n                \"Managed Local state root must be absolute before Goose ACP can isolate its machine-local configuration\"\n                    .to_owned(),\n            ));\n        }\n        Ok(Self { managed_model })",
+  "new": "        if !managed_model.state_root.is_absolute() {\n            return Err(AcpRuntimeError::InvalidDescriptor(\n                \"Managed Local state root must be absolute before Goose ACP can isolate its machine-local configuration\"\n                    .to_owned(),\n            ));\n        }\n        let _ = goose_managed_token_budget(&managed_model)?;\n        Ok(Self { managed_model })"
+}
