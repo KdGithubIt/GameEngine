@@ -1,0 +1,6 @@
+{
+  "new": "The managed runtime is pinned to the immutable GameEngine-managed distribution\n`1.45.0+gameengine.ge-midturn-2`\n(`managed-goose-v1.45.0-ge-midturn-2`). It is built from upstream Goose\nv1.45.0 at exact revision `4dc0420f5704a92806c6628c8f0a3497d7a88759`;\nthe Windows archive SHA-256 is\n`b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a`.\nThe managed series carries structured context-overflow classification,\noutput-limit metadata required by the OpenAI-compatible Managed Local path,\nbounded recovery from truncated compaction summaries, stream metadata\npreservation, and same-turn compaction after completed tool results. It does\nnot import Goose desktop UI or provider-limit precedence because GameEngine\ncontinues to own the authoritative physical context and output budget.\n",
+  "old": "The managed runtime remains pinned to Goose 1.44.0 for this contract. Upstream\ncontext-limit precedence and mid-tool-loop compaction fixes are not assumed to\nbe present until a later explicit dependency update validates ACP compatibility,\npermission behavior, Windows artifacts/digests, and the Managed Local adapter.\n",
+  "operation": "replace_text",
+  "path": "docs/adr/0166-acp-centered-external-agent-runtime-foundation.md"
+}
