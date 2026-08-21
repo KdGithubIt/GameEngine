@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/acp_agent_runtime/transport.rs",
+  "old": "    #[test]\n    fn descriptor_environment_is_forwarded_without_provider_logic() {",
+  "new": "    #[test]\n    fn usage_and_tool_result_measurements_use_wire_metadata_only() {\n        let usage = serde_json::json!({\"used\": 28_640, \"size\": 32_768});\n        assert_eq!(acp_usage_tokens(&usage), Some((28_640, 32_768)));\n\n        let update = serde_json::json!({\n            \"rawOutput\": {\"secret\": \"not-retained\"}\n        });\n        let measured = acp_tool_result_payload_bytes(&update).expect(\"raw output bytes\");\n        assert!(measured > 0);\n        assert_eq!(\n            acp_tool_result_payload_bytes(&serde_json::json!({\"status\": \"completed\"})),\n            None\n        );\n    }\n\n    #[test]\n    fn descriptor_environment_is_forwarded_without_provider_logic() {"
+}
