@@ -1,0 +1,27 @@
+From: GameEngine automation
+Subject: [PATCH 1/5] brand the managed Goose distribution
+
+GameEngine-Origin: managed Goose provenance contract
+Adapted-To: v1.45.0 (4dc0420f5704a92806c6628c8f0a3497d7a88759)
+
+diff --git a/crates/goose-cli/src/cli.rs b/crates/goose-cli/src/cli.rs
+--- a/crates/goose-cli/src/cli.rs
++++ b/crates/goose-cli/src/cli.rs
+@@ -62,7 +62,14 @@ impl From<ServePlatform> for GoosePlatform {
+     }
+ }
+ 
+ #[derive(Parser)]
+-#[command(name = "goose", author, version, display_name = "", about, long_about = None)]
++#[command(
++    name = "goose",
++    author,
++    version = concat!(env!("CARGO_PKG_VERSION"), "+gameengine.ge-midturn-1"),
++    display_name = "",
++    about,
++    long_about = None
++)]
+ pub struct Cli {
+     #[command(subcommand)]
+     command: Option<Command>,
+ }
