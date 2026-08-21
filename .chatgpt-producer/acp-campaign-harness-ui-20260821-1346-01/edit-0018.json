@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "    pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {\n        self.benchmark_campaign.execution_environment = CampaignExecutionEnvironment::WindowsNative;\n        self.benchmark_campaign.selected_models.clear();\n",
+  "new": "    pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {\n        self.benchmark_campaign.execution_environment = CampaignExecutionEnvironment::WindowsNative;\n        self.benchmark_campaign.harness_selection = CampaignHarnessSelection::GooseAcpAgentHarness;\n        self.benchmark_campaign\n            .selected_tasks\n            .retain(|task_id| campaign_task_agent_inclusive_runtime_support(task_id).is_ok());\n        self.benchmark_campaign.selected_models.clear();\n"
+}
