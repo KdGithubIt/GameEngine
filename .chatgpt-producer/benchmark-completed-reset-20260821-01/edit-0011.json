@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "                \"ADR 0133 Remote AI Studio\"\n                    | \"ADR 0143 Model Resources\"\n                    | \"ADR 0145 External Agent\"\n            ) {",
+  "new": "                \"ADR 0133 Remote AI Studio\"\n                    | \"ADR 0143 Model Resources\"\n                    | \"ADR 0145 External Agent\"\n                    | \"ADR 0156 Benchmark Completed\"\n                    | \"ADR 0156 Benchmark Reset\"\n            ) {"
+}
