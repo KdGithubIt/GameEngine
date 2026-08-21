@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            (backend_runtime_version, candidates)\n        };\n        Ok(CampaignPolicy {\n",
+  "new": "            (backend_runtime_version, candidates)\n        };\n        let benchmark_runtime = self.selected_campaign_benchmark_runtime(&candidates)?;\n        Ok(CampaignPolicy {\n"
+}
