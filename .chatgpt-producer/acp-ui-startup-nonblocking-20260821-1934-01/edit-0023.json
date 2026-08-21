@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    fn stop_active_run(&mut self) {\n        let run_id = self.active_run_id.clone();","new":"    fn stop_active_run(&mut self) {\n        let run_id = self.active_run_id.clone();\n        self.cancel_acp_startup();"}
