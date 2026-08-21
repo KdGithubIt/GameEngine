@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/cli/src/lib.rs","old":"    \"Usage:\\n  engine-cli authoring capabilities\\n  engine-cli authoring describe <capability-id>","new":"    \"Usage:\\n  engine-cli authoring list\\n  engine-cli authoring capabilities\\n  engine-cli authoring describe <capability-id>"}

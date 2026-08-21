@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/cli/src/capability_cli.rs","old":"    AuthoringCapability, AuthoringCapabilityId, AuthoringCapabilityKind,\n    AuthoringCapabilityRegistry, Diagnostic,","new":"    AuthoringCapability, AuthoringCapabilityId, AuthoringCapabilityKind,\n    AuthoringCapabilityRegistry, AuthoringCapabilitySummary, Diagnostic,"}
