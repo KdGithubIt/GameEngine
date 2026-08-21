@@ -1,0 +1,44 @@
+name: ACP integration repair
+
+on:
+  push:
+    branches:
+      - chatgpt/gameengine-acp-ci-diagnostics
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: chatgpt/gameengine-acp-integration
+          fetch-depth: 0
+
+      - name: Regenerate lockfile and format ACP integration
+        shell: pwsh
+        run: |
+          cargo generate-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Commit exact repair to PR 1061 branch
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain
+          if (-not $changes) {
+            Write-Host "No repair changes were produced."
+            exit 0
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock crates/editor/src
+          git commit -m "fix: regenerate ACP lockfile and format integration"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git push origin HEAD:chatgpt/gameengine-acp-integration
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
