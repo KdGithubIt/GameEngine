@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/acp_startup.rs","old":"            runtime_identity: AcpRuntimeIdentity::stable(\n                \"test-agent\",\n                Some(\"1.0\".to_owned()),\n            ),","new":"            runtime_identity: AcpRuntimeIdentity::stable(\"test-agent\", Some(\"1.0\".to_owned())),"}
