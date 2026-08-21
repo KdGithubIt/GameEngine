@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"use crate::acp_agent_runtime::{\n    AcpAgentRegistry, AcpAgentSession, AcpNormalizedEvent, AcpPermissionOptionKind,\n","new":"use crate::acp_agent_runtime::{\n    AcpAgentSession, AcpNormalizedEvent, AcpPermissionOptionKind,\n"}
