@@ -1,0 +1,6 @@
+{
+  "new": "pub(crate) const PINNED_GOOSE_VERSION: &str = \"1.45.0+gameengine.ge-midturn-2\";\nconst PINNED_GOOSE_WINDOWS_ASSET: &str =\n    \"gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip\";\nconst PINNED_GOOSE_WINDOWS_SHA256: &str =\n    \"b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a\";\nconst PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH: &str = \"goose.exe\";\nconst PINNED_GOOSE_WINDOWS_URL: &str = concat!(\n    \"https://github.com/KdGithubIt/GameEngine/releases/download/\",\n    \"managed-goose-v1.45.0-ge-midturn-2/\",\n    \"gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip\"\n);\n",
+  "old": "pub(crate) const PINNED_GOOSE_VERSION: &str = \"1.44.0\";\nconst PINNED_GOOSE_WINDOWS_ASSET: &str = \"goose-x86_64-pc-windows-msvc.zip\";\nconst PINNED_GOOSE_WINDOWS_SHA256: &str =\n    \"50ed0ee034355036b94718b65aad5b7a2ec4fd6d80f6ae4fc7f26e623aa5b193\";\nconst PINNED_GOOSE_WINDOWS_URL: &str = concat!(\n    \"https://github.com/block/goose/releases/download/v1.44.0/\",\n    \"goose-x86_64-pc-windows-msvc.zip\"\n);\n",
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs"
+}
