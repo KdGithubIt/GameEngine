@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "    pub(super) fn benchmark_child_uses_acp_runtime(&self) -> bool {\n        self.benchmark_child\n            .as_ref()\n            .is_some_and(|child| child.spec.uses_acp_runtime())\n    }",
+  "new": "    pub(super) fn benchmark_child_uses_acp_runtime(&self) -> bool {\n        self.benchmark_child\n            .as_ref()\n            .is_some_and(|child| child.spec.uses_acp_runtime())\n    }\n\n    /// Mirrors only credential-safe ACP activity into the run-scoped child log.\n    ///\n    /// The ACP transport owns raw protocol I/O, which may contain ephemeral MCP\n    /// credentials and is therefore never copied into benchmark diagnostics.\n    /// The campaign parent already captures this child process's stderr per run,\n    /// so normalized event categories provide enough liveness evidence without\n    /// creating another persistence or authorization surface.\n    pub(super) fn report_benchmark_acp_live_event(&self, event: &AcpNormalizedEvent) {\n        if !self.benchmark_child_uses_acp_runtime() {\n            return;\n        }\n        eprintln!(\"[benchmark.acp] {}\", benchmark_acp_live_summary(event));\n    }"
+}
