@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "use std::collections::BTreeMap;",
+  "new": "use std::collections::{BTreeMap, VecDeque};"
+}
