@@ -42,7 +42,7 @@ use crate::external_agent_provider::{
     sign_in_url, translate_provider_line, wsl_environment_forwarding,
 };
 use crate::goose_local_acp::{
-    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig,
+    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,
 };
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
@@ -6807,10 +6807,7 @@ impl AiStudioPanel {
     fn stop_active_run(&mut self) {
         let run_id = self.active_run_id.clone();
         if self.acp_startup.as_ref().is_some_and(|pending| {
-            matches!(
-                &pending.continuation,
-                AcpStartupContinuation::Build { .. }
-            )
+            matches!(&pending.continuation, AcpStartupContinuation::Build { .. })
         }) && let Some(pending) = self.acp_startup.take()
         {
             pending.task.cancel();

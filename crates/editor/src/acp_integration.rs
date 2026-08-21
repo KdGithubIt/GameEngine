@@ -70,12 +70,8 @@ impl AcpIntegration {
         session: Box<dyn AcpAgentSession>,
         expected_session_id: &str,
     ) -> Result<String, AcpBridgeError> {
-        self.bridge.attach_opened_ask_session(
-            host,
-            descriptor_id,
-            session,
-            expected_session_id,
-        )
+        self.bridge
+            .attach_opened_ask_session(host, descriptor_id, session, expected_session_id)
     }
 
     pub(crate) fn attach_opened_run_session(

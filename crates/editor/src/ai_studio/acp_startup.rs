@@ -168,11 +168,7 @@ impl AcpSessionStartupTask {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected)
-                if self.cancelled.load(Ordering::Acquire) =>
-            {
-                None
-            }
+            Err(mpsc::TryRecvError::Disconnected) if self.cancelled.load(Ordering::Acquire) => None,
             Err(mpsc::TryRecvError::Disconnected) => Some(Err(
                 "ACP startup worker disconnected unexpectedly.".to_owned(),
             )),
@@ -302,21 +298,14 @@ mod tests {
             arguments: Vec::new(),
             environment: BTreeMap::new(),
             capabilities: AcpCapabilities::default(),
-            runtime_identity: AcpRuntimeIdentity::stable(
-                "test-agent",
-                Some("1.0".to_owned()),
-            ),
+            runtime_identity: AcpRuntimeIdentity::stable("test-agent", Some("1.0".to_owned())),
         }
     }
 
     fn request() -> AcpSessionOpenRequest {
         AcpSessionOpenRequest::new(
-            AcpSessionBinding::read_only(
-                "session-test",
-                "http://127.0.0.1:1/mcp",
-                "token",
-            )
-            .expect("binding"),
+            AcpSessionBinding::read_only("session-test", "http://127.0.0.1:1/mcp", "token")
+                .expect("binding"),
             std::env::current_dir().expect("current dir"),
         )
         .expect("request")
