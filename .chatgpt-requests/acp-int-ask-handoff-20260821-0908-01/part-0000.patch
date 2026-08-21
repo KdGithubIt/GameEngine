@@ -1,0 +1,383 @@
+diff --git a/crates/editor/src/acp_integration.rs b/crates/editor/src/acp_integration.rs
+index 41ecb14381d085bd41193b0329fc17dfb104f6a4..9200b0a40688b731a7177b557d5fc4916d1a875a 100644
+--- a/crates/editor/src/acp_integration.rs
++++ b/crates/editor/src/acp_integration.rs
+@@ -44,6 +44,13 @@ impl AcpIntegration {
+         &self.registry
+     }
+ 
++    pub(crate) fn is_registered(&self, agent_id: &str) -> bool {
++        self.registry
++            .descriptors()
++            .into_iter()
++            .any(|descriptor| descriptor.id == agent_id)
++    }
++
+     pub(crate) fn open_ask_session(
+         &mut self,
+         host: &AgentHost,
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index c5e9f4f6bbdb94513cb766faf1f8eca609f690b5..75e1c4a59277e6700ddeee5535ac18c8c7ebab47 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -11,6 +11,15 @@ mod benchmark_experiment_ui;
+ mod execution_routing;
+ mod settings_ui;
+ 
++use crate::acp_agent_host_bridge::AcpBridgePoll;
++use crate::acp_agent_runtime::{AcpNormalizedEvent, AcpProcessRuntime};
++use crate::acp_integration::AcpIntegration;
++use crate::claude_acp_adapter::{
++    CLAUDE_ACP_AGENT_ID, ClaudeAcpConfig, discover_claude_acp,
++};
++use crate::codex_acp_adapter::{
++    CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
++};
+ use crate::agent_benchmark::{
+     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
+     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
+@@ -73,6 +82,7 @@ use eframe::egui;
+ use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
+ use engine_authoring::ProjectRoot;
+ use serde::{Deserialize, Serialize};
++use execution_routing::{AiExecutionDriver, AiExecutionRouter};
+ use settings_ui::{ProviderReadiness, SettingsSection};
+ use std::ffi::OsString;
+ use std::fs;
+@@ -956,6 +966,13 @@ struct PendingQuestionPermission {
+     conversation: Vec<QuestionMessage>,
+ }
+ 
++struct AcpQuestionState {
++    acp_session_id: String,
++    gameengine_session_id: String,
++    answer: String,
++    started_at: std::time::Instant,
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+ #[serde(rename_all = "snake_case")]
+ enum AiStudioPresentationMode {
+@@ -1063,6 +1080,10 @@ pub struct AiStudioPanel {
+     /// [`AiStudioPanel::select_ai`], so the family and the entry cannot drift
+     /// apart into the two independent selections ADR 0164 §1 replaced.
+     selected_ai_family: SelectedAiFamily,
++    execution_router: AiExecutionRouter,
++    acp: AcpIntegration,
++    acp_question: Option<AcpQuestionState>,
++    active_acp_run_session: Option<String>,
+     /// The provider process answering the current Ask turn, if one is running.
+     external_question: Option<ExternalAgentQuestionTask>,
+     /// Which session a provider-served answer belongs to.
+@@ -1250,6 +1271,23 @@ impl AiStudioPanel {
+             .proposal
+             .clone();
+         let active_run_id = host.active_writer_run_id().map(str::to_owned);
++        let acp = AcpIntegration::new(
++            project.path().to_path_buf(),
++            connection.endpoint.clone(),
++            connection.authorization_token.clone(),
++            connection.read_only_authorization_token.clone(),
++        )
++        .map_err(|error| error.to_string())?;
++        let mut execution_router = AiExecutionRouter::default();
++        execution_router
++            .set_acp_route("agent:codex", CODEX_ACP_DESCRIPTOR_ID)
++            .map_err(|error| error.to_string())?;
++        execution_router
++            .set_acp_route("agent:claude-code", CLAUDE_ACP_AGENT_ID)
++            .map_err(|error| error.to_string())?;
++        execution_router
++            .set_legacy_route("agent:generic-external")
++            .map_err(|error| error.to_string())?;
+         Ok(Self {
+             project_root: project.path().to_path_buf(),
+             project_id: project.project_id().as_str().to_owned(),
+@@ -1280,6 +1318,10 @@ impl AiStudioPanel {
+                 preferences.external_agent_provider,
+             ),
+             selected_ai_family,
++            execution_router,
++            acp,
++            acp_question: None,
++            active_acp_run_session: None,
+             external_question: None,
+             external_question_session: None,
+             external_setup: None,
+@@ -1394,14 +1436,20 @@ impl AiStudioPanel {
+         tool: &str,
+         mutating: bool,
+     ) -> Result<(), String> {
+-        if self.active_run_id.as_deref() != Some(run_id) || self.process.is_none() {
++        let legacy_external_active = self.process.is_some();
++        let acp_external_active = self.active_acp_run_session.is_some();
++        if self.active_run_id.as_deref() != Some(run_id)
++            || (!legacy_external_active && !acp_external_active)
++        {
+             return Err(format!(
+                 "MCP request for run `{run_id}` was rejected because that external run is no longer active."
+             ));
+         }
+         self.host.run(run_id).map_err(|error| error.to_string())?;
+         if mutating {
+-            if self.process_purpose != Some(ExternalAgentPurpose::BuildOrRepair) {
++            if legacy_external_active
++                && self.process_purpose != Some(ExternalAgentPurpose::BuildOrRepair)
++            {
+                 return Err(format!(
+                     "Mutating MCP tool `{tool}` is not allowed during read-only runtime evaluation."
+                 ));
+@@ -2286,6 +2334,7 @@ impl AiStudioPanel {
+         self.poll_native_question(context);
+         self.request_external_provider_probe_once();
+         self.poll_external_provider_probe(context);
++        self.poll_acp_question(context);
+         self.poll_external_question(context);
+         self.poll_external_setup(context);
+         self.poll_model_resource_task(context);
+@@ -4522,17 +4571,238 @@ impl AiStudioPanel {
+         }
+     }
+ 
+-    /// Answers the submitted Ask turn with whichever runtime is ready for it.
++    /// Answers the submitted Ask turn with whichever runtime is selected.
+     ///
+-    /// ADR 0163 §1: a signed-in external provider answers Ask when the user
+-    /// keeps that preference, so one provider subscription serves both Ask and
+-    /// Build. Every other case keeps the ModelBackend answer path unchanged.
++    /// First-class external agents route through ACP. A route selected for ACP
++    /// never silently falls back to the legacy provider harness when its adapter
++    /// is unavailable; explicit Legacy routes and model backends retain their
++    /// existing behavior.
+     fn start_question(&mut self) {
+-        if self.provider_answers_questions() {
+-            self.start_external_question();
++        let driver = match self.selected_execution_driver() {
++            Ok(driver) => driver,
++            Err(error) => {
++                self.status = Some(error);
++                return;
++            }
++        };
++        match driver {
++            AiExecutionDriver::Acp { agent_id } => self.start_acp_question(&agent_id),
++            AiExecutionDriver::Legacy => {
++                if self.provider_answers_questions() {
++                    self.start_external_question();
++                } else {
++                    self.start_native_question();
++                }
++            }
++        }
++    }
++
++    fn selected_execution_driver(&mut self) -> Result<AiExecutionDriver, String> {
++        let selection = self.selected_ai();
++        let logical_ai_id = ai_entry_id(selection, &self.managed_model_id);
++        let route_key = match selection {
++            SelectedAi::Model(ModelBackendPreference::ManagedLocal) => {
++                "model:managed_local".to_owned()
++            }
++            _ => logical_ai_id.clone(),
++        };
++        let configured_agent = match selection {
++            SelectedAi::Agent(ExternalAgentProviderKind::Codex) => Some(CODEX_ACP_DESCRIPTOR_ID),
++            SelectedAi::Agent(ExternalAgentProviderKind::ClaudeCode) => Some(CLAUDE_ACP_AGENT_ID),
++            _ => None,
++        };
++        if let Some(agent_id) = configured_agent {
++            self.ensure_acp_runtime(agent_id)?;
++        }
++        self.execution_router.sync_registry(self.acp.registry());
++        self.execution_router
++            .resolve(logical_ai_id, route_key)
++            .map(|resolution| resolution.driver)
++            .map_err(|error| error.to_string())
++    }
++
++    fn ensure_acp_runtime(&mut self, agent_id: &str) -> Result<(), String> {
++        if self.acp.is_registered(agent_id) {
++            return Ok(());
++        }
++        let placement = self.external_agent_placement();
++        match agent_id {
++            CODEX_ACP_DESCRIPTOR_ID => {
++                let runtime = CodexAcpRuntime::discover(
++                    placement,
++                    CodexAcpSessionPreferences::default(),
++                )
++                .map_err(|error| error.to_string())?;
++                self.acp
++                    .register(Box::new(runtime))
++                    .map_err(|error| error.to_string())
++            }
++            CLAUDE_ACP_AGENT_ID => {
++                let registration = discover_claude_acp(&ClaudeAcpConfig::default(), &placement)
++                    .map_err(|error| error.to_string())?;
++                let runtime = AcpProcessRuntime::new(registration.descriptor)
++                    .map_err(|error| error.to_string())?;
++                self.acp
++                    .register(Box::new(runtime))
++                    .map_err(|error| error.to_string())
++            }
++            _ => Err(format!("ACP agent `{agent_id}` is not configured by AI Studio")),
++        }
++    }
++
++    fn start_acp_question(&mut self, agent_id: &str) {
++        let session_id = self.selected_session.clone();
++        let turns = match self.host.session(&session_id) {
++            Ok(session) => session
++                .messages
++                .iter()
++                .map(|message| ExternalAgentQuestionTurn {
++                    role: match message.role {
++                        ConversationRole::User => ExternalAgentQuestionRole::User,
++                        ConversationRole::Assistant => ExternalAgentQuestionRole::Assistant,
++                        ConversationRole::System => ExternalAgentQuestionRole::System,
++                    },
++                    text: message.text.clone(),
++                })
++                .collect::<Vec<_>>(),
++            Err(error) => {
++                self.status = Some(error.to_string());
++                return;
++            }
++        };
++        let prompt = build_question_prompt(&turns);
++        let acp_session_id = match self
++            .acp
++            .open_ask_session(&self.host, agent_id, &session_id)
++        {
++            Ok(session_id) => session_id,
++            Err(error) => {
++                self.status = Some(format!("Could not open ACP Ask session: {error}"));
++                return;
++            }
++        };
++        if let Err(error) = self
++            .acp
++            .send_prompt(&mut self.host, &acp_session_id, &prompt)
++        {
++            let _ = self.acp.close_session(&acp_session_id);
++            self.status = Some(format!("Could not send ACP Ask prompt: {error}"));
++            return;
++        }
++        self.acp_question = Some(AcpQuestionState {
++            acp_session_id,
++            gameengine_session_id: session_id,
++            answer: String::new(),
++            started_at: std::time::Instant::now(),
++        });
++        self.status = Some(format!(
++            "{} is answering through the common ACP runtime with read-only Editor MCP authority.",
++            self.external_provider_kind.label()
++        ));
++    }
++
++    fn poll_acp_question(&mut self, context: &egui::Context) {
++        let Some(acp_session_id) = self
++            .acp_question
++            .as_ref()
++            .map(|question| question.acp_session_id.clone())
++        else {
+             return;
++        };
++        let poll = match self.acp.poll(&mut self.host, &acp_session_id) {
++            Ok(poll) => poll,
++            Err(error) => {
++                let question = self.acp_question.take();
++                let _ = self.acp.close_session(&acp_session_id);
++                let diagnostic = format!("ACP Ask failed: {error}");
++                self.status = Some(diagnostic.clone());
++                if let Some(question) = question {
++                    let _ = self.host.append_message(
++                        &question.gameengine_session_id,
++                        ConversationRole::System,
++                        diagnostic,
++                    );
++                }
++                return;
++            }
++        };
++        match poll {
++            AcpBridgePoll::Idle => {
++                context.request_repaint_after(std::time::Duration::from_millis(100));
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::AgentMessage { text }) => {
++                if let Some(question) = self.acp_question.as_mut() {
++                    question.answer.push_str(&text);
++                }
++                context.request_repaint_after(std::time::Duration::from_millis(16));
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::Progress { detail, .. }) => {
++                self.status = Some(detail);
++                context.request_repaint_after(std::time::Duration::from_millis(100));
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::Plan { entries }) => {
++                self.status = Some(format!("ACP Ask plan: {}", entries.join("; ")));
++                context.request_repaint_after(std::time::Duration::from_millis(100));
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::ToolCall { title, status, .. }) => {
++                self.status = Some(format!("ACP Ask tool `{title}` is {status:?}."));
++                context.request_repaint_after(std::time::Duration::from_millis(100));
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::SessionInfo { title }) => {
++                if let Some(title) = title {
++                    self.status = Some(format!("ACP Ask session: {title}"));
++                }
++                context.request_repaint_after(std::time::Duration::from_millis(100));
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::ProtocolDiagnostic { message }) => {
++                self.status = Some(message);
++                context.request_repaint_after(std::time::Duration::from_millis(100));
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::TurnFinished { stop_reason }) => {
++                let Some(question) = self.acp_question.take() else {
++                    return;
++                };
++                let elapsed_ms = question.started_at.elapsed().as_millis();
++                let answer = question.answer.trim().to_owned();
++                let close_result = self.acp.close_session(&acp_session_id);
++                if answer.is_empty() {
++                    self.status = Some(format!(
++                        "ACP Ask returned control with `{stop_reason}` but produced no assistant message."
++                    ));
++                    return;
++                }
++                if let Err(error) = self.host.append_message(
++                    &question.gameengine_session_id,
++                    ConversationRole::Assistant,
++                    answer,
++                ) {
++                    self.status = Some(error.to_string());
++                    return;
++                }
++                if let Err(error) = close_result {
++                    self.status = Some(format!("ACP Ask answered but session close failed: {error}"));
++                } else {
++                    self.status = Some(format!(
++                        "{} answered read-only through ACP in {elapsed_ms} ms.",
++                        self.external_provider_kind.label()
++                    ));
++                }
++            }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::PermissionRequest(_)) => {
++                self.status = Some(
++                    "ACP Ask requested permission after the bridge should have denied it; the session remains read-only."
++                        .to_owned(),
++                );
++            }
++            AcpBridgePoll::Recorded { .. }
++            | AcpBridgePoll::PermissionRequired { .. }
++            | AcpBridgePoll::ValidationReady { .. } => {
++                self.status = Some(
++                    "ACP Ask received an unexpected run-bound bridge result and was not promoted to write authority."
++                        .to_owned(),
++                );
++            }
+         }
+-        self.start_native_question();
+     }
+ 
+     /// Whether the selected agent is ready to answer this Ask turn.
