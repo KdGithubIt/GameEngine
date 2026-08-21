@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "    #[test]\n    fn acp_benchmark_proposal_uses_the_frozen_agent_inclusive_authority() {\n",
+  "new": "    #[test]\n    fn headless_acp_auto_approval_refuses_capabilities_outside_the_frozen_policy() {\n        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(\n            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(\n                GOOSE_ACP_AGENT_NAME,\n                Some(\"1.0.0\".to_owned()),\n            ),\n        );\n        assert!(benchmark_task_allows_capability(\n            \"code_implementation_v1\",\n            Some(&runtime),\n            AgentCapability::ExternalAgentProcess,\n        ));\n        assert!(benchmark_task_allows_capability(\n            \"code_implementation_v1\",\n            Some(&runtime),\n            AgentCapability::CodeWorkspaceApply,\n        ));\n        assert!(!benchmark_task_allows_capability(\n            \"code_implementation_v1\",\n            Some(&runtime),\n            AgentCapability::RuntimeLaunch,\n        ));\n    }\n\n    #[test]\n    fn acp_benchmark_proposal_uses_the_frozen_agent_inclusive_authority() {\n"
+}
