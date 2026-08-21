@@ -1,0 +1,261 @@
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index 219d616b447382cde37598c8cf3d51c82396a781..07e8a39485d0f12fc13d044059a8dbaa5327b12e 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -838,28 +838,64 @@ fn first_nonempty_output_line(output: &Output) -> Option<String> {
+ fn extract_semver(output: &str) -> Option<String> {
+     output
+         .split(|character: char| {
+-            !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
++            !(character.is_ascii_alphanumeric()
++                || character == '.'
++                || character == '-'
++                || character == '+')
+         })
+         .map(|token| token.trim_start_matches('v'))
+-        .find(|token| {
+-            let mut parts = token.split('.');
+-            let valid = (0..3).all(|_| {
+-                parts.next().is_some_and(|part| {
+-                    !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())
+-                })
+-            });
+-            valid && parts.next().is_none()
+-        })
++        .find(|token| is_semver(token))
+         .map(str::to_owned)
+ }
+ 
++fn is_semver(value: &str) -> bool {
++    let (core_and_prerelease, build_metadata) = match value.split_once('+') {
++        Some((core, metadata)) => (core, Some(metadata)),
++        None => (value, None),
++    };
++    if build_metadata.is_some_and(|metadata| !valid_semver_identifiers(metadata)) {
++        return false;
++    }
++
++    let (core, prerelease) = match core_and_prerelease.split_once('-') {
++        Some((core, prerelease)) => (core, Some(prerelease)),
++        None => (core_and_prerelease, None),
++    };
++    if prerelease.is_some_and(|value| !valid_semver_identifiers(value)) {
++        return false;
++    }
++
++    let mut parts = core.split('.');
++    let valid_core = (0..3).all(|_| {
++        parts.next().is_some_and(|part| {
++            !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
++        })
++    });
++    valid_core && parts.next().is_none()
++}
++
++fn valid_semver_identifiers(value: &str) -> bool {
++    !value.is_empty()
++        && value.split('.').all(|identifier| {
++            !identifier.is_empty()
++                && identifier
++                    .chars()
++                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
++        })
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+-    fn goose_version_parser_uses_semantic_version_only() {
++    fn goose_version_parser_preserves_managed_build_identity() {
+         assert_eq!(extract_semver("goose 1.9.3"), Some("1.9.3".to_owned()));
++        assert_eq!(
++            extract_semver("goose 1.45.0+gameengine.ge-midturn-2"),
++            Some("1.45.0+gameengine.ge-midturn-2".to_owned())
++        );
++        assert_eq!(extract_semver("goose 1.45.0+"), None);
+         assert_eq!(extract_semver("goose unknown"), None);
+     }
+ 
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index a659d65d2724355b69082679146de62748f9699b..5411fd1081b309db6bb796c8f4147a3707364eef 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -26,13 +26,16 @@ pub(crate) const MANAGED_BACKEND_ID: &str = "gameengine-managed-llama-cpp";
+ pub(crate) const PINNED_LLAMA_CPP_TAG: &str = "b10336";
+ pub(crate) const PINNED_LLAMA_CPP_REVISION: &str = "f401bb1";
+ /// Goose version pinned for the GameEngine-managed ACP agent runtime.
+-pub(crate) const PINNED_GOOSE_VERSION: &str = "1.44.0";
+-const PINNED_GOOSE_WINDOWS_ASSET: &str = "goose-x86_64-pc-windows-msvc.zip";
++pub(crate) const PINNED_GOOSE_VERSION: &str = "1.45.0+gameengine.ge-midturn-2";
++const PINNED_GOOSE_WINDOWS_ASSET: &str =
++    "gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip";
+ const PINNED_GOOSE_WINDOWS_SHA256: &str =
+-    "50ed0ee034355036b94718b65aad5b7a2ec4fd6d80f6ae4fc7f26e623aa5b193";
++    "b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a";
++const PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH: &str = "goose.exe";
+ const PINNED_GOOSE_WINDOWS_URL: &str = concat!(
+-    "https://github.com/block/goose/releases/download/v1.44.0/",
+-    "goose-x86_64-pc-windows-msvc.zip"
++    "https://github.com/KdGithubIt/GameEngine/releases/download/",
++    "managed-goose-v1.45.0-ge-midturn-2/",
++    "gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip"
+ );
+ const GOOSE_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
+ pub(crate) const MANAGED_WSL_DISTRIBUTION: &str = "GameEngine-LocalAI";
+@@ -1011,7 +1014,7 @@ impl ManagedLocalRuntime {
+         let download = self
+             .root
+             .join("downloads")
+-            .join(format!("goose-v{PINNED_GOOSE_VERSION}-windows-x86_64.zip"));
++            .join(PINNED_GOOSE_WINDOWS_ASSET);
+         if download.is_file()
+             && verify_file_sha256(
+                 &download,
+@@ -1036,12 +1039,12 @@ impl ManagedLocalRuntime {
+         }
+         fs::create_dir_all(&staging_root).map_err(runtime_io)?;
+         expand_zip(&download, &staging_root)?;
+-        let staged_executable = staging_root.join("goose-package").join("goose.exe");
++        let staged_executable = staging_root.join(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH);
+         if !staged_executable.is_file() {
+             let _ = fs::remove_dir_all(&staging_root);
+             return Err(ManagedLocalRuntimeError::new(
+                 ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
+-                "verified Goose archive does not contain goose-package/goose.exe",
++                "verified Goose archive does not contain goose.exe",
+             ));
+         }
+         let executable_sha256 = sha256_via_platform(&staged_executable)?;
+@@ -1062,7 +1065,7 @@ impl ManagedLocalRuntime {
+             asset_sha256: PINNED_GOOSE_WINDOWS_SHA256.to_owned(),
+             executable_sha256,
+             installed_unix_ms: now_unix_ms(),
+-            executable_path: final_root.join("goose-package").join("goose.exe"),
++            executable_path: final_root.join(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH),
+             retained_artifact_path: final_root
+                 .join("artifacts")
+                 .join(PINNED_GOOSE_WINDOWS_ASSET),
+@@ -3486,11 +3489,15 @@ mod tests {
+         let final_root = manager
+             .goose_runtime_root()
+             .join(format!("v{PINNED_GOOSE_VERSION}"));
+-        let executable = final_root.join("goose-package").join("goose.exe");
++        let executable = final_root.join(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH);
+         fs::create_dir_all(executable.parent().expect("executable parent")).expect("goose parent");
+         fs::write(&executable, b"managed-goose-fixture").expect("goose fixture");
+         let executable_sha256 = sha256_via_platform(&executable).expect("fixture sha256");
+-        let retained_artifact = final_root.join(PINNED_GOOSE_WINDOWS_ASSET);
++        let retained_artifact = final_root
++            .join("artifacts")
++            .join(PINNED_GOOSE_WINDOWS_ASSET);
++        fs::create_dir_all(retained_artifact.parent().expect("artifact parent"))
++            .expect("artifact directory");
+         fs::write(&retained_artifact, b"managed-goose-archive-fixture")
+             .expect("retained Goose fixture");
+         let installation = ManagedGooseInstallation {
+@@ -3519,6 +3526,27 @@ mod tests {
+         let _ = fs::remove_dir_all(root);
+     }
+ 
++    #[test]
++    fn managed_goose_pin_names_the_immutable_patched_release() {
++        assert_eq!(
++            PINNED_GOOSE_VERSION,
++            "1.45.0+gameengine.ge-midturn-2"
++        );
++        assert_eq!(
++            PINNED_GOOSE_WINDOWS_ASSET,
++            "gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip"
++        );
++        assert_eq!(
++            PINNED_GOOSE_WINDOWS_SHA256,
++            "b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a"
++        );
++        assert_eq!(
++            PINNED_GOOSE_WINDOWS_URL,
++            "https://github.com/KdGithubIt/GameEngine/releases/download/managed-goose-v1.45.0-ge-midturn-2/gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip"
++        );
++        assert_eq!(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH, "goose.exe");
++    }
++
+     #[test]
+     fn machine_local_goose_override_round_trips_without_environment_variables() {
+         let root = temp_root("goose-override");
+diff --git a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+index a8b920fcb7a941f2281a761ecf2a1bb6797d144a..7161629d78660cac6b864e75b5e56313b0a73290 100644
+--- a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
++++ b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+@@ -311,10 +311,18 @@ tool call is not executed by GameEngine, and Agent Host fails a run (or ends an
+ Ask with an error) instead of leaving the outer session executing or retrying the
+ same oversized prompt.
+ 
+-The managed runtime remains pinned to Goose 1.44.0 for this contract. Upstream
+-context-limit precedence and mid-tool-loop compaction fixes are not assumed to
+-be present until a later explicit dependency update validates ACP compatibility,
+-permission behavior, Windows artifacts/digests, and the Managed Local adapter.
++The managed runtime is pinned to the immutable GameEngine-managed distribution
++`1.45.0+gameengine.ge-midturn-2`
++(`managed-goose-v1.45.0-ge-midturn-2`). It is built from upstream Goose
++v1.45.0 at exact revision `4dc0420f5704a92806c6628c8f0a3497d7a88759`;
++the Windows archive SHA-256 is
++`b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a`.
++The managed series carries structured context-overflow classification,
++output-limit metadata required by the OpenAI-compatible Managed Local path,
++bounded recovery from truncated compaction summaries, stream metadata
++preservation, and same-turn compaction after completed tool results. It does
++not import Goose desktop UI or provider-limit precedence because GameEngine
++continues to own the authoritative physical context and output budget.
+ 
+ ### Managed Local context telemetry contract
+ 
+@@ -324,26 +332,28 @@ window, the identical value exported as `GOOSE_CONTEXT_LIMIT`,
+ `GOOSE_MAX_TOKENS`, and the resolved `GOOSE_AUTO_COMPACT_THRESHOLD`. The Managed
+ Local Goose adapter explicitly exports that resolved auto-compaction threshold so
+ the diagnostic value is also the value seen by the launched Goose process. The
+-pinned Goose 1.44.0 default is `0.8`.
+-
+-Goose 1.44.0 stable ACP emits `SessionUpdate::UsageUpdate` with the session's
+-current used-token value and the model configuration's effective context limit.
+-GameEngine normalizes those two numeric values as agent-reported context usage;
+-it does not reinterpret them as one model request's prompt-token count. A
+-provider context-overflow failure may additionally be reduced to the numeric
+-`requested_tokens` and `available_context_tokens` explicitly present in the
+-provider error. Raw prompt/error bodies are not retained as context telemetry.
+-
+-Goose 1.44.0 also fills the ACP SDK's optional `PromptResponse.usage`, including
+-input/output totals, but that field is marked unstable by the pinned ACP SDK and
+-is outside this ADR's stable-v1 contract. `input_tokens_total` therefore remains
+-unavailable until a stable ACP surface exposes it. Stable ACP 1.44.0 likewise
+-does not expose an authoritative split of system/instructions, conversation, tool
+-definitions, and tool results, nor a stable compaction-trigger event with
+-before/after token counts. Those fields remain unavailable. GameEngine does not
+-reconstruct Goose's conversation, count characters as tokens, or infer that
+-compaction occurred merely because usage crossed or later fell below the
+-configured threshold.
++v1.45.0-based managed distribution keeps the upstream default of `0.8`; the
++GameEngine patch series does not change that threshold.
++
++The managed v1.45.0 stable ACP emits `SessionUpdate::UsageUpdate` with the
++session's current used-token value and the model configuration's effective
++context limit. GameEngine normalizes those two numeric values as agent-reported
++context usage; it does not reinterpret them as one model request's prompt-token
++count. A provider context-overflow failure may additionally be reduced to the
++numeric `requested_tokens` and `available_context_tokens` explicitly present
++in the provider error. Raw prompt/error bodies are not retained as context
++telemetry.
++
++The managed v1.45.0 ACP also fills the ACP SDK's optional
++`PromptResponse.usage`, including input/output totals, but that field is marked
++unstable by the pinned ACP SDK and is outside this ADR's stable-v1 contract.
++`input_tokens_total` therefore remains unavailable until a stable ACP surface
++exposes it. That stable ACP surface likewise does not expose an authoritative
++split of system/instructions, conversation, tool definitions, and tool results,
++nor a stable compaction-trigger event with before/after token counts. Those
++fields remain unavailable. GameEngine does not reconstruct Goose's conversation,
++count characters as tokens, or infer that compaction occurred merely because
++usage crossed or later fell below the configured threshold.
+ 
+ For tool-result diagnosis, the common ACP transport may transiently measure the
+ serialized byte size of a stable-ACP tool result and retain only that byte count
