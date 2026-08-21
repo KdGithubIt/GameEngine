@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "use crate::acp_agent_runtime::{\n    AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession, AcpCapabilities, AcpProcessRuntime,\n    AcpRuntimeError, AcpRuntimeIdentity, AcpSessionOpenRequest,\n};",
+  "new": "use crate::acp_agent_runtime::{\n    AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession, AcpCapabilities, AcpContextTelemetry,\n    AcpLargestToolResult, AcpNormalizedEvent, AcpProcessRuntime, AcpProviderContextFailure,\n    AcpRuntimeError, AcpRuntimeIdentity, AcpSessionOpenRequest,\n};"
+}
