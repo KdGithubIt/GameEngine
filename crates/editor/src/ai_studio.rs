@@ -1576,6 +1576,48 @@ impl AiStudioPanel {
     }
 
     #[cfg(feature = "visual-validation")]
+    /// Seeds the real composer startup presentation without starting a provider process.
+    pub fn prepare_acp_startup_visual_validation(&mut self) {
+        self.selected_ai_family = SelectedAiFamily::Model;
+        self.model_backend = ModelBackendPreference::ManagedLocal;
+        self.managed_model_id = "visual-managed-model".to_owned();
+        self.conversation_mode = ConversationMode::Ask;
+        self.message_draft.clear();
+        let session_id = self.selected_session.clone();
+        let _ = self.host.append_message(
+            &session_id,
+            ConversationRole::User,
+            "Inspect the current scene and explain the player spawn path.",
+        );
+        let _ = self.host.append_message(
+            &session_id,
+            ConversationRole::Assistant,
+            "The previous answer found the spawn controller and scene entry point.",
+        );
+        let _ = self.host.append_message(
+            &session_id,
+            ConversationRole::System,
+            "Could not start Goose: previous startup failed; retry remains available.",
+        );
+        let _ = self.host.append_message(
+            &session_id,
+            ConversationRole::User,
+            "Try again and check the current project state.",
+        );
+        self.acp_startup = Some(PendingAcpStartup {
+            task: AcpSessionStartupTask::visual_pending(
+                "Starting Managed Local and connecting ACP…",
+            ),
+            continuation: AcpStartupContinuation::Ask {
+                agent_id: GOOSE_LOCAL_ACP_DESCRIPTOR_ID.to_owned(),
+                gameengine_session_id: session_id,
+                prompt: "visual validation startup fixture".to_owned(),
+            },
+        });
+        self.status = Some("Starting Managed Local and connecting ACP…".to_owned());
+    }
+
+    #[cfg(feature = "visual-validation")]
     /// Seeds one session and run so the transcript can be reviewed (ADR 0158).
     ///
     /// An empty studio shows a composer and an empty-state line, which proves
@@ -3806,6 +3848,16 @@ impl AiStudioPanel {
                     || (self.external_question.is_some()
                         && self.external_question_session.as_deref()
                             == Some(self.selected_session.as_str()))
+                    || self.acp_question.as_ref().is_some_and(|question| {
+                        question.gameengine_session_id == self.selected_session
+                    })
+                    || self.acp_startup.as_ref().is_some_and(|pending| {
+                        matches!(
+                            &pending.continuation,
+                            AcpStartupContinuation::Ask { gameengine_session_id, .. }
+                                if gameengine_session_id == &self.selected_session
+                        )
+                    })
                     || self
                         .pending_question_permission
                         .as_ref()
@@ -3947,17 +3999,48 @@ impl AiStudioPanel {
         let run_active = self.run_is_active();
         let commit_blocked = self.send_blocked();
         let can_send = !self.message_draft.trim().is_empty()
+            && self.acp_question.is_none()
             && self.native_question.is_none()
             && self.external_question.is_none()
             && self.pending_question_permission.is_none()
             && commit_blocked.is_none();
         let mut stop_answer_requested = false;
+        let mut stop_acp_answer_requested = false;
+        let acp_startup_ask = self.acp_startup.as_ref().is_some_and(|pending| {
+            matches!(&pending.continuation, AcpStartupContinuation::Ask { .. })
+        });
+        let acp_startup_build = self.acp_startup.as_ref().is_some_and(|pending| {
+            matches!(&pending.continuation, AcpStartupContinuation::Build { .. })
+        });
+        let acp_answering = self.acp_question.is_some();
+        let acp_status = self.status.clone();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(can_send, egui::Button::new("Send"))
                 .clicked()
             {
                 self.submit_message();
+            }
+            if acp_startup_ask {
+                ui.spinner();
+                ui.small(acp_status.as_deref().unwrap_or("Starting…"));
+                if ui.button("Stop answering").clicked() {
+                    stop_acp_answer_requested = true;
+                }
+                return;
+            }
+            if acp_startup_build {
+                ui.spinner();
+                ui.small(acp_status.as_deref().unwrap_or("Starting agent…"));
+                return;
+            }
+            if acp_answering {
+                ui.spinner();
+                ui.small(acp_status.as_deref().unwrap_or("Waiting for agent…"));
+                if ui.button("Stop answering").clicked() {
+                    stop_acp_answer_requested = true;
+                }
+                return;
             }
             if self.native_question.is_some() {
                 ui.spinner();
@@ -4004,8 +4087,31 @@ impl AiStudioPanel {
                 }
             }
         });
+        if stop_acp_answer_requested {
+            self.cancel_acp_answer();
+        }
         if stop_answer_requested {
             self.cancel_external_question();
+        }
+    }
+
+    /// Stops an ACP startup or read-only answer without recording a transcript entry.
+    fn cancel_acp_answer(&mut self) {
+        if self
+            .acp_startup
+            .as_ref()
+            .is_some_and(|pending| matches!(&pending.continuation, AcpStartupContinuation::Ask { .. }))
+            && let Some(pending) = self.acp_startup.take()
+        {
+            pending.task.cancel();
+            self.status = Some("Stopped the ACP answer during startup.".to_owned());
+            return;
+        }
+        if let Some(question) = self.acp_question.take() {
+            self.status = Some(match self.acp.cancel_session(&question.acp_session_id) {
+                Ok(()) => "Stopped the ACP answer.".to_owned(),
+                Err(error) => format!("Could not stop ACP answer cleanly: {error}"),
+            });
         }
     }
 
@@ -4067,6 +4173,12 @@ impl AiStudioPanel {
     /// refuses. The same predicate guards submission itself, so no other path
     /// can answer a turn on an AI the composer is not displaying.
     fn send_blocked(&mut self) -> Option<String> {
+        if self.acp_startup.is_some() {
+            return Some("Agent startup is already in progress.".to_owned());
+        }
+        if self.acp_question.is_some() {
+            return Some("The selected agent is already answering a question.".to_owned());
+        }
         if self.native_run_awaits_user() {
             return None;
         }
@@ -4812,13 +4924,41 @@ impl AiStudioPanel {
         if &descriptor_id != expected_agent_id {
             let _ = started.session.cancel();
             let _ = started.session.close();
-            self.status = Some(format!("ACP startup returned `{descriptor_id}` while `{expected_agent_id}` was requested."));
+            let diagnostic = format!(
+                "ACP startup returned `{descriptor_id}` while `{expected_agent_id}` was requested."
+            );
+            match &continuation {
+                AcpStartupContinuation::Ask { gameengine_session_id, .. } => {
+                    let _ = self.host.append_message(
+                        gameengine_session_id,
+                        ConversationRole::System,
+                        diagnostic.clone(),
+                    );
+                    self.status = Some(diagnostic);
+                }
+                AcpStartupContinuation::Build { run_id, .. } => {
+                    self.fail_run(run_id, diagnostic);
+                }
+            }
             return;
         }
         if let Err(error) = self.acp.replace(started.runtime) {
             let _ = started.session.cancel();
             let _ = started.session.close();
-            self.status = Some(format!("Could not register started ACP runtime: {error}"));
+            let diagnostic = format!("Could not register started ACP runtime: {error}");
+            match &continuation {
+                AcpStartupContinuation::Ask { gameengine_session_id, .. } => {
+                    let _ = self.host.append_message(
+                        gameengine_session_id,
+                        ConversationRole::System,
+                        diagnostic.clone(),
+                    );
+                    self.status = Some(diagnostic);
+                }
+                AcpStartupContinuation::Build { run_id, .. } => {
+                    self.fail_run(run_id, diagnostic);
+                }
+            }
             return;
         }
         self.execution_router.sync_registry(self.acp.registry());
@@ -4848,7 +4988,18 @@ impl AiStudioPanel {
                 };
                 let runtime_identity = match self.acp.runtime_identity(&acp_session_id) {
                     Ok(identity) => identity,
-                    Err(error) => { let _ = self.acp.close_session(&acp_session_id); self.fail_run(&run_id, format!("Could not read negotiated ACP runtime identity: {error}")); return; }
+                    Err(error) => {
+                        let _ = self.acp.close_session(&acp_session_id);
+                        let message = format!("Could not read negotiated ACP runtime identity: {error}");
+                        self.fail_run(&run_id, message.clone());
+                        if self.benchmark_child_active() {
+                            self.write_benchmark_child_failure(
+                                BenchmarkRunFailureKind::Harness,
+                                message,
+                            );
+                        }
+                        return;
+                    }
                 };
                 if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {
                     let _ = self.acp.close_session(&acp_session_id);
@@ -6640,6 +6791,14 @@ impl AiStudioPanel {
     /// §3), so the sequence lives here rather than inside either control.
     fn stop_active_run(&mut self) {
         let run_id = self.active_run_id.clone();
+        if self
+            .acp_startup
+            .as_ref()
+            .is_some_and(|pending| matches!(&pending.continuation, AcpStartupContinuation::Build { .. }))
+            && let Some(pending) = self.acp_startup.take()
+        {
+            pending.task.cancel();
+        }
         if let Some(task) = self.native_question.as_ref() {
             task.interrupt();
         }

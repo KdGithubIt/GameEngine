@@ -71,6 +71,10 @@ pub(super) struct AcpSessionStartupTask {
     result: mpsc::Receiver<Result<AcpSessionStartupResult, String>>,
     progress: mpsc::Receiver<String>,
     cancelled: Arc<AtomicBool>,
+    #[cfg(feature = "visual-validation")]
+    visual_result_hold: Option<mpsc::Sender<Result<AcpSessionStartupResult, String>>>,
+    #[cfg(feature = "visual-validation")]
+    visual_progress_hold: Option<mpsc::Sender<String>>,
 }
 
 impl AcpSessionStartupTask {
@@ -130,7 +134,29 @@ impl AcpSessionStartupTask {
                 }
             })
             .map_err(|error| format!("Could not start ACP startup worker: {error}"))?;
-        Ok(Self { result, progress, cancelled })
+        Ok(Self {
+            result,
+            progress,
+            cancelled,
+            #[cfg(feature = "visual-validation")]
+            visual_result_hold: None,
+            #[cfg(feature = "visual-validation")]
+            visual_progress_hold: None,
+        })
+    }
+
+    #[cfg(feature = "visual-validation")]
+    pub(super) fn visual_pending(progress_text: &str) -> Self {
+        let (visual_result_hold, result) = mpsc::channel();
+        let (visual_progress_hold, progress) = mpsc::channel();
+        let _ = visual_progress_hold.send(progress_text.to_owned());
+        Self {
+            result,
+            progress,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            visual_result_hold: Some(visual_result_hold),
+            visual_progress_hold: Some(visual_progress_hold),
+        }
     }
 
     pub(super) fn poll(&self) -> Option<Result<AcpSessionStartupResult, String>> {
@@ -224,6 +250,25 @@ mod tests {
         }
     }
 
+    struct FailingRuntime {
+        descriptor: AcpAgentDescriptor,
+    }
+
+    impl AcpAgentRuntime for FailingRuntime {
+        fn descriptor(&self) -> &AcpAgentDescriptor {
+            &self.descriptor
+        }
+
+        fn open_session(
+            &mut self,
+            _request: AcpSessionOpenRequest,
+        ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
+            Err(AcpRuntimeError::Protocol(
+                "controlled initialize failure".to_owned(),
+            ))
+        }
+    }
+
     fn descriptor() -> AcpAgentDescriptor {
         AcpAgentDescriptor {
             id: "test.acp".to_owned(),
@@ -269,6 +314,27 @@ mod tests {
         release_tx.send(()).expect("release open");
         let mut started = task.result.recv_timeout(Duration::from_secs(1)).expect("result").expect("open");
         started.session.close().expect("close");
+    }
+
+    #[test]
+    fn session_open_failure_is_reported_without_blocking_the_caller() {
+        let runtime = FailingRuntime {
+            descriptor: descriptor(),
+        };
+        let task = AcpSessionStartupTask::spawn_with(
+            request(),
+            "Connecting ACP…".to_owned(),
+            move || Ok(Box::new(runtime)),
+        )
+        .expect("spawn");
+        let result = task
+            .result
+            .recv_timeout(Duration::from_secs(1))
+            .expect("failure result");
+        assert!(matches!(
+            result,
+            Err(ref error) if error.contains("controlled initialize failure")
+        ));
     }
 
     #[test]

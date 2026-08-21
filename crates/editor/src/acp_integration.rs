@@ -153,6 +153,10 @@ impl AcpIntegration {
         self.bridge.runtime_identity(acp_session_id).cloned()
     }
 
+    pub(crate) fn cancel_session(&mut self, acp_session_id: &str) -> Result<(), AcpBridgeError> {
+        self.bridge.cancel_session(acp_session_id)
+    }
+
     pub(crate) fn close_session(&mut self, acp_session_id: &str) -> Result<(), AcpBridgeError> {
         self.bridge.close_session(acp_session_id)
     }

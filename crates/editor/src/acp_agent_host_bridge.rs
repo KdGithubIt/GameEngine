@@ -681,6 +681,18 @@ impl AcpAgentHostBridge {
         Ok(())
     }
 
+    pub(crate) fn cancel_session(&mut self, acp_id: &str) -> Result<(), AcpBridgeError> {
+        let mut attached = self
+            .sessions
+            .remove(acp_id)
+            .ok_or_else(|| AcpBridgeError::SessionNotFound(acp_id.to_owned()))?;
+        let cancel_result = attached.session.cancel();
+        let close_result = attached.session.close();
+        cancel_result?;
+        close_result?;
+        Ok(())
+    }
+
     pub(crate) fn close_session(&mut self, acp_id: &str) -> Result<(), AcpBridgeError> {
         let mut attached = self
             .sessions

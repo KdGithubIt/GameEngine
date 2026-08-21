@@ -178,6 +178,23 @@ mod tests {
     }
 
     #[test]
+    fn configured_acp_route_is_selectable_before_background_discovery() {
+        let mut router = AiExecutionRouter::default();
+        router
+            .set_acp_route("model:managed_local", "goose.managed-local")
+            .expect("route");
+        let resolution = router
+            .resolve_configured("model:managed_local:model-a", "model:managed_local")
+            .expect("configured route");
+        assert_eq!(
+            resolution.driver,
+            AiExecutionDriver::Acp {
+                agent_id: "goose.managed-local".to_owned(),
+            }
+        );
+    }
+
+    #[test]
     fn explicit_acp_route_requires_registered_descriptor() {
         let mut router = AiExecutionRouter::default();
         router
