@@ -92,7 +92,7 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
  use tempfile::TempDir;
 
  struct MockCompactionProvider {
-@@ -697,3 +697,192 @@ async fn test_context_limit_recovery_compaction() -> Result<()> {
+@@ -697,3 +697,232 @@ async fn test_context_limit_recovery_compaction() -> Result<()> {
 
      Ok(())
  }
