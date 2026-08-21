@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-mcp-permission-terminal-r2-20260821-2102-01",
+  "target_branch": "chatgpt/gameengine-acp-mcp-permission-terminal-r2",
+  "expected_head_sha": "cb53b065f4c8c22982e32a50c3b06dc3151f08ec",
+  "baseline_main_sha": "cb53b065f4c8c22982e32a50c3b06dc3151f08ec",
+  "patch_sha256": "642fb37cb45f6b05e4f557dfbc981d3746dbe7841443bb284e40225e20ddd6f5",
+  "patch_bytes": 44299,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Preserve ACP MCP permission identity and terminal run state",
+  "pr_title": "GameEngine: preserve ACP MCP permission identity",
+  "pr_body": "## Summary\n\n- preserve provider-declared stable GameEngine MCP tool identity across ACP tool-call and permission events\n- normalize claimed GameEngine MCP identities against the canonical Editor MCP inventory and shared read/write classifier while keeping malformed/unknown identities fail-closed\n- distinguish Agent Host policy rejection from explicit user denial\n- make provider turns terminal when completion gates remain unsatisfied so AI Studio cannot remain indefinitely Executing\n- include regression coverage and ADR 0166 contract updates\n- incorporate the prior Windows Validation diagnostics: test-only AcpPermissionOption import and rustfmt-normalized source\n\n## Validation\n\nRequest Windows affected validation for the engine-editor scope. This changes ACP/Agent Host logic and documentation only; no visual-layout change is intended.\n\nSupersedes Draft PR #1111, which was based on an older main baseline.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
