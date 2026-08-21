@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "managed-goose-rustfmt-20260821-1944-01",
+  "target_branch": "chatgpt/gameengine-managed-goose-runtime",
+  "expected_head_sha": "b04f758361e74f571154cfd88625fa4fe091ca48",
+  "baseline_main_sha": "e7435867771854982d1ac64e12a5fa1250434cdf",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json"
+  ],
+  "commit_message": "Format managed Goose runtime implementation",
+  "pr_title": "GameEngine: manage Goose for Managed Local ACP",
+  "pr_body": "## Summary\n\n- provision a pinned, digest-verified Goose Windows runtime inside the existing Managed Local machine state\n- use one Goose resolver for AI Studio and Benchmark Campaign with managed, machine override, environment, PATH, and legacy-home discovery\n- surface install, progress, repair, error, and explicit override controls in Managed Local settings without Legacy Native fallback\n- document the machine-local Goose lifecycle in ADR 0166 and add resolver/provisioning regressions\n\n## Security\n\nThe managed path downloads a pinned GitHub release archive, verifies its fixed SHA-256, stages it before activation, records executable integrity, and never executes a remote installer script. Agent Host, ACP permission, MCP credential, and completion boundaries are unchanged.\n\n## Validation\n\nRequest Windows affected validation and Editor visual validation.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
