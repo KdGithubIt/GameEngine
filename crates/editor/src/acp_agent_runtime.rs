@@ -387,6 +387,14 @@ pub(crate) enum AcpNormalizedEvent {
     TurnFinished {
         stop_reason: String,
     },
+    /// The ACP prompt RPC itself failed after the request was accepted.
+    ///
+    /// This is terminal for the current GameEngine Ask/AgentRun. It is distinct
+    /// from a protocol diagnostic, which can describe malformed or unknown
+    /// updates without proving that the prompt ended.
+    PromptFailed {
+        message: String,
+    },
     ProtocolDiagnostic {
         message: String,
     },
@@ -405,6 +413,7 @@ impl AcpNormalizedEvent {
             | Self::TurnFinished { .. } => AgentEventKind::SemanticProgress,
             Self::ToolCall { .. } => AgentEventKind::ToolAction,
             Self::PermissionRequest(_) => AgentEventKind::PermissionRequested,
+            Self::PromptFailed { .. } => AgentEventKind::Failure,
             Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,
         }
     }

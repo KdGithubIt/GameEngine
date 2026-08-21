@@ -30,8 +30,39 @@ const GOOSE_EXECUTABLE_ENV: &str = "GAMEENGINE_GOOSE_EXECUTABLE";
 const GOOSE_PROVIDER_ID: &str = "custom_gameengine_managed_local";
 const GOOSE_PROVIDER_FILE: &str = "custom_gameengine_managed_local.json";
 const GOOSE_PATH_ROOT_ENV: &str = "GOOSE_PATH_ROOT";
+const GOOSE_CONTEXT_LIMIT_ENV: &str = "GOOSE_CONTEXT_LIMIT";
+const GOOSE_MAX_TOKENS_ENV: &str = "GOOSE_MAX_TOKENS";
+/// Reserve one eighth of the physical context for a single model response.
+///
+/// Goose auto-compacts at 80% by default. A 12.5% response cap therefore leaves
+/// additional headroom for a normal threshold-triggered provider call while
+/// scaling from 1,024 output tokens at the 8,192-token managed floor to 4,096
+/// at the 32,768-token managed ceiling. Long same-turn tool loops remain Goose
+/// state-machine responsibility; if upstream still overruns this contract, the
+/// ACP prompt failure is terminalized rather than retried by GameEngine.
+const GOOSE_OUTPUT_BUDGET_DIVISOR: u32 = 8;
 const GOOSE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 static GOOSE_CONFIG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GooseManagedTokenBudget {
+    context_tokens: u32,
+    max_output_tokens: u32,
+}
+
+impl GooseManagedTokenBudget {
+    fn from_config(config: &ManagedLocalModelConfig) -> Self {
+        Self::from_context_tokens(managed_context_tokens(config))
+    }
+
+    fn from_context_tokens(context_tokens: u32) -> Self {
+        debug_assert!(context_tokens >= GOOSE_OUTPUT_BUDGET_DIVISOR);
+        Self {
+            context_tokens,
+            max_output_tokens: context_tokens / GOOSE_OUTPUT_BUDGET_DIVISOR,
+        }
+    }
+}
 
 /// Identity linking the ACP Goose process to the exact Managed Local runtime/model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,15 +191,18 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
         let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)
             .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;
         validate_managed_lease_identity(&lease, &self.config.managed_model)?;
+        let token_budget = GooseManagedTokenBudget::from_config(&self.config.managed_model);
         let ephemeral =
-            GooseEphemeralConfig::create(&self.config.managed_model, &lease).map_err(|error| {
-                AcpRuntimeError::Transport(format!(
-                    "could not create isolated Goose config: {error}"
-                ))
-            })?;
+            GooseEphemeralConfig::create(&self.config.managed_model, &lease, token_budget).map_err(
+                |error| {
+                    AcpRuntimeError::Transport(format!(
+                        "could not create isolated Goose config: {error}"
+                    ))
+                },
+            )?;
 
         let mut descriptor = self.descriptor.clone();
-        descriptor.environment = goose_environment(&lease, &ephemeral);
+        descriptor.environment = goose_environment(&lease, &ephemeral, token_budget);
         let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(
             descriptor,
             &["goose", "toolCall", "toolName"],
@@ -299,8 +333,9 @@ fn validate_managed_lease_identity(
 fn goose_environment(
     lease: &ManagedLocalEndpointLease,
     ephemeral: &GooseEphemeralConfig,
+    token_budget: GooseManagedTokenBudget,
 ) -> BTreeMap<OsString, OsString> {
-    BTreeMap::from([
+    let mut environment = BTreeMap::from([
         (
             OsString::from("GOOSE_PROVIDER"),
             OsString::from(GOOSE_PROVIDER_ID),
@@ -322,12 +357,29 @@ fn goose_environment(
             OsString::from("GOOSE_PROJECT_TRACKER_ENABLED"),
             OsString::from("false"),
         ),
-    ])
+    ]);
+    environment.extend(goose_token_budget_environment(token_budget));
+    environment
+}
+
+fn goose_token_budget_environment(
+    token_budget: GooseManagedTokenBudget,
+) -> [(OsString, OsString); 2] {
+    [
+        (
+            OsString::from(GOOSE_CONTEXT_LIMIT_ENV),
+            OsString::from(token_budget.context_tokens.to_string()),
+        ),
+        (
+            OsString::from(GOOSE_MAX_TOKENS_ENV),
+            OsString::from(token_budget.max_output_tokens.to_string()),
+        ),
+    ]
 }
 
 fn goose_provider_document(
     lease: &ManagedLocalEndpointLease,
-    config: &ManagedLocalModelConfig,
+    token_budget: GooseManagedTokenBudget,
 ) -> Value {
     json!({
         "name": GOOSE_PROVIDER_ID,
@@ -338,7 +390,7 @@ fn goose_provider_document(
         "base_url": lease.identity().endpoint_url.clone(),
         "models": [{
             "name": lease.identity().model_id.clone(),
-            "context_limit": managed_context_tokens(config) as usize,
+            "context_limit": token_budget.context_tokens as usize,
             "input_token_cost": null,
             "output_token_cost": null,
             "currency": null,
@@ -371,6 +423,7 @@ impl GooseEphemeralConfig {
     fn create(
         config: &ManagedLocalModelConfig,
         lease: &ManagedLocalEndpointLease,
+        token_budget: GooseManagedTokenBudget,
     ) -> std::io::Result<Self> {
         let id = GOOSE_CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let root = config
@@ -388,7 +441,7 @@ impl GooseEphemeralConfig {
         }
         let provider_dir = root.join("config").join("custom_providers");
         fs::create_dir_all(&provider_dir)?;
-        let provider = serde_json::to_vec_pretty(&goose_provider_document(lease, config))
+        let provider = serde_json::to_vec_pretty(&goose_provider_document(lease, token_budget))
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         fs::write(provider_dir.join(GOOSE_PROVIDER_FILE), provider)?;
         Ok(Self { root })
@@ -671,6 +724,40 @@ mod tests {
     fn goose_version_parser_uses_semantic_version_only() {
         assert_eq!(extract_semver("goose 1.9.3"), Some("1.9.3".to_owned()));
         assert_eq!(extract_semver("goose unknown"), None);
+    }
+
+    #[test]
+    fn managed_context_contract_reserves_output_budget_at_the_physical_limit() {
+        let budget = GooseManagedTokenBudget::from_context_tokens(8_192);
+        assert_eq!(budget.context_tokens, 8_192);
+        assert_eq!(budget.max_output_tokens, 1_024);
+
+        let environment = BTreeMap::from(goose_token_budget_environment(budget));
+        assert_eq!(
+            environment.get(&OsString::from(GOOSE_CONTEXT_LIMIT_ENV)),
+            Some(&OsString::from("8192"))
+        );
+        assert_eq!(
+            environment.get(&OsString::from(GOOSE_MAX_TOKENS_ENV)),
+            Some(&OsString::from("1024"))
+        );
+    }
+
+    #[test]
+    fn managed_context_override_is_independent_of_canonical_model_names() {
+        let budget = GooseManagedTokenBudget::from_context_tokens(8_192);
+        let environment = BTreeMap::from(goose_token_budget_environment(budget));
+
+        for canonical_shaped_model in ["gpt-4.1", "deepseek-ai/deepseek-v4-pro"] {
+            let advertised = environment
+                .get(&OsString::from(GOOSE_CONTEXT_LIMIT_ENV))
+                .expect("managed context override");
+            assert_eq!(
+                advertised,
+                &OsString::from("8192"),
+                "{canonical_shaped_model} must not change the managed physical context"
+            );
+        }
     }
 
     fn candidate_fixture(name: &str) -> PathBuf {
