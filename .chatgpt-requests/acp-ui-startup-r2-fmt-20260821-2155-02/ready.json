@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-ui-startup-r2-fmt-20260821-2155-02",
+  "target_branch": "chatgpt/gameengine-acp-ui-startup-nonblocking-r2",
+  "expected_head_sha": "417e01ae109cef9c87df26cf01617bf4ba88d756",
+  "baseline_main_sha": "579e136ad0e45ae65e2a8aeac17419ecac018b3e",
+  "patch_sha256": "fc46cb2ff4f46d9128d4cb0a6468e933ed6091fdcc93d09cc42e27a99ba8d949",
+  "patch_bytes": 3816,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ACP startup formatting and Goose runtime import",
+  "pr_title": "Keep AI Studio responsive during ACP startup",
+  "pr_body": "## Summary\n\n- keep ACP provider discovery, process launch, Managed Local endpoint startup, initialization, and session negotiation off the egui presentation thread\n- apply the exact rustfmt shape reported by Windows Validation\n- restore the Goose runtime type import still required by Benchmark Campaign discovery and Managed Local setup checks without restoring synchronous AI Studio startup\n\nThis follows the core non-blocking ACP startup commit and preserves current ACP MCP permission identity.\n"
+}
