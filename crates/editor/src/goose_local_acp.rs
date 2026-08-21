@@ -5,7 +5,8 @@
 //! retains model/server ownership and Agent Host retains execution authority.
 
 use crate::acp_agent_runtime::{
-    AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession, AcpCapabilities, AcpProcessRuntime,
+    AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession, AcpCapabilities, AcpContextTelemetry,
+    AcpLargestToolResult, AcpNormalizedEvent, AcpProcessRuntime, AcpProviderContextFailure,
     AcpRuntimeError, AcpRuntimeIdentity, AcpSessionOpenRequest,
 };
 use crate::managed_local_runtime::{
@@ -13,7 +14,7 @@ use crate::managed_local_runtime::{
     ManagedLocalModelConfig, ManagedLocalRuntime, managed_context_tokens,
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,8 @@ const GOOSE_PROVIDER_FILE: &str = "custom_gameengine_managed_local.json";
 const GOOSE_PATH_ROOT_ENV: &str = "GOOSE_PATH_ROOT";
 const GOOSE_CONTEXT_LIMIT_ENV: &str = "GOOSE_CONTEXT_LIMIT";
 const GOOSE_MAX_TOKENS_ENV: &str = "GOOSE_MAX_TOKENS";
+const GOOSE_AUTO_COMPACT_THRESHOLD_ENV: &str = "GOOSE_AUTO_COMPACT_THRESHOLD";
+const GOOSE_DEFAULT_AUTO_COMPACT_THRESHOLD: &str = "0.8";
 /// Minimum physical context admitted for Goose ACP Authoring.
 ///
 /// The observed Authoring workload already reached 16,366 input tokens before
@@ -224,19 +227,28 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
                     ))
                 })?;
 
+        let compaction_threshold = goose_compaction_threshold();
         let mut descriptor = self.descriptor.clone();
-        descriptor.environment = goose_environment(&lease, &ephemeral, token_budget);
+        descriptor.environment =
+            goose_environment(&lease, &ephemeral, token_budget, &compaction_threshold);
         let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(
             descriptor,
             &["goose", "toolCall", "toolName"],
         )?;
         match runtime.open_session(request) {
-            Ok(inner) => Ok(Box::new(GooseLocalAcpSession {
-                inner,
-                lease: Some(lease),
-                ephemeral: Some(ephemeral),
-                closed: false,
-            })),
+            Ok(inner) => {
+                let context_telemetry = goose_context_telemetry(token_budget, compaction_threshold);
+                Ok(Box::new(GooseLocalAcpSession {
+                    inner,
+                    lease: Some(lease),
+                    ephemeral: Some(ephemeral),
+                    pending_events: VecDeque::from([AcpNormalizedEvent::ContextTelemetry(
+                        context_telemetry.clone(),
+                    )]),
+                    context_telemetry,
+                    closed: false,
+                }))
+            }
             Err(error) => {
                 drop(ephemeral);
                 drop(lease);
@@ -250,6 +262,8 @@ struct GooseLocalAcpSession {
     inner: Box<dyn AcpAgentSession>,
     lease: Option<ManagedLocalEndpointLease>,
     ephemeral: Option<GooseEphemeralConfig>,
+    pending_events: VecDeque<AcpNormalizedEvent>,
+    context_telemetry: AcpContextTelemetry,
     closed: bool,
 }
 
@@ -294,10 +308,60 @@ impl AcpAgentSession for GooseLocalAcpSession {
         self.inner.send_prompt(prompt)
     }
 
-    fn try_next_event(
-        &mut self,
-    ) -> Result<Option<crate::acp_agent_runtime::AcpNormalizedEvent>, AcpRuntimeError> {
-        self.inner.try_next_event()
+    fn try_next_event(&mut self) -> Result<Option<AcpNormalizedEvent>, AcpRuntimeError> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(Some(event));
+        }
+        let Some(event) = self.inner.try_next_event()? else {
+            return Ok(None);
+        };
+
+        if let AcpNormalizedEvent::Usage {
+            used_tokens,
+            context_limit_tokens,
+        } = &event
+        {
+            self.context_telemetry.context_used_tokens = Some(*used_tokens);
+            self.context_telemetry.effective_context_tokens = Some(*context_limit_tokens);
+            return Ok(Some(AcpNormalizedEvent::ContextTelemetry(
+                self.context_telemetry.clone(),
+            )));
+        }
+
+        if let AcpNormalizedEvent::ToolCall {
+            stable_tool_name: Some(stable_tool_name),
+            result_payload_bytes: Some(payload_bytes),
+            ..
+        } = &event
+        {
+            let becomes_largest = self
+                .context_telemetry
+                .largest_tool_result
+                .as_ref()
+                .is_none_or(|current| *payload_bytes > current.payload_bytes);
+            if becomes_largest {
+                self.context_telemetry.largest_tool_result = Some(AcpLargestToolResult {
+                    stable_tool_name: stable_tool_name.clone(),
+                    payload_bytes: *payload_bytes,
+                });
+                self.pending_events
+                    .push_back(AcpNormalizedEvent::ContextTelemetry(
+                        self.context_telemetry.clone(),
+                    ));
+            }
+        }
+
+        if let AcpNormalizedEvent::PromptFailed { message } = &event
+            && let Some(failure) = parse_goose_context_overflow(message)
+        {
+            self.context_telemetry.provider_context_failure = Some(failure);
+            self.pending_events.push_back(event);
+            return Ok(Some(AcpNormalizedEvent::ContextTelemetry(
+                self.context_telemetry.clone(),
+            )));
+        }
+
+        Ok(Some(event))
     }
 
     fn resolve_permission(
@@ -353,10 +417,56 @@ fn validate_managed_lease_identity(
     Ok(())
 }
 
+fn goose_compaction_threshold() -> String {
+    std::env::var(GOOSE_AUTO_COMPACT_THRESHOLD_ENV)
+        .unwrap_or_else(|_| GOOSE_DEFAULT_AUTO_COMPACT_THRESHOLD.to_owned())
+}
+
+fn goose_context_telemetry(
+    token_budget: GooseManagedTokenBudget,
+    compaction_threshold: String,
+) -> AcpContextTelemetry {
+    AcpContextTelemetry {
+        physical_context_tokens: Some(u64::from(token_budget.context_tokens)),
+        configured_context_tokens: Some(u64::from(token_budget.context_tokens)),
+        effective_context_tokens: None,
+        max_output_tokens: Some(u64::from(token_budget.max_output_tokens)),
+        input_tokens_total: None,
+        context_used_tokens: None,
+        token_breakdown: Default::default(),
+        largest_tool_result: None,
+        compaction_threshold: Some(compaction_threshold),
+        compaction_triggered: None,
+        compaction_before_tokens: None,
+        compaction_after_tokens: None,
+        provider_context_failure: None,
+    }
+}
+
+pub(crate) fn parse_goose_context_overflow(message: &str) -> Option<AcpProviderContextFailure> {
+    fn ascii_u64(value: &str) -> Option<u64> {
+        let value = value.trim();
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        value.parse::<u64>().ok()
+    }
+
+    let (requested_side, available_side) =
+        message.split_once(" tokens) exceeds the available context size (")?;
+    let requested_tokens = ascii_u64(requested_side.rsplit_once("request (")?.1)?;
+    let available_context_tokens = ascii_u64(available_side.split_once(" tokens)")?.0)?;
+    Some(AcpProviderContextFailure {
+        requested_tokens,
+        available_context_tokens,
+    })
+}
+
 fn goose_environment(
     lease: &ManagedLocalEndpointLease,
     ephemeral: &GooseEphemeralConfig,
     token_budget: GooseManagedTokenBudget,
+    compaction_threshold: &str,
 ) -> BTreeMap<OsString, OsString> {
     let mut environment = BTreeMap::from([
         (
@@ -379,6 +489,10 @@ fn goose_environment(
         (
             OsString::from("GOOSE_PROJECT_TRACKER_ENABLED"),
             OsString::from("false"),
+        ),
+        (
+            OsString::from(GOOSE_AUTO_COMPACT_THRESHOLD_ENV),
+            OsString::from(compaction_threshold),
         ),
     ]);
     environment.extend(goose_token_budget_environment(token_budget));
@@ -793,6 +907,35 @@ mod tests {
                 "{canonical_shaped_model} must not change the managed physical context"
             );
         }
+    }
+
+    #[test]
+    fn managed_context_telemetry_records_admitted_config_without_estimating_breakdown() {
+        let budget = goose_token_budget_for_physical_context(32_768)
+            .expect("32K physical context admits Goose ACP Authoring");
+        let telemetry = goose_context_telemetry(budget, "0.8".to_owned());
+        assert_eq!(telemetry.physical_context_tokens, Some(32_768));
+        assert_eq!(telemetry.configured_context_tokens, Some(32_768));
+        assert_eq!(telemetry.max_output_tokens, Some(4_096));
+        assert_eq!(telemetry.effective_context_tokens, None);
+        assert_eq!(telemetry.input_tokens_total, None);
+        assert_eq!(telemetry.token_breakdown.tool_definitions, None);
+        assert_eq!(telemetry.compaction_threshold.as_deref(), Some("0.8"));
+        assert_eq!(telemetry.compaction_triggered, None);
+    }
+
+    #[test]
+    fn context_overflow_parser_keeps_only_provider_reported_numbers() {
+        let failure = parse_goose_context_overflow(
+            "Bad request (400): request (16366 tokens) exceeds the available context size (8192 tokens)",
+        )
+        .expect("context overflow");
+        assert_eq!(failure.requested_tokens, 16_366);
+        assert_eq!(failure.available_context_tokens, 8_192);
+        assert!(
+            parse_goose_context_overflow("prompt body contains 16366 but no context failure")
+                .is_none()
+        );
     }
 
     fn candidate_fixture(name: &str) -> PathBuf {

@@ -500,6 +500,7 @@ impl AcpAgentHostBridge {
                 tool_call_id,
                 title,
                 status,
+                ..
             } => {
                 let success = match status {
                     AcpToolCallStatus::Pending | AcpToolCallStatus::InProgress => None,
@@ -513,6 +514,21 @@ impl AcpAgentHostBridge {
                     success,
                 )?;
             }
+            AcpNormalizedEvent::Usage {
+                used_tokens,
+                context_limit_tokens,
+            } => host.record_event(
+                run_id,
+                AgentEventKind::ProviderOutput,
+                format!(
+                    "ACP usage: context_used={used_tokens}, effective_context={context_limit_tokens}."
+                ),
+            )?,
+            AcpNormalizedEvent::ContextTelemetry(telemetry) => host.record_event(
+                run_id,
+                AgentEventKind::ProviderOutput,
+                telemetry.diagnostic_summary(),
+            )?,
             AcpNormalizedEvent::PermissionRequest(request) => {
                 return self.record_permission(host, acp_id, run_id, request);
             }

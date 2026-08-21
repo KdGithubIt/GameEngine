@@ -112,6 +112,16 @@ itself exposes authoritative telemetry for them. The distinction between
 "measured as zero" and "not measured" is therefore preserved across both the
 legacy native and ACP paths.
 
+Standard ACP session usage is a separate diagnostic surface. An agent-reported
+current context usage and effective context limit may be recorded as
+`ProviderOutput`/benchmark live activity without populating
+`BenchmarkModelTelemetry.prompt_tokens` or `response_tokens`: session context
+occupancy is not the same measurement as one model request/response exchange.
+Likewise, configured Managed Local context budgets, metadata-only tool-result byte
+sizes, and provider-reported context-overflow limits improve diagnosis but do not
+change comparison identity or manufacture model-turn telemetry. Unavailable ACP
+token breakdowns remain unavailable rather than estimated.
+
 ### 4. Both formats are versioned explicitly
 
 `BenchmarkRecord` moves to `schema_version: 3`. Records at version 2 remain
