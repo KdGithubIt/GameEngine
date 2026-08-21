@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/goose_local_acp.rs","old":"        let acp_identity = AcpRuntimeIdentity::stable(\"goose\", Some(version));","new":"        let acp_identity = AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(version));"}
