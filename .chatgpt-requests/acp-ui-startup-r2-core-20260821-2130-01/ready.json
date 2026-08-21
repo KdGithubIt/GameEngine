@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-ui-startup-r2-core-20260821-2130-01",
+  "target_branch": "chatgpt/gameengine-acp-ui-startup-nonblocking-r2",
+  "expected_head_sha": "579e136ad0e45ae65e2a8aeac17419ecac018b3e",
+  "baseline_main_sha": "579e136ad0e45ae65e2a8aeac17419ecac018b3e",
+  "patch_sha256": "16187de4c9bcd97d808569ea6d5c25303556de630d29f4a05164dae1d72cd349",
+  "patch_bytes": 52578,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Run ACP startup outside the Editor presentation thread",
+  "pr_title": "Keep AI Studio responsive during ACP startup",
+  "pr_body": "## Summary\n\n- move ACP provider discovery, process launch, Managed Local endpoint startup, initialization, and session negotiation off the egui presentation thread\n- prepare Agent Host bindings before background startup and attach negotiated sessions only after the worker completes\n- preserve current ACP MCP permission identity and Agent Host authority while keeping benchmark runtime identity checks before measured work\n- cancel background Build startup ownership when the active run is stopped\n\nA follow-up slice adds explicit Ask startup controls, deterministic visual evidence, and the ADR 0166 presentation-thread contract."
+}
