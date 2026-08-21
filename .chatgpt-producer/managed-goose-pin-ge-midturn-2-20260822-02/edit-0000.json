@@ -1,0 +1,6 @@
+{
+  "new": "        let download = self.root.join(\"downloads\").join(PINNED_GOOSE_WINDOWS_ASSET);\n",
+  "old": "        let download = self\n            .root\n            .join(\"downloads\")\n            .join(PINNED_GOOSE_WINDOWS_ASSET);\n",
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs"
+}
