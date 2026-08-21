@@ -1,0 +1,6 @@
++itself exposes authoritative telemetry for them. The distinction between
++"measured as zero" and "not measured" is therefore preserved across both the
++legacy native and ACP paths.
+ 
+ ### 4. Both formats are versioned explicitly
+ 
