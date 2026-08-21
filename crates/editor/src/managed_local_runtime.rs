@@ -69,10 +69,11 @@ const MANAGED_GPU_FIT_TARGET_MIB: u32 = 1024;
 /// times the slot count. Managed local inference is issued sequentially, so extra slots only
 /// multiply KV residency and scatter prompt-prefix reuse across cold slots.
 const MANAGED_SERVER_PARALLEL_SLOTS: u32 = 1;
-/// Smallest context window the managed agent protocol is usable at.
+/// Smallest context window retained by the Managed Local physical launch policy.
 ///
-/// Observed managed-agent prompts reach roughly 6400 tokens and grow as tool results accumulate,
-/// so a smaller window truncates or rejects the prompt regardless of which model is loaded.
+/// This is a backend floor for existing Managed Local consumers, not an Agent Harness guarantee.
+/// Consumers such as Goose ACP may declare a larger admission requirement without increasing the
+/// physical context beyond the model and device resource plan.
 const MANAGED_CONTEXT_FLOOR_TOKENS: u32 = 8_192;
 /// Largest context window managed inference requests, whatever the model declares.
 ///
@@ -93,6 +94,30 @@ const MANAGED_CONTEXT_UNMEASURED_TOKENS: u32 = 12_288;
 const MANAGED_KV_CACHE_MEMORY_PERCENT: u64 = 25;
 /// Context windows are aligned down to this multiple so a launch stays reproducible.
 const MANAGED_CONTEXT_ALIGNMENT_TOKENS: u32 = 512;
+
+/// Minimum physical context required by one Managed Local consumer.
+///
+/// The requirement is an admission predicate only. It never raises the physical context selected
+/// from GGUF metadata and device-memory planning, so a consumer that needs more context fails
+/// closed rather than forcing an unsupported or unsafe `--ctx-size`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagedContextRequirement {
+    minimum_tokens: u32,
+}
+
+impl ManagedContextRequirement {
+    pub(crate) const fn new(minimum_tokens: u32) -> Self {
+        Self { minimum_tokens }
+    }
+
+    pub(crate) const fn minimum_tokens(self) -> u32 {
+        self.minimum_tokens
+    }
+
+    pub(crate) const fn admits(self, physical_context_tokens: u32) -> bool {
+        physical_context_tokens >= self.minimum_tokens
+    }
+}
 /// Allow a released llama-server to finish exiting before another one measures device memory.
 ///
 /// A forced kill closes the loopback socket long before the process frees its device allocations,
@@ -3981,6 +4006,14 @@ mod tests {
             resolve_managed_context_tokens(&capability, Some(12 * 1024 * 1024 * 1024)),
             19_456
         );
+    }
+
+    #[test]
+    fn consumer_context_requirement_rejects_without_expanding_the_physical_plan() {
+        let requirement = ManagedContextRequirement::new(32_768);
+        assert_eq!(requirement.minimum_tokens(), 32_768);
+        assert!(!requirement.admits(19_456));
+        assert!(requirement.admits(32_768));
     }
 
     #[test]

@@ -263,16 +263,42 @@ permission, MCP credential, completion, or persistence authority to Goose.
 
 ### Managed Local Goose context contract
 
-For GameEngine-managed local inference, `managed_context_tokens` is the single
-authoritative physical context value. The same value is used to launch
+For GameEngine-managed local inference, `managed_context_tokens` remains the
+single authoritative physical context value. It is derived from GGUF-declared
+model capability, measured KV-cache bytes per token, available device memory,
+and the Managed Local floor/ceiling. The same physical value is used to launch
 `llama-server --ctx-size`, written into the ephemeral Goose custom-provider
 model definition, and exported to the isolated Goose process as
 `GOOSE_CONTEXT_LIMIT`. Canonical Goose model metadata must not enlarge that
 value for a Managed Local session.
 
-GameEngine also exports `GOOSE_MAX_TOKENS` from the same budget. The response cap
-is one eighth of the managed context, which is 1,024 tokens at the 8,192-token
-managed floor and 4,096 at the 32,768-token ceiling. This cap bounds one provider
+A consumer may additionally declare a minimum physical-context requirement as
+an admission predicate. Such a requirement never raises the physical plan. If
+the model/device plan cannot satisfy it, that consumer fails closed while other
+Managed Local consumers retain their existing context behavior. In particular,
+Legacy Native Harness and ordinary Native Ask do not inherit Goose's requirement.
+
+Goose ACP Authoring requires at least **32,768 physical context tokens**. This is
+a practical minimum for the Agent Harness, not a new Managed Local floor. An
+observed Authoring provider request already reached 16,366 input tokens before
+subsequent model output and additional tool-call/tool-result turns. A 16K window
+therefore cannot hold even that input with response headroom, while 24K leaves
+little safety margin for the continuing tool loop. The existing 32,768-token
+Managed Local ceiling provides the required headroom without inventing a larger
+model capability or KV allocation.
+
+`GooseLocalAcpConfig` owns this Goose-specific admission contract and rechecks it
+before acquiring a Managed Local endpoint lease. Therefore a physical plan such
+as 19,456 tokens is rejected before GameEngine starts `llama-server` for Goose
+ACP, rather than being increased to 32K or allowed to fail later with a provider
+context-overflow response. AI Studio and Benchmark Campaign both use this same
+configuration contract. A Goose benchmark campaign validates every selected
+Managed Local candidate before the campaign is frozen; it does not implement a
+second benchmark-only context rule.
+
+GameEngine also exports `GOOSE_MAX_TOKENS` from the admitted physical budget. The
+response cap remains one eighth of the managed context, which is 4,096 tokens at
+the current 32,768-token Authoring requirement. This cap bounds one provider
 generation, including reasoning tokens when the provider accounts for them in
 the completion budget; it does not move conversation history, summarize tool
 results, or otherwise duplicate Goose's Agent Harness responsibilities.

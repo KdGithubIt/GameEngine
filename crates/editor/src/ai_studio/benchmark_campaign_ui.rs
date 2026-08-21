@@ -1194,8 +1194,15 @@ impl AiStudioPanel {
                             first.representation.model_id
                         )
                     })?;
+                let config = GooseLocalAcpConfig::new(first_config).map_err(|error| {
+                    format!(
+                        "Managed Local model `{}` cannot use Goose ACP Agent Harness: {error}",
+                        first.representation.model_id
+                    )
+                })?;
                 for candidate in &candidates[1..] {
-                    self.managed_local_runtime
+                    let candidate_config = self
+                        .managed_local_runtime
                         .configuration_for(
                             &candidate.representation.model_id,
                             environment,
@@ -1207,9 +1214,13 @@ impl AiStudioPanel {
                                 candidate.representation.model_id
                             )
                         })?;
+                    GooseLocalAcpConfig::new(candidate_config).map_err(|error| {
+                        format!(
+                            "Managed Local model `{}` cannot use Goose ACP Agent Harness: {error}",
+                            candidate.representation.model_id
+                        )
+                    })?;
                 }
-                let config =
-                    GooseLocalAcpConfig::new(first_config).map_err(|error| error.to_string())?;
                 let goose = GooseLocalAcpRuntime::discover(config)
                     .map_err(|error| format!("Goose ACP Agent Harness unavailable: {error}"))?;
                 Ok(Some(
