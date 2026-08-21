@@ -1,0 +1,1114 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 71c88dc6e90a364a6ed8cf87fb5838ab7acf563b..2423f2929c76423fb7b5fbec80d916518b16057d 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -2217,6 +2217,28 @@ mod tests {
+         ));
+     }
+ 
++    #[test]
++    fn acp_runtime_identity_match_is_exact_and_fail_closed() {
++        let expected_identity = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++            "goose",
++            Some("1.2.3".to_owned()),
++        );
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(&expected_identity);
++        assert!(runtime.matches_acp_runtime(&expected_identity));
++        assert!(!runtime.matches_acp_runtime(
++            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++                "goose",
++                Some("1.2.4".to_owned()),
++            )
++        ));
++        assert!(!runtime.matches_acp_runtime(
++            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++                "another-agent",
++                Some("1.2.3".to_owned()),
++            )
++        ));
++    }
++
+     fn measured_identity(model: &str) -> BenchmarkIdentity {
+         BenchmarkIdentity {
+             corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index 5154c48bff15c023f9febe8d7a9df51e4c1a6bbd..fa16e977f659bb63f5d869d05f9b14fb2d32c5ef 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -171,6 +171,28 @@ pub(crate) fn campaign_task_agent_policy(task_id: &str) -> Result<CampaignTaskAg
+     Ok(policy)
+ }
+ 
++/// Checks whether a task can produce honest evidence through an agent-inclusive ACP runtime.
++///
++/// This is shared by campaign freeze and the UI so unsupported tasks are rejected
++/// before execution without duplicating the authority policy.
++pub(crate) fn campaign_task_agent_inclusive_runtime_support(
++    task_id: &str,
++) -> Result<(), String> {
++    if campaign_task_harness(task_id)? == CampaignTaskHarness::NativeReadQuestion {
++        return Err(
++            "agent-inclusive ACP campaigns cannot relabel the Native read-question provenance harness"
++                .to_owned(),
++        );
++    }
++    if task_id == "visual_evaluation_v1" {
++        return Err(
++            "agent-inclusive ACP campaigns cannot run visual_evaluation_v1 until the common ACP session boundary carries host-captured image content"
++                .to_owned(),
++        );
++    }
++    Ok(())
++}
++
+ pub(crate) fn campaign_task_agent_policy_for_runtime(
+     task_id: &str,
+     runtime: Option<&BenchmarkRuntimeIdentity>,
+@@ -180,18 +202,7 @@ pub(crate) fn campaign_task_agent_policy_for_runtime(
+         runtime.map(|runtime| runtime.lane),
+         Some(BenchmarkLane::AgentHarness | BenchmarkLane::CodingAgent)
+     ) {
+-        if campaign_task_harness(task_id)? == CampaignTaskHarness::NativeReadQuestion {
+-            return Err(
+-                "agent-inclusive ACP campaigns cannot relabel the Native read-question provenance harness"
+-                    .to_owned(),
+-            );
+-        }
+-        if task_id == "visual_evaluation_v1" {
+-            return Err(
+-                "agent-inclusive ACP campaigns cannot run visual_evaluation_v1 until the common ACP session boundary carries host-captured image content"
+-                    .to_owned(),
+-            );
+-        }
++        campaign_task_agent_inclusive_runtime_support(task_id)?;
+         policy
+             .requested_capabilities
+             .insert(AgentCapability::ExternalAgentProcess);
+@@ -576,6 +587,72 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn acp_permission_budget_is_derived_from_the_same_requested_capabilities() {
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
++        );
++        let proposal_policy = campaign_task_agent_policy_for_runtime(
++            "code_implementation_v1",
++            Some(&runtime),
++        )
++        .expect("ACP code policy");
++        let budget = campaign_task_tool_budget_for_runtime(
++            "code_implementation_v1",
++            Some(&runtime),
++        )
++        .expect("ACP code budget");
++        let budget_capabilities = budget
++            .permission_budget
++            .iter()
++            .cloned()
++            .collect::<BTreeSet<_>>();
++        let requested_capabilities = proposal_policy
++            .requested_capabilities
++            .iter()
++            .map(|capability| {
++                serde_json::to_value(capability)
++                    .expect("serialize capability")
++                    .as_str()
++                    .expect("capability id")
++                    .to_owned()
++            })
++            .collect::<BTreeSet<_>>();
++        assert_eq!(budget_capabilities, requested_capabilities);
++        assert!(!budget_capabilities.contains("runtime_launch"));
++    }
++
++    #[test]
++    fn acp_validation_repair_preserves_repair_authority_and_work_claim() {
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &AcpRuntimeIdentity::stable("goose", Some("1.0.0".to_owned())),
++        );
++        let policy = campaign_task_agent_policy_for_runtime(
++            "validation_repair_v1",
++            Some(&runtime),
++        )
++        .expect("ACP validation repair policy");
++        assert_eq!(
++            policy.requested_capabilities,
++            BTreeSet::from([
++                AgentCapability::CodeWorkspaceApply,
++                AgentCapability::ExternalAgentProcess,
++            ])
++        );
++        assert_eq!(
++            policy.work_claims,
++            BTreeSet::from([AgentWorkClaim::code_path("game/src/benchmark_target.rs")])
++        );
++        let budget = campaign_task_tool_budget_for_runtime(
++            "validation_repair_v1",
++            Some(&runtime),
++        )
++        .expect("ACP validation repair budget");
++        assert!(budget.repair_budget > 0);
++        assert!(budget.permission_budget.contains(&"code_workspace_apply".to_owned()));
++        assert!(budget.permission_budget.contains(&"external_agent_process".to_owned()));
++    }
++
+     #[test]
+     fn acp_agent_harness_rejects_native_read_and_visual_only_tasks() {
+         let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 81a6c9bfc17e663066ad3728789b75df2d467ed4..d4430d556b340ff45982d75bdb9da709d86660f3 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -7181,16 +7181,24 @@ impl AiStudioPanel {
+             Ok(identity) => identity,
+             Err(error) => {
+                 let _ = self.acp.close_session(&acp_session_id);
+-                self.fail_run(
+-                    run_id,
+-                    format!("Could not read negotiated ACP runtime identity: {error}"),
+-                );
++                let message = format!("Could not read negotiated ACP runtime identity: {error}");
++                self.fail_run(run_id, message.clone());
++                if self.benchmark_child_active() {
++                    self.write_benchmark_child_failure(
++                        BenchmarkRunFailureKind::Harness,
++                        message,
++                    );
++                }
+                 return;
+             }
+         };
+         if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {
+             let _ = self.acp.close_session(&acp_session_id);
+-            self.fail_run(run_id, format!("ACP benchmark runtime mismatch: {error}"));
++            let message = format!("ACP benchmark runtime mismatch: {error}");
++            self.fail_run(run_id, message.clone());
++            if self.benchmark_child_active() {
++                self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, message);
++            }
+             return;
+         }
+         if let Err(error) = self
+diff --git a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+index 7ab393f8013c67b11ce0f3b8aaec297454e26e8f..bf3826e9edcf65ea419d5404bba1112f9361f549 100644
+--- a/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
++++ b/crates/editor/src/ai_studio/benchmark_campaign_ui.rs
+@@ -13,10 +13,11 @@
+ use super::benchmark_child::unix_ms;
+ use super::benchmark_experiment_ui::experiment_directory_name;
+ use super::*;
++use crate::agent_benchmark::{BenchmarkLane, BenchmarkRuntimeIdentity};
+ use crate::agent_benchmark_campaign::{
+     CampaignCandidate, CampaignCandidateSource, CampaignComparisonClass,
+     CampaignExecutionEnvironment, CampaignExecutionProfile, CampaignRepresentation,
+-    DEFAULT_CAMPAIGN_REPETITIONS,
++    DEFAULT_CAMPAIGN_REPETITIONS, campaign_task_agent_inclusive_runtime_support,
+ };
+ use crate::benchmark_campaign::{
+     CampaignBaselineReuse, CampaignEnvironmentProbe, CampaignEvidence, CampaignPlan,
+@@ -26,7 +27,9 @@ use crate::benchmark_experiment::{
+     BenchmarkExperimentResult, BenchmarkRunOutcome, ENGINE_COMMIT_HEAD,
+ };
+ use crate::benchmark_runner::DEFAULT_BENCHMARK_RUN_TIMEOUT;
+-use crate::managed_local_runtime::{ManagedAcquisitionPlan, ManagedModelRegistration};
++use crate::managed_local_runtime::{
++    ManagedAcquisitionPlan, ManagedIntegrityCheck, ManagedModelRegistration,
++};
+ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ use std::fs::File;
+@@ -55,12 +58,56 @@ struct CampaignCheckpoint {
+     run: CampaignRun,
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum CampaignHarnessSelection {
++    GooseAcpAgentHarness,
++    LegacyNativeHarness,
++}
++
++impl Default for CampaignHarnessSelection {
++    fn default() -> Self {
++        Self::LegacyNativeHarness
++    }
++}
++
++impl CampaignHarnessSelection {
++    const ALL: [Self; 2] = [Self::GooseAcpAgentHarness, Self::LegacyNativeHarness];
++
++    const fn label(self) -> &'static str {
++        match self {
++            Self::GooseAcpAgentHarness => "Goose ACP Agent Harness (recommended)",
++            Self::LegacyNativeHarness => "Legacy Native Harness",
++        }
++    }
++
++    const fn is_goose_acp(self) -> bool {
++        matches!(self, Self::GooseAcpAgentHarness)
++    }
++
++    fn recommended_for_environment(environment: CampaignExecutionEnvironment) -> Self {
++        if environment.managed_environment().is_some() {
++            Self::GooseAcpAgentHarness
++        } else {
++            Self::LegacyNativeHarness
++        }
++    }
++
++    fn from_plan(plan: &CampaignPlan) -> Self {
++        if plan.benchmark_runtime().is_some() {
++            Self::GooseAcpAgentHarness
++        } else {
++            Self::LegacyNativeHarness
++        }
++    }
++}
++
+ /// Everything the campaign section needs between frames.
+ pub(super) struct BenchmarkCampaignPanel {
+     campaign_id: String,
+     comparison_class: CampaignComparisonClass,
+     execution_profile: CampaignExecutionProfile,
+     execution_environment: CampaignExecutionEnvironment,
++    harness_selection: CampaignHarnessSelection,
+     quality: QualityPreference,
+     selected_models: BTreeSet<String>,
+     selected_tasks: BTreeSet<String>,
+@@ -83,6 +130,9 @@ impl Default for BenchmarkCampaignPanel {
+             comparison_class: CampaignComparisonClass::ModelComparison,
+             execution_profile: CampaignExecutionProfile::Warm,
+             execution_environment: CampaignExecutionEnvironment::CompatibleBackend,
++            harness_selection: CampaignHarnessSelection::recommended_for_environment(
++                CampaignExecutionEnvironment::CompatibleBackend,
++            ),
+             quality: QualityPreference::Balanced,
+             selected_models: BTreeSet::new(),
+             selected_tasks: BENCHMARK_TASKS
+@@ -104,6 +154,38 @@ impl Default for BenchmarkCampaignPanel {
+ }
+ 
+ impl BenchmarkCampaignPanel {
++    fn set_execution_environment(&mut self, environment: CampaignExecutionEnvironment) {
++        let was_managed = self.execution_environment.managed_environment().is_some();
++        let is_managed = environment.managed_environment().is_some();
++        self.execution_environment = environment;
++        if was_managed != is_managed {
++            self.set_harness_selection(CampaignHarnessSelection::recommended_for_environment(
++                environment,
++            ));
++        }
++    }
++
++    fn set_harness_selection(&mut self, selection: CampaignHarnessSelection) {
++        self.harness_selection = selection;
++        if !selection.is_goose_acp() {
++            return;
++        }
++        let before = self.selected_tasks.len();
++        self.selected_tasks
++            .retain(|task_id| campaign_task_agent_inclusive_runtime_support(task_id).is_ok());
++        if self.selected_tasks.len() != before {
++            self.message = Some(
++                "Goose ACP Agent Harness does not currently support Read question or Visual evaluation benchmark evidence, so those tasks were removed before freeze."
++                    .to_owned(),
++            );
++        }
++    }
++
++    fn uses_goose_acp(&self) -> bool {
++        self.execution_environment.managed_environment().is_some()
++            && self.harness_selection.is_goose_acp()
++    }
++
+     pub(super) fn load_checkpoint(root: &Path) -> Self {
+         let path = campaign_checkpoint_path(root);
+         let Ok(bytes) = fs::read(path) else {
+@@ -150,6 +232,7 @@ impl BenchmarkCampaignPanel {
+             comparison_class: checkpoint.plan.comparison_class,
+             execution_profile: checkpoint.plan.execution_profile,
+             execution_environment: checkpoint.plan.execution_environment,
++            harness_selection: CampaignHarnessSelection::from_plan(&checkpoint.plan),
+             quality: checkpoint.plan.quality,
+             selected_models,
+             selected_tasks,
+@@ -174,6 +257,10 @@ impl AiStudioPanel {
+     #[cfg(feature = "visual-validation")]
+     pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {
+         self.benchmark_campaign.execution_environment = CampaignExecutionEnvironment::WindowsNative;
++        self.benchmark_campaign.harness_selection = CampaignHarnessSelection::GooseAcpAgentHarness;
++        self.benchmark_campaign
++            .selected_tasks
++            .retain(|task_id| campaign_task_agent_inclusive_runtime_support(task_id).is_ok());
+         self.benchmark_campaign.selected_models.clear();
+         self.benchmark_campaign
+             .selected_models
+@@ -275,10 +362,38 @@ impl AiStudioPanel {
+                     )
+                     .clicked()
+                 {
+-                    self.benchmark_campaign.execution_environment = environment;
++                    self.benchmark_campaign.set_execution_environment(environment);
++                }
++            }
++        });
++        let managed = self
++            .benchmark_campaign
++            .execution_environment
++            .managed_environment()
++            .is_some();
++        ui.horizontal_wrapped(|ui| {
++            ui.label("Runtime / Harness");
++            for harness in CampaignHarnessSelection::ALL {
++                let selected = self.benchmark_campaign.harness_selection == harness;
++                let enabled = !frozen
++                    && (managed || harness == CampaignHarnessSelection::LegacyNativeHarness);
++                if ui
++                    .add_enabled(enabled, egui::Button::selectable(selected, harness.label()))
++                    .clicked()
++                {
++                    self.benchmark_campaign.set_harness_selection(harness);
+                 }
+             }
+         });
++        if managed && self.benchmark_campaign.harness_selection.is_goose_acp() {
++            ui.small(
++                "Goose ACP Agent Harness is the recommended Managed Local path. Its runtime identity is discovered and frozen before the campaign can start; failures never fall back to Legacy Native.",
++            );
++        } else if !managed {
++            ui.small(
++                "Compatible backend campaigns use the Legacy Native Harness. Goose ACP Agent Harness becomes selectable with a Managed Local execution environment.",
++            );
++        }
+         if self.benchmark_campaign.comparison_class
+             == CampaignComparisonClass::RuntimeCharacterization
+         {
+@@ -393,10 +508,17 @@ impl AiStudioPanel {
+     fn show_campaign_tasks(&mut self, ui: &mut egui::Ui) {
+         let frozen = self.benchmark_campaign.plan.is_some();
+         ui.strong("Tasks");
++        let goose_acp = self.benchmark_campaign.uses_goose_acp();
+         for task in BENCHMARK_TASKS.iter() {
++            let unsupported = goose_acp
++                .then(|| campaign_task_agent_inclusive_runtime_support(task.id).err())
++                .flatten();
+             let mut selected = self.benchmark_campaign.selected_tasks.contains(task.id);
+             if ui
+-                .add_enabled(!frozen, egui::Checkbox::new(&mut selected, task.label))
++                .add_enabled(
++                    !frozen && unsupported.is_none(),
++                    egui::Checkbox::new(&mut selected, task.label),
++                )
+                 .changed()
+             {
+                 if selected {
+@@ -407,6 +529,9 @@ impl AiStudioPanel {
+                     self.benchmark_campaign.selected_tasks.remove(task.id);
+                 }
+             }
++            if let Some(reason) = unsupported {
++                ui.small(format!("{} unavailable with Goose ACP: {reason}", task.label));
++            }
+         }
+         ui.horizontal_wrapped(|ui| {
+             ui.label("Repetitions");
+@@ -493,13 +618,27 @@ impl AiStudioPanel {
+         });
+         if let Some(plan) = self.benchmark_campaign.plan.as_ref() {
+             let runtime = plan.runtime_identity();
++            let (lane, harness, agent_runtime) =
++                frozen_harness_identity(plan.benchmark_runtime());
++            let models = plan
++                .candidates
++                .iter()
++                .map(|candidate| candidate.representation.model_id.as_str())
++                .collect::<Vec<_>>()
++                .join(", ");
+             ui.small(format!(
+-                "Frozen plan {} · {} scheduled runs · schedule {} · quality {} · timeout {}s · runtime {} {}",
++                "Frozen plan {} · {} scheduled runs · schedule {} · quality {} · timeout {}s",
+                 plan.plan_digest(),
+                 plan.schedule().len(),
+                 plan.schedule_version,
+                 plan.quality.label(),
+                 plan.run_timeout_seconds,
++            ));
++            ui.small(format!(
++                "Lane: {lane} · Harness: {harness} · Agent/runtime: {agent_runtime}"
++            ));
++            ui.small(format!(
++                "Model(s): {models} · Execution environment: {} · Backend runtime: {}",
+                 runtime.execution_environment.label(),
+                 runtime.backend_runtime_version
+             ));
+@@ -685,6 +824,63 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn selected_campaign_benchmark_runtime(
++        &self,
++        candidates: &[CampaignCandidate],
++    ) -> Result<Option<BenchmarkRuntimeIdentity>, String> {
++        match self.benchmark_campaign.harness_selection {
++            CampaignHarnessSelection::LegacyNativeHarness => Ok(None),
++            CampaignHarnessSelection::GooseAcpAgentHarness => {
++                let environment = self
++                    .benchmark_campaign
++                    .execution_environment
++                    .managed_environment()
++                    .ok_or_else(|| {
++                        "Goose ACP Agent Harness requires a Managed Local execution environment; select Legacy Native for compatible-backend campaigns"
++                            .to_owned()
++                    })?;
++                let first = candidates.first().ok_or_else(|| {
++                    "Goose ACP Agent Harness requires at least one exact Managed Local model candidate"
++                        .to_owned()
++                })?;
++                let first_config = self
++                    .managed_local_runtime
++                    .configuration_for(
++                        &first.representation.model_id,
++                        environment,
++                        ManagedIntegrityCheck::Skipped,
++                    )
++                    .map_err(|error| {
++                        format!(
++                            "Managed Local model `{}` is unavailable for Goose ACP: {error}",
++                            first.representation.model_id
++                        )
++                    })?;
++                for candidate in &candidates[1..] {
++                    self.managed_local_runtime
++                        .configuration_for(
++                            &candidate.representation.model_id,
++                            environment,
++                            ManagedIntegrityCheck::Skipped,
++                        )
++                        .map_err(|error| {
++                            format!(
++                                "Managed Local model `{}` is unavailable for Goose ACP: {error}",
++                                candidate.representation.model_id
++                            )
++                        })?;
++                }
++                let config = GooseLocalAcpConfig::new(first_config)
++                    .map_err(|error| error.to_string())?;
++                let goose = GooseLocalAcpRuntime::discover(config)
++                    .map_err(|error| format!("Goose ACP Agent Harness unavailable: {error}"))?;
++                Ok(Some(BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++                    &goose.runtime_identity().acp,
++                )))
++            }
++        }
++    }
++
+     fn build_campaign_policy(&self) -> Result<CampaignPolicy, String> {
+         if ENGINE_COMMIT_HEAD.is_empty() {
+             return Err("this Editor build carries no exact GameEngine commit identity".to_owned());
+@@ -781,6 +977,7 @@ impl AiStudioPanel {
+             }
+             (backend_runtime_version, candidates)
+         };
++        let benchmark_runtime = self.selected_campaign_benchmark_runtime(&candidates)?;
+         Ok(CampaignPolicy {
+             campaign_id: self.benchmark_campaign.campaign_id.trim().to_owned(),
+             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
+@@ -797,6 +994,7 @@ impl AiStudioPanel {
+                 .filter(|task| self.benchmark_campaign.selected_tasks.contains(task.id))
+                 .map(|task| task.id.to_owned())
+                 .collect(),
++            benchmark_runtime,
+             repetitions: self.benchmark_campaign.repetitions,
+             host_seed: self.benchmark_campaign.host_seed,
+         })
+@@ -1225,6 +1423,45 @@ fn managed_model_is_campaign_candidate(model: &ManagedModelRegistration) -> bool
+     model.has_exact_representation_identity()
+ }
+ 
++fn frozen_harness_identity(
++    runtime: Option<&BenchmarkRuntimeIdentity>,
++) -> (String, String, String) {
++    let Some(runtime) = runtime else {
++        return (
++            "Legacy Native".to_owned(),
++            "Legacy Native Harness".to_owned(),
++            "GameEngine Native Agent Runtime".to_owned(),
++        );
++    };
++    let lane = match runtime.lane {
++        BenchmarkLane::RawModel => "Raw Model",
++        BenchmarkLane::AgentHarness => "Agent Harness",
++        BenchmarkLane::CodingAgent => "Coding Agent",
++    }
++    .to_owned();
++    let harness = if runtime.lane == BenchmarkLane::AgentHarness {
++        "Goose ACP Agent Harness".to_owned()
++    } else {
++        runtime.harness.harness_id.clone()
++    };
++    let agent = runtime
++        .agent_runtime
++        .as_ref()
++        .map(|agent| match &agent.runtime_version {
++            TelemetryValue::Measured(version) => {
++                format!("{} {}", agent.runtime_id, version)
++            }
++            TelemetryValue::ConservativeEstimate(version) => {
++                format!("{} {} (estimated)", agent.runtime_id, version)
++            }
++            TelemetryValue::Unavailable => {
++                format!("{} · version unavailable", agent.runtime_id)
++            }
++        })
++        .unwrap_or_else(|| "none".to_owned());
++    (lane, harness, agent)
++}
++
+ /// Reports whether one on-disk run result was produced by this execution.
+ ///
+ /// A frozen plan always resolves to the same experiment directory, so starting
+@@ -1286,6 +1523,33 @@ mod tests {
+         assert!(managed_model_is_campaign_candidate(&exact));
+     }
+ 
++    #[test]
++    fn managed_local_environment_recommends_goose_acp_and_removes_unsupported_tasks() {
++        let mut panel = BenchmarkCampaignPanel::default();
++        assert_eq!(
++            panel.harness_selection,
++            CampaignHarnessSelection::LegacyNativeHarness
++        );
++        panel.set_execution_environment(CampaignExecutionEnvironment::WindowsNative);
++        assert_eq!(
++            panel.harness_selection,
++            CampaignHarnessSelection::GooseAcpAgentHarness
++        );
++        assert!(!panel.selected_tasks.contains("read_question_v1"));
++        assert!(!panel.selected_tasks.contains("visual_evaluation_v1"));
++        assert!(panel.selected_tasks.contains("validation_repair_v1"));
++    }
++
++    #[test]
++    fn explicit_legacy_native_selection_remains_available_for_managed_local() {
++        let mut panel = BenchmarkCampaignPanel::default();
++        panel.set_execution_environment(CampaignExecutionEnvironment::WindowsNative);
++        panel.set_harness_selection(CampaignHarnessSelection::LegacyNativeHarness);
++        assert!(!panel.uses_goose_acp());
++        panel.selected_tasks.insert("read_question_v1".to_owned());
++        assert!(panel.selected_tasks.contains("read_question_v1"));
++    }
++
+     fn campaign_result(finished_unix_ms: u64) -> BenchmarkExperimentResult {
+         BenchmarkExperimentResult {
+             experiment_id: "local-model-campaign-test".to_owned(),
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index 3c5204015c78470f6572eed68788de6cf551a9a7..3e9a434c922394cc7e9f09bc75bc43d652f1c6a0 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -90,8 +90,7 @@ impl AiStudioPanel {
+     pub(super) fn benchmark_child_uses_acp_runtime(&self) -> bool {
+         self.benchmark_child
+             .as_ref()
+-            .and_then(|child| benchmark_runtime_from_spec(&child.spec))
+-            .is_some()
++            .is_some_and(|child| child.spec.uses_acp_runtime())
+     }
+ 
+     pub(super) fn validate_benchmark_acp_runtime_identity(
+@@ -145,11 +144,11 @@ impl AiStudioPanel {
+         let Some(child) = self.benchmark_child.as_ref() else {
+             return false;
+         };
+-        campaign_task_agent_policy_for_runtime(
++        benchmark_task_allows_capability(
+             &child.spec.task_id,
+             benchmark_runtime_from_spec(&child.spec),
++            capability,
+         )
+-        .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
+     }
+ 
+     /// Ends this run because it asked for a capability its campaign never froze.
+@@ -569,9 +568,7 @@ impl AiStudioPanel {
+ fn benchmark_runtime_from_spec(
+     spec: &BenchmarkChildRunSpec,
+ ) -> Option<&BenchmarkRuntimeIdentity> {
+-    spec.execution_identity
+-        .as_ref()
+-        .and_then(|identity| identity.benchmark_runtime.as_ref())
++    spec.benchmark_runtime()
+ }
+ 
+ fn validate_benchmark_runtime_spec(spec: &BenchmarkChildRunSpec) -> Result<(), String> {
+@@ -619,6 +616,15 @@ fn validate_benchmark_runtime_spec(spec: &BenchmarkChildRunSpec) -> Result<(), S
+     Ok(())
+ }
+ 
++fn benchmark_task_allows_capability(
++    task_id: &str,
++    runtime: Option<&BenchmarkRuntimeIdentity>,
++    capability: AgentCapability,
++) -> bool {
++    campaign_task_agent_policy_for_runtime(task_id, runtime)
++        .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))
++}
++
+ fn benchmark_proposal(
+     task_id: &str,
+     runtime: Option<&BenchmarkRuntimeIdentity>,
+@@ -731,6 +737,100 @@ mod tests {
+         }
+     }
+ 
++    fn runtime_validation_spec(
++        task_id: &str,
++        runtime: Option<BenchmarkRuntimeIdentity>,
++    ) -> BenchmarkChildRunSpec {
++        BenchmarkChildRunSpec {
++            schema_version: crate::benchmark_process::BENCHMARK_CHILD_SCHEMA_VERSION,
++            experiment_id: "experiment".to_owned(),
++            engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
++            fixture_version: crate::benchmark_experiment::BENCHMARK_FIXTURE_VERSION.to_owned(),
++            backend_id: MANAGED_BACKEND_ID.to_owned(),
++            managed_execution_environment: Some(ManagedExecutionEnvironment::WindowsNative),
++            endpoint: String::new(),
++            model_id: "gguf:model".to_owned(),
++            task_id: task_id.to_owned(),
++            repetition: 0,
++            ordinal: 0,
++            quality: QualityPreference::Balanced,
++            routing_mode: BenchmarkRoutingMode::SingleModel,
++            result_path: PathBuf::from("result.json"),
++            execution_identity: runtime.map(|benchmark_runtime| {
++                crate::agent_benchmark::BenchmarkExecutionIdentity {
++                    campaign_harness_version: "campaign-harness-v1".to_owned(),
++                    schedule_policy_version: "schedule-v1".to_owned(),
++                    comparison_class: "model_comparison".to_owned(),
++                    execution_profile: "warm".to_owned(),
++                    execution_environment: "windows_native".to_owned(),
++                    fixture_id: "fixture".to_owned(),
++                    fixture_version: crate::benchmark_experiment::BENCHMARK_FIXTURE_VERSION.to_owned(),
++                    fixture_instance_id: "fixture-instance".to_owned(),
++                    sampling_profile: "sampling".to_owned(),
++                    seed_policy: "seed".to_owned(),
++                    benchmark_runtime: Some(benchmark_runtime),
++                }
++            }),
++            candidate_contract: None,
++        }
++    }
++
++    #[test]
++    fn managed_acp_child_accepts_validation_repair_and_rejects_unsupported_evidence() {
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++                GOOSE_ACP_AGENT_NAME,
++                Some("1.0.0".to_owned()),
++            ),
++        );
++        assert!(validate_benchmark_runtime_spec(&runtime_validation_spec(
++            "validation_repair_v1",
++            Some(runtime.clone()),
++        ))
++        .is_ok());
++        for task_id in ["read_question_v1", "visual_evaluation_v1"] {
++            assert!(validate_benchmark_runtime_spec(&runtime_validation_spec(
++                task_id,
++                Some(runtime.clone()),
++            ))
++            .is_err());
++        }
++    }
++
++    #[test]
++    fn explicit_legacy_managed_child_remains_valid_without_acp_identity() {
++        assert!(validate_benchmark_runtime_spec(&runtime_validation_spec(
++            "read_question_v1",
++            None,
++        ))
++        .is_ok());
++    }
++
++    #[test]
++    fn headless_acp_auto_approval_refuses_capabilities_outside_the_frozen_policy() {
++        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++                GOOSE_ACP_AGENT_NAME,
++                Some("1.0.0".to_owned()),
++            ),
++        );
++        assert!(benchmark_task_allows_capability(
++            "code_implementation_v1",
++            Some(&runtime),
++            AgentCapability::ExternalAgentProcess,
++        ));
++        assert!(benchmark_task_allows_capability(
++            "code_implementation_v1",
++            Some(&runtime),
++            AgentCapability::CodeWorkspaceApply,
++        ));
++        assert!(!benchmark_task_allows_capability(
++            "code_implementation_v1",
++            Some(&runtime),
++            AgentCapability::RuntimeLaunch,
++        ));
++    }
++
+     #[test]
+     fn acp_benchmark_proposal_uses_the_frozen_agent_inclusive_authority() {
+         let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+diff --git a/crates/editor/src/ai_studio/execution_routing.rs b/crates/editor/src/ai_studio/execution_routing.rs
+index 16776f83a44ac7099aadf0b835353748e24847c6..37d5ee74286a215f72540772dced4f81e22ed58c 100644
+--- a/crates/editor/src/ai_studio/execution_routing.rs
++++ b/crates/editor/src/ai_studio/execution_routing.rs
+@@ -183,6 +183,22 @@ mod tests {
+         assert!(matches!(error, AiExecutionRoutingError::AcpAgentUnavailable { .. }));
+     }
+ 
++    #[test]
++    fn managed_acp_route_never_falls_back_when_goose_is_unavailable() {
++        let mut router = AiExecutionRouter::default();
++        router
++            .set_acp_route("model:managed_local", "goose.managed-local")
++            .expect("route");
++        router.sync_registry(&DescriptorRegistry { descriptors: Vec::new() });
++        let error = router
++            .resolve(
++                "model:managed_local:model-a",
++                "model:managed_local",
++            )
++            .expect_err("missing Goose must fail closed");
++        assert!(matches!(error, AiExecutionRoutingError::AcpAgentUnavailable { .. }));
++    }
++
+     #[test]
+     fn managed_model_identity_can_share_one_registered_route() {
+         let mut router = AiExecutionRouter::default();
+diff --git a/crates/editor/src/benchmark_campaign.rs b/crates/editor/src/benchmark_campaign.rs
+index 800b37e234209eb12f3311296d109000e1bce022..2271cb651af8f9702e118753ccaf48b90fc17e16 100644
+--- a/crates/editor/src/benchmark_campaign.rs
++++ b/crates/editor/src/benchmark_campaign.rs
+@@ -124,6 +124,11 @@ pub(crate) struct CampaignPolicy {
+     pub(crate) candidates: Vec<CampaignCandidate>,
+     /// ADR 0142 task identifiers to run.
+     pub(crate) task_ids: Vec<String>,
++    /// Explicit benchmark lane/runtime selected before freeze.
++    ///
++    /// `None` is the canonical Legacy Native Harness identity retained for
++    /// schema compatibility; an ACP selection must carry an explicit runtime.
++    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,
+     /// Repetitions per candidate and task.
+     pub(crate) repetitions: u32,
+     /// Host-owned fixture seed. Never exposed to a candidate.
+@@ -195,6 +200,7 @@ impl CampaignPolicy {
+             task_plans.push(CampaignTaskPlan::for_task(task_id, self.host_seed)?);
+         }
+ 
++        let benchmark_runtime = self.benchmark_runtime.clone();
+         let mut plan = CampaignPlan {
+             schema_version: CAMPAIGN_SCHEMA_VERSION,
+             campaign_id: self.campaign_id,
+@@ -217,7 +223,11 @@ impl CampaignPolicy {
+             host_seed: self.host_seed,
+             plan_digest: String::new(),
+         };
+-        plan.plan_digest = plan.compute_digest();
++        if let Some(runtime) = benchmark_runtime {
++            plan = plan.with_benchmark_runtime(runtime)?;
++        } else {
++            plan.plan_digest = plan.compute_digest();
++        }
+         Ok(plan)
+     }
+ }
+@@ -1178,6 +1188,7 @@ mod tests {
+                 .map(|model| installed_candidate(model))
+                 .collect(),
+             task_ids: tasks.iter().map(|task| (*task).to_owned()).collect(),
++            benchmark_runtime: None,
+             repetitions: 2,
+             host_seed: 7,
+         }
+@@ -1187,6 +1198,69 @@ mod tests {
+         policy(models, tasks).freeze().expect("policy must freeze")
+     }
+ 
++    fn goose_acp_runtime() -> BenchmarkRuntimeIdentity {
++        BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++                "goose",
++                Some("1.2.3".to_owned()),
++            ),
++        )
++    }
++
++    #[test]
++    fn managed_local_acp_policy_freezes_runtime_into_plan_and_experiment_identity() {
++        let runtime = goose_acp_runtime();
++        let mut draft = policy(&["model-a"], &["code_implementation_v1"]);
++        draft.execution_environment = CampaignExecutionEnvironment::WindowsNative;
++        draft.backend_runtime_version = "managed-runtime-v1".to_owned();
++        draft.candidates[0].representation.backend_id = MANAGED_BACKEND_ID.to_owned();
++        draft.benchmark_runtime = Some(runtime.clone());
++
++        let plan = draft.freeze().expect("ACP campaign freezes");
++        assert_eq!(plan.benchmark_runtime(), Some(&runtime));
++        let task_plan = plan
++            .task_plan("code_implementation_v1")
++            .expect("task plan");
++        assert!(
++            task_plan
++                .tool_budget
++                .permission_budget
++                .contains(&"external_agent_process".to_owned())
++        );
++
++        let spec = plan
++            .experiment_spec(PathBuf::from("target/benchmark-test"))
++            .expect("experiment spec");
++        let execution = spec
++            .execution_identity_by_task
++            .get("code_implementation_v1")
++            .expect("execution identity");
++        assert_eq!(execution.benchmark_runtime.as_ref(), Some(&runtime));
++    }
++
++    #[test]
++    fn legacy_native_policy_remains_an_explicit_runtime_free_plan() {
++        let plan = frozen(&["model-a"], &["code_implementation_v1"]);
++        assert!(plan.benchmark_runtime().is_none());
++        let task_plan = plan
++            .task_plan("code_implementation_v1")
++            .expect("task plan");
++        assert!(!task_plan
++            .tool_budget
++            .permission_budget
++            .contains(&"external_agent_process".to_owned()));
++    }
++
++    #[test]
++    fn acp_policy_rejects_tasks_without_common_acp_evidence_before_run() {
++        for task_id in ["read_question_v1", "visual_evaluation_v1"] {
++            let mut draft = policy(&["model-a"], &[task_id]);
++            draft.benchmark_runtime = Some(goose_acp_runtime());
++            let error = draft.freeze().expect_err("unsupported ACP task");
++            assert!(error.contains(task_id) || error.contains("Native read-question"));
++        }
++    }
++
+     fn installed(models: &[&str]) -> BTreeSet<String> {
+         models.iter().map(|model| (*model).to_owned()).collect()
+     }
+diff --git a/crates/editor/src/benchmark_process.rs b/crates/editor/src/benchmark_process.rs
+index a4b69219a33d0be8067d54e00f8153e7ace53da3..f865e2733e79d72ba19e3c121c7a29de8ea3b89b 100644
+--- a/crates/editor/src/benchmark_process.rs
++++ b/crates/editor/src/benchmark_process.rs
+@@ -126,6 +126,20 @@ impl BenchmarkChildRunSpec {
+             repetition: self.repetition,
+         }
+     }
++
++    /// Returns the benchmark lane/runtime frozen by the owning campaign.
++    pub(crate) fn benchmark_runtime(
++        &self,
++    ) -> Option<&crate::agent_benchmark::BenchmarkRuntimeIdentity> {
++        self.execution_identity
++            .as_ref()
++            .and_then(|identity| identity.benchmark_runtime.as_ref())
++    }
++
++    /// First-release benchmark runtime identities are ACP agent-harness identities.
++    pub(crate) fn uses_acp_runtime(&self) -> bool {
++        self.benchmark_runtime().is_some()
++    }
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -652,6 +666,55 @@ mod tests {
+         assert_eq!(loaded, spec);
+         assert_eq!(loaded.planned_run().model_id, "model:q4");
+     }
++
++    #[test]
++    fn child_spec_preserves_the_frozen_acp_runtime_identity() {
++        let root = tempfile::tempdir().expect("root");
++        let runtime = crate::agent_benchmark::BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
++            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
++                "goose",
++                Some("1.2.3".to_owned()),
++            ),
++        );
++        let spec = BenchmarkChildRunSpec {
++            schema_version: BENCHMARK_CHILD_SCHEMA_VERSION,
++            experiment_id: "experiment".to_owned(),
++            engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
++            fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
++            backend_id: MANAGED_BACKEND_ID.to_owned(),
++            managed_execution_environment: Some(ManagedExecutionEnvironment::WindowsNative),
++            endpoint: String::new(),
++            model_id: "gguf:model".to_owned(),
++            task_id: "code_implementation_v1".to_owned(),
++            repetition: 0,
++            ordinal: 0,
++            quality: QualityPreference::Balanced,
++            routing_mode: BenchmarkRoutingMode::SingleModel,
++            result_path: root.path().join("result.json"),
++            execution_identity: Some(BenchmarkExecutionIdentity {
++                campaign_harness_version: "campaign-harness-v1".to_owned(),
++                schedule_policy_version: "schedule-v1".to_owned(),
++                comparison_class: "model_comparison".to_owned(),
++                execution_profile: "warm".to_owned(),
++                execution_environment: "windows_native".to_owned(),
++                fixture_id: "fixture".to_owned(),
++                fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
++                fixture_instance_id: "fixture-instance".to_owned(),
++                sampling_profile: "sampling".to_owned(),
++                seed_policy: "seed".to_owned(),
++                benchmark_runtime: Some(runtime.clone()),
++            }),
++            candidate_contract: None,
++        };
++        assert!(spec.uses_acp_runtime());
++        assert_eq!(spec.benchmark_runtime(), Some(&runtime));
++
++        let path = root.path().join("acp-child.json");
++        spec.write(&path).expect("write");
++        let loaded = BenchmarkChildRunSpec::read(&path).expect("read");
++        assert!(loaded.uses_acp_runtime());
++        assert_eq!(loaded.benchmark_runtime(), Some(&runtime));
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+index 6bc5d450647c838be42966bc1968c12f6f782130..e356be79cd9ca3b19618005f1a36d936665b525c 100644
+--- a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
++++ b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+@@ -70,6 +70,10 @@ The explicit runtime identity records harness identity/version, adapter version,
+ 
+ Comparison equivalence is lane-aware. Legacy and `raw_model` evidence may qualify a model-only comparison only when the established non-model dimensions match. `agent_harness` comparison additionally requires the same exactly measured underlying model representation and the same measured ACP, MCP/tool, and permission contracts while allowing the harness/agent implementation to be the candidate dimension. `coding_agent` comparison treats the end-to-end agent implementation as the candidate dimension while requiring the same measured MCP/tool and permission contracts. Agent-inclusive equivalence is never consumed as model-only catalog or routing evidence. Different lanes are explicitly non-equivalent.
+ 
++For Managed Local campaign measurement, ADR 0156 makes the `agent_harness` lane an explicit user-visible harness choice. Goose ACP Agent Harness is the normal/recommended Managed Local choice and freezes a provider-neutral runtime identity before execution. Legacy Native remains available only as an explicit compatibility/comparison selection and retains the historical missing-runtime identity; an ACP-selected run must never silently execute Native. The frozen ACP identity follows the campaign through experiment/child execution and must match the negotiated session identity before a schema-v4 ACP record can be written.
++
++`read_question_v1` and `visual_evaluation_v1` are not currently admissible as common-ACP Agent Harness evidence: the first is defined by the Native provenance harness and the second requires host-captured image content beyond the current common ACP session contract. Rejecting those tasks is preferable to recording Native answers or unobserved images as ACP evidence.
++
+ Model-internal telemetry exposed only below an ACP agent remains truthful: model turns, prompt tokens, and response tokens are `Unavailable` when the adapter cannot observe them. GameEngine MUST NOT infer those values from ACP prompt boundaries, session events, or normalized Agent Host progress. The legacy native AgentRun path keeps its existing recorded-exchange semantics so historical records retain their original meaning.
+ 
+ ## Dependencies and parallel work
+diff --git a/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md b/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
+index 980c23a2424823d61f6f1e65563985ab7536d0c9..7212413c29e1b7efb6c51ccdd0b77eaade8de046 100644
+--- a/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
++++ b/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
+@@ -476,6 +476,11 @@ AI Studio SHOULD provide a benchmark surface that allows the user to:
+ - inspect discovered GGUF files and explicitly choose the representation /
+   quantization used by the campaign;
+ - inspect exact model/quantization/runtime identity;
++- select the runtime/agent harness before freeze, with Goose ACP Agent Harness
++  recommended for Managed Local and Legacy Native available only by explicit
++  compatibility/comparison selection;
++- inspect the frozen lane, harness, agent/runtime, model, and execution
++  environment after freeze;
+ - select full corpus or a task subset;
+ - choose repetition count;
+ - choose cold/warm execution profile where supported;
+@@ -532,16 +537,38 @@ ACP lane. A schema-v2 checkpoint remains resumable only while all of its origina
+ contract dimensions still match and no schema-v3 runtime identity has been
+ attached.
+ 
+-`CampaignPlan::with_benchmark_runtime` derives a new frozen agent-inclusive
+-plan before execution and stamps that runtime identity into the per-task
+-execution identity. Evidence whose top-level benchmark runtime differs from the
+-frozen plan is rejected as an identity mismatch. The existing seven-task ADR
+-0156 campaign cannot be relabelled `raw_model`, because every task executes
+-through an Agent Host or production task harness. Raw Model records must come
+-from a model-only harness; ACP Agent Harness (for example Goose) and Coding Agent
+-runtime identities can be frozen into the existing campaign without changing
+-the seven-task harness mapping. Agent-inclusive campaign evidence is never
+-treated as model-only routing/catalog evidence.
++The campaign launcher exposes **Runtime / Harness** before freeze. Managed
++Local selects **Goose ACP Agent Harness** as the normal/recommended choice when
++the user moves into a managed execution environment; **Legacy Native Harness**
++remains an explicit compatibility/comparison choice. Compatible-backend
++campaigns retain Legacy Native. The selector is identity-bearing, not a display
++preference: a Goose choice discovers the actual local Goose ACP runtime and
++places the provider-neutral `BenchmarkRuntimeIdentity` directly in
++`CampaignPolicy`, so `CampaignPolicy::freeze` atomically derives the runtime-aware
++per-task authority and immutable `CampaignPlan`.
++
++That identity is stamped into the per-task experiment execution identity and
++therefore into every `BenchmarkChildRunSpec`. A Managed Local child with the
++frozen ACP identity must select the Goose ACP route; a child without it is the
++explicit Legacy Native lane. Failure to discover or negotiate the frozen ACP
++runtime, or mismatch between the negotiated and frozen identities, is a failed
++run with no ACP `BenchmarkRecord`; it never falls back to Native. Evidence whose
++top-level benchmark runtime differs from the frozen plan is likewise rejected as
++an identity mismatch.
++
++The existing seven-task ADR 0156 campaign cannot be relabelled `raw_model`,
++because every task executes through an Agent Host or production task harness.
++Raw Model records must come from a model-only harness. The common ACP Agent
++Harness currently cannot provide honest evidence for `read_question_v1` or
++`visual_evaluation_v1`; the Goose selector disables/removes them before freeze
++and runtime-aware freeze rejects them again. `validation_repair_v1` remains on
++the governed failure -> ACP repair -> revalidation path. Agent-inclusive
++campaign evidence is never treated as model-only routing/catalog evidence.
++
++The same runtime-aware task policy derives both the immutable
++`AgentProposal.requested_capabilities` and the headless permission budget. The
++budget therefore cannot auto-approve a capability the proposal did not declare,
++and ACP does not weaken Agent Host's existing authority boundary.
+ 
+ The headless coordinator records a timed-out child as one `Timeout` run failure
+ and continues the remaining schedule. It does not clear the queue. The campaign
+diff --git a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+index 2c76772d57408b3f52fa1b4d89a58afebcfbc23d..e779352320a08b434de9de1d65a37e91ab908524 100644
+--- a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
++++ b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+@@ -162,6 +162,46 @@ arguments, environment placement, and provider diagnostics. They do not own
+ authoring semantics, GameEngine permission policy, work-claim policy,
+ completion gates, or canonical project persistence.
+ 
++### 10. Managed Local Agent Harness benchmarks normally use Goose ACP
++
++The Benchmark Campaign surface distinguishes the model being measured from the
++agent harness that drives it. For a Managed Local campaign, the normal and
++recommended Agent Harness lane is:
++
++```text
++GameEngine -> Benchmark Campaign -> Goose Agent Harness -> ACP -> Managed Local model
++```
++
++The operator may explicitly choose the retained Legacy Native Harness for
++compatibility or comparison evidence. Legacy is not an ACP recovery path. Once
++a campaign selects Goose ACP, failure to discover Goose, failure to negotiate
++ACP, an exact negotiated-runtime identity mismatch, an unavailable selected
++Managed Local runtime/model, or a permission request outside the frozen budget
++must fail closed and must not execute or record a Native run as ACP evidence.
++
++The harness choice is part of campaign identity. Before `CampaignPolicy::freeze`
++returns, a Goose selection is resolved to the existing provider-neutral
++`BenchmarkRuntimeIdentity::gameengine_acp_agent_harness` identity using the
++actually discovered `AcpRuntimeIdentity`. The resulting runtime identity is
++frozen through `CampaignPlan`, experiment execution identity, child run spec,
++actual ACP execution, and terminal `BenchmarkRecord`. Adapter/version fields
++that GameEngine cannot observe remain `Unavailable`; they are not inferred.
++The negotiated session identity must match the frozen identity before measured
++work is admitted.
++
++The runtime-aware campaign policy remains the single source for both
++`AgentProposal.requested_capabilities` and the headless permission budget, so an
++ACP harness does not weaken Agent Host's rule that undeclared capabilities are
++rejected.
++
++`read_question_v1` and `visual_evaluation_v1` are not currently valid common-ACP
++Agent Harness evidence. The former belongs to the Native provenance harness and
++the latter requires host-captured image content that the common ACP boundary
++does not yet carry. Goose ACP campaigns remove/disable them before freeze and
++freeze rejects them again if reached programmatically.
++`validation_repair_v1` remains supported through the existing initial validation
++failure -> ACP repair -> managed revalidation path.
++
+ ## Consequences
+ 
+ - New ACP agents are registry entries rather than central architecture variants.
