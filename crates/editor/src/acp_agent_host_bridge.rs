@@ -1300,12 +1300,9 @@ mod tests {
         registry
             .register(Box::new(PromptFailingRuntime::new()))
             .expect("test runtime");
-        let credentials = AcpEditorMcpCredentials::new(
-            "http://127.0.0.1:1/mcp",
-            "run-token",
-            "read-token",
-        )
-        .expect("credentials");
+        let credentials =
+            AcpEditorMcpCredentials::new("http://127.0.0.1:1/mcp", "run-token", "read-token")
+                .expect("credentials");
         let mut bridge = AcpAgentHostBridge::new(credentials, project).expect("bridge");
         let acp_session_id = bridge
             .open_run_session(

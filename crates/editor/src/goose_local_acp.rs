@@ -193,13 +193,12 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
         validate_managed_lease_identity(&lease, &self.config.managed_model)?;
         let token_budget = GooseManagedTokenBudget::from_config(&self.config.managed_model);
         let ephemeral =
-            GooseEphemeralConfig::create(&self.config.managed_model, &lease, token_budget).map_err(
-                |error| {
+            GooseEphemeralConfig::create(&self.config.managed_model, &lease, token_budget)
+                .map_err(|error| {
                     AcpRuntimeError::Transport(format!(
                         "could not create isolated Goose config: {error}"
                     ))
-                },
-            )?;
+                })?;
 
         let mut descriptor = self.descriptor.clone();
         descriptor.environment = goose_environment(&lease, &ephemeral, token_budget);
