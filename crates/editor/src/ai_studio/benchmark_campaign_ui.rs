@@ -58,16 +58,11 @@ struct CampaignCheckpoint {
     run: CampaignRun,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum CampaignHarnessSelection {
     GooseAcpAgentHarness,
+    #[default]
     LegacyNativeHarness,
-}
-
-impl Default for CampaignHarnessSelection {
-    fn default() -> Self {
-        Self::LegacyNativeHarness
-    }
 }
 
 impl CampaignHarnessSelection {
