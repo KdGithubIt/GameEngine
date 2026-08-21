@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-int-benchmark-schema-20260821-1105-02",
+  "target_branch": "chatgpt/gameengine-acp-integration",
+  "expected_head_sha": "edece16f5fe9c9120c84f963483f06148fbd6078",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "c5c7c16f47addcd3e035ecf4e6f88b646214b455001116a58cbae9498c12cea6",
+  "patch_bytes": 60202,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Integrate ACP benchmark runtime lanes",
+  "pr_title": "GameEngine: integrate ACP external agent runtime",
+  "pr_body": "## Summary\n\n- integrate common ACP transport, AgentHost bridge, Claude/Codex/Goose adapters\n- route first-class AI Studio agent Ask and Build plus normal Managed Local sessions through ACP\n- preserve AgentHost-selected project-root/read-only and isolated-workspace/run-bound MCP authority\n- add benchmark schema v4 Raw Model, Agent Harness, and Coding Agent runtime identities without reinterpreting schema v1-v3 evidence\n- add campaign schema v3 frozen runtime identity and keep agent-inclusive evidence out of model-only routing/catalog recommendations\n- keep ACP-unobservable model-turn/token telemetry explicitly unavailable\n\n## Integration\n\nExplicit ACP benchmark execution wiring, Cargo.lock generation, final Windows Validation, and any required final visual checks remain.\n\n## Validation\n\nDispatcher Windows Validation is required; final integrated-head validation remains authoritative.\n"
+}
