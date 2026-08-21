@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "fn benchmark_proposal(\n    task_id: &str,\n    runtime: Option<&BenchmarkRuntimeIdentity>,\n) -> Result<AgentProposal, String> {\n",
+  "new": "fn benchmark_task_allows_capability(\n    task_id: &str,\n    runtime: Option<&BenchmarkRuntimeIdentity>,\n    capability: AgentCapability,\n) -> bool {\n    campaign_task_agent_policy_for_runtime(task_id, runtime)\n        .is_ok_and(|policy| policy.requested_capabilities.contains(&capability))\n}\n\nfn benchmark_proposal(\n    task_id: &str,\n    runtime: Option<&BenchmarkRuntimeIdentity>,\n) -> Result<AgentProposal, String> {\n"
+}
