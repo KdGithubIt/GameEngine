@@ -104,9 +104,14 @@ jobs:
         shell: pwsh
         run: |
           $series = Get-Content tools/managed-goose/series.json -Raw | ConvertFrom-Json
+          $exportRoot = Join-Path $env:RUNNER_TEMP "managed-goose-canonical-patches"
+          python tools/managed-goose/verify_series.py --export-dir $exportRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "Canonical patch export failed"
+          }
           foreach ($entry in $series.patches) {
-            $patch = Join-Path $env:GITHUB_WORKSPACE $entry.path
-            Write-Host "Checking $($entry.path)"
+            $patch = Join-Path $exportRoot $entry.path
+            Write-Host "Checking canonical bytes for $($entry.path)"
             git -C upstream-goose apply --check --whitespace=error-all $patch
             if ($LASTEXITCODE -ne 0) {
               throw "git apply --check failed for $($entry.path)"
