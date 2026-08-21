@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    if let Some(execution) = record.identity.execution.as_ref() {\n        if execution.benchmark_runtime != record.identity.runtime {\n            return Err(\n                \"campaign benchmark runtime identity must match the record runtime identity\"\n                    .to_owned(),\n            );\n        }\n    }",
+  "new": "    if let Some(execution) = record.identity.execution.as_ref()\n        && execution.benchmark_runtime != record.identity.runtime\n    {\n        return Err(\n            \"campaign benchmark runtime identity must match the record runtime identity\".to_owned(),\n        );\n    }"
+}
