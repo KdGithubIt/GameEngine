@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        let child_label = if run.plan().benchmark_runtime().is_some() {\n            \"Goose ACP / benchmark child\"\n        } else {\n            \"Benchmark child\"\n        };",
+  "new": "        let child_label = if run.plan().benchmark_runtime().is_some() {\n            \"Benchmark child / Goose ACP progress\"\n        } else {\n            \"Benchmark child\"\n        };"
+}
