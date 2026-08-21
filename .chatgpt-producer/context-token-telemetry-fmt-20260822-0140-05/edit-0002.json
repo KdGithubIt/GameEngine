@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/acp_agent_runtime.rs",
+  "old": "            self.compaction_threshold.as_deref().unwrap_or(\"unavailable\"),",
+  "new": "            self.compaction_threshold\n                .as_deref()\n                .unwrap_or(\"unavailable\"),"
+}
