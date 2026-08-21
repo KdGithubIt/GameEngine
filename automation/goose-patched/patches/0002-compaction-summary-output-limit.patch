@@ -1,0 +1,23 @@
+diff --git a/crates/goose/src/context_mgmt/mod.rs b/crates/goose/src/context_mgmt/mod.rs
+--- a/crates/goose/src/context_mgmt/mod.rs
++++ b/crates/goose/src/context_mgmt/mod.rs
+@@ -382,6 +382,25 @@ async fn do_compact(
+         .await
+         {
+             Ok((mut response, mut provider_usage)) => {
++                if response.metadata.output_token_limit_reached {
++                    if attempt < removal_percentages.len() - 1 {
++                        warn!(
++                            "Compaction summary hit the output token limit at {}% tool-response removal; retrying with more removed",
++                            remove_percent
++                        );
++                        continue;
++                    }
++                    warn!(
++                        "Compaction summary still hit the output token limit after removing all tool responses; the retained context will be incomplete"
++                    );
++                }
++
+                 response.role = Role::User;
+ 
+                 // Usage must reflect the raw model output (billable tokens),
