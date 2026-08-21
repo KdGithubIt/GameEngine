@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "request_id": "acp-ui-startup-r2-final-20260821-2232-04",
+  "target_branch": "chatgpt/gameengine-acp-ui-startup-nonblocking-r2",
+  "expected_head_sha": "bb80ebc2d50ecea4a9b6fc7c7fa233d43b06f540",
+  "baseline_main_sha": "579e136ad0e45ae65e2a8aeac17419ecac018b3e",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json"
+  ],
+  "commit_message": "Finish responsive ACP startup controls and validation",
+  "pr_title": "Keep AI Studio responsive during ACP startup",
+  "pr_body": "## Summary\n\n- keep ACP provider discovery, process launch, Managed Local endpoint startup, initialization, and session negotiation off the egui presentation thread\n- show pollable ACP startup progress in the composer and allow Ask startup/answer cancellation without late session attachment\n- prevent deleting the bound session while an ACP Ask is starting or answering\n- box the large Goose startup config identified by Clippy without changing runtime ownership\n- add the ACP startup fixture and document the presentation-thread contract in ADR 0166\n\n## Validation\n\nWindows Validation requested. Visual Validation is deferred for this pass at the user's request."
+}
