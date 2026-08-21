@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "    #[test]\n    fn managed_log_path_matches_execution_environment() {",
+  "new": "    #[test]\n    fn recent_log_lines_keep_only_the_newest_non_empty_entries() {\n        assert_eq!(\n            recent_log_lines(b\"one\\n\\ntwo\\nthree\\n\", 2),\n            vec![\"two\".to_owned(), \"three\".to_owned()]\n        );\n    }\n\n    #[test]\n    fn managed_log_path_matches_execution_environment() {"
+}
