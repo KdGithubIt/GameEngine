@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_integration.rs","old":"use crate::acp_agent_runtime::{\n    AcpAgentRegistry, AcpAgentRuntime, AcpRuntimeError, AcpRuntimeRegistry,\n};","new":"use crate::acp_agent_runtime::{\n    AcpAgentRegistry, AcpAgentRuntime, AcpAgentSession, AcpRuntimeError, AcpRuntimeRegistry,\n    AcpSessionOpenRequest,\n};"}
