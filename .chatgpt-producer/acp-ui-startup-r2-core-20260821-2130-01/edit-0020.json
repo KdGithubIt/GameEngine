@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"    InvalidMcpCredentials,\n    InvalidWorkingDirectory,\n    AgentNotRegistered(String),\n    SessionNotFound(String),","new":"    InvalidMcpCredentials,\n    InvalidWorkingDirectory,\n    SessionNotFound(String),"}
