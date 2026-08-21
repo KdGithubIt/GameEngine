@@ -13,6 +13,7 @@ name = "engine-editor"
 path = "src/main.rs"
 
 [dependencies]
+# ACP wire compatibility is validated against this exact SDK release.
 agent-client-protocol = "=2.0.0"
 dirs = "5"
 eframe = "0.34.3"
