@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            child_lines: vec![\n                \"stderr | goose: ACP session initialized for benchmark run\".to_owned(),\n                \"stderr | goose: tool call project inspection in progress\".to_owned(),\n            ],",
+  "new": "            child_lines: vec![\n                \"stderr | [benchmark.acp] session metadata updated\".to_owned(),\n                \"stderr | [benchmark.acp] tool call is InProgress\".to_owned(),\n            ],"
+}
