@@ -1,0 +1,453 @@
+diff --git a/crates/editor/src/acp_agent_host_bridge.rs b/crates/editor/src/acp_agent_host_bridge.rs
+index f11bf9d19ae4a090b3ace063e26e8e30ada1fe00..32b8d1b2d3c64e1925821d4c4f3159c13f06d277 100644
+--- a/crates/editor/src/acp_agent_host_bridge.rs
++++ b/crates/editor/src/acp_agent_host_bridge.rs
+@@ -681,6 +681,18 @@ impl AcpAgentHostBridge {
+         Ok(())
+     }
+ 
++    pub(crate) fn cancel_session(&mut self, acp_id: &str) -> Result<(), AcpBridgeError> {
++        let mut attached = self
++            .sessions
++            .remove(acp_id)
++            .ok_or_else(|| AcpBridgeError::SessionNotFound(acp_id.to_owned()))?;
++        let cancel_result = attached.session.cancel();
++        let close_result = attached.session.close();
++        cancel_result?;
++        close_result?;
++        Ok(())
++    }
++
+     pub(crate) fn close_session(&mut self, acp_id: &str) -> Result<(), AcpBridgeError> {
+         let mut attached = self
+             .sessions
+diff --git a/crates/editor/src/acp_integration.rs b/crates/editor/src/acp_integration.rs
+index 4b79abdf5a5e2d0fc1a5fda25453865da00518fb..49b13ceefc1e74538160f30c97889251e8138fbf 100644
+--- a/crates/editor/src/acp_integration.rs
++++ b/crates/editor/src/acp_integration.rs
+@@ -153,6 +153,10 @@ impl AcpIntegration {
+         self.bridge.runtime_identity(acp_session_id).cloned()
+     }
+ 
++    pub(crate) fn cancel_session(&mut self, acp_session_id: &str) -> Result<(), AcpBridgeError> {
++        self.bridge.cancel_session(acp_session_id)
++    }
++
+     pub(crate) fn close_session(&mut self, acp_session_id: &str) -> Result<(), AcpBridgeError> {
+         self.bridge.close_session(acp_session_id)
+     }
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 9a036f2e2027f6d905c009145fe889019e7dd396..955690d8f3e6bf73fcda884628ee0832b8ae6519 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -1575,6 +1575,48 @@ impl AiStudioPanel {
+         self.visual_external_provider_evidence = false;
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    /// Seeds the real composer startup presentation without starting a provider process.
++    pub fn prepare_acp_startup_visual_validation(&mut self) {
++        self.selected_ai_family = SelectedAiFamily::Model;
++        self.model_backend = ModelBackendPreference::ManagedLocal;
++        self.managed_model_id = "visual-managed-model".to_owned();
++        self.conversation_mode = ConversationMode::Ask;
++        self.message_draft.clear();
++        let session_id = self.selected_session.clone();
++        let _ = self.host.append_message(
++            &session_id,
++            ConversationRole::User,
++            "Inspect the current scene and explain the player spawn path.",
++        );
++        let _ = self.host.append_message(
++            &session_id,
++            ConversationRole::Assistant,
++            "The previous answer found the spawn controller and scene entry point.",
++        );
++        let _ = self.host.append_message(
++            &session_id,
++            ConversationRole::System,
++            "Could not start Goose: previous startup failed; retry remains available.",
++        );
++        let _ = self.host.append_message(
++            &session_id,
++            ConversationRole::User,
++            "Try again and check the current project state.",
++        );
++        self.acp_startup = Some(PendingAcpStartup {
++            task: AcpSessionStartupTask::visual_pending(
++                "Starting Managed Local and connecting ACP…",
++            ),
++            continuation: AcpStartupContinuation::Ask {
++                agent_id: GOOSE_LOCAL_ACP_DESCRIPTOR_ID.to_owned(),
++                gameengine_session_id: session_id,
++                prompt: "visual validation startup fixture".to_owned(),
++            },
++        });
++        self.status = Some("Starting Managed Local and connecting ACP…".to_owned());
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Seeds one session and run so the transcript can be reviewed (ADR 0158).
+     ///
+@@ -3806,6 +3848,16 @@ impl AiStudioPanel {
+                     || (self.external_question.is_some()
+                         && self.external_question_session.as_deref()
+                             == Some(self.selected_session.as_str()))
++                    || self.acp_question.as_ref().is_some_and(|question| {
++                        question.gameengine_session_id == self.selected_session
++                    })
++                    || self.acp_startup.as_ref().is_some_and(|pending| {
++                        matches!(
++                            &pending.continuation,
++                            AcpStartupContinuation::Ask { gameengine_session_id, .. }
++                                if gameengine_session_id == &self.selected_session
++                        )
++                    })
+                     || self
+                         .pending_question_permission
+                         .as_ref()
+@@ -3947,11 +3999,21 @@ impl AiStudioPanel {
+         let run_active = self.run_is_active();
+         let commit_blocked = self.send_blocked();
+         let can_send = !self.message_draft.trim().is_empty()
++            && self.acp_question.is_none()
+             && self.native_question.is_none()
+             && self.external_question.is_none()
+             && self.pending_question_permission.is_none()
+             && commit_blocked.is_none();
+         let mut stop_answer_requested = false;
++        let mut stop_acp_answer_requested = false;
++        let acp_startup_ask = self.acp_startup.as_ref().is_some_and(|pending| {
++            matches!(&pending.continuation, AcpStartupContinuation::Ask { .. })
++        });
++        let acp_startup_build = self.acp_startup.as_ref().is_some_and(|pending| {
++            matches!(&pending.continuation, AcpStartupContinuation::Build { .. })
++        });
++        let acp_answering = self.acp_question.is_some();
++        let acp_status = self.status.clone();
+         ui.horizontal(|ui| {
+             if ui
+                 .add_enabled(can_send, egui::Button::new("Send"))
+@@ -3959,6 +4021,27 @@ impl AiStudioPanel {
+             {
+                 self.submit_message();
+             }
++            if acp_startup_ask {
++                ui.spinner();
++                ui.small(acp_status.as_deref().unwrap_or("Starting…"));
++                if ui.button("Stop answering").clicked() {
++                    stop_acp_answer_requested = true;
++                }
++                return;
++            }
++            if acp_startup_build {
++                ui.spinner();
++                ui.small(acp_status.as_deref().unwrap_or("Starting agent…"));
++                return;
++            }
++            if acp_answering {
++                ui.spinner();
++                ui.small(acp_status.as_deref().unwrap_or("Waiting for agent…"));
++                if ui.button("Stop answering").clicked() {
++                    stop_acp_answer_requested = true;
++                }
++                return;
++            }
+             if self.native_question.is_some() {
+                 ui.spinner();
+                 ui.small("Reading current GameEngine/project evidence…");
+@@ -4004,11 +4087,34 @@ impl AiStudioPanel {
+                 }
+             }
+         });
++        if stop_acp_answer_requested {
++            self.cancel_acp_answer();
++        }
+         if stop_answer_requested {
+             self.cancel_external_question();
+         }
+     }
+ 
++    /// Stops an ACP startup or read-only answer without recording a transcript entry.
++    fn cancel_acp_answer(&mut self) {
++        if self
++            .acp_startup
++            .as_ref()
++            .is_some_and(|pending| matches!(&pending.continuation, AcpStartupContinuation::Ask { .. }))
++            && let Some(pending) = self.acp_startup.take()
++        {
++            pending.task.cancel();
++            self.status = Some("Stopped the ACP answer during startup.".to_owned());
++            return;
++        }
++        if let Some(question) = self.acp_question.take() {
++            self.status = Some(match self.acp.cancel_session(&question.acp_session_id) {
++                Ok(()) => "Stopped the ACP answer.".to_owned(),
++                Err(error) => format!("Could not stop ACP answer cleanly: {error}"),
++            });
++        }
++    }
++
+     /// Stops a provider-served answer without recording a transcript entry.
+     ///
+     /// The user asked for the answer to stop, so the terminated process is not
+@@ -4067,6 +4173,12 @@ impl AiStudioPanel {
+     /// refuses. The same predicate guards submission itself, so no other path
+     /// can answer a turn on an AI the composer is not displaying.
+     fn send_blocked(&mut self) -> Option<String> {
++        if self.acp_startup.is_some() {
++            return Some("Agent startup is already in progress.".to_owned());
++        }
++        if self.acp_question.is_some() {
++            return Some("The selected agent is already answering a question.".to_owned());
++        }
+         if self.native_run_awaits_user() {
+             return None;
+         }
+@@ -4812,13 +4924,41 @@ impl AiStudioPanel {
+         if &descriptor_id != expected_agent_id {
+             let _ = started.session.cancel();
+             let _ = started.session.close();
+-            self.status = Some(format!("ACP startup returned `{descriptor_id}` while `{expected_agent_id}` was requested."));
++            let diagnostic = format!(
++                "ACP startup returned `{descriptor_id}` while `{expected_agent_id}` was requested."
++            );
++            match &continuation {
++                AcpStartupContinuation::Ask { gameengine_session_id, .. } => {
++                    let _ = self.host.append_message(
++                        gameengine_session_id,
++                        ConversationRole::System,
++                        diagnostic.clone(),
++                    );
++                    self.status = Some(diagnostic);
++                }
++                AcpStartupContinuation::Build { run_id, .. } => {
++                    self.fail_run(run_id, diagnostic);
++                }
++            }
+             return;
+         }
+         if let Err(error) = self.acp.replace(started.runtime) {
+             let _ = started.session.cancel();
+             let _ = started.session.close();
+-            self.status = Some(format!("Could not register started ACP runtime: {error}"));
++            let diagnostic = format!("Could not register started ACP runtime: {error}");
++            match &continuation {
++                AcpStartupContinuation::Ask { gameengine_session_id, .. } => {
++                    let _ = self.host.append_message(
++                        gameengine_session_id,
++                        ConversationRole::System,
++                        diagnostic.clone(),
++                    );
++                    self.status = Some(diagnostic);
++                }
++                AcpStartupContinuation::Build { run_id, .. } => {
++                    self.fail_run(run_id, diagnostic);
++                }
++            }
+             return;
+         }
+         self.execution_router.sync_registry(self.acp.registry());
+@@ -4848,7 +4988,18 @@ impl AiStudioPanel {
+                 };
+                 let runtime_identity = match self.acp.runtime_identity(&acp_session_id) {
+                     Ok(identity) => identity,
+-                    Err(error) => { let _ = self.acp.close_session(&acp_session_id); self.fail_run(&run_id, format!("Could not read negotiated ACP runtime identity: {error}")); return; }
++                    Err(error) => {
++                        let _ = self.acp.close_session(&acp_session_id);
++                        let message = format!("Could not read negotiated ACP runtime identity: {error}");
++                        self.fail_run(&run_id, message.clone());
++                        if self.benchmark_child_active() {
++                            self.write_benchmark_child_failure(
++                                BenchmarkRunFailureKind::Harness,
++                                message,
++                            );
++                        }
++                        return;
++                    }
+                 };
+                 if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {
+                     let _ = self.acp.close_session(&acp_session_id);
+@@ -6640,6 +6791,14 @@ impl AiStudioPanel {
+     /// §3), so the sequence lives here rather than inside either control.
+     fn stop_active_run(&mut self) {
+         let run_id = self.active_run_id.clone();
++        if self
++            .acp_startup
++            .as_ref()
++            .is_some_and(|pending| matches!(&pending.continuation, AcpStartupContinuation::Build { .. }))
++            && let Some(pending) = self.acp_startup.take()
++        {
++            pending.task.cancel();
++        }
+         if let Some(task) = self.native_question.as_ref() {
+             task.interrupt();
+         }
+diff --git a/crates/editor/src/ai_studio/acp_startup.rs b/crates/editor/src/ai_studio/acp_startup.rs
+index f39e1599d5592e455e3a2330ac13e54fe5693c16..21a6da2186277a0699e2c91e88f27fc192e0bf24 100644
+--- a/crates/editor/src/ai_studio/acp_startup.rs
++++ b/crates/editor/src/ai_studio/acp_startup.rs
+@@ -71,6 +71,10 @@ pub(super) struct AcpSessionStartupTask {
+     result: mpsc::Receiver<Result<AcpSessionStartupResult, String>>,
+     progress: mpsc::Receiver<String>,
+     cancelled: Arc<AtomicBool>,
++    #[cfg(feature = "visual-validation")]
++    visual_result_hold: Option<mpsc::Sender<Result<AcpSessionStartupResult, String>>>,
++    #[cfg(feature = "visual-validation")]
++    visual_progress_hold: Option<mpsc::Sender<String>>,
+ }
+ 
+ impl AcpSessionStartupTask {
+@@ -130,7 +134,29 @@ impl AcpSessionStartupTask {
+                 }
+             })
+             .map_err(|error| format!("Could not start ACP startup worker: {error}"))?;
+-        Ok(Self { result, progress, cancelled })
++        Ok(Self {
++            result,
++            progress,
++            cancelled,
++            #[cfg(feature = "visual-validation")]
++            visual_result_hold: None,
++            #[cfg(feature = "visual-validation")]
++            visual_progress_hold: None,
++        })
++    }
++
++    #[cfg(feature = "visual-validation")]
++    pub(super) fn visual_pending(progress_text: &str) -> Self {
++        let (visual_result_hold, result) = mpsc::channel();
++        let (visual_progress_hold, progress) = mpsc::channel();
++        let _ = visual_progress_hold.send(progress_text.to_owned());
++        Self {
++            result,
++            progress,
++            cancelled: Arc::new(AtomicBool::new(false)),
++            visual_result_hold: Some(visual_result_hold),
++            visual_progress_hold: Some(visual_progress_hold),
++        }
+     }
+ 
+     pub(super) fn poll(&self) -> Option<Result<AcpSessionStartupResult, String>> {
+@@ -224,6 +250,25 @@ mod tests {
+         }
+     }
+ 
++    struct FailingRuntime {
++        descriptor: AcpAgentDescriptor,
++    }
++
++    impl AcpAgentRuntime for FailingRuntime {
++        fn descriptor(&self) -> &AcpAgentDescriptor {
++            &self.descriptor
++        }
++
++        fn open_session(
++            &mut self,
++            _request: AcpSessionOpenRequest,
++        ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
++            Err(AcpRuntimeError::Protocol(
++                "controlled initialize failure".to_owned(),
++            ))
++        }
++    }
++
+     fn descriptor() -> AcpAgentDescriptor {
+         AcpAgentDescriptor {
+             id: "test.acp".to_owned(),
+@@ -271,6 +316,27 @@ mod tests {
+         started.session.close().expect("close");
+     }
+ 
++    #[test]
++    fn session_open_failure_is_reported_without_blocking_the_caller() {
++        let runtime = FailingRuntime {
++            descriptor: descriptor(),
++        };
++        let task = AcpSessionStartupTask::spawn_with(
++            request(),
++            "Connecting ACP…".to_owned(),
++            move || Ok(Box::new(runtime)),
++        )
++        .expect("spawn");
++        let result = task
++            .result
++            .recv_timeout(Duration::from_secs(1))
++            .expect("failure result");
++        assert!(matches!(
++            result,
++            Err(ref error) if error.contains("controlled initialize failure")
++        ));
++    }
++
+     #[test]
+     fn cancel_during_open_cleans_up_late_session() {
+         let (entered_tx, entered_rx) = mpsc::channel();
+diff --git a/crates/editor/src/ai_studio/execution_routing.rs b/crates/editor/src/ai_studio/execution_routing.rs
+index 8815d7d344d2f0992c6f4582298ecee4d692063e..3983a7d098fde5cc9c611eb718142d41ffd07b5e 100644
+--- a/crates/editor/src/ai_studio/execution_routing.rs
++++ b/crates/editor/src/ai_studio/execution_routing.rs
+@@ -177,6 +177,23 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn configured_acp_route_is_selectable_before_background_discovery() {
++        let mut router = AiExecutionRouter::default();
++        router
++            .set_acp_route("model:managed_local", "goose.managed-local")
++            .expect("route");
++        let resolution = router
++            .resolve_configured("model:managed_local:model-a", "model:managed_local")
++            .expect("configured route");
++        assert_eq!(
++            resolution.driver,
++            AiExecutionDriver::Acp {
++                agent_id: "goose.managed-local".to_owned(),
++            }
++        );
++    }
++
+     #[test]
+     fn explicit_acp_route_requires_registered_descriptor() {
+         let mut router = AiExecutionRouter::default();
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 76656de1c081ff96a0f9bdbed61dfea63a4555c9..397eb2f36f81c95398a07adacdffba735073bf39 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -109,7 +109,9 @@ impl EditorShell {
+                     None => {
+                         let touches_ai_studio = visual_validation_touches_ai_studio();
+                         if touches_ai_studio {
+-                            if visual_validation_touches_managed_local_runtime() {
++                            if visual_validation_touches_acp_startup() {
++                                ai_studio.prepare_acp_startup_visual_validation();
++                            } else if visual_validation_touches_managed_local_runtime() {
+                                 ai_studio.prepare_managed_local_visual_validation()?;
+                             } else {
+                                 ai_studio.prepare_hosted_backend_visual_validation();
+@@ -600,6 +602,24 @@ fn visual_validation_touches_ai_studio() -> bool {
+         .is_some_and(|output| !output.stdout.is_empty())
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn visual_validation_touches_acp_startup() -> bool {
++    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
++    let base = format!("origin/{base_ref}...HEAD");
++    std::process::Command::new("git")
++        .args([
++            "diff",
++            "--name-only",
++            &base,
++            "--",
++            "crates/editor/src/ai_studio/acp_startup.rs",
++        ])
++        .output()
++        .ok()
++        .filter(|output| output.status.success())
++        .is_some_and(|output| !output.stdout.is_empty())
++}
++
+ #[cfg(feature = "visual-validation")]
+ fn visual_validation_touches_managed_local_runtime() -> bool {
+     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
