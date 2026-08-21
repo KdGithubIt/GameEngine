@@ -4,9 +4,10 @@
 //! for permissions, work claims, canonical authoring, validation and completion.
 
 use crate::acp_agent_runtime::{
-    AcpAgentRegistry, AcpAgentSession, AcpNormalizedEvent, AcpPermissionOptionKind,
-    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpRuntimeError,
-    AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenRequest, AcpToolCallStatus,
+    AcpAgentRegistry, AcpAgentSession, AcpMcpAccessLevel, AcpNormalizedEvent,
+    AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution,
+    AcpPermissionTarget, AcpRuntimeError, AcpRuntimeIdentity, AcpSessionBinding,
+    AcpSessionOpenRequest, AcpToolCallStatus,
 };
 use crate::agent_host::{
     AgentCapability, AgentEventKind, AgentHost, AgentHostError, AgentRunState, AgentWorkClaim,
@@ -91,6 +92,10 @@ pub(crate) enum AcpBridgePoll {
     },
     ValidationReady {
         run_id: String,
+    },
+    TurnFailed {
+        run_id: String,
+        reason: String,
     },
 }
 
@@ -384,21 +389,70 @@ impl AcpAgentHostBridge {
     ) -> Result<AcpBridgePoll, AcpBridgeError> {
         if let AcpNormalizedEvent::PermissionRequest(request) = &event {
             self.check_permission_session(acp_id, request)?;
+            let read_only_binding =
+                self.attached(acp_id)?.session.binding().mcp.access == AcpMcpAccessLevel::ReadOnly;
+            let (outcome, message) = match &request.target {
+                AcpPermissionTarget::GameEngineMcpTool {
+                    stable_name,
+                    mutating: false,
+                } if read_only_binding => {
+                    let Some(option_id) = allow_once_option(request) else {
+                        self.resolve_acp(
+                            host,
+                            acp_id,
+                            AcpPermissionResolution {
+                                request_id: request.request_id.clone(),
+                                outcome: host_rejection_outcome(request),
+                            },
+                        )?;
+                        return Ok(AcpBridgePoll::AskEvent(
+                            AcpNormalizedEvent::ProtocolDiagnostic {
+                                message: format!(
+                                    "ACP host rejected registered GameEngine MCP tool `{stable_name}` because the agent offered no safe allow-once permission option."
+                                ),
+                            },
+                        ));
+                    };
+                    (
+                        AcpPermissionOutcome::SelectedOption(option_id),
+                        format!(
+                            "ACP host allowed registered read-only GameEngine MCP tool `{stable_name}` under the Ask MCP contract."
+                        ),
+                    )
+                }
+                AcpPermissionTarget::GameEngineMcpTool {
+                    stable_name,
+                    mutating: true,
+                } => (
+                    host_rejection_outcome(request),
+                    format!(
+                        "ACP host denied GameEngine MCP tool `{stable_name}` because Ask is read-only; no user decline was recorded."
+                    ),
+                ),
+                AcpPermissionTarget::AgentCapability(capability) => (
+                    host_rejection_outcome(request),
+                    format!(
+                        "ACP host denied `{}` because Ask cannot grant elevated Agent Host capabilities; no user decline was recorded.",
+                        capability.label()
+                    ),
+                ),
+                AcpPermissionTarget::Unclassified
+                | AcpPermissionTarget::GameEngineMcpTool { .. } => (
+                    host_rejection_outcome(request),
+                    "ACP host denied an unclassified permission request; no user decline was recorded."
+                        .to_owned(),
+                ),
+            };
             self.resolve_acp(
                 host,
                 acp_id,
                 AcpPermissionResolution {
                     request_id: request.request_id.clone(),
-                    outcome: AcpPermissionOutcome::Cancelled,
+                    outcome,
                 },
             )?;
             return Ok(AcpBridgePoll::AskEvent(
-                AcpNormalizedEvent::ProtocolDiagnostic {
-                    message: format!(
-                        "ACP permission `{}` denied: Ask is read-only.",
-                        request.request_id
-                    ),
-                },
+                AcpNormalizedEvent::ProtocolDiagnostic { message },
             ));
         }
         Ok(AcpBridgePoll::AskEvent(event))
@@ -460,6 +514,20 @@ impl AcpAgentHostBridge {
                         run_id: run_id.to_owned(),
                     });
                 }
+                if let Some(reason) =
+                    self.turn_failure_reason(host, acp_id, stop_reason.as_str())?
+                {
+                    host.record_event(run_id, AgentEventKind::Failure, reason.clone())?;
+                    host.transition_run(
+                        run_id,
+                        AgentRunState::Failed,
+                        "ACP provider turn ended without satisfying Agent Host completion gates.",
+                    )?;
+                    return Ok(AcpBridgePoll::TurnFailed {
+                        run_id: run_id.to_owned(),
+                        reason,
+                    });
+                }
             }
             AcpNormalizedEvent::ProtocolDiagnostic { message } => host.record_event(
                 run_id,
@@ -482,21 +550,43 @@ impl AcpAgentHostBridge {
         request: AcpPermissionRequest,
     ) -> Result<AcpBridgePoll, AcpBridgeError> {
         self.check_permission_session(acp_id, &request)?;
-        if !host
-            .run(run_id)?
-            .proposal_snapshot
-            .requested_capabilities
-            .contains(&request.required_capability)
-        {
-            self.resolve_cancel(host, acp_id, &request.request_id)?;
-            return Err(AcpBridgeError::UndeclaredCapability(
-                request.required_capability,
-            ));
-        }
-        match host.check_permission(run_id, request.required_capability)? {
-            PermissionCheck::Granted => {
+        match request.target.clone() {
+            AcpPermissionTarget::GameEngineMcpTool {
+                stable_name,
+                mutating,
+            } => {
+                let run_bound_binding = self.attached(acp_id)?.session.binding().mcp.access
+                    == AcpMcpAccessLevel::AgentRunBoundReadWrite;
+                if !run_bound_binding {
+                    self.resolve_acp(
+                        host,
+                        acp_id,
+                        AcpPermissionResolution {
+                            request_id: request.request_id.clone(),
+                            outcome: host_rejection_outcome(&request),
+                        },
+                    )?;
+                    host.record_event(
+                        run_id,
+                        AgentEventKind::PermissionResolved,
+                        format!(
+                            "ACP host denied GameEngine MCP tool `{stable_name}` because the session is not run-bound; no user decline was recorded."
+                        ),
+                    )?;
+                    return Ok(AcpBridgePoll::Recorded {
+                        run_id: run_id.to_owned(),
+                        kind: AgentEventKind::PermissionResolved,
+                    });
+                }
                 let Some(option_id) = allow_once_option(&request) else {
-                    self.resolve_cancel(host, acp_id, &request.request_id)?;
+                    self.resolve_acp(
+                        host,
+                        acp_id,
+                        AcpPermissionResolution {
+                            request_id: request.request_id.clone(),
+                            outcome: host_rejection_outcome(&request),
+                        },
+                    )?;
                     return Err(AcpBridgeError::UnsafePermissionOptions(request.request_id));
                 };
                 self.resolve_acp(
@@ -507,33 +597,121 @@ impl AcpAgentHostBridge {
                         outcome: AcpPermissionOutcome::SelectedOption(option_id),
                     },
                 )?;
+                host.record_event(
+                    run_id,
+                    AgentEventKind::PermissionResolved,
+                    format!(
+                        "ACP host allowed registered GameEngine MCP tool `{stable_name}` under the run-bound {} authoring contract.",
+                        if mutating { "write" } else { "read" }
+                    ),
+                )?;
                 Ok(AcpBridgePoll::Recorded {
                     run_id: run_id.to_owned(),
                     kind: AgentEventKind::PermissionResolved,
                 })
             }
-            PermissionCheck::Denied => {
-                self.resolve_cancel(host, acp_id, &request.request_id)?;
+            AcpPermissionTarget::Unclassified => {
+                self.resolve_acp(
+                    host,
+                    acp_id,
+                    AcpPermissionResolution {
+                        request_id: request.request_id.clone(),
+                        outcome: host_rejection_outcome(&request),
+                    },
+                )?;
+                host.record_event(
+                    run_id,
+                    AgentEventKind::PermissionResolved,
+                    "ACP host denied a permission request whose tool identity/capability could not be safely classified; no user decline was recorded.",
+                )?;
                 Ok(AcpBridgePoll::Recorded {
                     run_id: run_id.to_owned(),
                     kind: AgentEventKind::PermissionResolved,
                 })
             }
-            PermissionCheck::RequiresApproval => {
-                let request_id = request.request_id.clone();
-                let title = request.title.clone();
-                let capability = request.required_capability;
-                let pending = &mut self.attached_mut(acp_id)?.pending_permissions;
-                if pending.contains_key(&request_id) {
-                    return Err(AcpBridgeError::DuplicatePermission(request_id));
+            AcpPermissionTarget::AgentCapability(required_capability) => {
+                if !host
+                    .run(run_id)?
+                    .proposal_snapshot
+                    .requested_capabilities
+                    .contains(&required_capability)
+                {
+                    self.resolve_acp(
+                        host,
+                        acp_id,
+                        AcpPermissionResolution {
+                            request_id: request.request_id.clone(),
+                            outcome: host_rejection_outcome(&request),
+                        },
+                    )?;
+                    return Err(AcpBridgeError::UndeclaredCapability(required_capability));
                 }
-                pending.insert(request_id.clone(), request);
-                Ok(AcpBridgePoll::PermissionRequired {
-                    run_id: run_id.to_owned(),
-                    request_id,
-                    title,
-                    capability,
-                })
+                match host.check_permission(run_id, required_capability)? {
+                    PermissionCheck::Granted => {
+                        let Some(option_id) = allow_once_option(&request) else {
+                            self.resolve_acp(
+                                host,
+                                acp_id,
+                                AcpPermissionResolution {
+                                    request_id: request.request_id.clone(),
+                                    outcome: host_rejection_outcome(&request),
+                                },
+                            )?;
+                            return Err(AcpBridgeError::UnsafePermissionOptions(
+                                request.request_id,
+                            ));
+                        };
+                        self.resolve_acp(
+                            host,
+                            acp_id,
+                            AcpPermissionResolution {
+                                request_id: request.request_id.clone(),
+                                outcome: AcpPermissionOutcome::SelectedOption(option_id),
+                            },
+                        )?;
+                        Ok(AcpBridgePoll::Recorded {
+                            run_id: run_id.to_owned(),
+                            kind: AgentEventKind::PermissionResolved,
+                        })
+                    }
+                    PermissionCheck::Denied => {
+                        self.resolve_acp(
+                            host,
+                            acp_id,
+                            AcpPermissionResolution {
+                                request_id: request.request_id.clone(),
+                                outcome: host_rejection_outcome(&request),
+                            },
+                        )?;
+                        host.record_event(
+                            run_id,
+                            AgentEventKind::PermissionResolved,
+                            format!(
+                                "ACP host denied `{}` by existing Agent Host policy; no user decline was recorded.",
+                                required_capability.label()
+                            ),
+                        )?;
+                        Ok(AcpBridgePoll::Recorded {
+                            run_id: run_id.to_owned(),
+                            kind: AgentEventKind::PermissionResolved,
+                        })
+                    }
+                    PermissionCheck::RequiresApproval => {
+                        let request_id = request.request_id.clone();
+                        let title = request.title.clone();
+                        let pending = &mut self.attached_mut(acp_id)?.pending_permissions;
+                        if pending.contains_key(&request_id) {
+                            return Err(AcpBridgeError::DuplicatePermission(request_id));
+                        }
+                        pending.insert(request_id.clone(), request);
+                        Ok(AcpBridgePoll::PermissionRequired {
+                            run_id: run_id.to_owned(),
+                            request_id,
+                            title,
+                            capability: required_capability,
+                        })
+                    }
+                }
             }
         }
     }
@@ -552,8 +730,14 @@ impl AcpAgentHostBridge {
             .get(request_id)
             .cloned()
             .ok_or_else(|| AcpBridgeError::PendingPermissionNotFound(request_id.to_owned()))?;
+        let AcpPermissionTarget::AgentCapability(required_capability) = &request.target else {
+            return Err(AcpBridgeError::UnsafePermissionOptions(
+                request_id.to_owned(),
+            ));
+        };
+        let required_capability = *required_capability;
         if scope == ApprovalScope::Deny {
-            host.resolve_permission(&run_id, request.required_capability, scope)?;
+            host.resolve_permission(&run_id, required_capability, scope)?;
             self.resolve_cancel(host, acp_id, request_id)?;
         } else {
             let Some(option_id) = allow_once_option(&request) else {
@@ -565,10 +749,8 @@ impl AcpAgentHostBridge {
                     request_id.to_owned(),
                 ));
             };
-            host.resolve_permission(&run_id, request.required_capability, scope)?;
-            if host.check_permission(&run_id, request.required_capability)?
-                != PermissionCheck::Granted
-            {
+            host.resolve_permission(&run_id, required_capability, scope)?;
+            if host.check_permission(&run_id, required_capability)? != PermissionCheck::Granted {
                 return Err(AcpBridgeError::UnsafePermissionOptions(
                     request_id.to_owned(),
                 ));
@@ -671,6 +853,28 @@ impl AcpAgentHostBridge {
             AgentRunState::Executing | AgentRunState::AwaitingUser | AgentRunState::Repairing
         ) && gate_satisfied(run.completion.acceptance_criteria)
             && gate_satisfied(run.completion.authoring_validation))
+    }
+
+    fn turn_failure_reason(
+        &self,
+        host: &AgentHost,
+        acp_id: &str,
+        stop_reason: &str,
+    ) -> Result<Option<String>, AcpBridgeError> {
+        let attached = self.attached(acp_id)?;
+        let Some(run_id) = attached.run_id.as_deref() else {
+            return Ok(None);
+        };
+        let run = host.run(run_id)?;
+        Ok(provider_turn_failure_reason(
+            run.state,
+            stop_reason,
+            !attached.pending_permissions.is_empty(),
+            run.work_claims
+                .contains(&AgentWorkClaim::shared_resource("canonical_authoring")),
+            run.completion.acceptance_criteria,
+            run.completion.authoring_validation,
+        ))
     }
 
     pub(crate) fn begin_managed_validation(
@@ -795,9 +999,150 @@ fn allow_once_option(request: &AcpPermissionRequest) -> Option<String> {
         .find(|option| option.kind == AcpPermissionOptionKind::AllowOnce)
         .map(|option| option.id.clone())
 }
+
+fn reject_once_option(request: &AcpPermissionRequest) -> Option<String> {
+    request
+        .options
+        .iter()
+        .find(|option| option.kind == AcpPermissionOptionKind::RejectOnce)
+        .map(|option| option.id.clone())
+}
+
+fn host_rejection_outcome(request: &AcpPermissionRequest) -> AcpPermissionOutcome {
+    reject_once_option(request)
+        .map(AcpPermissionOutcome::SelectedOption)
+        .unwrap_or(AcpPermissionOutcome::Cancelled)
+}
+
+fn provider_turn_failure_reason(
+    state: AgentRunState,
+    stop_reason: &str,
+    has_pending_permissions: bool,
+    has_canonical_authoring: bool,
+    acceptance_criteria: CompletionStatus,
+    authoring_validation: CompletionStatus,
+) -> Option<String> {
+    if state == AgentRunState::AwaitingUser
+        || !matches!(state, AgentRunState::Executing | AgentRunState::Repairing)
+    {
+        return None;
+    }
+    if stop_reason != "end_turn" {
+        return Some(format!(
+            "ACP agent returned control with `{stop_reason}` before successful host completion."
+        ));
+    }
+    if has_pending_permissions {
+        return Some(
+            "ACP agent returned control while a permission request was still unresolved."
+                .to_owned(),
+        );
+    }
+    if has_canonical_authoring {
+        return Some(
+            "ACP agent returned control while canonical authoring work was still active."
+                .to_owned(),
+        );
+    }
+
+    let mut unsatisfied = Vec::new();
+    if !gate_satisfied(acceptance_criteria) {
+        unsatisfied.push("acceptance_criteria");
+    }
+    if !gate_satisfied(authoring_validation) {
+        unsatisfied.push("authoring_validation");
+    }
+    if unsatisfied.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "ACP agent returned control before required provider completion gates were satisfied: {}.",
+            unsatisfied.join(", ")
+        ))
+    }
+}
+
 fn gate_satisfied(status: CompletionStatus) -> bool {
     matches!(
         status,
         CompletionStatus::Passed | CompletionStatus::NotApplicable
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acp_agent_runtime::AcpPermissionOption;
+
+    fn permission_request(options: Vec<AcpPermissionOption>) -> AcpPermissionRequest {
+        AcpPermissionRequest {
+            request_id: "permission-1".to_owned(),
+            acp_session_id: "acp-1".to_owned(),
+            tool_call_id: "opaque-call-1".to_owned(),
+            title: "asset search".to_owned(),
+            target: AcpPermissionTarget::Unclassified,
+            options,
+        }
+    }
+
+    #[test]
+    fn host_policy_rejection_is_not_explicit_user_cancellation() {
+        let request = permission_request(vec![AcpPermissionOption {
+            id: "reject_once".to_owned(),
+            name: "Reject once".to_owned(),
+            kind: AcpPermissionOptionKind::RejectOnce,
+        }]);
+        assert_eq!(
+            host_rejection_outcome(&request),
+            AcpPermissionOutcome::SelectedOption("reject_once".to_owned())
+        );
+        assert_ne!(
+            host_rejection_outcome(&request),
+            AcpPermissionOutcome::Cancelled
+        );
+    }
+
+    #[test]
+    fn provider_end_turn_with_satisfied_gates_can_validate() {
+        assert_eq!(
+            provider_turn_failure_reason(
+                AgentRunState::Executing,
+                "end_turn",
+                false,
+                false,
+                CompletionStatus::Passed,
+                CompletionStatus::NotApplicable,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_end_turn_with_failed_gate_becomes_terminal_failure() {
+        let reason = provider_turn_failure_reason(
+            AgentRunState::Executing,
+            "end_turn",
+            false,
+            false,
+            CompletionStatus::Failed,
+            CompletionStatus::NotApplicable,
+        )
+        .expect("failed provider gate must terminate the returned turn");
+        assert!(reason.contains("acceptance_criteria"));
+    }
+
+    #[test]
+    fn awaiting_user_is_not_failed_when_provider_returns_control() {
+        assert_eq!(
+            provider_turn_failure_reason(
+                AgentRunState::AwaitingUser,
+                "end_turn",
+                false,
+                false,
+                CompletionStatus::Pending,
+                CompletionStatus::Pending,
+            ),
+            None
+        );
+    }
 }
