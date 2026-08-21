@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: managed-goose-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GAMEENGINE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
