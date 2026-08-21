@@ -43,7 +43,7 @@
     },
     {
       "path": "tools/managed-goose/patches/0002-structured-context-overflow.patch",
-      "sha256": "4dfe50bd1c25b0851f514e9fc6922ef11e292a90d99596934dd1f7689529052c",
+      "sha256": "e6105b975204028efe7bc74618ae7f16db62a13dcd947edecb77040df6e7255b",
       "allowed_paths": [
         "crates/goose-providers/src/http_status.rs"
       ],
