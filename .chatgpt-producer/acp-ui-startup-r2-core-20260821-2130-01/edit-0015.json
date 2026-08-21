@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            execution_router,\n            acp,\n            acp_question: None,","new":"            execution_router,\n            acp,\n            acp_startup: None,\n            acp_question: None,"}
