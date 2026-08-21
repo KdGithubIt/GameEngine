@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"use crate::agent_host::AgentCapability;\nuse agent_client_protocol::schema::{\n","new":"use crate::agent_host::AgentCapability;\nuse engine_mcp::{authoring_tool_descriptors, tool_is_mutating};\nuse agent_client_protocol::schema::{\n"}
