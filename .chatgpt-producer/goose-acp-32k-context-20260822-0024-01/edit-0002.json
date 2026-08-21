@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "use crate::managed_local_runtime::{\n    ManagedExecutionEnvironment, ManagedLocalEndpointLease, ManagedLocalModelConfig,\n    ManagedLocalRuntime, managed_context_tokens,\n};",
+  "new": "use crate::managed_local_runtime::{\n    ManagedContextRequirement, ManagedExecutionEnvironment, ManagedLocalEndpointLease,\n    ManagedLocalModelConfig, ManagedLocalRuntime, managed_context_tokens,\n};"
+}
