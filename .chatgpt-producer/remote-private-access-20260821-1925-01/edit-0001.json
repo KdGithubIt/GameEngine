@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod remote_ai_studio;\nmod resource_arbitration;","new":"mod remote_ai_studio;\nmod remote_publication;\nmod resource_arbitration;"}
