@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::acp_agent_host_bridge::AcpBridgePoll;\n","new":"use acp_startup::{AcpRuntimeStartupConfig, AcpSessionStartupTask};\nuse crate::acp_agent_host_bridge::AcpBridgePoll;\n"}
