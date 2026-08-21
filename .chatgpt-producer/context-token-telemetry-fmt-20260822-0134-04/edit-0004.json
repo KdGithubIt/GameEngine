@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "        AcpNormalizedEvent::Usage {\n            used_tokens,\n            context_limit_tokens,\n        } => format!(\n            \"context usage {used_tokens}/{context_limit_tokens} tokens (agent-reported)\"\n        ),",
+  "new": "        AcpNormalizedEvent::Usage {\n            used_tokens,\n            context_limit_tokens,\n        } => format!(\"context usage {used_tokens}/{context_limit_tokens} tokens (agent-reported)\"),"
+}
