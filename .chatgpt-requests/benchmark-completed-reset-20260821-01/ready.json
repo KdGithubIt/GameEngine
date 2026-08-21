@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "benchmark-completed-reset-20260821-01",
+  "target_branch": "chatgpt/gameengine-benchmark-completed-reset-20260821",
+  "expected_head_sha": "e7435867771854982d1ac64e12a5fa1250434cdf",
+  "baseline_main_sha": "e7435867771854982d1ac64e12a5fa1250434cdf",
+  "patch_sha256": "61cbb0bf09ff8103684ca04eceedfbb49c0a306788c4886d2b0a53717eb991f6",
+  "patch_bytes": 19891,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Allow restarting completed benchmark campaigns",
+  "pr_title": "GameEngine: allow restarting completed benchmark campaigns",
+  "pr_body": "## Summary\n\n- add a Completed-state `Start new campaign` action that reuses the shared campaign reset semantics\n- clear the frozen plan/run/acquisition/checkpoint only after the user explicitly starts a new campaign\n- add regression coverage for Completed reset, checkpoint restore, and Planned/Running/Paused/Completed state mapping\n- add deterministic visual-validation fixtures for the Completed and post-reset Benchmark Campaign UI\n\n## Root cause\n\nBenchmark settings are frozen whenever a campaign plan exists, but the Completed controls had no transition that discarded that frozen plan. The plan therefore survived completion and checkpoint restore while every campaign setting remained disabled.\n\n## Contracts preserved\n\nThis change does not alter benchmark serialization, stable identity, ACP runtime identity freeze, Goose availability, or Legacy Native fallback policy.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR 0156 Benchmark Completed -->"
+}
