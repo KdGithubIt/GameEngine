@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-ui-startup-controls-20260821-2108-07",
+  "target_branch": "chatgpt/gameengine-acp-ui-startup-nonblocking",
+  "expected_head_sha": "b4e90847112ac3300bda952677a75051180406cc",
+  "baseline_main_sha": "cb53b065f4c8c22982e32a50c3b06dc3151f08ec",
+  "patch_sha256": "811fc1a4d1d27bef23b7e753713b6de6fe8218e5363f40d18577fca172b7a8d0",
+  "patch_bytes": 19528,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ACP startup cancellation and progress controls",
+  "pr_title": "Keep AI Studio responsive during ACP startup",
+  "pr_body": "## Summary\n\n- block duplicate Send while ACP startup or an ACP Ask answer is active\n- expose startup/answer progress and Stop controls without blocking egui\n- cancel Ask/Build startup ownership and clean up sessions that finish after cancellation\n- prevent deleting sessions with ACP startup/Ask activity\n- add controlled startup failure/cancellation tests and deterministic Editor visual evidence\n\nA final cleanup slice removes the temporary synchronous compatibility seam, records the ADR 0166 presentation-thread rule, and resolves formatting/validation findings.\n\n<!-- gameengine-visual-validation: editor -->"
+}
