@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-int-build-handoff-20260821-0917-01",
+  "target_branch": "chatgpt/gameengine-acp-integration",
+  "expected_head_sha": "2667f7a6716036285ca9144c5665efce9489eee0",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "b55b52d4224d6e8635457e629df86aacf41b999da7c176571142f4e7e096a5ab",
+  "patch_bytes": 27647,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Route AI Studio Build through common ACP runtime",
+  "pr_title": "GameEngine: integrate ACP external agent runtime",
+  "pr_body": "## Summary\n\n- integrate common ACP transport, AgentHost bridge, Claude/Codex/Goose adapters\n- route first-class AI Studio agent Ask and Build through ACP\n- preserve the AgentHost-managed isolated CodeWorkspace for ACP Build sessions\n- map ACP permission requests to existing Agent Host approval in desktop and Remote Companion\n- parse the existing GameEngine semantic event contract from ACP agent messages and require host completion gates before managed validation\n- keep ACP turn-finished distinct from completion, and route Stop/cancel through the bridge\n\n## Integration\n\nManaged Local/Goose selection routing, benchmark migration, Cargo.lock generation, and final validation continue on this Draft integration branch.\n\n## Validation\n\nDispatcher Windows Validation is required; final integrated-head validation remains authoritative.\n"
+}
