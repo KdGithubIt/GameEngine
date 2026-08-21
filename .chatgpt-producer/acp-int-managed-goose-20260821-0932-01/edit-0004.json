@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"const GAMEENGINE_MCP_SERVER_NAME: &str = \"gameengine\";\n","new":"const GAMEENGINE_MCP_SERVER_NAME: &str = \"gameengine_editor\";\n"}
