@@ -2236,7 +2236,7 @@ fn resolve_program_locations(
             (program, args)
         }
     };
-    let Ok((succeeded, output)) = direct_command_output(locator, locator_args) else {
+    let Ok((succeeded, output)) = direct_command_output(locator, locator_args, &[]) else {
         return Vec::new();
     };
     if !succeeded {
