@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/acp_agent_runtime/transport.rs",
+  "old": "fn extract_tool_name_metadata<T: serde::Serialize>(value: &T, path: &[String]) -> Option<String> {\n    if path.is_empty() {\n        return None;\n    }",
+  "new": "fn acp_tool_result_payload_bytes<T: serde::Serialize>(fields: &T) -> Option<u64> {\n    let value = serde_json::to_value(fields).ok()?;\n    let payload = value\n        .get(\"rawOutput\")\n        .filter(|value| !value.is_null())\n        .or_else(|| {\n            value\n                .get(\"content\")\n                .filter(|content| content.as_array().is_some_and(|items| !items.is_empty()))\n        })?;\n    let bytes = serde_json::to_vec(payload).ok()?.len();\n    u64::try_from(bytes).ok()\n}\n\nfn acp_usage_tokens<T: serde::Serialize>(usage: &T) -> Option<(u64, u64)> {\n    let value = serde_json::to_value(usage).ok()?;\n    Some((\n        value.get(\"used\")?.as_u64()?,\n        value.get(\"size\")?.as_u64()?,\n    ))\n}\n\nfn extract_tool_name_metadata<T: serde::Serialize>(value: &T, path: &[String]) -> Option<String> {\n    if path.is_empty() {\n        return None;\n    }"
+}
