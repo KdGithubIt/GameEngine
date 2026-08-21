@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-int-ci-fix-20260821-1806-01",
+  "target_branch": "chatgpt/gameengine-acp-integration",
+  "expected_head_sha": "a28cbdc06bbd649269128b966b9c353cac327190",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "bc79df76210fb31bea2e78e5b5be9157cd1e4b5a8cc10cbe6efe6cb8a1233cdf",
+  "patch_bytes": 3440,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ACP integration validation regressions",
+  "pr_title": "GameEngine: integrate ACP external agent runtime",
+  "pr_body": "## Summary\n\n- integrate common ACP transport, AgentHost bridge, Claude/Codex/Goose adapters\n- route first-class AI Studio agent Ask and Build plus normal Managed Local sessions through ACP\n- make Goose ACP Agent Harness the normal/recommended Managed Local Benchmark Campaign path\n- expose an explicit Runtime / Harness selector and freeze its provider-neutral ACP runtime identity through campaign, experiment, child, execution, and terminal record\n- retain Legacy Native only as an explicit compatibility/comparison harness and fail closed instead of silently falling back from ACP\n- reject ACP read-question and visual-evaluation evidence before execution while preserving validation-repair and runtime-aware AgentHost permission authority\n- keep ACP-unobservable model turn/token telemetry unavailable\n- keep legacy runtime-classification regression tests on an ACP-supported governed task\n\n## Validation\n\nDispatcher Windows Validation is authoritative for the integrated head.\nEditor Visual Validation covers the Benchmark Campaign Runtime / Harness selector and frozen identity summary.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-validation-retry: fc8f6abbd61e1fda2d53448e7a0e002eea03324d -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
