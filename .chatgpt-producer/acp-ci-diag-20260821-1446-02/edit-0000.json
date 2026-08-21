@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/external_agent_provider.rs","old":"    let Ok((succeeded, output)) = direct_command_output(locator, locator_args) else {\n","new":"    let Ok((succeeded, output)) = direct_command_output(locator, locator_args, &[]) else {\n"}
