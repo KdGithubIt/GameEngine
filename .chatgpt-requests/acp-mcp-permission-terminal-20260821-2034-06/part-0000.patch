@@ -1,0 +1,1023 @@
+diff --git a/crates/editor/src/acp_agent_host_bridge.rs b/crates/editor/src/acp_agent_host_bridge.rs
+index 250ccc484e037e7232b84b7f6901b813897237ec..4e8cea73485710a3ce2949bde6225ff6f457ea2a 100644
+--- a/crates/editor/src/acp_agent_host_bridge.rs
++++ b/crates/editor/src/acp_agent_host_bridge.rs
+@@ -4,9 +4,10 @@
+ //! for permissions, work claims, canonical authoring, validation and completion.
+ 
+ use crate::acp_agent_runtime::{
+-    AcpAgentRegistry, AcpAgentSession, AcpNormalizedEvent, AcpPermissionOptionKind,
+-    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpRuntimeError,
+-    AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenRequest, AcpToolCallStatus,
++    AcpAgentRegistry, AcpAgentSession, AcpMcpAccessLevel, AcpNormalizedEvent,
++    AcpPermissionOptionKind, AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution,
++    AcpPermissionTarget, AcpRuntimeError, AcpRuntimeIdentity, AcpSessionBinding,
++    AcpSessionOpenRequest, AcpToolCallStatus,
+ };
+ use crate::agent_host::{
+     AgentCapability, AgentEventKind, AgentHost, AgentHostError, AgentRunState, AgentWorkClaim,
+@@ -92,6 +93,10 @@ pub(crate) enum AcpBridgePoll {
+     ValidationReady {
+         run_id: String,
+     },
++    TurnFailed {
++        run_id: String,
++        reason: String,
++    },
+ }
+ 
+ #[derive(Debug)]
+@@ -384,21 +389,70 @@ impl AcpAgentHostBridge {
+     ) -> Result<AcpBridgePoll, AcpBridgeError> {
+         if let AcpNormalizedEvent::PermissionRequest(request) = &event {
+             self.check_permission_session(acp_id, request)?;
++            let read_only_binding = self.attached(acp_id)?.session.binding().mcp.access
++                == AcpMcpAccessLevel::ReadOnly;
++            let (outcome, message) = match &request.target {
++                AcpPermissionTarget::GameEngineMcpTool {
++                    stable_name,
++                    mutating: false,
++                } if read_only_binding => {
++                    let Some(option_id) = allow_once_option(request) else {
++                        self.resolve_acp(
++                            host,
++                            acp_id,
++                            AcpPermissionResolution {
++                                request_id: request.request_id.clone(),
++                                outcome: host_rejection_outcome(request),
++                            },
++                        )?;
++                        return Ok(AcpBridgePoll::AskEvent(
++                            AcpNormalizedEvent::ProtocolDiagnostic {
++                                message: format!(
++                                    "ACP host rejected registered GameEngine MCP tool `{stable_name}` because the agent offered no safe allow-once permission option."
++                                ),
++                            },
++                        ));
++                    };
++                    (
++                        AcpPermissionOutcome::SelectedOption(option_id),
++                        format!(
++                            "ACP host allowed registered read-only GameEngine MCP tool `{stable_name}` under the Ask MCP contract."
++                        ),
++                    )
++                }
++                AcpPermissionTarget::GameEngineMcpTool {
++                    stable_name,
++                    mutating: true,
++                } => (
++                    host_rejection_outcome(request),
++                    format!(
++                        "ACP host denied GameEngine MCP tool `{stable_name}` because Ask is read-only; no user decline was recorded."
++                    ),
++                ),
++                AcpPermissionTarget::AgentCapability(capability) => (
++                    host_rejection_outcome(request),
++                    format!(
++                        "ACP host denied `{}` because Ask cannot grant elevated Agent Host capabilities; no user decline was recorded.",
++                        capability.label()
++                    ),
++                ),
++                AcpPermissionTarget::Unclassified
++                | AcpPermissionTarget::GameEngineMcpTool { .. } => (
++                    host_rejection_outcome(request),
++                    "ACP host denied an unclassified permission request; no user decline was recorded."
++                        .to_owned(),
++                ),
++            };
+             self.resolve_acp(
+                 host,
+                 acp_id,
+                 AcpPermissionResolution {
+                     request_id: request.request_id.clone(),
+-                    outcome: AcpPermissionOutcome::Cancelled,
++                    outcome,
+                 },
+             )?;
+             return Ok(AcpBridgePoll::AskEvent(
+-                AcpNormalizedEvent::ProtocolDiagnostic {
+-                    message: format!(
+-                        "ACP permission `{}` denied: Ask is read-only.",
+-                        request.request_id
+-                    ),
+-                },
++                AcpNormalizedEvent::ProtocolDiagnostic { message },
+             ));
+         }
+         Ok(AcpBridgePoll::AskEvent(event))
+@@ -460,6 +514,20 @@ impl AcpAgentHostBridge {
+                         run_id: run_id.to_owned(),
+                     });
+                 }
++                if let Some(reason) =
++                    self.turn_failure_reason(host, acp_id, stop_reason.as_str())?
++                {
++                    host.record_event(run_id, AgentEventKind::Failure, reason.clone())?;
++                    host.transition_run(
++                        run_id,
++                        AgentRunState::Failed,
++                        "ACP provider turn ended without satisfying Agent Host completion gates.",
++                    )?;
++                    return Ok(AcpBridgePoll::TurnFailed {
++                        run_id: run_id.to_owned(),
++                        reason,
++                    });
++                }
+             }
+             AcpNormalizedEvent::ProtocolDiagnostic { message } => host.record_event(
+                 run_id,
+@@ -482,21 +550,43 @@ impl AcpAgentHostBridge {
+         request: AcpPermissionRequest,
+     ) -> Result<AcpBridgePoll, AcpBridgeError> {
+         self.check_permission_session(acp_id, &request)?;
+-        if !host
+-            .run(run_id)?
+-            .proposal_snapshot
+-            .requested_capabilities
+-            .contains(&request.required_capability)
+-        {
+-            self.resolve_cancel(host, acp_id, &request.request_id)?;
+-            return Err(AcpBridgeError::UndeclaredCapability(
+-                request.required_capability,
+-            ));
+-        }
+-        match host.check_permission(run_id, request.required_capability)? {
+-            PermissionCheck::Granted => {
++        match request.target.clone() {
++            AcpPermissionTarget::GameEngineMcpTool {
++                stable_name,
++                mutating,
++            } => {
++                let run_bound_binding = self.attached(acp_id)?.session.binding().mcp.access
++                    == AcpMcpAccessLevel::AgentRunBoundReadWrite;
++                if !run_bound_binding {
++                    self.resolve_acp(
++                        host,
++                        acp_id,
++                        AcpPermissionResolution {
++                            request_id: request.request_id.clone(),
++                            outcome: host_rejection_outcome(&request),
++                        },
++                    )?;
++                    host.record_event(
++                        run_id,
++                        AgentEventKind::PermissionResolved,
++                        format!(
++                            "ACP host denied GameEngine MCP tool `{stable_name}` because the session is not run-bound; no user decline was recorded."
++                        ),
++                    )?;
++                    return Ok(AcpBridgePoll::Recorded {
++                        run_id: run_id.to_owned(),
++                        kind: AgentEventKind::PermissionResolved,
++                    });
++                }
+                 let Some(option_id) = allow_once_option(&request) else {
+-                    self.resolve_cancel(host, acp_id, &request.request_id)?;
++                    self.resolve_acp(
++                        host,
++                        acp_id,
++                        AcpPermissionResolution {
++                            request_id: request.request_id.clone(),
++                            outcome: host_rejection_outcome(&request),
++                        },
++                    )?;
+                     return Err(AcpBridgeError::UnsafePermissionOptions(request.request_id));
+                 };
+                 self.resolve_acp(
+@@ -507,33 +597,119 @@ impl AcpAgentHostBridge {
+                         outcome: AcpPermissionOutcome::SelectedOption(option_id),
+                     },
+                 )?;
++                host.record_event(
++                    run_id,
++                    AgentEventKind::PermissionResolved,
++                    format!(
++                        "ACP host allowed registered GameEngine MCP tool `{stable_name}` under the run-bound {} authoring contract.",
++                        if mutating { "write" } else { "read" }
++                    ),
++                )?;
+                 Ok(AcpBridgePoll::Recorded {
+                     run_id: run_id.to_owned(),
+                     kind: AgentEventKind::PermissionResolved,
+                 })
+             }
+-            PermissionCheck::Denied => {
+-                self.resolve_cancel(host, acp_id, &request.request_id)?;
++            AcpPermissionTarget::Unclassified => {
++                self.resolve_acp(
++                    host,
++                    acp_id,
++                    AcpPermissionResolution {
++                        request_id: request.request_id.clone(),
++                        outcome: host_rejection_outcome(&request),
++                    },
++                )?;
++                host.record_event(
++                    run_id,
++                    AgentEventKind::PermissionResolved,
++                    "ACP host denied a permission request whose tool identity/capability could not be safely classified; no user decline was recorded.",
++                )?;
+                 Ok(AcpBridgePoll::Recorded {
+                     run_id: run_id.to_owned(),
+                     kind: AgentEventKind::PermissionResolved,
+                 })
+             }
+-            PermissionCheck::RequiresApproval => {
+-                let request_id = request.request_id.clone();
+-                let title = request.title.clone();
+-                let capability = request.required_capability;
+-                let pending = &mut self.attached_mut(acp_id)?.pending_permissions;
+-                if pending.contains_key(&request_id) {
+-                    return Err(AcpBridgeError::DuplicatePermission(request_id));
++            AcpPermissionTarget::AgentCapability(required_capability) => {
++                if !host
++                    .run(run_id)?
++                    .proposal_snapshot
++                    .requested_capabilities
++                    .contains(&required_capability)
++                {
++                    self.resolve_acp(
++                        host,
++                        acp_id,
++                        AcpPermissionResolution {
++                            request_id: request.request_id.clone(),
++                            outcome: host_rejection_outcome(&request),
++                        },
++                    )?;
++                    return Err(AcpBridgeError::UndeclaredCapability(required_capability));
++                }
++                match host.check_permission(run_id, required_capability)? {
++                    PermissionCheck::Granted => {
++                        let Some(option_id) = allow_once_option(&request) else {
++                            self.resolve_acp(
++                                host,
++                                acp_id,
++                                AcpPermissionResolution {
++                                    request_id: request.request_id.clone(),
++                                    outcome: host_rejection_outcome(&request),
++                                },
++                            )?;
++                            return Err(AcpBridgeError::UnsafePermissionOptions(request.request_id));
++                        };
++                        self.resolve_acp(
++                            host,
++                            acp_id,
++                            AcpPermissionResolution {
++                                request_id: request.request_id.clone(),
++                                outcome: AcpPermissionOutcome::SelectedOption(option_id),
++                            },
++                        )?;
++                        Ok(AcpBridgePoll::Recorded {
++                            run_id: run_id.to_owned(),
++                            kind: AgentEventKind::PermissionResolved,
++                        })
++                    }
++                    PermissionCheck::Denied => {
++                        self.resolve_acp(
++                            host,
++                            acp_id,
++                            AcpPermissionResolution {
++                                request_id: request.request_id.clone(),
++                                outcome: host_rejection_outcome(&request),
++                            },
++                        )?;
++                        host.record_event(
++                            run_id,
++                            AgentEventKind::PermissionResolved,
++                            format!(
++                                "ACP host denied `{}` by existing Agent Host policy; no user decline was recorded.",
++                                required_capability.label()
++                            ),
++                        )?;
++                        Ok(AcpBridgePoll::Recorded {
++                            run_id: run_id.to_owned(),
++                            kind: AgentEventKind::PermissionResolved,
++                        })
++                    }
++                    PermissionCheck::RequiresApproval => {
++                        let request_id = request.request_id.clone();
++                        let title = request.title.clone();
++                        let pending = &mut self.attached_mut(acp_id)?.pending_permissions;
++                        if pending.contains_key(&request_id) {
++                            return Err(AcpBridgeError::DuplicatePermission(request_id));
++                        }
++                        pending.insert(request_id.clone(), request);
++                        Ok(AcpBridgePoll::PermissionRequired {
++                            run_id: run_id.to_owned(),
++                            request_id,
++                            title,
++                            capability: required_capability,
++                        })
++                    }
+                 }
+-                pending.insert(request_id.clone(), request);
+-                Ok(AcpBridgePoll::PermissionRequired {
+-                    run_id: run_id.to_owned(),
+-                    request_id,
+-                    title,
+-                    capability,
+-                })
+             }
+         }
+     }
+@@ -552,8 +728,14 @@ impl AcpAgentHostBridge {
+             .get(request_id)
+             .cloned()
+             .ok_or_else(|| AcpBridgeError::PendingPermissionNotFound(request_id.to_owned()))?;
++        let AcpPermissionTarget::AgentCapability(required_capability) = &request.target else {
++            return Err(AcpBridgeError::UnsafePermissionOptions(
++                request_id.to_owned(),
++            ));
++        };
++        let required_capability = *required_capability;
+         if scope == ApprovalScope::Deny {
+-            host.resolve_permission(&run_id, request.required_capability, scope)?;
++            host.resolve_permission(&run_id, required_capability, scope)?;
+             self.resolve_cancel(host, acp_id, request_id)?;
+         } else {
+             let Some(option_id) = allow_once_option(&request) else {
+@@ -565,8 +747,8 @@ impl AcpAgentHostBridge {
+                     request_id.to_owned(),
+                 ));
+             };
+-            host.resolve_permission(&run_id, request.required_capability, scope)?;
+-            if host.check_permission(&run_id, request.required_capability)?
++            host.resolve_permission(&run_id, required_capability, scope)?;
++            if host.check_permission(&run_id, required_capability)?
+                 != PermissionCheck::Granted
+             {
+                 return Err(AcpBridgeError::UnsafePermissionOptions(
+@@ -673,6 +855,28 @@ impl AcpAgentHostBridge {
+             && gate_satisfied(run.completion.authoring_validation))
+     }
+ 
++    fn turn_failure_reason(
++        &self,
++        host: &AgentHost,
++        acp_id: &str,
++        stop_reason: &str,
++    ) -> Result<Option<String>, AcpBridgeError> {
++        let attached = self.attached(acp_id)?;
++        let Some(run_id) = attached.run_id.as_deref() else {
++            return Ok(None);
++        };
++        let run = host.run(run_id)?;
++        Ok(provider_turn_failure_reason(
++            run.state,
++            stop_reason,
++            !attached.pending_permissions.is_empty(),
++            run.work_claims
++                .contains(&AgentWorkClaim::shared_resource("canonical_authoring")),
++            run.completion.acceptance_criteria,
++            run.completion.authoring_validation,
++        ))
++    }
++
+     pub(crate) fn begin_managed_validation(
+         &mut self,
+         host: &mut AgentHost,
+@@ -795,9 +999,150 @@ fn allow_once_option(request: &AcpPermissionRequest) -> Option<String> {
+         .find(|option| option.kind == AcpPermissionOptionKind::AllowOnce)
+         .map(|option| option.id.clone())
+ }
++
++fn reject_once_option(request: &AcpPermissionRequest) -> Option<String> {
++    request
++        .options
++        .iter()
++        .find(|option| option.kind == AcpPermissionOptionKind::RejectOnce)
++        .map(|option| option.id.clone())
++}
++
++fn host_rejection_outcome(request: &AcpPermissionRequest) -> AcpPermissionOutcome {
++    reject_once_option(request)
++        .map(AcpPermissionOutcome::SelectedOption)
++        .unwrap_or(AcpPermissionOutcome::Cancelled)
++}
++
++
++fn provider_turn_failure_reason(
++    state: AgentRunState,
++    stop_reason: &str,
++    has_pending_permissions: bool,
++    has_canonical_authoring: bool,
++    acceptance_criteria: CompletionStatus,
++    authoring_validation: CompletionStatus,
++) -> Option<String> {
++    if state == AgentRunState::AwaitingUser
++        || !matches!(state, AgentRunState::Executing | AgentRunState::Repairing)
++    {
++        return None;
++    }
++    if stop_reason != "end_turn" {
++        return Some(format!(
++            "ACP agent returned control with `{stop_reason}` before successful host completion."
++        ));
++    }
++    if has_pending_permissions {
++        return Some(
++            "ACP agent returned control while a permission request was still unresolved."
++                .to_owned(),
++        );
++    }
++    if has_canonical_authoring {
++        return Some(
++            "ACP agent returned control while canonical authoring work was still active."
++                .to_owned(),
++        );
++    }
++
++    let mut unsatisfied = Vec::new();
++    if !gate_satisfied(acceptance_criteria) {
++        unsatisfied.push("acceptance_criteria");
++    }
++    if !gate_satisfied(authoring_validation) {
++        unsatisfied.push("authoring_validation");
++    }
++    if unsatisfied.is_empty() {
++        None
++    } else {
++        Some(format!(
++            "ACP agent returned control before required provider completion gates were satisfied: {}.",
++            unsatisfied.join(", ")
++        ))
++    }
++}
++
+ fn gate_satisfied(status: CompletionStatus) -> bool {
+     matches!(
+         status,
+         CompletionStatus::Passed | CompletionStatus::NotApplicable
+     )
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn permission_request(options: Vec<AcpPermissionOption>) -> AcpPermissionRequest {
++        AcpPermissionRequest {
++            request_id: "permission-1".to_owned(),
++            acp_session_id: "acp-1".to_owned(),
++            tool_call_id: "opaque-call-1".to_owned(),
++            title: "asset search".to_owned(),
++            target: AcpPermissionTarget::Unclassified,
++            options,
++        }
++    }
++
++    #[test]
++    fn host_policy_rejection_is_not_explicit_user_cancellation() {
++        let request = permission_request(vec![AcpPermissionOption {
++            id: "reject_once".to_owned(),
++            name: "Reject once".to_owned(),
++            kind: AcpPermissionOptionKind::RejectOnce,
++        }]);
++        assert_eq!(
++            host_rejection_outcome(&request),
++            AcpPermissionOutcome::SelectedOption("reject_once".to_owned())
++        );
++        assert_ne!(
++            host_rejection_outcome(&request),
++            AcpPermissionOutcome::Cancelled
++        );
++    }
++
++    #[test]
++    fn provider_end_turn_with_satisfied_gates_can_validate() {
++        assert_eq!(
++            provider_turn_failure_reason(
++                AgentRunState::Executing,
++                "end_turn",
++                false,
++                false,
++                CompletionStatus::Passed,
++                CompletionStatus::NotApplicable,
++            ),
++            None
++        );
++    }
++
++    #[test]
++    fn provider_end_turn_with_failed_gate_becomes_terminal_failure() {
++        let reason = provider_turn_failure_reason(
++            AgentRunState::Executing,
++            "end_turn",
++            false,
++            false,
++            CompletionStatus::Failed,
++            CompletionStatus::NotApplicable,
++        )
++        .expect("failed provider gate must terminate the returned turn");
++        assert!(reason.contains("acceptance_criteria"));
++    }
++
++    #[test]
++    fn awaiting_user_is_not_failed_when_provider_returns_control() {
++        assert_eq!(
++            provider_turn_failure_reason(
++                AgentRunState::AwaitingUser,
++                "end_turn",
++                false,
++                false,
++                CompletionStatus::Pending,
++                CompletionStatus::Pending,
++            ),
++            None
++        );
++    }
++}
+diff --git a/crates/editor/src/acp_agent_runtime.rs b/crates/editor/src/acp_agent_runtime.rs
+index 0517d5d01af154fe32927b1c8d8f668b847c8851..ec33e9bbf9e742ad88aacbcda8c3ef70ff62cce8 100644
+--- a/crates/editor/src/acp_agent_runtime.rs
++++ b/crates/editor/src/acp_agent_runtime.rs
+@@ -318,13 +318,27 @@ pub(crate) struct AcpPermissionOption {
+ }
+ 
+ /// ACP permission request after classification into GameEngine authority.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum AcpPermissionTarget {
++    /// Exact registered GameEngine MCP tool identity recovered from provider
++    /// metadata and normalized against the MCP inventory.
++    GameEngineMcpTool {
++        stable_name: String,
++        mutating: bool,
++    },
++    /// Non-MCP operation classified through ACP ToolKind into Agent Host policy.
++    AgentCapability(AgentCapability),
++    /// No trustworthy stable tool identity/capability could be established.
++    Unclassified,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct AcpPermissionRequest {
+     pub(crate) request_id: String,
+     pub(crate) acp_session_id: String,
+     pub(crate) tool_call_id: String,
+     pub(crate) title: String,
+-    pub(crate) required_capability: AgentCapability,
++    pub(crate) target: AcpPermissionTarget,
+     pub(crate) options: Vec<AcpPermissionOption>,
+ }
+ 
+diff --git a/crates/editor/src/acp_agent_runtime/transport.rs b/crates/editor/src/acp_agent_runtime/transport.rs
+index be056236175242d0e56d0c3beb14df66c831289c..98d46a3f4b92a34e2d4ee7be2d4833d4a1143b5d 100644
+--- a/crates/editor/src/acp_agent_runtime/transport.rs
++++ b/crates/editor/src/acp_agent_runtime/transport.rs
+@@ -1,11 +1,12 @@
+ use super::{
+     ACP_STABLE_PROTOCOL_VERSION, AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession,
+     AcpCapabilities, AcpNormalizedEvent, AcpPermissionOption, AcpPermissionOptionKind,
+-    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpRuntimeError,
+-    AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenMode, AcpSessionOpenRequest,
+-    AcpToolCallStatus, validate_descriptor,
++    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpPermissionTarget,
++    AcpRuntimeError, AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenMode,
++    AcpSessionOpenRequest, AcpToolCallStatus, validate_descriptor,
+ };
+ use crate::agent_host::AgentCapability;
++use engine_mcp::{authoring_tool_descriptors, tool_is_mutating};
+ use agent_client_protocol::schema::{
+     ProtocolVersion,
+     v1::{
+@@ -32,6 +33,7 @@ use std::sync::{
+ 
+ const GAMEENGINE_ACP_CLIENT_NAME: &str = "gameengine-ai-studio";
+ const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
++const GAMEENGINE_MCP_TOOL_PREFIX: &str = "gameengine_editor__";
+ const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
+ 
+ #[derive(Debug)]
+@@ -59,6 +61,7 @@ struct TrackedToolCall {
+     title: String,
+     kind: ToolKind,
+     status: AcpToolCallStatus,
++    stable_tool_name: Option<String>,
+ }
+ 
+ type PendingPermissions = Arc<Mutex<HashMap<String, oneshot::Sender<AcpPermissionOutcome>>>>;
+@@ -67,11 +70,27 @@ type ToolCalls = Arc<Mutex<HashMap<String, TrackedToolCall>>>;
+ /// Provider-neutral ACP subprocess runtime using the official Rust SDK.
+ pub(crate) struct AcpProcessRuntime {
+     descriptor: AcpAgentDescriptor,
++    tool_name_metadata_path: Vec<String>,
+ }
+ 
+ impl AcpProcessRuntime {
+     pub(crate) fn new(descriptor: AcpAgentDescriptor) -> Result<Self, AcpRuntimeError> {
++        Self::new_with_tool_name_metadata_path(descriptor, &[])
++    }
++
++    pub(crate) fn new_with_tool_name_metadata_path(
++        descriptor: AcpAgentDescriptor,
++        tool_name_metadata_path: &[&str],
++    ) -> Result<Self, AcpRuntimeError> {
+         validate_descriptor(&descriptor)?;
++        if tool_name_metadata_path
++            .iter()
++            .any(|segment| segment.trim().is_empty() || segment.trim() != *segment)
++        {
++            return Err(AcpRuntimeError::InvalidDescriptor(
++                "ACP tool-name metadata path segments must be non-empty and unpadded".to_owned(),
++            ));
++        }
+         if descriptor.runtime_identity.protocol_version != ACP_STABLE_PROTOCOL_VERSION {
+             return Err(AcpRuntimeError::Unsupported(format!(
+                 "stable ACP core transport supports protocol v{ACP_STABLE_PROTOCOL_VERSION} only"
+@@ -88,7 +107,13 @@ impl AcpProcessRuntime {
+                     .to_owned(),
+             ));
+         }
+-        Ok(Self { descriptor })
++        Ok(Self {
++            descriptor,
++            tool_name_metadata_path: tool_name_metadata_path
++                .iter()
++                .map(|segment| (*segment).to_owned())
++                .collect(),
++        })
+     }
+ }
+ 
+@@ -105,6 +130,7 @@ impl AcpAgentRuntime for AcpProcessRuntime {
+ 
+         let config = build_agent_config(&self.descriptor)?;
+         let descriptor = self.descriptor.clone();
++        let tool_name_metadata_path = self.tool_name_metadata_path.clone();
+         let binding = request.binding.clone();
+         let (command_tx, command_rx) = async_mpsc::unbounded();
+         let (event_tx, event_rx) = mpsc::channel();
+@@ -128,6 +154,7 @@ impl AcpAgentRuntime for AcpProcessRuntime {
+                     descriptor,
+                     request,
+                     config,
++                    tool_name_metadata_path,
+                     command_rx,
+                     thread_event_tx.clone(),
+                     open_tx,
+@@ -371,6 +398,7 @@ async fn run_connection(
+     descriptor: AcpAgentDescriptor,
+     request: AcpSessionOpenRequest,
+     config: AcpAgentConfig,
++    tool_name_metadata_path: Vec<String>,
+     command_rx: async_mpsc::UnboundedReceiver<RuntimeCommand>,
+     event_tx: mpsc::Sender<AcpNormalizedEvent>,
+     open_tx: mpsc::SyncSender<Result<OpenedSession, AcpRuntimeError>>,
+@@ -385,10 +413,12 @@ async fn run_connection(
+     let notification_session_id = Arc::clone(&active_session_id);
+     let notification_tools = Arc::clone(&tool_calls);
+     let notification_events = event_tx.clone();
++    let notification_tool_name_metadata_path = tool_name_metadata_path.clone();
+ 
+     let permission_session_id = Arc::clone(&active_session_id);
+     let permission_tools = Arc::clone(&tool_calls);
+     let permission_events = event_tx.clone();
++    let permission_tool_name_metadata_path = tool_name_metadata_path;
+     let permission_pending = Arc::clone(&pending_permissions);
+     let permission_sequence_clone = Arc::clone(&permission_sequence);
+ 
+@@ -407,6 +437,7 @@ async fn run_connection(
+                     &notification_session_id,
+                     &notification_tools,
+                     &notification_events,
++                    &notification_tool_name_metadata_path,
+                 )
+                 .map_err(sdk_internal_error)
+             },
+@@ -421,6 +452,7 @@ async fn run_connection(
+                     &permission_events,
+                     &permission_pending,
+                     &permission_sequence_clone,
++                    &permission_tool_name_metadata_path,
+                 )
+                 .await
+                 .map_err(sdk_internal_error)?;
+@@ -851,6 +883,7 @@ fn handle_session_notification(
+     active_session_id: &Arc<Mutex<Option<String>>>,
+     tool_calls: &ToolCalls,
+     events: &mpsc::Sender<AcpNormalizedEvent>,
++    tool_name_metadata_path: &[String],
+ ) -> Result<(), AcpRuntimeError> {
+     let session_id = notification.session_id.to_string();
+     let expected = active_session_id
+@@ -889,6 +922,8 @@ fn handle_session_notification(
+             },
+         ),
+         SessionUpdate::ToolCall(tool_call) => {
++            let stable_tool_name =
++                extract_tool_name_metadata(&tool_call, tool_name_metadata_path);
+             let tool_call_id = tool_call.tool_call_id.to_string();
+             let status = normalize_tool_status(tool_call.status);
+             tool_calls
+@@ -902,6 +937,7 @@ fn handle_session_notification(
+                         title: tool_call.title.clone(),
+                         kind: tool_call.kind,
+                         status,
++                        stable_tool_name,
+                     },
+                 );
+             send_normalized(
+@@ -914,6 +950,8 @@ fn handle_session_notification(
+             )
+         }
+         SessionUpdate::ToolCallUpdate(update) => {
++            let stable_tool_name =
++                extract_tool_name_metadata(&update, tool_name_metadata_path);
+             let tool_call_id = update.tool_call_id.to_string();
+             let mut tools = tool_calls.lock().map_err(|_| {
+                 AcpRuntimeError::Transport("ACP tool state lock is poisoned".to_owned())
+@@ -924,7 +962,11 @@ fn handle_session_notification(
+                     title: "ACP tool call".to_owned(),
+                     kind: ToolKind::Other,
+                     status: AcpToolCallStatus::Pending,
++                    stable_tool_name: None,
+                 });
++            if let Some(stable_tool_name) = stable_tool_name {
++                tracked.stable_tool_name = Some(stable_tool_name);
++            }
+             if let Some(title) = update.fields.title {
+                 tracked.title = title;
+             }
+@@ -1006,6 +1048,7 @@ async fn handle_permission_request(
+     events: &mpsc::Sender<AcpNormalizedEvent>,
+     pending_permissions: &PendingPermissions,
+     sequence: &AtomicU64,
++    tool_name_metadata_path: &[String],
+ ) -> Result<RequestPermissionResponse, AcpRuntimeError> {
+     let session_id = request.session_id.to_string();
+     let expected = active_session_id
+@@ -1018,6 +1061,8 @@ async fn handle_permission_request(
+         )));
+     }
+ 
++    let request_stable_tool_name =
++        extract_tool_name_metadata(&request.tool_call, tool_name_metadata_path);
+     let tool_call_id = request.tool_call.tool_call_id.to_string();
+     let tracked = {
+         let tools = tool_calls.lock().map_err(|_| {
+@@ -1037,19 +1082,9 @@ async fn handle_permission_request(
+         .fields
+         .kind
+         .or_else(|| tracked.as_ref().map(|tool| tool.kind));
+-    let Some(required_capability) = kind.and_then(classify_tool_kind) else {
+-        send_normalized(
+-            events,
+-            AcpNormalizedEvent::ProtocolDiagnostic {
+-                message: format!(
+-                    "ACP permission request for tool `{tool_call_id}` could not be safely classified"
+-                ),
+-            },
+-        )?;
+-        return Ok(RequestPermissionResponse::new(
+-            RequestPermissionOutcome::Cancelled,
+-        ));
+-    };
++    let stable_tool_name = request_stable_tool_name
++        .or_else(|| tracked.as_ref().and_then(|tool| tool.stable_tool_name.clone()));
++    let target = classify_permission_target(stable_tool_name.as_deref(), kind);
+ 
+     let request_id = format!("acp-permission-{}", sequence.fetch_add(1, Ordering::SeqCst));
+     let options = request
+@@ -1081,7 +1116,7 @@ async fn handle_permission_request(
+             acp_session_id: session_id,
+             tool_call_id,
+             title,
+-            required_capability,
++            target,
+             options,
+         }),
+     )?;
+@@ -1116,6 +1151,48 @@ async fn handle_permission_request(
+     }
+ }
+ 
++fn extract_tool_name_metadata<T: serde::Serialize>(
++    value: &T,
++    path: &[String],
++) -> Option<String> {
++    if path.is_empty() {
++        return None;
++    }
++    let value = serde_json::to_value(value).ok()?;
++    let mut current = value.get("_meta")?;
++    for segment in path {
++        current = current.get(segment)?;
++    }
++    current
++        .as_str()
++        .filter(|name| !name.trim().is_empty() && name.trim() == *name)
++        .map(str::to_owned)
++}
++
++fn classify_permission_target(
++    stable_tool_name: Option<&str>,
++    kind: Option<ToolKind>,
++) -> AcpPermissionTarget {
++    if let Some(stable_tool_name) = stable_tool_name
++        && let Some(canonical_name) = stable_tool_name.strip_prefix(GAMEENGINE_MCP_TOOL_PREFIX)
++    {
++        let registered = authoring_tool_descriptors()
++            .into_iter()
++            .any(|descriptor| descriptor.name == canonical_name);
++        if registered {
++            return AcpPermissionTarget::GameEngineMcpTool {
++                stable_name: canonical_name.to_owned(),
++                mutating: tool_is_mutating(canonical_name),
++            };
++        }
++        return AcpPermissionTarget::Unclassified;
++    }
++
++    kind.and_then(classify_tool_kind)
++        .map(AcpPermissionTarget::AgentCapability)
++        .unwrap_or(AcpPermissionTarget::Unclassified)
++}
++
+ fn classify_tool_kind(kind: ToolKind) -> Option<AgentCapability> {
+     match kind {
+         ToolKind::Read => Some(AgentCapability::RawWorkspaceFilesystem),
+@@ -1228,12 +1305,70 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn ambiguous_permission_kinds_are_not_classified() {
+-        assert_eq!(classify_tool_kind(ToolKind::Search), None);
+-        assert_eq!(classify_tool_kind(ToolKind::Other), None);
++    fn permission_classification_prefers_registered_gameengine_mcp_identity() {
++        let expected = AcpPermissionTarget::GameEngineMcpTool {
++            stable_name: "asset.search".to_owned(),
++            mutating: false,
++        };
++        assert_eq!(
++            classify_permission_target(
++                Some("gameengine_editor__asset.search"),
++                Some(ToolKind::Search),
++            ),
++            expected
++        );
++        assert_eq!(
++            classify_permission_target(
++                Some("gameengine_editor__asset.search"),
++                Some(ToolKind::Other),
++            ),
++            expected,
++            "ACP call-instance state must not change the stable MCP permission identity"
++        );
++    }
++
++    #[test]
++    fn malformed_or_unknown_mcp_identity_fails_closed() {
++        assert_eq!(
++            classify_permission_target(
++                Some("gameengine_editor__not.registered"),
++                Some(ToolKind::Search),
++            ),
++            AcpPermissionTarget::Unclassified
++        );
++        assert_eq!(
++            classify_permission_target(None, Some(ToolKind::Search)),
++            AcpPermissionTarget::Unclassified
++        );
++        assert_eq!(
++            classify_permission_target(None, Some(ToolKind::Other)),
++            AcpPermissionTarget::Unclassified
++        );
++        assert_eq!(
++            classify_permission_target(None, Some(ToolKind::Execute)),
++            AcpPermissionTarget::AgentCapability(AgentCapability::ArbitraryCommandExecution)
++        );
++    }
++
++    #[test]
++    fn provider_metadata_path_recovers_stable_tool_name() {
++        let value = serde_json::json!({
++            "_meta": {
++                "goose": {
++                    "toolCall": {
++                        "toolName": "gameengine_editor__asset.search"
++                    }
++                }
++            }
++        });
++        let path = vec![
++            "goose".to_owned(),
++            "toolCall".to_owned(),
++            "toolName".to_owned(),
++        ];
+         assert_eq!(
+-            classify_tool_kind(ToolKind::Execute),
+-            Some(AgentCapability::ArbitraryCommandExecution)
++            extract_tool_name_metadata(&value, &path).as_deref(),
++            Some("gameengine_editor__asset.search")
+         );
+     }
+ 
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 3a72f7c5fb26e123d422e03cb6b692f9481ef921..831fab318e99f01aa584e7056184ed649d5b4871 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -4911,7 +4911,8 @@ impl AiStudioPanel {
+             AcpBridgePoll::Recorded { .. }
+             | AcpBridgePoll::RecordedEvent { .. }
+             | AcpBridgePoll::PermissionRequired { .. }
+-            | AcpBridgePoll::ValidationReady { .. } => {
++            | AcpBridgePoll::ValidationReady { .. }
++            | AcpBridgePoll::TurnFailed { .. } => {
+                 self.status = Some(
+                     "ACP Ask received an unexpected run-bound bridge result and was not promoted to write authority."
+                         .to_owned(),
+@@ -7631,6 +7632,17 @@ impl AiStudioPanel {
+             AcpBridgePoll::ValidationReady { run_id } => {
+                 self.finish_acp_provider_execution(&run_id, &acp_session_id);
+             }
++            AcpBridgePoll::TurnFailed { reason, .. } => {
++                self.active_acp_run_session = None;
++                self.pending_acp_permission = None;
++                let close_result = self.acp.close_session(&acp_session_id);
++                self.status = Some(match close_result {
++                    Ok(()) => reason,
++                    Err(error) => {
++                        format!("{reason} The ACP session also failed to close cleanly: {error}")
++                    }
++                });
++            }
+             AcpBridgePoll::AskEvent(_) => {
+                 self.status =
+                     Some("Run-bound ACP session produced an Ask-only bridge result.".to_owned());
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index c77b5bfb39c341b609946aadabe19ae779adcf03..5de07e3954d787d5102296d6072660d2984d10a5 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -169,7 +169,10 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
+ 
+         let mut descriptor = self.descriptor.clone();
+         descriptor.environment = goose_environment(&lease, &ephemeral);
+-        let mut runtime = AcpProcessRuntime::new(descriptor)?;
++        let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(
++            descriptor,
++            &["goose", "toolCall", "toolName"],
++        )?;
+         match runtime.open_session(request) {
+             Ok(inner) => Ok(Box::new(GooseLocalAcpSession {
+                 inner,
+diff --git a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+index b563e292e7ba7991c60b4d5e6f94e8fe98afc6e7..df17d7df7aa0bf8d88052208a04bc2db7b58f0c0 100644
+--- a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
++++ b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+@@ -119,15 +119,32 @@ debug representation must be redacted.
+ 
+ ### 6. ACP permission requests do not create authority
+ 
+-ACP permission requests normalize into `AcpPermissionRequest`. Before resolving
+-one, the adapter must classify the operation into an existing `AgentCapability`.
+-Provider option names do not create new GameEngine capabilities or approval
+-scopes.
+-
+-Agent Host resolves its existing permission policy first. Only then may the ACP
+-session receive `AcpPermissionResolution` selecting a compatible agent-provided
+-option or cancelling the request. A request that cannot be safely classified
+-fails closed.
++ACP permission requests normalize into `AcpPermissionRequest`. ACP tool-call
++instance IDs are correlation identifiers only and never authorize an operation.
++ACP `ToolKind` remains a coarse category; it is not a stable GameEngine tool
++identity.
++
++For GameEngine MCP calls, the ACP adapter may retain a provider-declared stable
++tool name from trusted provider metadata attached to the matching tool-call
++instance. The common transport normalizes that name back to the exact registered
++Editor MCP inventory before Agent Host may resolve it. A claimed GameEngine MCP
++name that is absent from the registered inventory fails closed. The resulting
++read/write classification comes from the shared MCP tool contract rather than
++from the ACP display title, opaque call ID, or a provider option name.
++
++Non-MCP operations still classify into an existing `AgentCapability`. Provider
++option names do not create new GameEngine capabilities or approval scopes.
++Read-only ACP sessions may automatically select one-shot approval only for an
++exact registered non-mutating GameEngine MCP tool; run-bound sessions may do so
++only for an exact registered GameEngine MCP tool under the existing
++AgentRun-bound MCP authority. The MCP credential, exact run identity, work claim,
++and canonical authoring checks remain authoritative at execution time.
++
++Host policy/classification rejection is distinct from an explicit user denial.
++When the agent offers a reject option, a host-side rejection selects that option
++and records a host diagnostic; `Cancelled` is reserved for an actual user
++denial/cancellation or for a protocol request that offers no safe reject
++representation. A request that cannot be safely classified always fails closed.
+ 
+ ### 7. ACP updates are normalized before entering Agent Host
+ 
+@@ -150,6 +167,14 @@ and `AgentHost::complete_run`. An ACP adapter cannot mark acceptance,
+ authoring/source validation, Play, frame capture, visual evaluation, or
+ interaction gates successful merely because the agent says it is done.
+ 
++When an ACP provider returns control while a run is still `Executing` or
++`Repairing`, Agent Host must either admit the run to managed validation because
++all provider-side completion gates are satisfied, or terminate the run as
++failed with the unsatisfied gate recorded. A run already in `AwaitingUser`
++remains user-blocked. No timeout is used to manufacture completion, and an
++`end_turn` with failed or unresolved gates must not leave the outer AI Studio
++run permanently executing.
++
+ ### 9. Provider adapters register at one seam
+ 
+ Each migrated provider implements `AcpAgentRuntime` and returns an
