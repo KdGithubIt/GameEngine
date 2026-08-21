@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::goose_local_acp::{\n    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,\n};","new":"use crate::goose_local_acp::{\n    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig,\n};"}
