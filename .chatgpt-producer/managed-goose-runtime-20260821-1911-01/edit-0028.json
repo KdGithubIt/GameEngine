@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"        self.managed_goose_executable()?;\n        Ok(installation)\n","new":"        let _verified_executable = self.managed_goose_executable()?;\n        Ok(installation)\n"}
