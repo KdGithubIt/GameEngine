@@ -3178,9 +3178,9 @@ dependencies = [
 
 [[package]]
 name = "mmd-anim-format"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a47e12b9ceb74192ec80812ec51660c7c3fb3292113188d8511e3d1bd5da49a"
+checksum = "2d9a4db938a33b1ea44ff9a6a2ed8ff306ec180ef1f826ce112daf1e499dcc8d"
 dependencies = [
  "encoding_rs",
  "glam 0.32.1",
@@ -3191,9 +3191,9 @@ dependencies = [
 
 [[package]]
 name = "mmd-anim-runtime"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ffac27d6a5001e848d688ca8cf7b7bc5f41c03abf7a2fe093e78af01c3375fe"
+checksum = "036207304ebf845dcd18f2112289388a062b72e3ea246e06b0be2ad7253f8fe9"
 dependencies = [
  "glam 0.32.1",
  "rayon",
