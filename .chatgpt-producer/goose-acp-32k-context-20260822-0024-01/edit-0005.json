@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "        let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)\n            .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;\n        validate_managed_lease_identity(&lease, &self.config.managed_model)?;\n        let token_budget = GooseManagedTokenBudget::from_config(&self.config.managed_model);",
+  "new": "        let token_budget = goose_managed_token_budget(&self.config.managed_model)?;\n        let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)\n            .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;\n        validate_managed_lease_identity(&lease, &self.config.managed_model)?;"
+}
