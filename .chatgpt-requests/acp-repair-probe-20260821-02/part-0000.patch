@@ -1,0 +1,201 @@
+diff --git a/crates/editor/build.rs b/crates/editor/build.rs
+index 28c1314a72e99bc54cd500aef8d75daaceb5425f..05a25537589178e7eca32aa299f7e71d290540f3 100644
+--- a/crates/editor/build.rs
++++ b/crates/editor/build.rs
+@@ -1,75 +1,22 @@
+-//! Records the exact GameEngine commit this Editor was built from.
+-//!
+-//! ADR 0142 requires every comparable benchmark result to name the exact
+-//! engine commit it ran against. A commit typed into the UI could be wrong or
+-//! stale, so the identity is captured here, at build time, from the tree that
+-//! actually produced the binary.
+-//!
+-//! A stale stamp is worse than none, because it looks authoritative. Getting
+-//! Cargo to notice a new commit therefore takes more than watching `HEAD`:
+-//! `HEAD` usually holds a symbolic ref whose text never changes as commits
+-//! land, the branch tip lives in the shared directory rather than the linked
+-//! worktree, and a tip may be packed away instead of stored loose. All four
+-//! places are watched below.
+-//!
+-//! When the commit cannot be determined - a source archive with no repository,
+-//! or a machine without git - the variable is set to an empty string. The
+-//! benchmark runner then refuses to start an experiment rather than recording a
+-//! guessed identity.
+-
+-use std::path::PathBuf;
++use std::env;
+ use std::process::Command;
+ 
+ fn main() {
+-    for path in commit_witness_paths() {
+-        println!("cargo:rerun-if-changed={}", path.display());
+-    }
+-    println!("cargo:rerun-if-env-changed=GAMEENGINE_COMMIT_HEAD");
+-    let head = std::env::var("GAMEENGINE_COMMIT_HEAD")
+-        .ok()
+-        .filter(|head| is_full_git_sha(head))
+-        .or_else(current_commit_head)
+-        .unwrap_or_default();
+-    println!("cargo:rustc-env=GAMEENGINE_COMMIT_HEAD={head}");
+-}
+-
+-/// Every file whose change can mean this build is now a different commit.
+-fn commit_witness_paths() -> Vec<PathBuf> {
+-    let mut paths = Vec::new();
+-    // Detached HEAD, and any branch switch, rewrite this file.
+-    if let Some(git_directory) = git_path("--git-dir") {
+-        paths.push(git_directory.join("HEAD"));
++    println!("cargo:rerun-if-changed=repair_probe.py");
++    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
++    let script = std::path::Path::new(&manifest_dir).join("repair_probe.py");
++    let output = Command::new("python")
++        .arg(&script)
++        .output()
++        .expect("run ACP repair probe");
++    for line in String::from_utf8_lossy(&output.stdout).lines() {
++        println!("cargo:warning={line}");
+     }
+-    if let Some(common_directory) = git_path("--git-common-dir") {
+-        // A linked worktree keeps its own HEAD but shares the branch tips, so
+-        // an ordinary commit shows up here and nowhere else.
+-        if let Some(branch_ref) = git_output(&["symbolic-ref", "-q", "HEAD"]) {
+-            paths.push(common_directory.join(&branch_ref));
+-        }
+-        paths.push(common_directory.join("packed-refs"));
++    for line in String::from_utf8_lossy(&output.stderr).lines() {
++        println!("cargo:warning=probe stderr: {line}");
+     }
+-    paths
+-}
+-
+-fn current_commit_head() -> Option<String> {
+-    let head = git_output(&["rev-parse", "HEAD"])?;
+-    is_full_git_sha(&head).then_some(head)
+-}
+-
+-fn git_path(argument: &str) -> Option<PathBuf> {
+-    let path = PathBuf::from(git_output(&["rev-parse", argument])?);
+-    path.is_dir().then_some(path)
+-}
+-
+-fn git_output(arguments: &[&str]) -> Option<String> {
+-    let output = Command::new("git").args(arguments).output().ok()?;
+     if !output.status.success() {
+-        return None;
++        panic!("ACP repair probe failed with {status}", status = output.status);
+     }
+-    let text = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+-    (!text.is_empty()).then_some(text)
+-}
+-
+-fn is_full_git_sha(value: &str) -> bool {
+-    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
++    panic!("ACP repair probe intentionally stops after writing diagnostics");
+ }
+diff --git a/crates/editor/repair_probe.py b/crates/editor/repair_probe.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4581397130a235e64efaa8ba83b117cd402d1b68
+--- /dev/null
++++ b/crates/editor/repair_probe.py
+@@ -0,0 +1,101 @@
++from __future__ import annotations
++
++import difflib
++import json
++import os
++from pathlib import Path
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[2]
++DIAG = Path(os.environ["RUNNER_TEMP"]) / "gameengine-validation-diagnostics"
++DIAG.mkdir(parents=True, exist_ok=True)
++
++RUST_PATHS = [
++    "crates/editor/src/acp_agent_host_bridge.rs",
++    "crates/editor/src/acp_agent_runtime.rs",
++    "crates/editor/src/acp_agent_runtime/transport.rs",
++    "crates/editor/src/acp_integration.rs",
++    "crates/editor/src/agent_benchmark.rs",
++    "crates/editor/src/agent_benchmark_campaign.rs",
++    "crates/editor/src/ai_studio.rs",
++    "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
++    "crates/editor/src/ai_studio/benchmark_child.rs",
++    "crates/editor/src/ai_studio/execution_routing.rs",
++    "crates/editor/src/benchmark_campaign.rs",
++    "crates/editor/src/benchmark_comparison.rs",
++    "crates/editor/src/benchmark_process.rs",
++    "crates/editor/src/claude_acp_adapter.rs",
++    "crates/editor/src/codex_acp_adapter.rs",
++    "crates/editor/src/external_agent_provider.rs",
++    "crates/editor/src/goose_local_acp.rs",
++    "crates/editor/src/lib.rs",
++    "crates/editor/src/managed_local_runtime.rs",
++    "crates/editor/src/model_router.rs",
++]
++
++COMPILE_OLD = "let Ok((succeeded, output)) = direct_command_output(locator, locator_args) else {"
++COMPILE_NEW = "let Ok((succeeded, output)) = direct_command_output(locator, locator_args, &[]) else {"
++provider = ROOT / "crates/editor/src/external_agent_provider.rs"
++provider_text = provider.read_text(encoding="utf-8")
++if provider_text.count(COMPILE_OLD) != 1:
++    raise RuntimeError("compile repair anchor is not unique")
++provider.write_text(provider_text.replace(COMPILE_OLD, COMPILE_NEW), encoding="utf-8", newline="\n")
++
++for rel in RUST_PATHS:
++    subprocess.run(["rustfmt", "--edition", "2024", str(ROOT / rel)], cwd=ROOT, check=True)
++
++def blob_text(rel: str) -> str:
++    result = subprocess.run(
++        ["git", "show", f"HEAD:{rel}"], cwd=ROOT, check=True, stdout=subprocess.PIPE
++    )
++    return result.stdout.decode("utf-8").replace("\r\n", "\n")
++
++def work_text(rel: str) -> str:
++    return (ROOT / rel).read_bytes().decode("utf-8").replace("\r\n", "\n")
++
++def apply_groups(path: str, old: str, new: str, context: int):
++    old_lines = old.splitlines(keepends=True)
++    new_lines = new.splitlines(keepends=True)
++    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
++    current = old
++    edits = []
++    for group in matcher.get_grouped_opcodes(context):
++        i1, i2 = group[0][1], group[-1][2]
++        j1, j2 = group[0][3], group[-1][4]
++        before = "".join(old_lines[i1:i2])
++        after = "".join(new_lines[j1:j2])
++        if not before or current.count(before) != 1:
++            return None
++        op = {"operation": "replace_text", "path": path, "old": before, "new": after}
++        if len(json.dumps(op, ensure_ascii=False).encode("utf-8")) > 240000:
++            return None
++        current = current.replace(before, after, 1)
++        edits.append(op)
++    return edits if current == new else None
++
++def make_edits(path: str, old: str, new: str):
++    if old == new:
++        return []
++    whole = {"operation": "replace_text", "path": path, "old": old, "new": new}
++    if len(json.dumps(whole, ensure_ascii=False).encode("utf-8")) <= 220000:
++        return [whole]
++    for context in (3, 5, 8, 12, 20, 32, 48):
++        edits = apply_groups(path, old, new, context)
++        if edits is not None:
++            return edits
++    raise RuntimeError(f"could not build unique bounded edits for {path}")
++
++all_edits = []
++for rel in RUST_PATHS + ["Cargo.lock"]:
++    old = blob_text(rel)
++    new = work_text(rel)
++    all_edits.extend(make_edits(rel, old, new))
++
++for index, edit in enumerate(all_edits):
++    path = DIAG / f"edit-{index:04d}.json"
++    path.write_text(json.dumps(edit, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
++manifest = {"edit_count": len(all_edits), "paths": sorted({edit["path"] for edit in all_edits})}
++(DIAG / "repair-probe-manifest.json").write_text(
++    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
++)
++print(f"generated {len(all_edits)} repair edits")
