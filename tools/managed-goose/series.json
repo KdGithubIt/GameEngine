@@ -32,7 +32,7 @@
   "patches": [
     {
       "path": "tools/managed-goose/patches/0001-gameengine-distribution-identity.patch",
-      "sha256": "b0d404b1f5b2889d349a4676194fad5b67e5669ab42ac3e971500f83f1938e8d",
+      "sha256": "dd86b1e8e7cd93fd7420d67b44ab32bc003f9bd0e136a8b9ce5ada7fb5c0eed8",
       "allowed_paths": [
         "crates/goose-cli/src/cli.rs"
       ],
