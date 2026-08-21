@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "    pub(super) fn benchmark_child_uses_acp_runtime(&self) -> bool {\n        self.benchmark_child\n            .as_ref()\n            .and_then(|child| benchmark_runtime_from_spec(&child.spec))\n            .is_some()\n    }\n",
+  "new": "    pub(super) fn benchmark_child_uses_acp_runtime(&self) -> bool {\n        self.benchmark_child\n            .as_ref()\n            .is_some_and(|child| child.spec.uses_acp_runtime())\n    }\n"
+}
