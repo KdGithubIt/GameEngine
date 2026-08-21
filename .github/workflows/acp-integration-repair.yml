@@ -19,9 +19,18 @@ jobs:
           ref: chatgpt/gameengine-acp-integration
           fetch-depth: 0
 
-      - name: Regenerate lockfile and format ACP integration
+      - name: Apply exact compile repair, regenerate lockfile, and format
         shell: pwsh
         run: |
+          $path = "crates/editor/src/external_agent_provider.rs"
+          $old = "direct_command_output(locator, locator_args)"
+          $new = "direct_command_output(locator, locator_args, &[])"
+          $text = [System.IO.File]::ReadAllText($path)
+          $count = ([regex]::Matches($text, [regex]::Escape($old))).Count
+          if ($count -ne 1) { throw "Expected exactly one provider probe repair anchor, found $count" }
+          $text = $text.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+
           cargo generate-lockfile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo fmt --all
@@ -38,7 +47,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock crates/editor/src
-          git commit -m "fix: regenerate ACP lockfile and format integration"
+          git commit -m "fix: repair ACP provider probe call"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git push origin HEAD:chatgpt/gameengine-acp-integration
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
