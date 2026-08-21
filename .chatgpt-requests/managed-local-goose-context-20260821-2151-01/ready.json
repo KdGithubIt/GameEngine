@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "managed-local-goose-context-20260821-2151-01",
+  "target_branch": "chatgpt/gameengine-managed-local-goose-context-budget",
+  "expected_head_sha": "579e136ad0e45ae65e2a8aeac17419ecac018b3e",
+  "baseline_main_sha": "579e136ad0e45ae65e2a8aeac17419ecac018b3e",
+  "patch_sha256": "7adc83f07fd7eda7a021fa37cfa2754405e150342ce912fc7bd08b3b494aa7be",
+  "patch_bytes": 23270,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Managed Local Goose context exhaustion handling",
+  "pr_title": "GameEngine: align Managed Local Goose context budget",
+  "pr_body": "## Summary\n\nAlign the Managed Local llama-server physical context with Goose's effective context contract, reserve an explicit per-response token budget, and terminalize ACP prompt failures such as context exhaustion/truncated tool calls. Conversation history and compaction remain owned by Goose.\n\n## Compatibility\n\nKeeps the pinned Goose 1.44.0 runtime and uses its supported explicit environment overrides; no authoring schema, stable ID, MCP tool name, or public crate contract changes."
+}
