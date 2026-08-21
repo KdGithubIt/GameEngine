@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "fn benchmark_runtime_from_spec(spec: &BenchmarkChildRunSpec) -> Option<&BenchmarkRuntimeIdentity> {\n    spec.benchmark_runtime()\n}",
+  "new": "fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {\n    match event {\n        AcpNormalizedEvent::AgentMessage { .. } => \"agent message received\".to_owned(),\n        AcpNormalizedEvent::Progress { .. } => \"progress update\".to_owned(),\n        AcpNormalizedEvent::Plan { entries } => {\n            format!(\"plan updated ({} entries)\", entries.len())\n        }\n        AcpNormalizedEvent::ToolCall { status, .. } => {\n            format!(\"tool call is {status:?}\")\n        }\n        AcpNormalizedEvent::SessionInfo { .. } => \"session metadata updated\".to_owned(),\n        AcpNormalizedEvent::ProtocolDiagnostic { .. } => {\n            \"protocol diagnostic reported\".to_owned()\n        }\n        AcpNormalizedEvent::TurnFinished { stop_reason } => {\n            format!(\"turn finished: {stop_reason:?}\")\n        }\n        AcpNormalizedEvent::PermissionRequest(_) => \"permission requested\".to_owned(),\n    }\n}\n\nfn benchmark_runtime_from_spec(spec: &BenchmarkChildRunSpec) -> Option<&BenchmarkRuntimeIdentity> {\n    spec.benchmark_runtime()\n}"
+}
