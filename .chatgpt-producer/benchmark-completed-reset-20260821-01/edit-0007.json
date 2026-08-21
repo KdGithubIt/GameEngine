@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "    fn clear_campaign_checkpoint(&mut self) {\n        let path = campaign_checkpoint_path(&self.benchmark_experiment_root);\n        match fs::remove_file(path) {\n            Ok(()) => {}\n            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}\n            Err(error) => {\n                self.benchmark_campaign.message =\n                    Some(format!(\"Could not remove campaign checkpoint: {error}\"));\n            }\n        }\n    }\n",
+  "new": ""
+}
