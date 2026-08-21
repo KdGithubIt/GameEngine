@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"            let read_only_binding = self.attached(acp_id)?.session.binding().mcp.access\n                == AcpMcpAccessLevel::ReadOnly;\n","new":"            let read_only_binding =\n                self.attached(acp_id)?.session.binding().mcp.access == AcpMcpAccessLevel::ReadOnly;\n"}

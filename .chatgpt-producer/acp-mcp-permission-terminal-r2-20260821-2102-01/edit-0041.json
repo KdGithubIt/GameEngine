@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client};\nuse futures::{\n","new":"use agent_client_protocol::{AcpAgent, AcpAgentConfig, Client};\nuse engine_mcp::{authoring_tool_descriptors, tool_is_mutating};\nuse futures::{\n"}

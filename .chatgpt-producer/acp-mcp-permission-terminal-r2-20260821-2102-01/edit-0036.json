@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"                            return Err(AcpBridgeError::UnsafePermissionOptions(request.request_id));\n","new":"                            return Err(AcpBridgeError::UnsafePermissionOptions(\n                                request.request_id,\n                            ));\n"}

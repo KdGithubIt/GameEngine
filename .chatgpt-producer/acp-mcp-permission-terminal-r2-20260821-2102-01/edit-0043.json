@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"            let stable_tool_name =\n                extract_tool_name_metadata(&update, tool_name_metadata_path);\n","new":"            let stable_tool_name = extract_tool_name_metadata(&update, tool_name_metadata_path);\n"}

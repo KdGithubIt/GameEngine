@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"fn extract_tool_name_metadata<T: serde::Serialize>(\n    value: &T,\n    path: &[String],\n) -> Option<String> {\n","new":"fn extract_tool_name_metadata<T: serde::Serialize>(value: &T, path: &[String]) -> Option<String> {\n"}

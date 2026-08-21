@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"struct TrackedToolCall {\n    title: String,\n    kind: ToolKind,\n    status: AcpToolCallStatus,\n}\n","new":"struct TrackedToolCall {\n    title: String,\n    kind: ToolKind,\n    status: AcpToolCallStatus,\n    stable_tool_name: Option<String>,\n}\n"}

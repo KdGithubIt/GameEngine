@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"            if host.check_permission(&run_id, required_capability)?\n                != PermissionCheck::Granted\n            {\n","new":"            if host.check_permission(&run_id, required_capability)? != PermissionCheck::Granted {\n"}

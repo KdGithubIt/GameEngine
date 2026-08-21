@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime.rs","old":"    GameEngineMcpTool {\n        stable_name: String,\n        mutating: bool,\n    },\n","new":"    GameEngineMcpTool { stable_name: String, mutating: bool },\n"}
