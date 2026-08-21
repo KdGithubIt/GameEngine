@@ -1,0 +1,535 @@
+diff --git a/crates/editor/src/acp_agent_host_bridge.rs b/crates/editor/src/acp_agent_host_bridge.rs
+index 72741698bfdcc822d1c03113d3fdd52954818887..c934e03001d63b1d4c5065f7cad0d60e88622759 100644
+--- a/crates/editor/src/acp_agent_host_bridge.rs
++++ b/crates/editor/src/acp_agent_host_bridge.rs
+@@ -375,6 +375,9 @@ impl AcpAgentHostBridge {
+         let Some(event) = event else {
+             return Ok(AcpBridgePoll::Idle);
+         };
++        if let Some(error) = terminal_prompt_error(&event) {
++            return self.fail_runtime(host, acp_id, error);
++        }
+         match self.attached(acp_id)?.run_id.clone() {
+             Some(run_id) => self.record_run_event(host, acp_id, &run_id, event),
+             None => self.record_ask_event(host, acp_id, event),
+@@ -529,6 +532,9 @@ impl AcpAgentHostBridge {
+                     });
+                 }
+             }
++            AcpNormalizedEvent::PromptFailed { message } => {
++                return self.fail_runtime(host, acp_id, AcpRuntimeError::Transport(message));
++            }
+             AcpNormalizedEvent::ProtocolDiagnostic { message } => host.record_event(
+                 run_id,
+                 AgentEventKind::ProviderOutput,
+@@ -1014,6 +1020,13 @@ fn host_rejection_outcome(request: &AcpPermissionRequest) -> AcpPermissionOutcom
+         .unwrap_or(AcpPermissionOutcome::Cancelled)
+ }
+ 
++fn terminal_prompt_error(event: &AcpNormalizedEvent) -> Option<AcpRuntimeError> {
++    let AcpNormalizedEvent::PromptFailed { message } = event else {
++        return None;
++    };
++    Some(AcpRuntimeError::Transport(message.clone()))
++}
++
+ fn provider_turn_failure_reason(
+     state: AgentRunState,
+     stop_reason: &str,
+@@ -1072,7 +1085,11 @@ fn gate_satisfied(status: CompletionStatus) -> bool {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::acp_agent_runtime::AcpPermissionOption;
++    use crate::acp_agent_runtime::{
++        AcpAgentDescriptor, AcpAgentRuntime, AcpCapabilities, AcpPermissionOption,
++        AcpRuntimeRegistry,
++    };
++    use std::ffi::OsString;
+ 
+     fn permission_request(options: Vec<AcpPermissionOption>) -> AcpPermissionRequest {
+         AcpPermissionRequest {
+@@ -1145,4 +1162,175 @@ mod tests {
+             None
+         );
+     }
++
++    #[test]
++    fn prompt_rpc_failure_is_terminal_but_diagnostic_is_not() {
++        let failure = AcpNormalizedEvent::PromptFailed {
++            message: "context length exceeded after truncated tool arguments".to_owned(),
++        };
++        assert_eq!(failure.host_event_kind(), AgentEventKind::Failure);
++        assert!(matches!(
++            terminal_prompt_error(&failure),
++            Some(AcpRuntimeError::Transport(message))
++                if message.contains("context length exceeded")
++        ));
++
++        let diagnostic = AcpNormalizedEvent::ProtocolDiagnostic {
++            message: "unknown optional ACP notification".to_owned(),
++        };
++        assert!(terminal_prompt_error(&diagnostic).is_none());
++    }
++
++    struct PromptFailingRuntime {
++        descriptor: AcpAgentDescriptor,
++    }
++
++    impl PromptFailingRuntime {
++        fn new() -> Self {
++            Self {
++                descriptor: AcpAgentDescriptor {
++                    id: "prompt-failing-test".to_owned(),
++                    executable: OsString::from("prompt-failing-test"),
++                    arguments: Vec::new(),
++                    environment: BTreeMap::new(),
++                    capabilities: AcpCapabilities::default(),
++                    runtime_identity: AcpRuntimeIdentity::stable(
++                        "prompt-failing-test",
++                        Some("1.0.0".to_owned()),
++                    ),
++                },
++            }
++        }
++    }
++
++    impl AcpAgentRuntime for PromptFailingRuntime {
++        fn descriptor(&self) -> &AcpAgentDescriptor {
++            &self.descriptor
++        }
++
++        fn open_session(
++            &mut self,
++            request: AcpSessionOpenRequest,
++        ) -> Result<Box<dyn AcpAgentSession>, AcpRuntimeError> {
++            Ok(Box::new(PromptFailingSession {
++                binding: request.binding,
++                capabilities: self.descriptor.capabilities.clone(),
++                runtime_identity: self.descriptor.runtime_identity.clone(),
++                event: Some(AcpNormalizedEvent::PromptFailed {
++                    message: "context length exceeded after finish_reason=length truncated tool arguments"
++                        .to_owned(),
++                }),
++            }))
++        }
++    }
++
++    struct PromptFailingSession {
++        binding: AcpSessionBinding,
++        capabilities: AcpCapabilities,
++        runtime_identity: AcpRuntimeIdentity,
++        event: Option<AcpNormalizedEvent>,
++    }
++
++    impl AcpAgentSession for PromptFailingSession {
++        fn acp_session_id(&self) -> &str {
++            "acp-prompt-failure-test"
++        }
++
++        fn binding(&self) -> &AcpSessionBinding {
++            &self.binding
++        }
++
++        fn capabilities(&self) -> &AcpCapabilities {
++            &self.capabilities
++        }
++
++        fn runtime_identity(&self) -> &AcpRuntimeIdentity {
++            &self.runtime_identity
++        }
++
++        fn send_prompt(&mut self, _prompt: &str) -> Result<(), AcpRuntimeError> {
++            Ok(())
++        }
++
++        fn try_next_event(&mut self) -> Result<Option<AcpNormalizedEvent>, AcpRuntimeError> {
++            Ok(self.event.take())
++        }
++
++        fn resolve_permission(
++            &mut self,
++            _resolution: AcpPermissionResolution,
++        ) -> Result<(), AcpRuntimeError> {
++            Ok(())
++        }
++
++        fn cancel(&mut self) -> Result<(), AcpRuntimeError> {
++            Ok(())
++        }
++
++        fn close(&mut self) -> Result<(), AcpRuntimeError> {
++            Ok(())
++        }
++    }
++
++    #[test]
++    fn truncated_prompt_failure_fails_run_and_closes_session() {
++        let root = std::env::temp_dir().join(format!(
++            "gameengine-acp-prompt-failure-{}",
++            std::process::id()
++        ));
++        let _ = std::fs::remove_dir_all(&root);
++        let project = root.join("project");
++        let storage = root.join("state");
++        let workspace = root.join("workspace");
++        std::fs::create_dir_all(&project).expect("project fixture");
++        std::fs::create_dir_all(&workspace).expect("workspace fixture");
++
++        let mut host = AgentHost::open(project.clone(), storage).expect("Agent Host");
++        let gameengine_session_id = host.create_session("Prompt failure").expect("session");
++        let proposal_version = host
++            .session(&gameengine_session_id)
++            .expect("session")
++            .proposal
++            .version;
++        let run_id = host
++            .start_run_authorized(&gameengine_session_id, proposal_version, "test")
++            .expect("run");
++
++        let mut registry = AcpRuntimeRegistry::default();
++        registry
++            .register(Box::new(PromptFailingRuntime::new()))
++            .expect("test runtime");
++        let credentials = AcpEditorMcpCredentials::new(
++            "http://127.0.0.1:1/mcp",
++            "run-token",
++            "read-token",
++        )
++        .expect("credentials");
++        let mut bridge = AcpAgentHostBridge::new(credentials, project).expect("bridge");
++        let acp_session_id = bridge
++            .open_run_session(
++                &mut host,
++                &mut registry,
++                "prompt-failing-test",
++                &gameengine_session_id,
++                &run_id,
++                workspace,
++            )
++            .expect("ACP session");
++        bridge
++            .send_prompt(&mut host, &acp_session_id, "use a tool")
++            .expect("prompt accepted");
++
++        let error = bridge
++            .poll_session(&mut host, &acp_session_id)
++            .expect_err("truncated prompt failure must terminate the run");
++        assert!(error.to_string().contains("context length exceeded"));
++        assert_eq!(host.run(&run_id).expect("run").state, AgentRunState::Failed);
++        assert!(matches!(
++            bridge.poll_session(&mut host, &acp_session_id),
++            Err(AcpBridgeError::SessionNotFound(id)) if id == acp_session_id
++        ));
++
++        let _ = std::fs::remove_dir_all(root);
++    }
+ }
+diff --git a/crates/editor/src/acp_agent_runtime.rs b/crates/editor/src/acp_agent_runtime.rs
+index 285e62af7514e9d4d5da4069fc4bee6a9dab2a34..45757f26e4e1c96d77c15a00a6434a151e0b2d7b 100644
+--- a/crates/editor/src/acp_agent_runtime.rs
++++ b/crates/editor/src/acp_agent_runtime.rs
+@@ -387,6 +387,14 @@ pub(crate) enum AcpNormalizedEvent {
+     TurnFinished {
+         stop_reason: String,
+     },
++    /// The ACP prompt RPC itself failed after the request was accepted.
++    ///
++    /// This is terminal for the current GameEngine Ask/AgentRun. It is distinct
++    /// from a protocol diagnostic, which can describe malformed or unknown
++    /// updates without proving that the prompt ended.
++    PromptFailed {
++        message: String,
++    },
+     ProtocolDiagnostic {
+         message: String,
+     },
+@@ -405,6 +413,7 @@ impl AcpNormalizedEvent {
+             | Self::TurnFinished { .. } => AgentEventKind::SemanticProgress,
+             Self::ToolCall { .. } => AgentEventKind::ToolAction,
+             Self::PermissionRequest(_) => AgentEventKind::PermissionRequested,
++            Self::PromptFailed { .. } => AgentEventKind::Failure,
+             Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,
+         }
+     }
+diff --git a/crates/editor/src/acp_agent_runtime/transport.rs b/crates/editor/src/acp_agent_runtime/transport.rs
+index 6103be644f41f57ba35d9a1c1c7d9cf70cb566b6..bf628d644518bbeb279e819d6b98b40d68bd0216 100644
+--- a/crates/editor/src/acp_agent_runtime/transport.rs
++++ b/crates/editor/src/acp_agent_runtime/transport.rs
+@@ -591,7 +591,7 @@ async fn run_command_loop(
+                             Err(error) => {
+                                 send_event(
+                                     &prompt_events,
+-                                    AcpNormalizedEvent::ProtocolDiagnostic {
++                                    AcpNormalizedEvent::PromptFailed {
+                                         message: format!("ACP session/prompt failed: {error}"),
+                                     },
+                                 )?;
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 831fab318e99f01aa584e7056184ed649d5b4871..50ae304ff5455a92291dbe0dd388ad5d70b02767 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -4866,6 +4866,10 @@ impl AiStudioPanel {
+                 }
+                 context.request_repaint_after(std::time::Duration::from_millis(100));
+             }
++            AcpBridgePoll::AskEvent(AcpNormalizedEvent::PromptFailed { .. }) => {
++                // Prompt failures are consumed by AcpAgentHostBridge::fail_runtime
++                // before an AskEvent can cross this composition boundary.
++            }
+             AcpBridgePoll::AskEvent(AcpNormalizedEvent::ProtocolDiagnostic { message }) => {
+                 self.status = Some(message);
+                 context.request_repaint_after(std::time::Duration::from_millis(100));
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index 5de07e3954d787d5102296d6072660d2984d10a5..ab2be585a53f8df29581bb8c19ca4ae147e12cda 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -30,9 +30,40 @@ const GOOSE_EXECUTABLE_ENV: &str = "GAMEENGINE_GOOSE_EXECUTABLE";
+ const GOOSE_PROVIDER_ID: &str = "custom_gameengine_managed_local";
+ const GOOSE_PROVIDER_FILE: &str = "custom_gameengine_managed_local.json";
+ const GOOSE_PATH_ROOT_ENV: &str = "GOOSE_PATH_ROOT";
++const GOOSE_CONTEXT_LIMIT_ENV: &str = "GOOSE_CONTEXT_LIMIT";
++const GOOSE_MAX_TOKENS_ENV: &str = "GOOSE_MAX_TOKENS";
++/// Reserve one eighth of the physical context for a single model response.
++///
++/// Goose auto-compacts at 80% by default. A 12.5% response cap therefore leaves
++/// additional headroom for a normal threshold-triggered provider call while
++/// scaling from 1,024 output tokens at the 8,192-token managed floor to 4,096
++/// at the 32,768-token managed ceiling. Long same-turn tool loops remain Goose
++/// state-machine responsibility; if upstream still overruns this contract, the
++/// ACP prompt failure is terminalized rather than retried by GameEngine.
++const GOOSE_OUTPUT_BUDGET_DIVISOR: u32 = 8;
+ const GOOSE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+ static GOOSE_CONFIG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct GooseManagedTokenBudget {
++    context_tokens: u32,
++    max_output_tokens: u32,
++}
++
++impl GooseManagedTokenBudget {
++    fn from_config(config: &ManagedLocalModelConfig) -> Self {
++        Self::from_context_tokens(managed_context_tokens(config))
++    }
++
++    fn from_context_tokens(context_tokens: u32) -> Self {
++        debug_assert!(context_tokens >= GOOSE_OUTPUT_BUDGET_DIVISOR);
++        Self {
++            context_tokens,
++            max_output_tokens: context_tokens / GOOSE_OUTPUT_BUDGET_DIVISOR,
++        }
++    }
++}
++
+ /// Identity linking the ACP Goose process to the exact Managed Local runtime/model.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct GooseLocalRuntimeIdentity {
+@@ -160,15 +191,18 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
+         let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)
+             .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;
+         validate_managed_lease_identity(&lease, &self.config.managed_model)?;
++        let token_budget = GooseManagedTokenBudget::from_config(&self.config.managed_model);
+         let ephemeral =
+-            GooseEphemeralConfig::create(&self.config.managed_model, &lease).map_err(|error| {
+-                AcpRuntimeError::Transport(format!(
+-                    "could not create isolated Goose config: {error}"
+-                ))
+-            })?;
++            GooseEphemeralConfig::create(&self.config.managed_model, &lease, token_budget).map_err(
++                |error| {
++                    AcpRuntimeError::Transport(format!(
++                        "could not create isolated Goose config: {error}"
++                    ))
++                },
++            )?;
+ 
+         let mut descriptor = self.descriptor.clone();
+-        descriptor.environment = goose_environment(&lease, &ephemeral);
++        descriptor.environment = goose_environment(&lease, &ephemeral, token_budget);
+         let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(
+             descriptor,
+             &["goose", "toolCall", "toolName"],
+@@ -299,8 +333,9 @@ fn validate_managed_lease_identity(
+ fn goose_environment(
+     lease: &ManagedLocalEndpointLease,
+     ephemeral: &GooseEphemeralConfig,
++    token_budget: GooseManagedTokenBudget,
+ ) -> BTreeMap<OsString, OsString> {
+-    BTreeMap::from([
++    let mut environment = BTreeMap::from([
+         (
+             OsString::from("GOOSE_PROVIDER"),
+             OsString::from(GOOSE_PROVIDER_ID),
+@@ -322,12 +357,29 @@ fn goose_environment(
+             OsString::from("GOOSE_PROJECT_TRACKER_ENABLED"),
+             OsString::from("false"),
+         ),
+-    ])
++    ]);
++    environment.extend(goose_token_budget_environment(token_budget));
++    environment
++}
++
++fn goose_token_budget_environment(
++    token_budget: GooseManagedTokenBudget,
++) -> [(OsString, OsString); 2] {
++    [
++        (
++            OsString::from(GOOSE_CONTEXT_LIMIT_ENV),
++            OsString::from(token_budget.context_tokens.to_string()),
++        ),
++        (
++            OsString::from(GOOSE_MAX_TOKENS_ENV),
++            OsString::from(token_budget.max_output_tokens.to_string()),
++        ),
++    ]
+ }
+ 
+ fn goose_provider_document(
+     lease: &ManagedLocalEndpointLease,
+-    config: &ManagedLocalModelConfig,
++    token_budget: GooseManagedTokenBudget,
+ ) -> Value {
+     json!({
+         "name": GOOSE_PROVIDER_ID,
+@@ -338,7 +390,7 @@ fn goose_provider_document(
+         "base_url": lease.identity().endpoint_url.clone(),
+         "models": [{
+             "name": lease.identity().model_id.clone(),
+-            "context_limit": managed_context_tokens(config) as usize,
++            "context_limit": token_budget.context_tokens as usize,
+             "input_token_cost": null,
+             "output_token_cost": null,
+             "currency": null,
+@@ -371,6 +423,7 @@ impl GooseEphemeralConfig {
+     fn create(
+         config: &ManagedLocalModelConfig,
+         lease: &ManagedLocalEndpointLease,
++        token_budget: GooseManagedTokenBudget,
+     ) -> std::io::Result<Self> {
+         let id = GOOSE_CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+         let root = config
+@@ -388,7 +441,7 @@ impl GooseEphemeralConfig {
+         }
+         let provider_dir = root.join("config").join("custom_providers");
+         fs::create_dir_all(&provider_dir)?;
+-        let provider = serde_json::to_vec_pretty(&goose_provider_document(lease, config))
++        let provider = serde_json::to_vec_pretty(&goose_provider_document(lease, token_budget))
+             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+         fs::write(provider_dir.join(GOOSE_PROVIDER_FILE), provider)?;
+         Ok(Self { root })
+@@ -673,6 +726,40 @@ mod tests {
+         assert_eq!(extract_semver("goose unknown"), None);
+     }
+ 
++    #[test]
++    fn managed_context_contract_reserves_output_budget_at_the_physical_limit() {
++        let budget = GooseManagedTokenBudget::from_context_tokens(8_192);
++        assert_eq!(budget.context_tokens, 8_192);
++        assert_eq!(budget.max_output_tokens, 1_024);
++
++        let environment = BTreeMap::from(goose_token_budget_environment(budget));
++        assert_eq!(
++            environment.get(&OsString::from(GOOSE_CONTEXT_LIMIT_ENV)),
++            Some(&OsString::from("8192"))
++        );
++        assert_eq!(
++            environment.get(&OsString::from(GOOSE_MAX_TOKENS_ENV)),
++            Some(&OsString::from("1024"))
++        );
++    }
++
++    #[test]
++    fn managed_context_override_is_independent_of_canonical_model_names() {
++        let budget = GooseManagedTokenBudget::from_context_tokens(8_192);
++        let environment = BTreeMap::from(goose_token_budget_environment(budget));
++
++        for canonical_shaped_model in ["gpt-4.1", "deepseek-ai/deepseek-v4-pro"] {
++            let advertised = environment
++                .get(&OsString::from(GOOSE_CONTEXT_LIMIT_ENV))
++                .expect("managed context override");
++            assert_eq!(
++                advertised,
++                &OsString::from("8192"),
++                "{canonical_shaped_model} must not change the managed physical context"
++            );
++        }
++    }
++
+     fn candidate_fixture(name: &str) -> PathBuf {
+         let root = std::env::temp_dir().join(format!(
+             "gameengine-goose-resolver-{}-{name}",
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index aca7a9de52a96f8f96e3a6621c998ccd85c9f649..19eeebb2103424a21de87c6bb5a795c4c6191451 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -4069,6 +4069,17 @@ mod tests {
+         let _ = fs::remove_dir_all(&state_root);
+     }
+ 
++    #[test]
++    fn windows_launch_uses_the_exact_managed_physical_context() {
++        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
++        let arguments = windows_server_arguments(model, None, 18443, 8_192);
++        let context_flag = arguments
++            .iter()
++            .position(|argument| argument == "--ctx-size")
++            .expect("managed context flag");
++        assert_eq!(arguments.get(context_flag + 1), Some(&"8192".to_owned()));
++    }
++
+     #[test]
+     fn windows_launch_contract_leaves_gpu_layers_to_memory_fitter() {
+         let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+diff --git a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+index df17d7df7aa0bf8d88052208a04bc2db7b58f0c0..e0c5a02054f961c8ac90f4c97e8143c5a4993aee 100644
+--- a/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
++++ b/docs/adr/0166-acp-centered-external-agent-runtime-foundation.md
+@@ -251,6 +251,35 @@ ACP setup failure and never authorizes a Legacy Native fallback. This lifecycle
+ changes only machine-local adapter availability and does not transfer Agent Host,
+ permission, MCP credential, completion, or persistence authority to Goose.
+ 
++### Managed Local Goose context contract
++
++For GameEngine-managed local inference, `managed_context_tokens` is the single
++authoritative physical context value. The same value is used to launch
++`llama-server --ctx-size`, written into the ephemeral Goose custom-provider
++model definition, and exported to the isolated Goose process as
++`GOOSE_CONTEXT_LIMIT`. Canonical Goose model metadata must not enlarge that
++value for a Managed Local session.
++
++GameEngine also exports `GOOSE_MAX_TOKENS` from the same budget. The response cap
++is one eighth of the managed context, which is 1,024 tokens at the 8,192-token
++managed floor and 4,096 at the 32,768-token ceiling. This cap bounds one provider
++generation, including reasoning tokens when the provider accounts for them in
++the completion budget; it does not move conversation history, summarize tool
++results, or otherwise duplicate Goose's Agent Harness responsibilities.
++
++Goose retains ownership of auto-compaction and same-turn tool-loop context
++management. A provider/prompt RPC failure caused by context exhaustion, output
++truncation, or an incomplete tool call is nevertheless terminal at the
++GameEngine ACP boundary: it is not downgraded to a diagnostic, the incomplete
++tool call is not executed by GameEngine, and Agent Host fails a run (or ends an
++Ask with an error) instead of leaving the outer session executing or retrying the
++same oversized prompt.
++
++The managed runtime remains pinned to Goose 1.44.0 for this contract. Upstream
++context-limit precedence and mid-tool-loop compaction fixes are not assumed to
++be present until a later explicit dependency update validates ACP compatibility,
++permission behavior, Windows artifacts/digests, and the Managed Local adapter.
++
+ ## Consequences
+ 
+ - New ACP agents are registry entries rather than central architecture variants.
+@@ -271,7 +300,9 @@ Focused tests cover:
+ - duplicate descriptor rejection;
+ - read-only versus AgentRun-bound MCP bindings;
+ - credential redaction; and
+-- ACP turn-finished projection to semantic progress rather than host completion.
++- ACP turn-finished projection to semantic progress rather than host completion;
++- Managed Local Goose physical/provider/environment context-budget consistency; and
++- terminal ACP prompt failure classification distinct from nonterminal protocol diagnostics.
+ 
+ Concrete adapter slices add transport/protocol tests when they begin ACP I/O.
+ 
