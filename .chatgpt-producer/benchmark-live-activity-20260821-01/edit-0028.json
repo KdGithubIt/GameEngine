@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        if run.state() != CampaignState::Running {\n            return;\n        }\n        let activity = &self.benchmark_campaign.live_activity;",
+  "new": "        if run.state() != CampaignState::Running {\n            return;\n        }\n        ui.ctx().request_repaint_after(std::time::Duration::from_millis(\n            CAMPAIGN_LIVE_LOG_REFRESH_MS,\n        ));\n        let activity = &self.benchmark_campaign.live_activity;"
+}
