@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            Err(error) => {\n                let _ = self.acp.close_session(&acp_session_id);\n                self.fail_run(\n                    run_id,\n                    format!(\"Could not read negotiated ACP runtime identity: {error}\"),\n                );\n                return;\n            }\n",
+  "new": "            Err(error) => {\n                let _ = self.acp.close_session(&acp_session_id);\n                let message = format!(\"Could not read negotiated ACP runtime identity: {error}\");\n                self.fail_run(run_id, message.clone());\n                if self.benchmark_child_active() {\n                    self.write_benchmark_child_failure(\n                        BenchmarkRunFailureKind::Harness,\n                        message,\n                    );\n                }\n                return;\n            }\n"
+}
