@@ -101,6 +101,10 @@ impl EditorShell {
                         ai_studio.prepare_benchmark_campaign_completed_visual_validation()?;
                         true
                     }
+                    Some("ADR 0156 Benchmark Running") => {
+                        ai_studio.prepare_benchmark_campaign_running_visual_validation()?;
+                        true
+                    }
                     Some("ADR 0156 Benchmark Reset") => {
                         ai_studio.prepare_benchmark_campaign_reset_visual_validation()?;
                         true
@@ -138,6 +142,7 @@ impl EditorShell {
                     | "ADR 0143 Model Resources"
                     | "ADR 0145 External Agent"
                     | "ADR 0156 Benchmark Completed"
+                    | "ADR 0156 Benchmark Running"
                     | "ADR 0156 Benchmark Reset"
             ) {
                 // AI Studio scenarios are prepared above and use its detached native viewport.
