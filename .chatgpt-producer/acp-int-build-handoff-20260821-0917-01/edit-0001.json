@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"        self.open_registered(registry, agent_id, binding, None)\n","new":"        self.open_registered(\n            registry,\n            agent_id,\n            binding,\n            self.working_directory.clone(),\n            None,\n        )\n"}
