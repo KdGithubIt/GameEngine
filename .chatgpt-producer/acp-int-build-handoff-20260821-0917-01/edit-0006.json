@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"        Ok(AcpBridgePoll::Recorded { run_id: run_id.to_owned(), kind })\n    }\n","new":"        Ok(AcpBridgePoll::RecordedEvent {\n            run_id: run_id.to_owned(),\n            kind,\n            event: recorded_event,\n        })\n    }\n"}
