@@ -11,6 +11,7 @@ use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRoutingMode, BenchmarkRunFailureKind, BenchmarkRunOutcome,
 };
 use crate::benchmark_process::BenchmarkChildRunSpec;
+use crate::goose_local_acp::parse_goose_context_overflow;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -315,6 +316,16 @@ impl AiStudioPanel {
         ) {
             return;
         }
+        if self.benchmark_child_uses_acp_runtime()
+            && let Some(message) = run
+                .events
+                .iter()
+                .filter(|event| event.kind == AgentEventKind::Failure)
+                .find_map(|event| benchmark_context_overflow_message(&event.message))
+        {
+            self.write_benchmark_child_failure(BenchmarkRunFailureKind::Backend, message);
+            return;
+        }
         let Some(identity) = self.native_run_benchmark_context.clone() else {
             self.write_benchmark_child_failure(
                 BenchmarkRunFailureKind::Harness,
@@ -586,9 +597,25 @@ fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
         AcpNormalizedEvent::Plan { entries } => {
             format!("plan updated ({} entries)", entries.len())
         }
-        AcpNormalizedEvent::ToolCall { status, .. } => {
-            format!("tool call is {status:?}")
-        }
+        AcpNormalizedEvent::ToolCall {
+            status,
+            stable_tool_name,
+            result_payload_bytes,
+            ..
+        } => format!(
+            "tool call is {status:?}; stable_tool={}; result_payload_bytes={}",
+            stable_tool_name.as_deref().unwrap_or("unavailable"),
+            result_payload_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unavailable".to_owned())
+        ),
+        AcpNormalizedEvent::Usage {
+            used_tokens,
+            context_limit_tokens,
+        } => format!(
+            "context usage {used_tokens}/{context_limit_tokens} tokens (agent-reported)"
+        ),
+        AcpNormalizedEvent::ContextTelemetry(telemetry) => telemetry.diagnostic_summary(),
         AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
         AcpNormalizedEvent::PromptFailed { .. } => "prompt failed".to_owned(),
         AcpNormalizedEvent::ProtocolDiagnostic { .. } => "protocol diagnostic reported".to_owned(),
@@ -597,6 +624,14 @@ fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
         }
         AcpNormalizedEvent::PermissionRequest(_) => "permission requested".to_owned(),
     }
+}
+
+fn benchmark_context_overflow_message(message: &str) -> Option<String> {
+    let failure = parse_goose_context_overflow(message)?;
+    Some(format!(
+        "Managed Local context overflow: requested_tokens={}, available_context_tokens={}",
+        failure.requested_tokens, failure.available_context_tokens
+    ))
 }
 
 fn benchmark_runtime_from_spec(spec: &BenchmarkChildRunSpec) -> Option<&BenchmarkRuntimeIdentity> {
@@ -767,6 +802,20 @@ mod tests {
                 "task `{task_id}` must not authorize an external agent runtime"
             );
         }
+    }
+
+    #[test]
+    fn managed_acp_context_overflow_is_classified_as_backend_metadata() {
+        assert_eq!(
+            benchmark_context_overflow_message(
+                "ACP runtime/session failed: Bad request (400): request (16366 tokens) exceeds the available context size (8192 tokens)"
+            ),
+            Some("Managed Local context overflow: requested_tokens=16366, available_context_tokens=8192".to_owned())
+        );
+        assert_eq!(
+            benchmark_context_overflow_message("completion gate failed after a long prompt"),
+            None
+        );
     }
 
     fn runtime_validation_spec(

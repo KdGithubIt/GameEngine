@@ -5201,6 +5201,19 @@ impl AiStudioPanel {
                 self.status = Some(format!("ACP Ask tool `{title}` is {status:?}."));
                 context.request_repaint_after(std::time::Duration::from_millis(100));
             }
+            AcpBridgePoll::AskEvent(AcpNormalizedEvent::Usage {
+                used_tokens,
+                context_limit_tokens,
+            }) => {
+                self.status = Some(format!(
+                    "ACP Ask context: {used_tokens}/{context_limit_tokens} tokens."
+                ));
+                context.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            AcpBridgePoll::AskEvent(AcpNormalizedEvent::ContextTelemetry(telemetry)) => {
+                self.status = Some(telemetry.diagnostic_summary());
+                context.request_repaint_after(std::time::Duration::from_millis(100));
+            }
             AcpBridgePoll::AskEvent(AcpNormalizedEvent::SessionInfo { title }) => {
                 if let Some(title) = title {
                     self.status = Some(format!("ACP Ask session: {title}"));

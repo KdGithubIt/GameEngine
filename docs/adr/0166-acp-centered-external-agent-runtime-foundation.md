@@ -316,6 +316,57 @@ context-limit precedence and mid-tool-loop compaction fixes are not assumed to
 be present until a later explicit dependency update validates ACP compatibility,
 permission behavior, Windows artifacts/digests, and the Managed Local adapter.
 
+### Managed Local context telemetry contract
+
+Context diagnostics preserve the same ownership boundary. GameEngine may record
+configuration facts it owns: the admitted `managed_context_tokens` physical
+window, the identical value exported as `GOOSE_CONTEXT_LIMIT`,
+`GOOSE_MAX_TOKENS`, and the resolved `GOOSE_AUTO_COMPACT_THRESHOLD`. The Managed
+Local Goose adapter explicitly exports that resolved auto-compaction threshold so
+the diagnostic value is also the value seen by the launched Goose process. The
+pinned Goose 1.44.0 default is `0.8`.
+
+Goose 1.44.0 stable ACP emits `SessionUpdate::UsageUpdate` with the session's
+current used-token value and the model configuration's effective context limit.
+GameEngine normalizes those two numeric values as agent-reported context usage;
+it does not reinterpret them as one model request's prompt-token count. A
+provider context-overflow failure may additionally be reduced to the numeric
+`requested_tokens` and `available_context_tokens` explicitly present in the
+provider error. Raw prompt/error bodies are not retained as context telemetry.
+
+Goose 1.44.0 also fills the ACP SDK's optional `PromptResponse.usage`, including
+input/output totals, but that field is marked unstable by the pinned ACP SDK and
+is outside this ADR's stable-v1 contract. `input_tokens_total` therefore remains
+unavailable until a stable ACP surface exposes it. Stable ACP 1.44.0 likewise
+does not expose an authoritative split of system/instructions, conversation, tool
+definitions, and tool results, nor a stable compaction-trigger event with
+before/after token counts. Those fields remain unavailable. GameEngine does not
+reconstruct Goose's conversation, count characters as tokens, or infer that
+compaction occurred merely because usage crossed or later fell below the
+configured threshold.
+
+For tool-result diagnosis, the common ACP transport may transiently measure the
+serialized byte size of a stable-ACP tool result and retain only that byte count
+plus the provider-declared stable tool name. The value is explicitly bytes, not
+a token estimate, and the tool-result payload itself is not retained by this
+telemetry.
+
+The pinned llama.cpp `b10336` / `f401bb1` server exposes exact token counting to
+a caller that owns the final chat-completion request body through
+`POST /v1/chat/completions/input_tokens`, and generated chat completions expose
+prompt/completion usage. That does not make ACP prompt-token counts observable:
+Goose owns construction of the final OpenAI-compatible request, and GameEngine
+does not possess that exact body. GameEngine therefore MUST NOT submit a
+reconstructed ACP conversation to the counting endpoint and label the result
+exact. If a future stable ACP version exposes authoritative per-request model
+usage or compaction events, those values may be added without changing Agent
+Host, MCP, permission, or completion authority.
+
+Telemetry contains metadata only: token counts, byte counts, stable tool names,
+context limits, compaction configuration/state when authoritative, and failure
+classification. It does not persist prompt bodies, MCP credentials, secrets,
+private file contents, or raw tool results.
+
 ## Consequences
 
 - New ACP agents are registry entries rather than central architecture variants.

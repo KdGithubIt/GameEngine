@@ -362,6 +362,109 @@ pub(crate) enum AcpToolCallStatus {
     Failed,
 }
 
+/// Token categories only when the owning agent/runtime reports them authoritatively.
+///
+/// `None` means unavailable. GameEngine never reconstructs an ACP conversation or
+/// estimates these fields from prompt text, tool schemas, or character counts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct AcpTokenBreakdown {
+    pub(crate) system_and_instructions: Option<u64>,
+    pub(crate) conversation: Option<u64>,
+    pub(crate) tool_definitions: Option<u64>,
+    pub(crate) tool_results: Option<u64>,
+}
+
+/// Largest tool-result payload observed on the ACP wire, measured as serialized bytes.
+///
+/// This is deliberately not a token count. The payload itself is never retained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AcpLargestToolResult {
+    pub(crate) stable_tool_name: String,
+    pub(crate) payload_bytes: u64,
+}
+
+/// Exact numeric context-overflow values reported by the provider error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AcpProviderContextFailure {
+    pub(crate) requested_tokens: u64,
+    pub(crate) available_context_tokens: u64,
+}
+
+/// Privacy-safe context diagnostics for one ACP session.
+///
+/// Every populated numeric field is either a GameEngine configuration fact or a
+/// value reported by the owning ACP agent/provider. Unavailable values stay
+/// `None`; this type has no field capable of retaining prompt/tool-result text or
+/// credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct AcpContextTelemetry {
+    pub(crate) physical_context_tokens: Option<u64>,
+    pub(crate) configured_context_tokens: Option<u64>,
+    pub(crate) effective_context_tokens: Option<u64>,
+    pub(crate) max_output_tokens: Option<u64>,
+    pub(crate) input_tokens_total: Option<u64>,
+    pub(crate) context_used_tokens: Option<u64>,
+    pub(crate) token_breakdown: AcpTokenBreakdown,
+    pub(crate) largest_tool_result: Option<AcpLargestToolResult>,
+    pub(crate) compaction_threshold: Option<String>,
+    pub(crate) compaction_triggered: Option<bool>,
+    pub(crate) compaction_before_tokens: Option<u64>,
+    pub(crate) compaction_after_tokens: Option<u64>,
+    pub(crate) provider_context_failure: Option<AcpProviderContextFailure>,
+}
+
+impl AcpContextTelemetry {
+    pub(crate) fn diagnostic_summary(&self) -> String {
+        fn number(value: Option<u64>) -> String {
+            value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unavailable".to_owned())
+        }
+        fn state(value: Option<bool>) -> &'static str {
+            match value {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unavailable",
+            }
+        }
+
+        let breakdown = &self.token_breakdown;
+        let largest_tool = self
+            .largest_tool_result
+            .as_ref()
+            .map(|tool| format!("{}:{}B", tool.stable_tool_name, tool.payload_bytes))
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let provider_failure = self
+            .provider_context_failure
+            .map(|failure| {
+                format!(
+                    "requested={} available={}",
+                    failure.requested_tokens, failure.available_context_tokens
+                )
+            })
+            .unwrap_or_else(|| "unavailable".to_owned());
+        format!(
+            "ACP context telemetry: physical={}, configured={}, effective={}, max_output={}, input_total={}, context_used={}, breakdown(system/instructions={}, conversation={}, tool_definitions={}, tool_results={}), largest_tool_result={}, compaction(threshold={}, triggered={}, before={}, after={}), provider_context_failure={}",
+            number(self.physical_context_tokens),
+            number(self.configured_context_tokens),
+            number(self.effective_context_tokens),
+            number(self.max_output_tokens),
+            number(self.input_tokens_total),
+            number(self.context_used_tokens),
+            number(breakdown.system_and_instructions),
+            number(breakdown.conversation),
+            number(breakdown.tool_definitions),
+            number(breakdown.tool_results),
+            largest_tool,
+            self.compaction_threshold.as_deref().unwrap_or("unavailable"),
+            state(self.compaction_triggered),
+            number(self.compaction_before_tokens),
+            number(self.compaction_after_tokens),
+            provider_failure,
+        )
+    }
+}
+
 /// ACP updates normalized before entering the Agent Host timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AcpNormalizedEvent {
@@ -379,7 +482,16 @@ pub(crate) enum AcpNormalizedEvent {
         tool_call_id: String,
         title: String,
         status: AcpToolCallStatus,
+        stable_tool_name: Option<String>,
+        result_payload_bytes: Option<u64>,
     },
+    /// Standard ACP usage update. These values come directly from the agent.
+    Usage {
+        used_tokens: u64,
+        context_limit_tokens: u64,
+    },
+    /// Provider-neutral, metadata-only context diagnostic.
+    ContextTelemetry(AcpContextTelemetry),
     PermissionRequest(AcpPermissionRequest),
     SessionInfo {
         title: Option<String>,
@@ -412,10 +524,32 @@ impl AcpNormalizedEvent {
             | Self::SessionInfo { .. }
             | Self::TurnFinished { .. } => AgentEventKind::SemanticProgress,
             Self::ToolCall { .. } => AgentEventKind::ToolAction,
+            Self::Usage { .. }
+            | Self::ContextTelemetry(_)
+            | Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,
             Self::PermissionRequest(_) => AgentEventKind::PermissionRequested,
             Self::PromptFailed { .. } => AgentEventKind::Failure,
-            Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,
         }
+    }
+}
+
+#[cfg(test)]
+mod context_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_breakdown_stays_unavailable_and_summary_contains_no_prompt_body() {
+        let telemetry = AcpContextTelemetry {
+            physical_context_tokens: Some(32_768),
+            configured_context_tokens: Some(32_768),
+            max_output_tokens: Some(4_096),
+            ..AcpContextTelemetry::default()
+        };
+        let summary = telemetry.diagnostic_summary();
+        assert!(summary.contains("physical=32768"));
+        assert!(summary.contains("tool_definitions=unavailable"));
+        assert!(!summary.contains("TOP_SECRET_PROMPT"));
+        assert!(!summary.contains("Bearer"));
     }
 }
 

@@ -936,7 +936,7 @@ fn handle_session_notification(
                         title: tool_call.title.clone(),
                         kind: tool_call.kind,
                         status,
-                        stable_tool_name,
+                        stable_tool_name: stable_tool_name.clone(),
                     },
                 );
             send_normalized(
@@ -945,11 +945,14 @@ fn handle_session_notification(
                     tool_call_id,
                     title: tool_call.title,
                     status,
+                    stable_tool_name,
+                    result_payload_bytes: None,
                 },
             )
         }
         SessionUpdate::ToolCallUpdate(update) => {
             let stable_tool_name = extract_tool_name_metadata(&update, tool_name_metadata_path);
+            let result_payload_bytes = acp_tool_result_payload_bytes(&update.fields);
             let tool_call_id = update.tool_call_id.to_string();
             let mut tools = tool_calls.lock().map_err(|_| {
                 AcpRuntimeError::Transport("ACP tool state lock is poisoned".to_owned())
@@ -978,6 +981,8 @@ fn handle_session_notification(
                 tool_call_id,
                 title: tracked.title.clone(),
                 status: tracked.status,
+                stable_tool_name: tracked.stable_tool_name.clone(),
+                result_payload_bytes,
             };
             drop(tools);
             send_normalized(events, event)
@@ -1022,13 +1027,24 @@ fn handle_session_notification(
                 detail: "ACP available commands updated".to_owned(),
             },
         ),
-        SessionUpdate::UsageUpdate(_) => send_normalized(
-            events,
-            AcpNormalizedEvent::Progress {
-                step: "usage".to_owned(),
-                detail: "ACP usage updated".to_owned(),
-            },
-        ),
+        SessionUpdate::UsageUpdate(usage) => {
+            let Some((used_tokens, context_limit_tokens)) = acp_usage_tokens(&usage) else {
+                return send_normalized(
+                    events,
+                    AcpNormalizedEvent::ProtocolDiagnostic {
+                        message: "ACP usage update did not contain numeric used/context-limit fields"
+                            .to_owned(),
+                    },
+                );
+            };
+            send_normalized(
+                events,
+                AcpNormalizedEvent::Usage {
+                    used_tokens,
+                    context_limit_tokens,
+                },
+            )
+        },
         _ => send_normalized(
             events,
             AcpNormalizedEvent::ProtocolDiagnostic {
@@ -1150,6 +1166,28 @@ async fn handle_permission_request(
             ))
         }
     }
+}
+
+fn acp_tool_result_payload_bytes<T: serde::Serialize>(fields: &T) -> Option<u64> {
+    let value = serde_json::to_value(fields).ok()?;
+    let payload = value
+        .get("rawOutput")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            value
+                .get("content")
+                .filter(|content| content.as_array().is_some_and(|items| !items.is_empty()))
+        })?;
+    let bytes = serde_json::to_vec(payload).ok()?.len();
+    u64::try_from(bytes).ok()
+}
+
+fn acp_usage_tokens<T: serde::Serialize>(usage: &T) -> Option<(u64, u64)> {
+    let value = serde_json::to_value(usage).ok()?;
+    Some((
+        value.get("used")?.as_u64()?,
+        value.get("size")?.as_u64()?,
+    ))
 }
 
 fn extract_tool_name_metadata<T: serde::Serialize>(value: &T, path: &[String]) -> Option<String> {
@@ -1367,6 +1405,22 @@ mod tests {
         assert_eq!(
             extract_tool_name_metadata(&value, &path).as_deref(),
             Some("gameengine_editor__asset.search")
+        );
+    }
+
+    #[test]
+    fn usage_and_tool_result_measurements_use_wire_metadata_only() {
+        let usage = serde_json::json!({"used": 28_640, "size": 32_768});
+        assert_eq!(acp_usage_tokens(&usage), Some((28_640, 32_768)));
+
+        let update = serde_json::json!({
+            "rawOutput": {"secret": "not-retained"}
+        });
+        let measured = acp_tool_result_payload_bytes(&update).expect("raw output bytes");
+        assert!(measured > 0);
+        assert_eq!(
+            acp_tool_result_payload_bytes(&serde_json::json!({"status": "completed"})),
+            None
         );
     }
 
