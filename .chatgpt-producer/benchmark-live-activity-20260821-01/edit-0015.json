@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "                    Some(\"ADR 0156 Benchmark Completed\") => {\n                        ai_studio.prepare_benchmark_campaign_completed_visual_validation()?;\n                        true\n                    }\n                    Some(\"ADR 0156 Benchmark Reset\") => {",
+  "new": "                    Some(\"ADR 0156 Benchmark Completed\") => {\n                        ai_studio.prepare_benchmark_campaign_completed_visual_validation()?;\n                        true\n                    }\n                    Some(\"ADR 0156 Benchmark Running\") => {\n                        ai_studio.prepare_benchmark_campaign_running_visual_validation()?;\n                        true\n                    }\n                    Some(\"ADR 0156 Benchmark Reset\") => {"
+}
