@@ -47,7 +47,7 @@ diff --git a/crates/goose-provider-types/src/formats/openai.rs b/crates/goose-pr
 +    }
 +}
 +
- pub fn is_reserved_request_param_key(key: &str) -> bool {
+ fn is_reserved_request_param_key(key: &str) -> bool {
      matches!(key, "messages" | "model" | "stream" | "stream_options")
  }
 @@ -634,6 +644,11 @@ pub fn format_tools(tools: &[Tool]) -> anyhow::Result<Vec<Value>> {
