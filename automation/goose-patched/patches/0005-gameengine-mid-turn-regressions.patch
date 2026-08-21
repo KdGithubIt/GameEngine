@@ -1,0 +1,252 @@
+diff --git a/crates/goose-cli/src/cli.rs b/crates/goose-cli/src/cli.rs
+--- a/crates/goose-cli/src/cli.rs
++++ b/crates/goose-cli/src/cli.rs
+@@ -64,7 +64,7 @@ impl From<ServePlatform> for GoosePlatform {
+ }
+ 
+ #[derive(Parser)]
+-#[command(name = "goose", author, version, display_name = "", about, long_about = None)]
++#[command(name = "goose", author, version = "1.45.0-gameengine-p1", display_name = "", about, long_about = None)]
+ pub struct Cli {
+     #[command(subcommand)]
+     command: Option<Command>,
+diff --git a/crates/goose/src/agents/agent.rs b/crates/goose/src/agents/agent.rs
+--- a/crates/goose/src/agents/agent.rs
++++ b/crates/goose/src/agents/agent.rs
+@@ -3557,6 +3557,37 @@ mod tests {
+     use std::sync::atomic::{AtomicUsize, Ordering};
+     use tempfile::TempDir;
+ 
++    #[test]
++    fn mid_turn_compaction_boundary_requires_a_completed_tool_result() {
++        let mut conversation = Conversation::new_unvalidated(vec![
++            Message::user().with_text("complete this task in one turn"),
++            Message::assistant().with_tool_request(
++                "tool-1",
++                Ok(CallToolRequestParams::new("read_file")),
++            ),
++        ]);
++
++        assert!(
++            !contains_completed_tool_result(&conversation),
++            "an assistant tool request without its result is not a safe compaction boundary"
++        );
++
++        conversation.push(Message::user().with_tool_response(
++            "tool-1",
++            Ok(CallToolResult::success(vec![ContentBlock::text(
++                "large tool result",
++            )])),
++        ));
++
++        assert!(
++            contains_completed_tool_result(&conversation),
++            "the tool result makes the same-turn boundary eligible for proactive compaction"
++        );
++    }
++
+     #[test]
+     fn ensure_message_event_id_assigns_missing_ids_and_preserves_existing_ids() {
+         let generated =
+             ensure_message_event_id(AgentEvent::Message(Message::assistant().with_text("hello")));
+diff --git a/crates/goose-provider-types/src/base.rs b/crates/goose-provider-types/src/base.rs
+--- a/crates/goose-provider-types/src/base.rs
++++ b/crates/goose-provider-types/src/base.rs
+@@ -745,6 +745,31 @@ mod tests {
+         assert_eq!(content_to_strings(&msg), expected);
+     }
+ 
++    #[tokio::test]
++    async fn collect_stream_keeps_output_token_limit_flag_from_a_later_chunk() {
++        use futures::stream;
++        let first = Message::new(
++            rmcp::model::Role::Assistant,
++            chrono::Utc::now().timestamp(),
++            vec![MessageContentBlock::text("partial ")],
++        );
++        let mut last = Message::new(
++            rmcp::model::Role::Assistant,
++            chrono::Utc::now().timestamp(),
++            vec![MessageContentBlock::text("answer")],
++        );
++        last.metadata.output_token_limit_reached = true;
++
++        let stream = stream::iter(vec![Ok((Some(first), None)), Ok((Some(last), None))]);
++        let (message, _) = collect_stream(Box::pin(stream)).await.unwrap();
++
++        assert!(message.metadata.output_token_limit_reached);
++        assert_eq!(content_to_strings(&message), vec!["partial answer"]);
++    }
++
+     #[tokio::test]
+     async fn test_collect_stream_defaults_usage() {
+         let stream = create_test_stream(vec!["Hello".to_string()]);
+diff --git a/crates/goose-providers/src/http_status.rs b/crates/goose-providers/src/http_status.rs
+--- a/crates/goose-providers/src/http_status.rs
++++ b/crates/goose-providers/src/http_status.rs
+@@ -463,4 +463,43 @@ mod tests {
+             );
+         }
+     }
++
++    #[test]
++    fn structured_context_overflow_is_not_a_generic_retryable_bad_request() {
++        let overflow = map_http_error_to_provider_error(
++            StatusCode::BAD_REQUEST,
++            Some(json!({
++                "error": {
++                    "message": "request too large",
++                    "code": "context_length_exceeded",
++                    "n_prompt_tokens": 32790,
++                    "n_ctx": 32768
++                }
++            })),
++            "http://localhost",
++        );
++        assert!(matches!(overflow, ProviderError::ContextLengthExceeded(_)));
++
++        let generic = map_http_error_to_provider_error(
++            StatusCode::BAD_REQUEST,
++            Some(json!({
++                "error": {
++                    "message": "max_tokens must be less than or equal to 4096",
++                    "code": "invalid_value"
++                }
++            })),
++            "http://localhost",
++        );
++        assert!(matches!(generic, ProviderError::RequestFailed(_)));
++    }
+ }
+diff --git a/crates/goose/src/context_mgmt/mod.rs b/crates/goose/src/context_mgmt/mod.rs
+--- a/crates/goose/src/context_mgmt/mod.rs
++++ b/crates/goose/src/context_mgmt/mod.rs
+@@ -727,6 +727,8 @@ mod tests {
+         message: Message,
+         config: ModelConfig,
+         max_tool_responses: Option<usize>,
++        truncated_attempts: usize,
++        attempts: std::sync::atomic::AtomicUsize,
+     }
+ 
+     impl MockProvider {
+@@ -746,6 +748,8 @@ mod tests {
+                 },
+                 max_tool_responses: None,
++                truncated_attempts: 0,
++                attempts: std::sync::atomic::AtomicUsize::new(0),
+             }
+         }
+ 
+@@ -754,6 +758,15 @@ mod tests {
+             self
+         }
++
++        fn with_truncated_attempts(mut self, truncated_attempts: usize) -> Self {
++            self.truncated_attempts = truncated_attempts;
++            self
++        }
++
++        fn attempt_count(&self) -> usize {
++            self.attempts.load(std::sync::atomic::Ordering::Relaxed)
++        }
+     }
+ 
+     #[async_trait]
+@@ -788,7 +801,13 @@ mod tests {
+                 }
+             }
+ 
+-            let message = self.message.clone();
++            let attempt = self
++                .attempts
++                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            let mut message = self.message.clone();
++            if attempt < self.truncated_attempts {
++                message.metadata.output_token_limit_reached = true;
++            }
+             let usage = ProviderUsage::new("mock-model".to_string(), Usage::default());
+             Ok(stream_from_single_message(message, usage))
+         }
+@@ -801,6 +820,85 @@ mod tests {
+         }
+     }
++
++    fn conversation_with_tool_pairs(pairs: usize) -> Conversation {
++        let mut messages = vec![Message::user().with_text("one user turn")];
++        for i in 0..pairs {
++            messages.extend(create_tool_pair(
++                &format!("tool_{i}"),
++                &format!("resp_{i}"),
++                "read_file",
++                &"tool output ".repeat(400),
++            ));
++        }
++        Conversation::new_unvalidated(messages)
++    }
++
++    #[tokio::test]
++    async fn mid_turn_compaction_preserves_tool_pairs_and_reduces_provider_context() {
++        let provider = MockProvider::new(Message::assistant().with_text("compact summary"), 100_000);
++        let conversation = conversation_with_tool_pairs(4);
++        let before = count_retained_context_tokens(&conversation)
++            .await
++            .expect("token counter should be available in the regression test");
++
++        let compaction = compact_messages(
++            &provider,
++            &provider.config,
++            "gameengine-mid-turn",
++            &conversation,
++            false,
++        )
++        .await
++        .expect("mid-turn compaction should succeed after completed tool results");
++
++        assert!(compaction.retained_context_tokens < before);
++        let agent_visible = compaction.conversation.agent_visible_messages();
++        Conversation::new(agent_visible.clone())
++            .expect("compaction must leave a provider-valid conversation");
++        assert!(agent_visible
++            .iter()
++            .any(|message| message.as_concat_text().contains("Continue calling tools")));
++
++        for i in 0..4 {
++            let id = format!("tool_{i}");
++            let matching = compaction
++                .conversation
++                .messages()
++                .iter()
++                .filter(|message| {
++                    message.content.iter().any(|content| match content {
++                        MessageContent::ToolRequest(request) => request.id == id,
++                        MessageContent::ToolResponse(response) => response.id == id,
++                        _ => false,
++                    })
++                })
++                .count();
++            assert_eq!(matching, 2, "tool request/result pair {id} must remain paired");
++        }
++    }
++
++    #[tokio::test]
++    async fn truncated_compaction_summary_is_retried_before_it_is_adopted() {
++        let provider = MockProvider::new(Message::assistant().with_text("compact summary"), 100_000)
++            .with_truncated_attempts(1);
++        let conversation = conversation_with_tool_pairs(4);
++
++        let (summary, _) = do_compact(
++            &provider,
++            &provider.config,
++            "gameengine-truncated-summary",
++            conversation.messages(),
++        )
++        .await
++        .expect("the next removal-ladder attempt should recover");
++
++        assert_eq!(provider.attempt_count(), 2);
++        assert!(!summary.metadata.output_token_limit_reached);
++    }
+ 
+     #[tokio::test]
+     async fn test_keeps_tool_request() {
