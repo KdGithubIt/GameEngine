@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "goose-acp-32k-context-20260822-0024-01",
+  "target_branch": "chatgpt/gameengine-goose-acp-32k-context",
+  "expected_head_sha": "67916d4968699594fa8dbf205f9111f1bef7556d",
+  "baseline_main_sha": "67916d4968699594fa8dbf205f9111f1bef7556d",
+  "patch_sha256": "2acd5a49b38b0beebf8ddc3c24b04a03c22de8b5d7e4b53c99a1a5e6f4d07a02",
+  "patch_bytes": 16323,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Require 32K context for Goose ACP Authoring",
+  "pr_title": "Require 32K context for Goose ACP Authoring",
+  "pr_body": "## Summary\n- keep Managed Local physical context planning unchanged and add an admission-only consumer requirement type\n- require 32,768 physical tokens for Goose ACP Authoring before Managed Local endpoint startup\n- make AI Studio and Benchmark Campaign share the same Goose configuration admission contract, validating every campaign candidate\n- document the 32K rationale and preserve Goose-owned compaction/history responsibility in ADR 0166\n\n## Validation\nUse the repository Windows Validation workflow. This changes engine-editor Rust plus ADR 0166 and does not intentionally change UI layout or appearance."
+}
