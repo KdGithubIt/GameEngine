@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"mod benchmark_campaign_ui;\n","new":"mod acp_startup;\nmod benchmark_campaign_ui;\n"}
