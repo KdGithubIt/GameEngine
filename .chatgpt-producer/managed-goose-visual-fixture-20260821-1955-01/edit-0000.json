@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.model_backend = ModelBackendPreference::ManagedLocal;\n        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;",
+  "new": "        self.model_backend = ModelBackendPreference::ManagedLocal;\n        self.settings_model_view = ModelBackendPreference::ManagedLocal;\n        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;"
+}
