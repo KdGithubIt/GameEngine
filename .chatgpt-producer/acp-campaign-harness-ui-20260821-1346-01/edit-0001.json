@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "    /// ADR 0142 task identifiers to run.\n    pub(crate) task_ids: Vec<String>,\n    /// Repetitions per candidate and task.\n",
+  "new": "    /// ADR 0142 task identifiers to run.\n    pub(crate) task_ids: Vec<String>,\n    /// Explicit benchmark lane/runtime selected before freeze.\n    ///\n    /// `None` is the canonical Legacy Native Harness identity retained for\n    /// schema compatibility; an ACP selection must carry an explicit runtime.\n    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,\n    /// Repetitions per candidate and task.\n"
+}
