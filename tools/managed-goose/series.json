@@ -56,7 +56,7 @@
     },
     {
       "path": "tools/managed-goose/patches/0002a-output-token-limit-contract.patch",
-      "sha256": "8df18b5ed11ff30251582f426dc48d49dae09e6120854a7db01e7257bf059f21",
+      "sha256": "a7a0c1c527f3155bd718bac3210f36bf4f343d84f0b547cd9ffecbbe61213e29",
       "allowed_paths": [
         "crates/goose-provider-types/src/conversation/message.rs",
         "crates/goose-provider-types/src/formats/openai.rs"
