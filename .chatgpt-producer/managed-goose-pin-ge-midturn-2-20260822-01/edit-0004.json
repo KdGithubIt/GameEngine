@@ -1,0 +1,6 @@
+{
+  "new": "    #[test]\n    fn goose_version_parser_preserves_managed_build_identity() {\n        assert_eq!(extract_semver(\"goose 1.9.3\"), Some(\"1.9.3\".to_owned()));\n        assert_eq!(\n            extract_semver(\"goose 1.45.0+gameengine.ge-midturn-2\"),\n            Some(\"1.45.0+gameengine.ge-midturn-2\".to_owned())\n        );\n        assert_eq!(extract_semver(\"goose 1.45.0+\"), None);\n        assert_eq!(extract_semver(\"goose unknown\"), None);\n    }\n",
+  "old": "    #[test]\n    fn goose_version_parser_uses_semantic_version_only() {\n        assert_eq!(extract_semver(\"goose 1.9.3\"), Some(\"1.9.3\".to_owned()));\n        assert_eq!(extract_semver(\"goose unknown\"), None);\n    }\n",
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs"
+}
