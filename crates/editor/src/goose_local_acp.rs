@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 
 /// Descriptor ID registered for the Managed Local Goose adapter.
 pub(crate) const GOOSE_LOCAL_ACP_DESCRIPTOR_ID: &str = "goose.managed-local";
+/// Stable ACP agent name reported by Goose initialization.
+pub(crate) const GOOSE_ACP_AGENT_NAME: &str = "goose";
 const GOOSE_EXECUTABLE_ENV: &str = "GAMEENGINE_GOOSE_EXECUTABLE";
 const GOOSE_PROVIDER_ID: &str = "custom_gameengine_managed_local";
 const GOOSE_PROVIDER_FILE: &str = "custom_gameengine_managed_local.json";
@@ -89,7 +91,7 @@ impl GooseLocalAcpRuntime {
         })?;
         command_output_with_timeout(&executable, &["acp", "--help"])?;
 
-        let acp_identity = AcpRuntimeIdentity::stable("goose", Some(version));
+        let acp_identity = AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(version));
         let identity = GooseLocalRuntimeIdentity {
             acp: acp_identity.clone(),
             managed_runtime: config.managed_model.benchmark_runtime_identity(),

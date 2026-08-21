@@ -492,6 +492,13 @@ impl AcpAgentHostBridge {
         self.attached(acp_id)?.run_id.as_deref().ok_or_else(|| AcpBridgeError::NotRunBound(acp_id.to_owned()))
     }
 
+    pub(crate) fn runtime_identity(
+        &self,
+        acp_id: &str,
+    ) -> Result<&AcpRuntimeIdentity, AcpBridgeError> {
+        Ok(&self.attached(acp_id)?.identity)
+    }
+
     fn attached(&self, acp_id: &str) -> Result<&AttachedSession, AcpBridgeError> {
         self.sessions.get(acp_id).ok_or_else(|| AcpBridgeError::SessionNotFound(acp_id.to_owned()))
     }

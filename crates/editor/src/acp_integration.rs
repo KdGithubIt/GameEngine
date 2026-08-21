@@ -135,6 +135,13 @@ impl AcpIntegration {
         self.bridge.cancel_run(host, acp_session_id)
     }
 
+    pub(crate) fn runtime_identity(
+        &self,
+        acp_session_id: &str,
+    ) -> Result<crate::acp_agent_runtime::AcpRuntimeIdentity, AcpBridgeError> {
+        self.bridge.runtime_identity(acp_session_id).cloned()
+    }
+
     pub(crate) fn close_session(&mut self, acp_session_id: &str) -> Result<(), AcpBridgeError> {
         self.bridge.close_session(acp_session_id)
     }

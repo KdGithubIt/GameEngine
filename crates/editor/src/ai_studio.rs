@@ -21,7 +21,8 @@ use crate::codex_acp_adapter::{
     CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,
 };
 use crate::goose_local_acp::{
-    GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig, GooseLocalAcpRuntime,
+    GOOSE_ACP_AGENT_NAME, GOOSE_LOCAL_ACP_DESCRIPTOR_ID, GooseLocalAcpConfig,
+    GooseLocalAcpRuntime,
 };
 use crate::agent_benchmark::{
     AgentRunBenchmarkIdentity, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
@@ -4654,10 +4655,11 @@ impl AiStudioPanel {
                 selection,
                 SelectedAi::Model(ModelBackendPreference::ManagedLocal)
             )
+            && !self.benchmark_child_uses_acp_runtime()
         {
-            // ADR 0156 campaign v2 freezes Managed Local as a model-backend/native-harness
-            // candidate. Keep that existing lane unchanged until the benchmark migration
-            // explicitly selects the new coding-agent lane and budgets its process authority.
+            // Legacy campaign plans continue to measure the existing Native harness.
+            // Only an explicit schema-v3 agent-inclusive runtime identity may switch a
+            // benchmark child onto Goose ACP.
             return Ok(AiExecutionDriver::Legacy);
         }
         let logical_ai_id = ai_entry_id(selection, &self.managed_model_id);
@@ -5626,7 +5628,7 @@ impl AiStudioPanel {
             .record_event(
                 run_id,
                 AgentEventKind::CodeWorkspacePrepared,
-                "Prepared isolated managed code workspace for the native AgentRuntime.",
+                "Prepared isolated managed code workspace for AgentRuntime execution.",
             )
             .map_err(|error| error.to_string())?;
         self.code_workspace = Some(workspace);
@@ -6866,7 +6868,7 @@ impl AiStudioPanel {
             model_judgement_required: true,
             ..WorkloadSignals::default()
         });
-        let native_benchmark_identity = native_config.as_ref().map(|config| {
+        let mut run_benchmark_identity = native_config.as_ref().map(|config| {
             let inventory = match config {
                 NativeModelConfig::Local(_) => self.current_installed_inventory().cloned(),
                 NativeModelConfig::Managed(config) => {
@@ -6876,6 +6878,17 @@ impl AiStudioPanel {
             };
             (config.backend_id().to_owned(), config.model_id(), inventory)
         });
+        if run_benchmark_identity.is_none()
+            && acp_agent_id.as_deref() == Some(GOOSE_LOCAL_ACP_DESCRIPTOR_ID)
+            && self.benchmark_child_uses_acp_runtime()
+        {
+            let config = self.described_managed_model_config()?;
+            run_benchmark_identity = Some((
+                MANAGED_BACKEND_ID.to_owned(),
+                config.model_id.clone(),
+                Some(self.managed_benchmark_inventory(&config)),
+            ));
+        }
         let run_id = self
             .host
             .start_run_authorized(
@@ -6911,7 +6924,7 @@ impl AiStudioPanel {
             }
         });
         self.native_run_benchmark_context =
-            native_benchmark_identity.map(|(backend_id, model_id, inventory)| {
+            run_benchmark_identity.map(|(backend_id, model_id, inventory)| {
                 NativeRunBenchmarkContext {
                     run_id: run_id.clone(),
                     task_id: self.benchmark_task_id.clone(),
@@ -6942,9 +6955,7 @@ impl AiStudioPanel {
         self.native_evaluation_had_image = false;
         self.managed_playtest_started_at = None;
         self.last_captured_frame = None;
-        if mode == AgentRuntimeMode::Native
-            && self.benchmark_child_requires_initial_validation_failure()
-        {
+        if self.benchmark_child_requires_initial_validation_failure() {
             self.prepare_native_workspace(&run_id)?;
             self.host
                 .transition_run(
@@ -7166,6 +7177,22 @@ impl AiStudioPanel {
                 return;
             }
         };
+        let runtime_identity = match self.acp.runtime_identity(&acp_session_id) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = self.acp.close_session(&acp_session_id);
+                self.fail_run(
+                    run_id,
+                    format!("Could not read negotiated ACP runtime identity: {error}"),
+                );
+                return;
+            }
+        };
+        if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {
+            let _ = self.acp.close_session(&acp_session_id);
+            self.fail_run(run_id, format!("ACP benchmark runtime mismatch: {error}"));
+            return;
+        }
         if let Err(error) = self
             .acp
             .send_prompt(&mut self.host, &acp_session_id, &prompt)
@@ -7488,7 +7515,14 @@ impl AiStudioPanel {
             Err(error) => {
                 self.active_acp_run_session = None;
                 self.pending_acp_permission = None;
-                self.status = Some(format!("ACP Build session failed: {error}"));
+                let message = format!("ACP Build session failed: {error}");
+                if let Some(run_id) = self.active_run_id.clone()
+                    && self.benchmark_child_active()
+                {
+                    self.fail_run(&run_id, message);
+                } else {
+                    self.status = Some(message);
+                }
                 return;
             }
         };
@@ -7529,6 +7563,36 @@ impl AiStudioPanel {
                 capability,
                 ..
             } => {
+                if self.benchmark_child_active() {
+                    if !self.benchmark_child_allows(capability) {
+                        let _ = self.acp.resolve_permission(
+                            &mut self.host,
+                            &acp_session_id,
+                            &request_id,
+                            ApprovalScope::Deny,
+                        );
+                        self.refuse_unbudgeted_benchmark_child_permission(capability);
+                        return;
+                    }
+                    match self.acp.resolve_permission(
+                        &mut self.host,
+                        &acp_session_id,
+                        &request_id,
+                        ApprovalScope::Run,
+                    ) {
+                        Ok(()) => {
+                            context.request_repaint_after(std::time::Duration::from_millis(16));
+                        }
+                        Err(error) => self.write_benchmark_child_failure(
+                            BenchmarkRunFailureKind::Harness,
+                            format!(
+                                "Could not resolve frozen ACP benchmark permission `{}`: {error}",
+                                capability.label()
+                            ),
+                        ),
+                    }
+                    return;
+                }
                 self.pending_acp_permission = Some(AcpPendingPermission {
                     acp_session_id,
                     request_id,

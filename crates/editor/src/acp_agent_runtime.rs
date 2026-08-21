@@ -16,6 +16,10 @@ use std::path::PathBuf;
 
 /// Stable ACP wire version used by the first GameEngine adapters.
 pub(crate) const ACP_STABLE_PROTOCOL_VERSION: u16 = 1;
+/// Stable benchmark identity for the Editor MCP contract handed to ACP agents.
+pub(crate) const ACP_GAMEENGINE_MCP_TOOL_CONTRACT: &str = "gameengine_editor-mcp-http-v1";
+/// Stable benchmark identity for run-bound Agent Host permission authority.
+pub(crate) const ACP_RUN_BOUND_PERMISSION_PROFILE: &str = "agent_host-run_bound_read_write-v1";
 
 /// Data-driven description of one ACP-capable agent.
 ///

@@ -18,7 +18,7 @@ use crate::agent_benchmark_campaign::{
     CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION, CAMPAIGN_SCHEMA_VERSION,
     CampaignCandidate, CampaignComparisonClass, CampaignExecutionEnvironment,
     CampaignExecutionProfile, CampaignRepresentation, CampaignRuntimeIdentity, CampaignTaskPlan,
-    CandidateTaskContract, HostOnlyEvaluation,
+    CandidateTaskContract, HostOnlyEvaluation, campaign_task_tool_budget_for_runtime,
 };
 use crate::benchmark_experiment::{
     BENCHMARK_FIXTURE_VERSION, BenchmarkExecutionOrder, BenchmarkExperimentSpec,
@@ -293,6 +293,10 @@ impl CampaignPlan {
         self.schema_version = CAMPAIGN_SCHEMA_VERSION;
         let runtime_harness_version = runtime.harness.harness_version.clone();
         for task_plan in &mut self.task_plans {
+            task_plan.tool_budget = campaign_task_tool_budget_for_runtime(
+                &task_plan.task_id,
+                Some(&runtime),
+            )?;
             task_plan.runtime_harness_version = runtime_harness_version.clone();
         }
         self.benchmark_runtime = Some(runtime);

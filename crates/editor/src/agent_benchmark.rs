@@ -20,6 +20,8 @@ pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 4;
 const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
 pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
 pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v2";
+pub(crate) const ACP_AGENT_HARNESS_ID: &str = "gameengine-acp-agent-harness";
+pub(crate) const ACP_AGENT_HARNESS_VERSION: &str = "gameengine-acp-agent-harness-v1";
 pub(crate) const RAW_MODEL_BENCHMARK_TASK_ID: &str = "raw_model_generation_v1";
 pub(crate) const RAW_MODEL_COMPLETION_CRITERIA: &[&str] = &["model_response_completed"];
 pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
@@ -172,6 +174,22 @@ pub(crate) struct BenchmarkRuntimeIdentity {
 
 #[allow(dead_code)]
 impl BenchmarkRuntimeIdentity {
+    pub(crate) fn gameengine_acp_agent_harness(
+        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
+    ) -> Self {
+        let mut harness = BenchmarkHarnessIdentity::new(
+            ACP_AGENT_HARNESS_ID,
+            ACP_AGENT_HARNESS_VERSION,
+        );
+        harness.mcp_tool_contract = TelemetryValue::Measured(
+            crate::acp_agent_runtime::ACP_GAMEENGINE_MCP_TOOL_CONTRACT.to_owned(),
+        );
+        harness.permission_profile = TelemetryValue::Measured(
+            crate::acp_agent_runtime::ACP_RUN_BOUND_PERMISSION_PROFILE.to_owned(),
+        );
+        Self::acp_agent_harness(harness, identity)
+    }
+
     pub(crate) fn raw_model(harness: BenchmarkHarnessIdentity) -> Self {
         Self {
             lane: BenchmarkLane::RawModel,
@@ -216,6 +234,29 @@ impl BenchmarkRuntimeIdentity {
     ) -> Self {
         harness.acp_protocol_version = TelemetryValue::Measured(identity.protocol_version);
         Self::coding_agent(harness, BenchmarkAgentRuntimeIdentity::from_acp(identity))
+    }
+
+    pub(crate) fn matches_acp_runtime(
+        &self,
+        identity: &crate::acp_agent_runtime::AcpRuntimeIdentity,
+    ) -> bool {
+        if self.lane == BenchmarkLane::RawModel
+            || self.harness.acp_protocol_version
+                != TelemetryValue::Measured(identity.protocol_version)
+        {
+            return false;
+        }
+        let Some(agent_runtime) = self.agent_runtime.as_ref() else {
+            return false;
+        };
+        if agent_runtime.runtime_id != identity.agent_name {
+            return false;
+        }
+        match (&agent_runtime.runtime_version, identity.agent_version.as_deref()) {
+            (TelemetryValue::Measured(expected), Some(actual)) => expected == actual,
+            (TelemetryValue::Unavailable, None) => true,
+            _ => false,
+        }
     }
 }
 
