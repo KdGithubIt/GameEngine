@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                Ok(AcpRuntimeStartupConfig::Goose { config })","new":"                Ok(AcpRuntimeStartupConfig::Goose {\n                    config: Box::new(config),\n                })"}
