@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_process.rs",
+  "old": "    pub(crate) fn planned_run(&self) -> BenchmarkPlannedRun {\n        BenchmarkPlannedRun {\n            ordinal: self.ordinal,\n            model_id: self.model_id.clone(),\n            task_id: self.task_id.clone(),\n            repetition: self.repetition,\n        }\n    }\n}\n",
+  "new": "    pub(crate) fn planned_run(&self) -> BenchmarkPlannedRun {\n        BenchmarkPlannedRun {\n            ordinal: self.ordinal,\n            model_id: self.model_id.clone(),\n            task_id: self.task_id.clone(),\n            repetition: self.repetition,\n        }\n    }\n\n    /// Returns the benchmark lane/runtime frozen by the owning campaign.\n    pub(crate) fn benchmark_runtime(\n        &self,\n    ) -> Option<&crate::agent_benchmark::BenchmarkRuntimeIdentity> {\n        self.execution_identity\n            .as_ref()\n            .and_then(|identity| identity.benchmark_runtime.as_ref())\n    }\n\n    /// First-release benchmark runtime identities are ACP agent-harness identities.\n    pub(crate) fn uses_acp_runtime(&self) -> bool {\n        self.benchmark_runtime().is_some()\n    }\n}\n"
+}
