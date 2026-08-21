@@ -13,10 +13,11 @@
 use super::benchmark_child::unix_ms;
 use super::benchmark_experiment_ui::experiment_directory_name;
 use super::*;
+use crate::agent_benchmark::{BenchmarkLane, BenchmarkRuntimeIdentity};
 use crate::agent_benchmark_campaign::{
     CampaignCandidate, CampaignCandidateSource, CampaignComparisonClass,
     CampaignExecutionEnvironment, CampaignExecutionProfile, CampaignRepresentation,
-    DEFAULT_CAMPAIGN_REPETITIONS,
+    DEFAULT_CAMPAIGN_REPETITIONS, campaign_task_agent_inclusive_runtime_support,
 };
 use crate::benchmark_campaign::{
     CampaignBaselineReuse, CampaignEnvironmentProbe, CampaignEvidence, CampaignPlan,
@@ -26,7 +27,9 @@ use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkRunOutcome, ENGINE_COMMIT_HEAD,
 };
 use crate::benchmark_runner::DEFAULT_BENCHMARK_RUN_TIMEOUT;
-use crate::managed_local_runtime::{ManagedAcquisitionPlan, ManagedModelRegistration};
+use crate::managed_local_runtime::{
+    ManagedAcquisitionPlan, ManagedIntegrityCheck, ManagedModelRegistration,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -55,12 +58,56 @@ struct CampaignCheckpoint {
     run: CampaignRun,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CampaignHarnessSelection {
+    GooseAcpAgentHarness,
+    LegacyNativeHarness,
+}
+
+impl Default for CampaignHarnessSelection {
+    fn default() -> Self {
+        Self::LegacyNativeHarness
+    }
+}
+
+impl CampaignHarnessSelection {
+    const ALL: [Self; 2] = [Self::GooseAcpAgentHarness, Self::LegacyNativeHarness];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::GooseAcpAgentHarness => "Goose ACP Agent Harness (recommended)",
+            Self::LegacyNativeHarness => "Legacy Native Harness",
+        }
+    }
+
+    const fn is_goose_acp(self) -> bool {
+        matches!(self, Self::GooseAcpAgentHarness)
+    }
+
+    fn recommended_for_environment(environment: CampaignExecutionEnvironment) -> Self {
+        if environment.managed_environment().is_some() {
+            Self::GooseAcpAgentHarness
+        } else {
+            Self::LegacyNativeHarness
+        }
+    }
+
+    fn from_plan(plan: &CampaignPlan) -> Self {
+        if plan.benchmark_runtime().is_some() {
+            Self::GooseAcpAgentHarness
+        } else {
+            Self::LegacyNativeHarness
+        }
+    }
+}
+
 /// Everything the campaign section needs between frames.
 pub(super) struct BenchmarkCampaignPanel {
     campaign_id: String,
     comparison_class: CampaignComparisonClass,
     execution_profile: CampaignExecutionProfile,
     execution_environment: CampaignExecutionEnvironment,
+    harness_selection: CampaignHarnessSelection,
     quality: QualityPreference,
     selected_models: BTreeSet<String>,
     selected_tasks: BTreeSet<String>,
@@ -83,6 +130,9 @@ impl Default for BenchmarkCampaignPanel {
             comparison_class: CampaignComparisonClass::ModelComparison,
             execution_profile: CampaignExecutionProfile::Warm,
             execution_environment: CampaignExecutionEnvironment::CompatibleBackend,
+            harness_selection: CampaignHarnessSelection::recommended_for_environment(
+                CampaignExecutionEnvironment::CompatibleBackend,
+            ),
             quality: QualityPreference::Balanced,
             selected_models: BTreeSet::new(),
             selected_tasks: BENCHMARK_TASKS
@@ -104,6 +154,38 @@ impl Default for BenchmarkCampaignPanel {
 }
 
 impl BenchmarkCampaignPanel {
+    fn set_execution_environment(&mut self, environment: CampaignExecutionEnvironment) {
+        let was_managed = self.execution_environment.managed_environment().is_some();
+        let is_managed = environment.managed_environment().is_some();
+        self.execution_environment = environment;
+        if was_managed != is_managed {
+            self.set_harness_selection(CampaignHarnessSelection::recommended_for_environment(
+                environment,
+            ));
+        }
+    }
+
+    fn set_harness_selection(&mut self, selection: CampaignHarnessSelection) {
+        self.harness_selection = selection;
+        if !selection.is_goose_acp() {
+            return;
+        }
+        let before = self.selected_tasks.len();
+        self.selected_tasks
+            .retain(|task_id| campaign_task_agent_inclusive_runtime_support(task_id).is_ok());
+        if self.selected_tasks.len() != before {
+            self.message = Some(
+                "Goose ACP Agent Harness does not currently support Read question or Visual evaluation benchmark evidence, so those tasks were removed before freeze."
+                    .to_owned(),
+            );
+        }
+    }
+
+    fn uses_goose_acp(&self) -> bool {
+        self.execution_environment.managed_environment().is_some()
+            && self.harness_selection.is_goose_acp()
+    }
+
     pub(super) fn load_checkpoint(root: &Path) -> Self {
         let path = campaign_checkpoint_path(root);
         let Ok(bytes) = fs::read(path) else {
@@ -150,6 +232,7 @@ impl BenchmarkCampaignPanel {
             comparison_class: checkpoint.plan.comparison_class,
             execution_profile: checkpoint.plan.execution_profile,
             execution_environment: checkpoint.plan.execution_environment,
+            harness_selection: CampaignHarnessSelection::from_plan(&checkpoint.plan),
             quality: checkpoint.plan.quality,
             selected_models,
             selected_tasks,
@@ -174,6 +257,10 @@ impl AiStudioPanel {
     #[cfg(feature = "visual-validation")]
     pub(super) fn prepare_managed_campaign_visual_validation(&mut self, model_id: &str) {
         self.benchmark_campaign.execution_environment = CampaignExecutionEnvironment::WindowsNative;
+        self.benchmark_campaign.harness_selection = CampaignHarnessSelection::GooseAcpAgentHarness;
+        self.benchmark_campaign
+            .selected_tasks
+            .retain(|task_id| campaign_task_agent_inclusive_runtime_support(task_id).is_ok());
         self.benchmark_campaign.selected_models.clear();
         self.benchmark_campaign
             .selected_models
@@ -275,10 +362,38 @@ impl AiStudioPanel {
                     )
                     .clicked()
                 {
-                    self.benchmark_campaign.execution_environment = environment;
+                    self.benchmark_campaign.set_execution_environment(environment);
                 }
             }
         });
+        let managed = self
+            .benchmark_campaign
+            .execution_environment
+            .managed_environment()
+            .is_some();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Runtime / Harness");
+            for harness in CampaignHarnessSelection::ALL {
+                let selected = self.benchmark_campaign.harness_selection == harness;
+                let enabled = !frozen
+                    && (managed || harness == CampaignHarnessSelection::LegacyNativeHarness);
+                if ui
+                    .add_enabled(enabled, egui::Button::selectable(selected, harness.label()))
+                    .clicked()
+                {
+                    self.benchmark_campaign.set_harness_selection(harness);
+                }
+            }
+        });
+        if managed && self.benchmark_campaign.harness_selection.is_goose_acp() {
+            ui.small(
+                "Goose ACP Agent Harness is the recommended Managed Local path. Its runtime identity is discovered and frozen before the campaign can start; failures never fall back to Legacy Native.",
+            );
+        } else if !managed {
+            ui.small(
+                "Compatible backend campaigns use the Legacy Native Harness. Goose ACP Agent Harness becomes selectable with a Managed Local execution environment.",
+            );
+        }
         if self.benchmark_campaign.comparison_class
             == CampaignComparisonClass::RuntimeCharacterization
         {
@@ -393,10 +508,17 @@ impl AiStudioPanel {
     fn show_campaign_tasks(&mut self, ui: &mut egui::Ui) {
         let frozen = self.benchmark_campaign.plan.is_some();
         ui.strong("Tasks");
+        let goose_acp = self.benchmark_campaign.uses_goose_acp();
         for task in BENCHMARK_TASKS.iter() {
+            let unsupported = goose_acp
+                .then(|| campaign_task_agent_inclusive_runtime_support(task.id).err())
+                .flatten();
             let mut selected = self.benchmark_campaign.selected_tasks.contains(task.id);
             if ui
-                .add_enabled(!frozen, egui::Checkbox::new(&mut selected, task.label))
+                .add_enabled(
+                    !frozen && unsupported.is_none(),
+                    egui::Checkbox::new(&mut selected, task.label),
+                )
                 .changed()
             {
                 if selected {
@@ -406,6 +528,9 @@ impl AiStudioPanel {
                 } else {
                     self.benchmark_campaign.selected_tasks.remove(task.id);
                 }
+            }
+            if let Some(reason) = unsupported {
+                ui.small(format!("{} unavailable with Goose ACP: {reason}", task.label));
             }
         }
         ui.horizontal_wrapped(|ui| {
@@ -493,13 +618,27 @@ impl AiStudioPanel {
         });
         if let Some(plan) = self.benchmark_campaign.plan.as_ref() {
             let runtime = plan.runtime_identity();
+            let (lane, harness, agent_runtime) =
+                frozen_harness_identity(plan.benchmark_runtime());
+            let models = plan
+                .candidates
+                .iter()
+                .map(|candidate| candidate.representation.model_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             ui.small(format!(
-                "Frozen plan {} · {} scheduled runs · schedule {} · quality {} · timeout {}s · runtime {} {}",
+                "Frozen plan {} · {} scheduled runs · schedule {} · quality {} · timeout {}s",
                 plan.plan_digest(),
                 plan.schedule().len(),
                 plan.schedule_version,
                 plan.quality.label(),
                 plan.run_timeout_seconds,
+            ));
+            ui.small(format!(
+                "Lane: {lane} · Harness: {harness} · Agent/runtime: {agent_runtime}"
+            ));
+            ui.small(format!(
+                "Model(s): {models} · Execution environment: {} · Backend runtime: {}",
                 runtime.execution_environment.label(),
                 runtime.backend_runtime_version
             ));
@@ -685,6 +824,63 @@ impl AiStudioPanel {
         }
     }
 
+    fn selected_campaign_benchmark_runtime(
+        &self,
+        candidates: &[CampaignCandidate],
+    ) -> Result<Option<BenchmarkRuntimeIdentity>, String> {
+        match self.benchmark_campaign.harness_selection {
+            CampaignHarnessSelection::LegacyNativeHarness => Ok(None),
+            CampaignHarnessSelection::GooseAcpAgentHarness => {
+                let environment = self
+                    .benchmark_campaign
+                    .execution_environment
+                    .managed_environment()
+                    .ok_or_else(|| {
+                        "Goose ACP Agent Harness requires a Managed Local execution environment; select Legacy Native for compatible-backend campaigns"
+                            .to_owned()
+                    })?;
+                let first = candidates.first().ok_or_else(|| {
+                    "Goose ACP Agent Harness requires at least one exact Managed Local model candidate"
+                        .to_owned()
+                })?;
+                let first_config = self
+                    .managed_local_runtime
+                    .configuration_for(
+                        &first.representation.model_id,
+                        environment,
+                        ManagedIntegrityCheck::Skipped,
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "Managed Local model `{}` is unavailable for Goose ACP: {error}",
+                            first.representation.model_id
+                        )
+                    })?;
+                for candidate in &candidates[1..] {
+                    self.managed_local_runtime
+                        .configuration_for(
+                            &candidate.representation.model_id,
+                            environment,
+                            ManagedIntegrityCheck::Skipped,
+                        )
+                        .map_err(|error| {
+                            format!(
+                                "Managed Local model `{}` is unavailable for Goose ACP: {error}",
+                                candidate.representation.model_id
+                            )
+                        })?;
+                }
+                let config = GooseLocalAcpConfig::new(first_config)
+                    .map_err(|error| error.to_string())?;
+                let goose = GooseLocalAcpRuntime::discover(config)
+                    .map_err(|error| format!("Goose ACP Agent Harness unavailable: {error}"))?;
+                Ok(Some(BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+                    &goose.runtime_identity().acp,
+                )))
+            }
+        }
+    }
+
     fn build_campaign_policy(&self) -> Result<CampaignPolicy, String> {
         if ENGINE_COMMIT_HEAD.is_empty() {
             return Err("this Editor build carries no exact GameEngine commit identity".to_owned());
@@ -781,6 +977,7 @@ impl AiStudioPanel {
             }
             (backend_runtime_version, candidates)
         };
+        let benchmark_runtime = self.selected_campaign_benchmark_runtime(&candidates)?;
         Ok(CampaignPolicy {
             campaign_id: self.benchmark_campaign.campaign_id.trim().to_owned(),
             engine_commit_head: ENGINE_COMMIT_HEAD.to_owned(),
@@ -797,6 +994,7 @@ impl AiStudioPanel {
                 .filter(|task| self.benchmark_campaign.selected_tasks.contains(task.id))
                 .map(|task| task.id.to_owned())
                 .collect(),
+            benchmark_runtime,
             repetitions: self.benchmark_campaign.repetitions,
             host_seed: self.benchmark_campaign.host_seed,
         })
@@ -1225,6 +1423,45 @@ fn managed_model_is_campaign_candidate(model: &ManagedModelRegistration) -> bool
     model.has_exact_representation_identity()
 }
 
+fn frozen_harness_identity(
+    runtime: Option<&BenchmarkRuntimeIdentity>,
+) -> (String, String, String) {
+    let Some(runtime) = runtime else {
+        return (
+            "Legacy Native".to_owned(),
+            "Legacy Native Harness".to_owned(),
+            "GameEngine Native Agent Runtime".to_owned(),
+        );
+    };
+    let lane = match runtime.lane {
+        BenchmarkLane::RawModel => "Raw Model",
+        BenchmarkLane::AgentHarness => "Agent Harness",
+        BenchmarkLane::CodingAgent => "Coding Agent",
+    }
+    .to_owned();
+    let harness = if runtime.lane == BenchmarkLane::AgentHarness {
+        "Goose ACP Agent Harness".to_owned()
+    } else {
+        runtime.harness.harness_id.clone()
+    };
+    let agent = runtime
+        .agent_runtime
+        .as_ref()
+        .map(|agent| match &agent.runtime_version {
+            TelemetryValue::Measured(version) => {
+                format!("{} {}", agent.runtime_id, version)
+            }
+            TelemetryValue::ConservativeEstimate(version) => {
+                format!("{} {} (estimated)", agent.runtime_id, version)
+            }
+            TelemetryValue::Unavailable => {
+                format!("{} · version unavailable", agent.runtime_id)
+            }
+        })
+        .unwrap_or_else(|| "none".to_owned());
+    (lane, harness, agent)
+}
+
 /// Reports whether one on-disk run result was produced by this execution.
 ///
 /// A frozen plan always resolves to the same experiment directory, so starting
@@ -1284,6 +1521,33 @@ mod tests {
             "gguf-repr-v1;gguf=3;file_type=none;quantization_version=2;types=Q4_K:2,Q6_K:1",
         ));
         assert!(managed_model_is_campaign_candidate(&exact));
+    }
+
+    #[test]
+    fn managed_local_environment_recommends_goose_acp_and_removes_unsupported_tasks() {
+        let mut panel = BenchmarkCampaignPanel::default();
+        assert_eq!(
+            panel.harness_selection,
+            CampaignHarnessSelection::LegacyNativeHarness
+        );
+        panel.set_execution_environment(CampaignExecutionEnvironment::WindowsNative);
+        assert_eq!(
+            panel.harness_selection,
+            CampaignHarnessSelection::GooseAcpAgentHarness
+        );
+        assert!(!panel.selected_tasks.contains("read_question_v1"));
+        assert!(!panel.selected_tasks.contains("visual_evaluation_v1"));
+        assert!(panel.selected_tasks.contains("validation_repair_v1"));
+    }
+
+    #[test]
+    fn explicit_legacy_native_selection_remains_available_for_managed_local() {
+        let mut panel = BenchmarkCampaignPanel::default();
+        panel.set_execution_environment(CampaignExecutionEnvironment::WindowsNative);
+        panel.set_harness_selection(CampaignHarnessSelection::LegacyNativeHarness);
+        assert!(!panel.uses_goose_acp());
+        panel.selected_tasks.insert("read_question_v1".to_owned());
+        assert!(panel.selected_tasks.contains("read_question_v1"));
     }
 
     fn campaign_result(finished_unix_ms: u64) -> BenchmarkExperimentResult {

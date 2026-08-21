@@ -2217,6 +2217,28 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn acp_runtime_identity_match_is_exact_and_fail_closed() {
+        let expected_identity = crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+            "goose",
+            Some("1.2.3".to_owned()),
+        );
+        let runtime = BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(&expected_identity);
+        assert!(runtime.matches_acp_runtime(&expected_identity));
+        assert!(!runtime.matches_acp_runtime(
+            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                "goose",
+                Some("1.2.4".to_owned()),
+            )
+        ));
+        assert!(!runtime.matches_acp_runtime(
+            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                "another-agent",
+                Some("1.2.3".to_owned()),
+            )
+        ));
+    }
+
     fn measured_identity(model: &str) -> BenchmarkIdentity {
         BenchmarkIdentity {
             corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),

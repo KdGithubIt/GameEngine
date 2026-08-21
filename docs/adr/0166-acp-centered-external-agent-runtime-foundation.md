@@ -162,6 +162,46 @@ arguments, environment placement, and provider diagnostics. They do not own
 authoring semantics, GameEngine permission policy, work-claim policy,
 completion gates, or canonical project persistence.
 
+### 10. Managed Local Agent Harness benchmarks normally use Goose ACP
+
+The Benchmark Campaign surface distinguishes the model being measured from the
+agent harness that drives it. For a Managed Local campaign, the normal and
+recommended Agent Harness lane is:
+
+```text
+GameEngine -> Benchmark Campaign -> Goose Agent Harness -> ACP -> Managed Local model
+```
+
+The operator may explicitly choose the retained Legacy Native Harness for
+compatibility or comparison evidence. Legacy is not an ACP recovery path. Once
+a campaign selects Goose ACP, failure to discover Goose, failure to negotiate
+ACP, an exact negotiated-runtime identity mismatch, an unavailable selected
+Managed Local runtime/model, or a permission request outside the frozen budget
+must fail closed and must not execute or record a Native run as ACP evidence.
+
+The harness choice is part of campaign identity. Before `CampaignPolicy::freeze`
+returns, a Goose selection is resolved to the existing provider-neutral
+`BenchmarkRuntimeIdentity::gameengine_acp_agent_harness` identity using the
+actually discovered `AcpRuntimeIdentity`. The resulting runtime identity is
+frozen through `CampaignPlan`, experiment execution identity, child run spec,
+actual ACP execution, and terminal `BenchmarkRecord`. Adapter/version fields
+that GameEngine cannot observe remain `Unavailable`; they are not inferred.
+The negotiated session identity must match the frozen identity before measured
+work is admitted.
+
+The runtime-aware campaign policy remains the single source for both
+`AgentProposal.requested_capabilities` and the headless permission budget, so an
+ACP harness does not weaken Agent Host's rule that undeclared capabilities are
+rejected.
+
+`read_question_v1` and `visual_evaluation_v1` are not currently valid common-ACP
+Agent Harness evidence. The former belongs to the Native provenance harness and
+the latter requires host-captured image content that the common ACP boundary
+does not yet carry. Goose ACP campaigns remove/disable them before freeze and
+freeze rejects them again if reached programmatically.
+`validation_repair_v1` remains supported through the existing initial validation
+failure -> ACP repair -> managed revalidation path.
+
 ## Consequences
 
 - New ACP agents are registry entries rather than central architecture variants.

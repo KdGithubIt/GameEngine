@@ -126,6 +126,20 @@ impl BenchmarkChildRunSpec {
             repetition: self.repetition,
         }
     }
+
+    /// Returns the benchmark lane/runtime frozen by the owning campaign.
+    pub(crate) fn benchmark_runtime(
+        &self,
+    ) -> Option<&crate::agent_benchmark::BenchmarkRuntimeIdentity> {
+        self.execution_identity
+            .as_ref()
+            .and_then(|identity| identity.benchmark_runtime.as_ref())
+    }
+
+    /// First-release benchmark runtime identities are ACP agent-harness identities.
+    pub(crate) fn uses_acp_runtime(&self) -> bool {
+        self.benchmark_runtime().is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -651,6 +665,55 @@ mod tests {
         let loaded = BenchmarkChildRunSpec::read(&path).expect("read");
         assert_eq!(loaded, spec);
         assert_eq!(loaded.planned_run().model_id, "model:q4");
+    }
+
+    #[test]
+    fn child_spec_preserves_the_frozen_acp_runtime_identity() {
+        let root = tempfile::tempdir().expect("root");
+        let runtime = crate::agent_benchmark::BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                "goose",
+                Some("1.2.3".to_owned()),
+            ),
+        );
+        let spec = BenchmarkChildRunSpec {
+            schema_version: BENCHMARK_CHILD_SCHEMA_VERSION,
+            experiment_id: "experiment".to_owned(),
+            engine_commit_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
+            backend_id: MANAGED_BACKEND_ID.to_owned(),
+            managed_execution_environment: Some(ManagedExecutionEnvironment::WindowsNative),
+            endpoint: String::new(),
+            model_id: "gguf:model".to_owned(),
+            task_id: "code_implementation_v1".to_owned(),
+            repetition: 0,
+            ordinal: 0,
+            quality: QualityPreference::Balanced,
+            routing_mode: BenchmarkRoutingMode::SingleModel,
+            result_path: root.path().join("result.json"),
+            execution_identity: Some(BenchmarkExecutionIdentity {
+                campaign_harness_version: "campaign-harness-v1".to_owned(),
+                schedule_policy_version: "schedule-v1".to_owned(),
+                comparison_class: "model_comparison".to_owned(),
+                execution_profile: "warm".to_owned(),
+                execution_environment: "windows_native".to_owned(),
+                fixture_id: "fixture".to_owned(),
+                fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
+                fixture_instance_id: "fixture-instance".to_owned(),
+                sampling_profile: "sampling".to_owned(),
+                seed_policy: "seed".to_owned(),
+                benchmark_runtime: Some(runtime.clone()),
+            }),
+            candidate_contract: None,
+        };
+        assert!(spec.uses_acp_runtime());
+        assert_eq!(spec.benchmark_runtime(), Some(&runtime));
+
+        let path = root.path().join("acp-child.json");
+        spec.write(&path).expect("write");
+        let loaded = BenchmarkChildRunSpec::read(&path).expect("read");
+        assert!(loaded.uses_acp_runtime());
+        assert_eq!(loaded.benchmark_runtime(), Some(&runtime));
     }
 }
 

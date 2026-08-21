@@ -7181,16 +7181,24 @@ impl AiStudioPanel {
             Ok(identity) => identity,
             Err(error) => {
                 let _ = self.acp.close_session(&acp_session_id);
-                self.fail_run(
-                    run_id,
-                    format!("Could not read negotiated ACP runtime identity: {error}"),
-                );
+                let message = format!("Could not read negotiated ACP runtime identity: {error}");
+                self.fail_run(run_id, message.clone());
+                if self.benchmark_child_active() {
+                    self.write_benchmark_child_failure(
+                        BenchmarkRunFailureKind::Harness,
+                        message,
+                    );
+                }
                 return;
             }
         };
         if let Err(error) = self.validate_benchmark_acp_runtime_identity(&runtime_identity) {
             let _ = self.acp.close_session(&acp_session_id);
-            self.fail_run(run_id, format!("ACP benchmark runtime mismatch: {error}"));
+            let message = format!("ACP benchmark runtime mismatch: {error}");
+            self.fail_run(run_id, message.clone());
+            if self.benchmark_child_active() {
+                self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, message);
+            }
             return;
         }
         if let Err(error) = self

@@ -184,6 +184,22 @@ mod tests {
     }
 
     #[test]
+    fn managed_acp_route_never_falls_back_when_goose_is_unavailable() {
+        let mut router = AiExecutionRouter::default();
+        router
+            .set_acp_route("model:managed_local", "goose.managed-local")
+            .expect("route");
+        router.sync_registry(&DescriptorRegistry { descriptors: Vec::new() });
+        let error = router
+            .resolve(
+                "model:managed_local:model-a",
+                "model:managed_local",
+            )
+            .expect_err("missing Goose must fail closed");
+        assert!(matches!(error, AiExecutionRoutingError::AcpAgentUnavailable { .. }));
+    }
+
+    #[test]
     fn managed_model_identity_can_share_one_registered_route() {
         let mut router = AiExecutionRouter::default();
         router

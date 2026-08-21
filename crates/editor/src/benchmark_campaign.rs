@@ -124,6 +124,11 @@ pub(crate) struct CampaignPolicy {
     pub(crate) candidates: Vec<CampaignCandidate>,
     /// ADR 0142 task identifiers to run.
     pub(crate) task_ids: Vec<String>,
+    /// Explicit benchmark lane/runtime selected before freeze.
+    ///
+    /// `None` is the canonical Legacy Native Harness identity retained for
+    /// schema compatibility; an ACP selection must carry an explicit runtime.
+    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,
     /// Repetitions per candidate and task.
     pub(crate) repetitions: u32,
     /// Host-owned fixture seed. Never exposed to a candidate.
@@ -195,6 +200,7 @@ impl CampaignPolicy {
             task_plans.push(CampaignTaskPlan::for_task(task_id, self.host_seed)?);
         }
 
+        let benchmark_runtime = self.benchmark_runtime.clone();
         let mut plan = CampaignPlan {
             schema_version: CAMPAIGN_SCHEMA_VERSION,
             campaign_id: self.campaign_id,
@@ -217,7 +223,11 @@ impl CampaignPolicy {
             host_seed: self.host_seed,
             plan_digest: String::new(),
         };
-        plan.plan_digest = plan.compute_digest();
+        if let Some(runtime) = benchmark_runtime {
+            plan = plan.with_benchmark_runtime(runtime)?;
+        } else {
+            plan.plan_digest = plan.compute_digest();
+        }
         Ok(plan)
     }
 }
@@ -1178,6 +1188,7 @@ mod tests {
                 .map(|model| installed_candidate(model))
                 .collect(),
             task_ids: tasks.iter().map(|task| (*task).to_owned()).collect(),
+            benchmark_runtime: None,
             repetitions: 2,
             host_seed: 7,
         }
@@ -1185,6 +1196,69 @@ mod tests {
 
     fn frozen(models: &[&str], tasks: &[&str]) -> CampaignPlan {
         policy(models, tasks).freeze().expect("policy must freeze")
+    }
+
+    fn goose_acp_runtime() -> BenchmarkRuntimeIdentity {
+        BenchmarkRuntimeIdentity::gameengine_acp_agent_harness(
+            &crate::acp_agent_runtime::AcpRuntimeIdentity::stable(
+                "goose",
+                Some("1.2.3".to_owned()),
+            ),
+        )
+    }
+
+    #[test]
+    fn managed_local_acp_policy_freezes_runtime_into_plan_and_experiment_identity() {
+        let runtime = goose_acp_runtime();
+        let mut draft = policy(&["model-a"], &["code_implementation_v1"]);
+        draft.execution_environment = CampaignExecutionEnvironment::WindowsNative;
+        draft.backend_runtime_version = "managed-runtime-v1".to_owned();
+        draft.candidates[0].representation.backend_id = MANAGED_BACKEND_ID.to_owned();
+        draft.benchmark_runtime = Some(runtime.clone());
+
+        let plan = draft.freeze().expect("ACP campaign freezes");
+        assert_eq!(plan.benchmark_runtime(), Some(&runtime));
+        let task_plan = plan
+            .task_plan("code_implementation_v1")
+            .expect("task plan");
+        assert!(
+            task_plan
+                .tool_budget
+                .permission_budget
+                .contains(&"external_agent_process".to_owned())
+        );
+
+        let spec = plan
+            .experiment_spec(PathBuf::from("target/benchmark-test"))
+            .expect("experiment spec");
+        let execution = spec
+            .execution_identity_by_task
+            .get("code_implementation_v1")
+            .expect("execution identity");
+        assert_eq!(execution.benchmark_runtime.as_ref(), Some(&runtime));
+    }
+
+    #[test]
+    fn legacy_native_policy_remains_an_explicit_runtime_free_plan() {
+        let plan = frozen(&["model-a"], &["code_implementation_v1"]);
+        assert!(plan.benchmark_runtime().is_none());
+        let task_plan = plan
+            .task_plan("code_implementation_v1")
+            .expect("task plan");
+        assert!(!task_plan
+            .tool_budget
+            .permission_budget
+            .contains(&"external_agent_process".to_owned()));
+    }
+
+    #[test]
+    fn acp_policy_rejects_tasks_without_common_acp_evidence_before_run() {
+        for task_id in ["read_question_v1", "visual_evaluation_v1"] {
+            let mut draft = policy(&["model-a"], &[task_id]);
+            draft.benchmark_runtime = Some(goose_acp_runtime());
+            let error = draft.freeze().expect_err("unsupported ACP task");
+            assert!(error.contains(task_id) || error.contains("Native read-question"));
+        }
     }
 
     fn installed(models: &[&str]) -> BTreeSet<String> {
