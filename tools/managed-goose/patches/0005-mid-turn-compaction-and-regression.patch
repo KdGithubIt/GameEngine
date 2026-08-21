@@ -9,7 +9,7 @@ Adapted-To: v1.45.0 (4dc0420f5704a92806c6628c8f0a3497d7a88759)
 diff --git a/crates/goose/src/agents/agent.rs b/crates/goose/src/agents/agent.rs
 --- a/crates/goose/src/agents/agent.rs
 +++ b/crates/goose/src/agents/agent.rs
-@@ -2974,6 +2974,61 @@ impl Agent {
+@@ -2974,6 +2974,65 @@ impl Agent {
                  }
                  conversation.extend(messages_to_add);
 
