@@ -57,31 +57,32 @@ impl AiExecutionRouter {
             .collect();
     }
 
-    pub(super) fn resolve(
+    pub(super) fn resolve_configured(
         &self,
         logical_ai_id: impl Into<String>,
         route_key: impl Into<String>,
     ) -> Result<AiExecutionResolution, AiExecutionRoutingError> {
         let logical_ai_id = validate_logical_ai_id(logical_ai_id.into())?;
         let route_key = validate_route_key(route_key.into())?;
-        let driver = self
-            .routes
-            .get(&route_key)
-            .cloned()
-            .unwrap_or(AiExecutionDriver::Legacy);
-        if let AiExecutionDriver::Acp { agent_id } = &driver
+        let driver = self.routes.get(&route_key).cloned().unwrap_or(AiExecutionDriver::Legacy);
+        Ok(AiExecutionResolution { logical_ai_id, route_key, driver })
+    }
+
+    pub(super) fn resolve(
+        &self,
+        logical_ai_id: impl Into<String>,
+        route_key: impl Into<String>,
+    ) -> Result<AiExecutionResolution, AiExecutionRoutingError> {
+        let resolution = self.resolve_configured(logical_ai_id, route_key)?;
+        if let AiExecutionDriver::Acp { agent_id } = &resolution.driver
             && !self.available_acp_agents.contains(agent_id)
         {
             return Err(AiExecutionRoutingError::AcpAgentUnavailable {
-                logical_ai_id,
+                logical_ai_id: resolution.logical_ai_id,
                 agent_id: agent_id.clone(),
             });
         }
-        Ok(AiExecutionResolution {
-            logical_ai_id,
-            route_key,
-            driver,
-        })
+        Ok(resolution)
     }
 }
 

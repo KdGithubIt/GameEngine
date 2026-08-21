@@ -8,7 +8,8 @@ use crate::acp_agent_host_bridge::{
     AcpProviderCompletionGate,
 };
 use crate::acp_agent_runtime::{
-    AcpAgentRegistry, AcpAgentRuntime, AcpRuntimeError, AcpRuntimeRegistry,
+    AcpAgentRegistry, AcpAgentRuntime, AcpAgentSession, AcpRuntimeError, AcpRuntimeRegistry,
+    AcpSessionOpenRequest,
 };
 use crate::agent_host::{AgentHost, ApprovalScope, CompletionStatus};
 use std::path::PathBuf;
@@ -41,6 +42,22 @@ impl AcpIntegration {
 
     pub(crate) fn registry(&self) -> &dyn AcpAgentRegistry {
         &self.registry
+    }
+
+    pub(crate) fn prepare_ask_session(&self, host: &AgentHost, gameengine_session_id: &str) -> Result<AcpSessionOpenRequest, AcpBridgeError> {
+        self.bridge.prepare_ask_session(host, gameengine_session_id)
+    }
+
+    pub(crate) fn prepare_run_session(&self, host: &AgentHost, gameengine_session_id: &str, run_id: &str, working_directory: PathBuf) -> Result<AcpSessionOpenRequest, AcpBridgeError> {
+        self.bridge.prepare_run_session(host, gameengine_session_id, run_id, working_directory)
+    }
+
+    pub(crate) fn attach_opened_ask_session(&mut self, host: &AgentHost, descriptor_id: String, session: Box<dyn AcpAgentSession>, expected_session_id: &str) -> Result<String, AcpBridgeError> {
+        self.bridge.attach_opened_ask_session(host, descriptor_id, session, expected_session_id)
+    }
+
+    pub(crate) fn attach_opened_run_session(&mut self, host: &mut AgentHost, descriptor_id: String, session: Box<dyn AcpAgentSession>, expected_session_id: &str, expected_run_id: &str) -> Result<String, AcpBridgeError> {
+        self.bridge.attach_opened_run_session(host, descriptor_id, session, expected_session_id, expected_run_id)
     }
 
     pub(crate) fn open_ask_session(
