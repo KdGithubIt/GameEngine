@@ -56,7 +56,7 @@
     },
     {
       "path": "tools/managed-goose/patches/0003-compaction-truncation-retry.patch",
-      "sha256": "3b1e83b12f43e85faa5847f005761320402410b3e0ba267946ba305176b815b7",
+      "sha256": "63dfff9f38eb494b97f57011f5580dcaacc2bcb9cd9b19dfcad5c6012832c132",
       "allowed_paths": [
         "crates/goose/src/context_mgmt/mod.rs"
       ],
