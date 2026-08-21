@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "        let compaction_threshold = goose_compaction_threshold();\n        let mut descriptor = self.descriptor.clone();\n        descriptor.environment = goose_environment(\n            &lease,\n            &ephemeral,\n            token_budget,\n            &compaction_threshold,\n        );\n        let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(\n            descriptor,\n            &[\"goose\", \"toolCall\", \"toolName\"],\n        )?;\n        match runtime.open_session(request) {\n            Ok(inner) => {\n                let context_telemetry =\n                    goose_context_telemetry(token_budget, compaction_threshold);",
+  "new": "        let compaction_threshold = goose_compaction_threshold();\n        let mut descriptor = self.descriptor.clone();\n        descriptor.environment =\n            goose_environment(&lease, &ephemeral, token_budget, &compaction_threshold);\n        let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(\n            descriptor,\n            &[\"goose\", \"toolCall\", \"toolName\"],\n        )?;\n        match runtime.open_session(request) {\n            Ok(inner) => {\n                let context_telemetry = goose_context_telemetry(token_budget, compaction_threshold);"
+}
