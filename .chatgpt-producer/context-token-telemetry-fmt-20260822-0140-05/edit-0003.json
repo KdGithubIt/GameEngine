@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/acp_agent_runtime.rs",
+  "old": "            Self::Usage { .. }\n            | Self::ContextTelemetry(_)\n            | Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,",
+  "new": "            Self::Usage { .. } | Self::ContextTelemetry(_) | Self::ProtocolDiagnostic { .. } => {\n                AgentEventKind::ProviderOutput\n            }"
+}
