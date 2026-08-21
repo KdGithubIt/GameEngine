@@ -1,5 +1,5 @@
 From: GameEngine automation
-Subject: [PATCH 5/5] compact proactively after tool results and cover the same-turn loop
+Subject: [PATCH 6/6] compact proactively after tool results and cover the same-turn loop
 
 Upstream-Origin: aaif-goose/goose PR #11075
 Upstream-Commit: 0786603fe8187ac52ed826bb07a48956976865f5
@@ -92,7 +92,7 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
  use tempfile::TempDir;
 
  struct MockCompactionProvider {
-@@ -697,3 +697,231 @@ async fn test_context_limit_recovery_compaction() -> Result<()> {
+@@ -697,3 +697,209 @@ async fn test_context_limit_recovery_compaction() -> Result<()> {
 
      Ok(())
  }
@@ -284,32 +284,10 @@ diff --git a/crates/goose/tests/compaction.rs b/crates/goose/tests/compaction.rs
 +    );
 +
 +    let history = compacted_history.expect("mid-turn compaction should replace history");
-+    for tool_id in ["midturn-tool-0", "midturn-tool-1", "midturn-tool-2"] {
-+        let request_count = history
-+            .messages()
-+            .iter()
-+            .flat_map(|message| message.content.iter())
-+            .filter(|content| {
-+                matches!(content, MessageContent::ToolRequest(request) if request.id == tool_id)
-+            })
-+            .count();
-+        let response_count = history
-+            .messages()
-+            .iter()
-+            .flat_map(|message| message.content.iter())
-+            .filter(|content| {
-+                matches!(content, MessageContent::ToolResponse(response) if response.id == tool_id)
-+            })
-+            .count();
-+        assert_eq!(
-+            request_count, 1,
-+            "tool request {tool_id} must remain paired"
-+        );
-+        assert_eq!(
-+            response_count, 1,
-+            "tool response {tool_id} must remain paired"
-+        );
-+    }
++    let agent_visible_history = history.agent_visible_messages();
++    Conversation::new(agent_visible_history).expect(
++        "compaction must leave an agent-visible conversation with no orphaned tool request/result",
++    );
 +
 +    let inputs = provider
 +        .regular_input_tokens
