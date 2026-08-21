@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_runtime/transport.rs","old":"            title,\n            required_capability,\n            options,\n","new":"            title,\n            target,\n            options,\n"}
