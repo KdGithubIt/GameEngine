@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "use crate::agent_benchmark_campaign::{\n    CampaignCandidate, CampaignCandidateSource, CampaignComparisonClass,\n    CampaignExecutionEnvironment, CampaignExecutionProfile, CampaignRepresentation,\n    DEFAULT_CAMPAIGN_REPETITIONS,\n};\n",
+  "new": "use crate::agent_benchmark::{BenchmarkLane, BenchmarkRuntimeIdentity};\nuse crate::agent_benchmark_campaign::{\n    CampaignCandidate, CampaignCandidateSource, CampaignComparisonClass,\n    CampaignExecutionEnvironment, CampaignExecutionProfile, CampaignRepresentation,\n    DEFAULT_CAMPAIGN_REPETITIONS, campaign_task_agent_inclusive_runtime_support,\n};\n"
+}
