@@ -1,5 +1,5 @@
 From: GameEngine automation
-Subject: [PATCH 1/5] brand the managed Goose distribution
+Subject: [PATCH identity] brand the managed Goose distribution
 
 GameEngine-Origin: managed Goose provenance contract
 Adapted-To: v1.45.0 (4dc0420f5704a92806c6628c8f0a3497d7a88759)
@@ -16,7 +16,7 @@ diff --git a/crates/goose-cli/src/cli.rs b/crates/goose-cli/src/cli.rs
 +#[command(
 +    name = "goose",
 +    author,
-+    version = concat!(env!("CARGO_PKG_VERSION"), "+gameengine.ge-midturn-1"),
++    version = concat!(env!("CARGO_PKG_VERSION"), "+gameengine.ge-midturn-2"),
 +    display_name = "",
 +    about,
 +    long_about = None
