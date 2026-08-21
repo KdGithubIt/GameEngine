@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_child.rs",
+  "old": "fn benchmark_runtime_from_spec(\n    spec: &BenchmarkChildRunSpec,\n) -> Option<&BenchmarkRuntimeIdentity> {\n    spec.execution_identity\n        .as_ref()\n        .and_then(|identity| identity.benchmark_runtime.as_ref())\n}\n",
+  "new": "fn benchmark_runtime_from_spec(\n    spec: &BenchmarkChildRunSpec,\n) -> Option<&BenchmarkRuntimeIdentity> {\n    spec.benchmark_runtime()\n}\n"
+}
