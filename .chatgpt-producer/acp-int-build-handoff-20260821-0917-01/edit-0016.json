@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            AcpBridgePoll::Recorded { .. }\n            | AcpBridgePoll::PermissionRequired { .. }\n","new":"            AcpBridgePoll::Recorded { .. }\n            | AcpBridgePoll::RecordedEvent { .. }\n            | AcpBridgePoll::PermissionRequired { .. }\n"}
