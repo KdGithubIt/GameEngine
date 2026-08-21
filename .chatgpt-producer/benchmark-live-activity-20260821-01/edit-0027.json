@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            backend_lines: vec![\n                \"srv update_slots: id 0 | new prompt, n_ctx_slot = 32768\".to_owned(),\n                \"srv update_slots: prompt processing in progress, n_past = 6144\".to_owned(),\n            ],\n            error: None,",
+  "new": "            backend_lines: vec![\n                \"srv update_slots: id 0 | new prompt, n_ctx_slot = 32768\".to_owned(),\n                \"srv update_slots: prompt processing in progress, n_past = 6144\".to_owned(),\n            ],\n            backend_task: None,\n            error: None,"
+}
