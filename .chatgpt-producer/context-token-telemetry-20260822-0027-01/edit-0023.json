@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0166-acp-centered-external-agent-runtime-foundation.md",
+  "old": "Stable ACP 1.44.0 does not expose an authoritative split of system/instructions,\nconversation, tool definitions, and tool results; nor does it expose a stable\ncompaction-trigger event with before/after token counts. Those fields therefore\nremain unavailable. GameEngine does not reconstruct Goose's conversation, count",
+  "new": "Stable ACP 1.44.0 does not expose an authoritative split of system/instructions,\nconversation, tool definitions, and tool results; nor does it expose a stable\ncompaction-trigger event with before/after token counts. Goose 1.44.0 also fills\nthe SDK's optional `PromptResponse.usage`, including input/output totals, but that\nfield is marked unstable by the pinned ACP SDK and is outside this ADR's stable-v1\ncontract. `input_tokens_total` therefore remains unavailable until a stable ACP\nsurface exposes it. GameEngine does not reconstruct Goose's conversation, count"
+}
