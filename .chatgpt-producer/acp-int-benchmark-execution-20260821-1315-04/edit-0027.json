@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"        self.native_run_benchmark_context =\n            native_benchmark_identity.map(|(backend_id, model_id, inventory)| {","new":"        self.native_run_benchmark_context =\n            run_benchmark_identity.map(|(backend_id, model_id, inventory)| {"}

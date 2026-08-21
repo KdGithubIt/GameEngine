@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/benchmark_child.rs","old":"            let policy = campaign_task_agent_policy(task_id).expect(\"task agent policy\");","new":"            let policy = campaign_task_agent_policy_for_runtime(task_id, None)\n                .expect(\"task agent policy\");"}
