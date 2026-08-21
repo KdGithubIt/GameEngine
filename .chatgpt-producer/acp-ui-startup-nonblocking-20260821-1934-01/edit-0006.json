@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::claude_acp_adapter::{CLAUDE_ACP_AGENT_ID, ClaudeAcpConfig, discover_claude_acp};","new":"use crate::claude_acp_adapter::{CLAUDE_ACP_AGENT_ID, ClaudeAcpConfig};"}
