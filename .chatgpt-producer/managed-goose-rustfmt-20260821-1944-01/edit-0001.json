@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "    let version_text = first_nonempty_output_line(&version_output).ok_or_else(|| {\n        AcpRuntimeError::Transport(\n            \"Goose executable did not report a version\".to_owned(),\n        )\n    })?;",
+  "new": "    let version_text = first_nonempty_output_line(&version_output).ok_or_else(|| {\n        AcpRuntimeError::Transport(\"Goose executable did not report a version\".to_owned())\n    })?;"
+}
