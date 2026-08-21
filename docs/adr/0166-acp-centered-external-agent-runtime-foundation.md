@@ -311,10 +311,18 @@ tool call is not executed by GameEngine, and Agent Host fails a run (or ends an
 Ask with an error) instead of leaving the outer session executing or retrying the
 same oversized prompt.
 
-The managed runtime remains pinned to Goose 1.44.0 for this contract. Upstream
-context-limit precedence and mid-tool-loop compaction fixes are not assumed to
-be present until a later explicit dependency update validates ACP compatibility,
-permission behavior, Windows artifacts/digests, and the Managed Local adapter.
+The managed runtime is pinned to the immutable GameEngine-managed distribution
+`1.45.0+gameengine.ge-midturn-2`
+(`managed-goose-v1.45.0-ge-midturn-2`). It is built from upstream Goose
+v1.45.0 at exact revision `4dc0420f5704a92806c6628c8f0a3497d7a88759`;
+the Windows archive SHA-256 is
+`b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a`.
+The managed series carries structured context-overflow classification,
+output-limit metadata required by the OpenAI-compatible Managed Local path,
+bounded recovery from truncated compaction summaries, stream metadata
+preservation, and same-turn compaction after completed tool results. It does
+not import Goose desktop UI or provider-limit precedence because GameEngine
+continues to own the authoritative physical context and output budget.
 
 ### Managed Local context telemetry contract
 
@@ -324,26 +332,28 @@ window, the identical value exported as `GOOSE_CONTEXT_LIMIT`,
 `GOOSE_MAX_TOKENS`, and the resolved `GOOSE_AUTO_COMPACT_THRESHOLD`. The Managed
 Local Goose adapter explicitly exports that resolved auto-compaction threshold so
 the diagnostic value is also the value seen by the launched Goose process. The
-pinned Goose 1.44.0 default is `0.8`.
+v1.45.0-based managed distribution keeps the upstream default of `0.8`; the
+GameEngine patch series does not change that threshold.
 
-Goose 1.44.0 stable ACP emits `SessionUpdate::UsageUpdate` with the session's
-current used-token value and the model configuration's effective context limit.
-GameEngine normalizes those two numeric values as agent-reported context usage;
-it does not reinterpret them as one model request's prompt-token count. A
-provider context-overflow failure may additionally be reduced to the numeric
-`requested_tokens` and `available_context_tokens` explicitly present in the
-provider error. Raw prompt/error bodies are not retained as context telemetry.
+The managed v1.45.0 stable ACP emits `SessionUpdate::UsageUpdate` with the
+session's current used-token value and the model configuration's effective
+context limit. GameEngine normalizes those two numeric values as agent-reported
+context usage; it does not reinterpret them as one model request's prompt-token
+count. A provider context-overflow failure may additionally be reduced to the
+numeric `requested_tokens` and `available_context_tokens` explicitly present
+in the provider error. Raw prompt/error bodies are not retained as context
+telemetry.
 
-Goose 1.44.0 also fills the ACP SDK's optional `PromptResponse.usage`, including
-input/output totals, but that field is marked unstable by the pinned ACP SDK and
-is outside this ADR's stable-v1 contract. `input_tokens_total` therefore remains
-unavailable until a stable ACP surface exposes it. Stable ACP 1.44.0 likewise
-does not expose an authoritative split of system/instructions, conversation, tool
-definitions, and tool results, nor a stable compaction-trigger event with
-before/after token counts. Those fields remain unavailable. GameEngine does not
-reconstruct Goose's conversation, count characters as tokens, or infer that
-compaction occurred merely because usage crossed or later fell below the
-configured threshold.
+The managed v1.45.0 ACP also fills the ACP SDK's optional
+`PromptResponse.usage`, including input/output totals, but that field is marked
+unstable by the pinned ACP SDK and is outside this ADR's stable-v1 contract.
+`input_tokens_total` therefore remains unavailable until a stable ACP surface
+exposes it. That stable ACP surface likewise does not expose an authoritative
+split of system/instructions, conversation, tool definitions, and tool results,
+nor a stable compaction-trigger event with before/after token counts. Those
+fields remain unavailable. GameEngine does not reconstruct Goose's conversation,
+count characters as tokens, or infer that compaction occurred merely because
+usage crossed or later fell below the configured threshold.
 
 For tool-result diagnosis, the common ACP transport may transiently measure the
 serialized byte size of a stable-ACP tool result and retain only that byte count
