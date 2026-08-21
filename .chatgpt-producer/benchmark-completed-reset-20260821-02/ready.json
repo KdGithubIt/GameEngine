@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "benchmark-completed-reset-20260821-02",
+  "target_branch": "chatgpt/gameengine-benchmark-completed-reset-20260821",
+  "expected_head_sha": "89843186ba8668ad0e3bf80a372802c3e2882123",
+  "baseline_main_sha": "e7435867771854982d1ac64e12a5fa1250434cdf",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Format benchmark campaign reset changes",
+  "pr_title": "GameEngine: allow restarting completed benchmark campaigns",
+  "pr_body": "Follow-up for Draft PR #1093. Apply only the rustfmt output reported by the exact-head Windows Validation lint gate; no benchmark or ACP behavior changes."
+}
