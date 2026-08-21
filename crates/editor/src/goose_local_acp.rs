@@ -9,8 +9,8 @@ use crate::acp_agent_runtime::{
     AcpRuntimeError, AcpRuntimeIdentity, AcpSessionOpenRequest,
 };
 use crate::managed_local_runtime::{
-    ManagedExecutionEnvironment, ManagedLocalEndpointLease, ManagedLocalModelConfig,
-    ManagedLocalRuntime, managed_context_tokens,
+    ManagedContextRequirement, ManagedExecutionEnvironment, ManagedLocalEndpointLease,
+    ManagedLocalModelConfig, ManagedLocalRuntime, managed_context_tokens,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -32,14 +32,20 @@ const GOOSE_PROVIDER_FILE: &str = "custom_gameengine_managed_local.json";
 const GOOSE_PATH_ROOT_ENV: &str = "GOOSE_PATH_ROOT";
 const GOOSE_CONTEXT_LIMIT_ENV: &str = "GOOSE_CONTEXT_LIMIT";
 const GOOSE_MAX_TOKENS_ENV: &str = "GOOSE_MAX_TOKENS";
-/// Reserve one eighth of the physical context for a single model response.
+/// Minimum physical context admitted for Goose ACP Authoring.
 ///
-/// Goose auto-compacts at 80% by default. A 12.5% response cap therefore leaves
-/// additional headroom for a normal threshold-triggered provider call while
-/// scaling from 1,024 output tokens at the 8,192-token managed floor to 4,096
-/// at the 32,768-token managed ceiling. Long same-turn tool loops remain Goose
-/// state-machine responsibility; if upstream still overruns this contract, the
-/// ACP prompt failure is terminalized rather than retried by GameEngine.
+/// The observed Authoring workload already reached 16,366 input tokens before
+/// additional tool results and model output. Requiring the current 32K managed
+/// ceiling leaves practical headroom without changing the physical resource plan.
+const GOOSE_ACP_AUTHORING_CONTEXT_REQUIREMENT: ManagedContextRequirement =
+    ManagedContextRequirement::new(32_768);
+/// Reserve one eighth of the admitted physical context for a single model response.
+///
+/// Goose auto-compacts at 80% by default. A 12.5% response cap leaves additional
+/// headroom for a normal threshold-triggered provider call. At the current 32K
+/// Authoring requirement the cap is 4,096 tokens. Long same-turn tool loops remain
+/// Goose state-machine responsibility; if upstream still overruns this contract,
+/// the ACP prompt failure is terminalized rather than retried by GameEngine.
 const GOOSE_OUTPUT_BUDGET_DIVISOR: u32 = 8;
 const GOOSE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 static GOOSE_CONFIG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -51,10 +57,6 @@ struct GooseManagedTokenBudget {
 }
 
 impl GooseManagedTokenBudget {
-    fn from_config(config: &ManagedLocalModelConfig) -> Self {
-        Self::from_context_tokens(managed_context_tokens(config))
-    }
-
     fn from_context_tokens(context_tokens: u32) -> Self {
         debug_assert!(context_tokens >= GOOSE_OUTPUT_BUDGET_DIVISOR);
         Self {
@@ -62,6 +64,27 @@ impl GooseManagedTokenBudget {
             max_output_tokens: context_tokens / GOOSE_OUTPUT_BUDGET_DIVISOR,
         }
     }
+}
+
+fn goose_token_budget_for_physical_context(
+    physical_context_tokens: u32,
+) -> Result<GooseManagedTokenBudget, AcpRuntimeError> {
+    if !GOOSE_ACP_AUTHORING_CONTEXT_REQUIREMENT.admits(physical_context_tokens) {
+        return Err(AcpRuntimeError::Transport(format!(
+            "Goose ACP Authoring requires at least {} tokens of Managed Local physical context, but the GGUF/device resource plan resolves to {} tokens. GameEngine will not raise llama-server --ctx-size beyond the existing model and device resource plan",
+            GOOSE_ACP_AUTHORING_CONTEXT_REQUIREMENT.minimum_tokens(),
+            physical_context_tokens
+        )));
+    }
+    Ok(GooseManagedTokenBudget::from_context_tokens(
+        physical_context_tokens,
+    ))
+}
+
+fn goose_managed_token_budget(
+    config: &ManagedLocalModelConfig,
+) -> Result<GooseManagedTokenBudget, AcpRuntimeError> {
+    goose_token_budget_for_physical_context(managed_context_tokens(config))
 }
 
 /// Identity linking the ACP Goose process to the exact Managed Local runtime/model.
@@ -93,6 +116,7 @@ impl GooseLocalAcpConfig {
                     .to_owned(),
             ));
         }
+        let _ = goose_managed_token_budget(&managed_model)?;
         Ok(Self { managed_model })
     }
 }
@@ -188,10 +212,10 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
             ));
         }
 
+        let token_budget = goose_managed_token_budget(&self.config.managed_model)?;
         let lease = ManagedLocalRuntime::lease_endpoint(&self.config.managed_model)
             .map_err(|error| AcpRuntimeError::Transport(error.to_string()))?;
         validate_managed_lease_identity(&lease, &self.config.managed_model)?;
-        let token_budget = GooseManagedTokenBudget::from_config(&self.config.managed_model);
         let ephemeral =
             GooseEphemeralConfig::create(&self.config.managed_model, &lease, token_budget)
                 .map_err(|error| {
@@ -726,25 +750,37 @@ mod tests {
     }
 
     #[test]
-    fn managed_context_contract_reserves_output_budget_at_the_physical_limit() {
-        let budget = GooseManagedTokenBudget::from_context_tokens(8_192);
-        assert_eq!(budget.context_tokens, 8_192);
-        assert_eq!(budget.max_output_tokens, 1_024);
+    fn goose_acp_authoring_rejects_context_below_32k_before_budget_export() {
+        let error = goose_token_budget_for_physical_context(19_456)
+            .expect_err("19K physical context must not admit Goose ACP Authoring");
+        let message = error.to_string();
+        assert!(message.contains("32768"));
+        assert!(message.contains("19456"));
+        assert!(message.contains("will not raise llama-server --ctx-size"));
+    }
+
+    #[test]
+    fn admitted_goose_context_reserves_output_budget_at_the_physical_limit() {
+        let budget = goose_token_budget_for_physical_context(32_768)
+            .expect("32K physical context admits Goose ACP Authoring");
+        assert_eq!(budget.context_tokens, 32_768);
+        assert_eq!(budget.max_output_tokens, 4_096);
 
         let environment = BTreeMap::from(goose_token_budget_environment(budget));
         assert_eq!(
             environment.get(&OsString::from(GOOSE_CONTEXT_LIMIT_ENV)),
-            Some(&OsString::from("8192"))
+            Some(&OsString::from("32768"))
         );
         assert_eq!(
             environment.get(&OsString::from(GOOSE_MAX_TOKENS_ENV)),
-            Some(&OsString::from("1024"))
+            Some(&OsString::from("4096"))
         );
     }
 
     #[test]
     fn managed_context_override_is_independent_of_canonical_model_names() {
-        let budget = GooseManagedTokenBudget::from_context_tokens(8_192);
+        let budget = goose_token_budget_for_physical_context(32_768)
+            .expect("32K physical context admits Goose ACP Authoring");
         let environment = BTreeMap::from(goose_token_budget_environment(budget));
 
         for canonical_shaped_model in ["gpt-4.1", "deepseek-ai/deepseek-v4-pro"] {
@@ -753,7 +789,7 @@ mod tests {
                 .expect("managed context override");
             assert_eq!(
                 advertised,
-                &OsString::from("8192"),
+                &OsString::from("32768"),
                 "{canonical_shaped_model} must not change the managed physical context"
             );
         }
