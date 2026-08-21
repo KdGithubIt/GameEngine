@@ -14,7 +14,7 @@ use crate::resource_arbitration::{InferenceWorkload, TelemetryValue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 2;
+pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 3;
 pub(crate) const CAMPAIGN_HARNESS_VERSION: &str = "gameengine-agent-benchmark-campaign-v2";
 pub(crate) const CAMPAIGN_SCHEDULE_VERSION: &str = "task-repetition-candidate-interleave-v2";
 pub(crate) const CAMPAIGN_FIXTURE_VERSION: &str = "gameengine-agent-fixture-v1";

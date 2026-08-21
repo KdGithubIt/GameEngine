@@ -372,13 +372,26 @@ fn experiment_equivalence(
             continue;
         };
         for record in rest {
-            if let ComparisonEquivalence::NonEquivalent(changed) =
-                comparison_equivalence(reference, record)
-            {
-                for dimension in changed {
-                    let dimension = dimension.to_owned();
+            match comparison_equivalence(reference, record) {
+                ComparisonEquivalence::EquivalentModelComparison => {}
+                ComparisonEquivalence::EquivalentAgentHarnessComparison => {
+                    let dimension = "agent_harness_comparison".to_owned();
                     if !differences.contains(&dimension) {
                         differences.push(dimension);
+                    }
+                }
+                ComparisonEquivalence::EquivalentCodingAgentComparison => {
+                    let dimension = "coding_agent_comparison".to_owned();
+                    if !differences.contains(&dimension) {
+                        differences.push(dimension);
+                    }
+                }
+                ComparisonEquivalence::NonEquivalent(changed) => {
+                    for dimension in changed {
+                        let dimension = dimension.to_owned();
+                        if !differences.contains(&dimension) {
+                            differences.push(dimension);
+                        }
                     }
                 }
             }
@@ -427,6 +440,7 @@ mod tests {
             task_id: task.to_owned(),
             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
             runtime_harness_version: "runtime-harness-v1".to_owned(),
+            runtime: None,
             model: BenchmarkModelIdentity {
                 backend_id: "ollama-compatible".to_owned(),
                 model_id: model.to_owned(),

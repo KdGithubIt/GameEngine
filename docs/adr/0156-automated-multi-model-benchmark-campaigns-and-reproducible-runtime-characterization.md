@@ -520,12 +520,28 @@ ADR 0142 redaction and provenance rules.
 
 ## Implementation
 
-The campaign implementation uses schema version 2 and the
+The campaign implementation uses schema version 3 and the
 `task-repetition-candidate-interleave-v2` schedule identity. The concrete order
 is task, repetition, then candidate, so the recorded identity and actual
-thermal/time-order policy agree. Schema version 2 freezes the explicit quality
-policy, hardware identity, and finite per-run timeout in addition to the
-previous campaign dimensions.
+thermal/time-order policy agree. Schema version 2 froze the explicit quality
+policy, hardware identity, and finite per-run timeout. Schema version 3 adds an
+optional frozen ADR 0142 benchmark runtime/lane identity to the campaign plan and
+plan digest. Existing schema-v2 campaign checkpoints deserialize with that field
+absent and retain their legacy harness meaning; they are not rewritten into an
+ACP lane. A schema-v2 checkpoint remains resumable only while all of its original
+contract dimensions still match and no schema-v3 runtime identity has been
+attached.
+
+`CampaignPlan::with_benchmark_runtime` derives a new frozen agent-inclusive
+plan before execution and stamps that runtime identity into the per-task
+execution identity. Evidence whose top-level benchmark runtime differs from the
+frozen plan is rejected as an identity mismatch. The existing seven-task ADR
+0156 campaign cannot be relabelled `raw_model`, because every task executes
+through an Agent Host or production task harness. Raw Model records must come
+from a model-only harness; ACP Agent Harness (for example Goose) and Coding Agent
+runtime identities can be frozen into the existing campaign without changing
+the seven-task harness mapping. Agent-inclusive campaign evidence is never
+treated as model-only routing/catalog evidence.
 
 The headless coordinator records a timed-out child as one `Timeout` run failure
 and continues the remaining schedule. It does not clear the queue. The campaign
@@ -546,11 +562,12 @@ than duplicating task semantics in the UI. Runtime-interaction and visual task
 execution MUST call the production ADR 0157 debugging/observation API rather
 than a benchmark-only control seam.
 
-The first release can reuse the current seven task descriptors and benchmark
-record schema while adding campaign-plan/progress storage, instantiated fixture
-identity, and any additional execution-profile identity required to preserve
-strict equivalence. If a schema extension is needed, it must be versioned and
-must not reinterpret existing records.
+The ACP benchmark migration keeps the current seven task descriptors and uses
+ADR 0142 benchmark record schema v4 to add optional runtime/lane identity.
+Existing schema v1-v3 records remain readable as legacy-harness records without
+that identity, so the migration does not reinterpret previously collected
+evidence. Campaign-plan/progress storage, instantiated fixture identity, and
+execution-profile identity remain separate frozen dimensions.
 
 Candidate-visible fixture material and host-only evaluator material MUST be
 separate application-layer resources with separate access policy. The Agent's

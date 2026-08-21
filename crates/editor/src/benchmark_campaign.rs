@@ -11,7 +11,8 @@
 
 use crate::agent_benchmark::{
     BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BenchmarkExecutionIdentity,
-    BenchmarkHardwareIdentity, BenchmarkRecord, benchmark_task,
+    BenchmarkHardwareIdentity, BenchmarkLane, BenchmarkRecord, BenchmarkRuntimeIdentity,
+    benchmark_task,
 };
 use crate::agent_benchmark_campaign::{
     CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION, CAMPAIGN_SCHEMA_VERSION,
@@ -40,6 +41,7 @@ pub(crate) const CAMPAIGN_SAMPLING_PROFILE: &str = "temperature-zero-seeded-v1";
 
 /// Seed policy frozen into every campaign record.
 pub(crate) const CAMPAIGN_SEED_POLICY: &str = "fixed-model-seed-zero-v1";
+const MIN_SUPPORTED_CAMPAIGN_SCHEMA_VERSION: u32 = 2;
 
 /// Why a campaign refused an operation.
 ///
@@ -206,6 +208,7 @@ impl CampaignPolicy {
             run_timeout_seconds: self.run_timeout_seconds,
             candidates: self.candidates,
             task_plans,
+            benchmark_runtime: None,
             repetitions: self.repetitions,
             harness_version: CAMPAIGN_HARNESS_VERSION.to_owned(),
             schedule_version: CAMPAIGN_SCHEDULE_VERSION.to_owned(),
@@ -249,6 +252,9 @@ pub(crate) struct CampaignPlan {
     pub(crate) candidates: Vec<CampaignCandidate>,
     /// Per-task plans in frozen order.
     pub(crate) task_plans: Vec<CampaignTaskPlan>,
+    /// Optional schema-v4 benchmark lane/runtime identity frozen for this campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) benchmark_runtime: Option<BenchmarkRuntimeIdentity>,
     /// Repetitions per candidate and task.
     pub(crate) repetitions: u32,
     /// Campaign harness version.
@@ -267,6 +273,37 @@ impl CampaignPlan {
     /// Returns the identity digest for this frozen plan.
     pub(crate) fn plan_digest(&self) -> &str {
         &self.plan_digest
+    }
+
+    /// Derives a new frozen plan with one explicit benchmark lane/runtime identity.
+    ///
+    /// This must be called before [`CampaignRun::prepare`]. The runtime identity
+    /// becomes part of the plan digest and every derived execution identity.
+    #[allow(dead_code)]
+    pub(crate) fn with_benchmark_runtime(
+        mut self,
+        runtime: BenchmarkRuntimeIdentity,
+    ) -> Result<Self, String> {
+        if runtime.lane == BenchmarkLane::RawModel {
+            return Err(
+                "ADR0156 task campaigns execute through agent/production harnesses and cannot be registered as raw_model"
+                    .to_owned(),
+            );
+        }
+        self.schema_version = CAMPAIGN_SCHEMA_VERSION;
+        let runtime_harness_version = runtime.harness.harness_version.clone();
+        for task_plan in &mut self.task_plans {
+            task_plan.runtime_harness_version = runtime_harness_version.clone();
+        }
+        self.benchmark_runtime = Some(runtime);
+        self.plan_digest = self.compute_digest();
+        Ok(self)
+    }
+
+    /// Returns the benchmark lane/runtime identity frozen into this campaign.
+    #[allow(dead_code)]
+    pub(crate) fn benchmark_runtime(&self) -> Option<&BenchmarkRuntimeIdentity> {
+        self.benchmark_runtime.as_ref()
     }
 
     fn compute_digest(&self) -> String {
@@ -289,6 +326,9 @@ impl CampaignPlan {
         hash = mix(hash, self.schedule_version.as_bytes());
         hash = mix(hash, self.sampling_profile.as_bytes());
         hash = mix(hash, self.seed_policy.as_bytes());
+        if let Some(runtime) = self.benchmark_runtime.as_ref() {
+            hash = mix(hash, serde_json::to_string(runtime).unwrap_or_default().as_bytes());
+        }
         for candidate in &self.candidates {
             hash = mix(hash, candidate.representation.backend_id.as_bytes());
             hash = mix(hash, candidate.representation.model_id.as_bytes());
@@ -366,6 +406,7 @@ impl CampaignPlan {
             fixture_instance_id: task_plan.fixture.instance_id.clone(),
             sampling_profile: self.sampling_profile.clone(),
             seed_policy: self.seed_policy.clone(),
+            benchmark_runtime: self.benchmark_runtime.clone(),
         })
     }
 
@@ -535,6 +576,9 @@ impl CampaignPlan {
         }
         if self.backend_runtime_version != prior.backend_runtime_version {
             changed.push("backend_runtime_version");
+        }
+        if self.benchmark_runtime != prior.benchmark_runtime {
+            changed.push("benchmark_runtime");
         }
         if self.hardware != prior.hardware {
             changed.push("hardware");
@@ -786,6 +830,18 @@ impl CampaignRun {
             if record.identity.execution.as_ref() != Some(&expected_identity) {
                 return Err(CampaignRejection::IdentityMismatch);
             }
+            if record.identity.runtime != self.plan.benchmark_runtime {
+                return Err(CampaignRejection::IdentityMismatch);
+            }
+            let expected_task_plan = self
+                .plan
+                .task_plan(&evidence.scheduled.task_id)
+                .map_err(|_| CampaignRejection::IdentityMismatch)?;
+            if record.identity.runtime_harness_version
+                != expected_task_plan.runtime_harness_version
+            {
+                return Err(CampaignRejection::IdentityMismatch);
+            }
             if record.identity.model.model_id != evidence.scheduled.model_id
                 || record.identity.task_id != evidence.scheduled.task_id
             {
@@ -855,7 +911,10 @@ impl CampaignRun {
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let current_contract = self.plan.schema_version == CAMPAIGN_SCHEMA_VERSION
+        let current_contract = (MIN_SUPPORTED_CAMPAIGN_SCHEMA_VERSION
+            ..=CAMPAIGN_SCHEMA_VERSION)
+            .contains(&self.plan.schema_version)
+            && (self.plan.schema_version >= 3 || self.plan.benchmark_runtime.is_none())
             && self.plan.plan_digest == self.plan.compute_digest()
             && self.plan.harness_version == CAMPAIGN_HARNESS_VERSION
             && self.plan.schedule_version == CAMPAIGN_SCHEDULE_VERSION
@@ -969,6 +1028,12 @@ impl CampaignRun {
         if self.plan.comparison_class != CampaignComparisonClass::ModelComparison {
             return Vec::new();
         }
+        if matches!(
+            self.plan.benchmark_runtime.as_ref().map(|runtime| runtime.lane),
+            Some(BenchmarkLane::AgentHarness) | Some(BenchmarkLane::CodingAgent)
+        ) {
+            return Vec::new();
+        }
         if !self.report().evidence_complete {
             return Vec::new();
         }
@@ -1052,8 +1117,9 @@ fn is_full_git_sha(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::agent_benchmark::{
-        BENCHMARK_TASKS, BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics,
-        BenchmarkModelIdentity, BenchmarkToolBudget,
+        BENCHMARK_SCHEMA_VERSION, BENCHMARK_TASKS, BenchmarkAgentRuntimeIdentity,
+        BenchmarkHardwareIdentity, BenchmarkHarnessIdentity, BenchmarkIdentity, BenchmarkLane,
+        BenchmarkMetrics, BenchmarkModelIdentity, BenchmarkRuntimeIdentity, BenchmarkToolBudget,
     };
     use crate::agent_benchmark_campaign::{
         CampaignCandidateSource, CampaignTaskHarness, campaign_task_harness,
@@ -1152,13 +1218,18 @@ mod tests {
     fn record_for(plan: &CampaignPlan, model_id: &str, task_id: &str) -> BenchmarkRecord {
         let task = benchmark_task(task_id).expect("known task");
         BenchmarkRecord {
-            schema_version: 3,
+            schema_version: BENCHMARK_SCHEMA_VERSION,
             recorded_unix_ms: 1,
             identity: BenchmarkIdentity {
                 corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
                 task_id: task_id.to_owned(),
                 harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
-                runtime_harness_version: "runtime-harness-v1".to_owned(),
+                runtime_harness_version: plan
+                    .task_plan(task_id)
+                    .expect("task plan")
+                    .runtime_harness_version
+                    .clone(),
+                runtime: plan.benchmark_runtime.clone(),
                 model: BenchmarkModelIdentity {
                     backend_id: "ollama-compatible".to_owned(),
                     model_id: model_id.to_owned(),
@@ -1277,6 +1348,71 @@ mod tests {
                 task.id
             );
         }
+    }
+
+    fn coding_runtime(runtime_id: &str) -> BenchmarkRuntimeIdentity {
+        let mut harness = BenchmarkHarnessIdentity::new("acp-coding-agent", "harness-v1");
+        harness.adapter_version = TelemetryValue::Measured("adapter-v1".to_owned());
+        harness.acp_protocol_version = TelemetryValue::Measured(1);
+        harness.mcp_tool_contract = TelemetryValue::Measured("editor-mcp-contract-v1".to_owned());
+        harness.permission_profile =
+            TelemetryValue::Measured("benchmark-agent-readwrite-v1".to_owned());
+        BenchmarkRuntimeIdentity::coding_agent(
+            harness,
+            BenchmarkAgentRuntimeIdentity {
+                runtime_id: runtime_id.to_owned(),
+                runtime_version: TelemetryValue::Measured("1.0".to_owned()),
+            },
+        )
+    }
+
+    #[test]
+    fn benchmark_runtime_registration_changes_campaign_identity_and_execution_identity() {
+        let legacy = frozen(&["model-a"], &["read_question_v1"]);
+        let classified = legacy
+            .clone()
+            .with_benchmark_runtime(coding_runtime("goose"))
+            .expect("coding runtime registration");
+        assert_ne!(legacy.plan_digest(), classified.plan_digest());
+        assert_eq!(
+            classified.benchmark_runtime().map(|runtime| runtime.lane),
+            Some(BenchmarkLane::CodingAgent)
+        );
+        let execution = classified
+            .execution_identity("read_question_v1")
+            .expect("execution identity");
+        assert_eq!(execution.benchmark_runtime, classified.benchmark_runtime);
+    }
+
+    #[test]
+    fn agent_inclusive_campaign_evidence_never_qualifies_as_model_only_routing_evidence() {
+        let plan = frozen(&["model-a"], &["read_question_v1"])
+            .with_benchmark_runtime(coding_runtime("goose"))
+            .expect("coding runtime registration");
+        let mut run = started(plan.clone(), &["model-a"]);
+        pass(&mut run, &plan);
+        assert!(run.qualified_records().is_empty());
+    }
+
+    #[test]
+    fn campaign_rejects_a_record_with_a_different_benchmark_runtime() {
+        let plan = frozen(&["model-a"], &["read_question_v1"])
+            .with_benchmark_runtime(coding_runtime("goose"))
+            .expect("coding runtime registration");
+        let mut run = started(plan.clone(), &["model-a"]);
+        let scheduled = run.next_scheduled().expect("scheduled run");
+        let mut record = record_for(&plan, "model-a", "read_question_v1");
+        record.identity.runtime = None;
+        assert_eq!(
+            run.record(CampaignEvidence {
+                scheduled,
+                outcome: BenchmarkRunOutcome::Passed,
+                failure_kind: None,
+                attempt: 0,
+                record: Some(record),
+            }),
+            Err(CampaignRejection::IdentityMismatch)
+        );
     }
 
     #[test]
