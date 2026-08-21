@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_campaign.rs",
+  "old": "        let mut run = started(plan.clone(), &[\"model-a\"]);\n        pass(&mut run, &plan);\n        assert!(run.qualified_records().is_empty());",
+  "new": "        let mut run = started(plan.clone(), &[\"model-a\"]);\n        let scheduled = run.next_scheduled().expect(\"scheduled run\");\n        let mut record = record_for(&plan, \"model-a\", \"project_inspection_v1\");\n        record.metrics.tool_calls = TelemetryValue::Measured(2);\n        run.record(CampaignEvidence {\n            scheduled,\n            outcome: BenchmarkRunOutcome::Passed,\n            failure_kind: None,\n            attempt: 0,\n            record: Some(record),\n        })\n        .expect(\"valid agent-inclusive evidence must be admitted\");\n        assert!(run.qualified_records().is_empty());"
+}
