@@ -59,7 +59,7 @@
     },
     {
       "path": "tools/managed-goose/patches/0005-mid-turn-compaction-and-regression.patch",
-      "sha256": "8f2a54446cd3de250e07f43deb4712bfcca62c91e471892e3d1c96362aa26d90",
+      "sha256": "0bebe8b6394cf8c50fb956a7d7e65a119ddd698d95419eb662330933b628e547",
       "allowed_paths": ["crates/goose/src/agents/agent.rs", "crates/goose/tests/compaction.rs"],
       "origin": {
         "type": "upstream-pr-adapted",
