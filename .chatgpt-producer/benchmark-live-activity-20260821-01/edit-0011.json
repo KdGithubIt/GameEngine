@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            Ok(running) => {\n                self.benchmark_campaign.running = Some(running);\n                self.benchmark_campaign.message =\n                    Some(\"Campaign started. Recording is now active.\".to_owned());",
+  "new": "            Ok(running) => {\n                self.benchmark_campaign.live_activity = CampaignLiveActivity::default();\n                self.benchmark_campaign.running = Some(running);\n                self.benchmark_campaign.message =\n                    Some(\"Campaign started. Recording is now active.\".to_owned());"
+}
