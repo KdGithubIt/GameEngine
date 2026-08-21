@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/benchmark_campaign_ui.rs","old":"        activity.update(200, child.clone(), vec![\"previous server line\".to_owned()], None);","new":"        activity.update(\n            200,\n            child.clone(),\n            vec![\"previous server line\".to_owned()],\n            None,\n        );"}
