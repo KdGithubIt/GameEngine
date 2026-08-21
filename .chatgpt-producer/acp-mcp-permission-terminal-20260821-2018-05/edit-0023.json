@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"    ValidationReady {\n        run_id: String,\n    },\n}\n","new":"    ValidationReady {\n        run_id: String,\n    },\n    TurnFailed {\n        run_id: String,\n        reason: String,\n    },\n}\n"}
