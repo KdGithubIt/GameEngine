@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "acp-int-benchmark-execution-20260821-1315-04",
+  "target_branch": "chatgpt/gameengine-acp-integration",
+  "expected_head_sha": "be213da7ed294b9ee690a37fceb13e437fcc42c8",
+  "baseline_main_sha": "0d394164340fadeb47fe8ce21514570e70e8851c",
+  "patch_sha256": "ef05205c56e55d2c23107649a73afd57b930226427ef0538c936fe872d5d9676",
+  "patch_bytes": 31596,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Wire ACP agent harness benchmark execution",
+  "pr_title": "GameEngine: integrate ACP external agent runtime",
+  "pr_body": "## Summary\n\n- integrate common ACP transport, AgentHost bridge, Claude/Codex/Goose adapters\n- route first-class AI Studio agent Ask and Build plus normal Managed Local sessions through ACP\n- add schema-v4 agent-inclusive benchmark identity and runtime-aware campaign authority\n- execute explicitly frozen Managed Local ACP agent-harness benchmark children through Goose ACP\n- verify negotiated ACP runtime identity before measured work and keep ACP-unobservable model telemetry unavailable\n- preserve legacy benchmark execution unless an agent-inclusive runtime is explicitly frozen\n\n## Validation\n\nDispatcher Windows Validation is authoritative for the integrated head.\n"
+}
