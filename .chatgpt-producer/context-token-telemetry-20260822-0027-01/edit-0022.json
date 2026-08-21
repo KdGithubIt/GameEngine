@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/acp_agent_runtime/transport.rs",
+  "old": "    let payload = value\n        .get(\"raw_output\")\n        .filter(|value| !value.is_null())",
+  "new": "    let payload = value\n        .get(\"rawOutput\")\n        .filter(|value| !value.is_null())"
+}
