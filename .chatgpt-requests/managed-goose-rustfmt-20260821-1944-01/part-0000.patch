@@ -1,0 +1,60 @@
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index 1c5661e0d4c5001d9bded4e6deac3a48e417ed05..c77b5bfb39c341b609946aadabe19ae779adcf03 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -78,8 +78,7 @@ impl GooseLocalAcpRuntime {
+     pub(crate) fn discover(config: GooseLocalAcpConfig) -> Result<Self, AcpRuntimeError> {
+         let resolved = discover_goose_executable(&config.managed_model)?;
+         let executable = resolved.executable;
+-        let acp_identity =
+-            AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(resolved.version));
++        let acp_identity = AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(resolved.version));
+         let identity = GooseLocalRuntimeIdentity {
+             acp: acp_identity.clone(),
+             managed_runtime: config.managed_model.benchmark_runtime_identity(),
+@@ -526,9 +525,7 @@ fn resolve_goose_candidates(
+ fn probe_goose_executable(executable: &Path) -> Result<String, AcpRuntimeError> {
+     let version_output = command_output_with_timeout(executable, &["--version"])?;
+     let version_text = first_nonempty_output_line(&version_output).ok_or_else(|| {
+-        AcpRuntimeError::Transport(
+-            "Goose executable did not report a version".to_owned(),
+-        )
++        AcpRuntimeError::Transport("Goose executable did not report a version".to_owned())
+     })?;
+     let version = extract_semver(&version_text).ok_or_else(|| {
+         AcpRuntimeError::Transport(format!(
+diff --git a/crates/editor/src/managed_local_runtime.rs b/crates/editor/src/managed_local_runtime.rs
+index 2b9558aef0a64359888130b7444cc0b24a0ff445..ceeb5c5f5d900d8b45ebd699b90af262ef8b2ee2 100644
+--- a/crates/editor/src/managed_local_runtime.rs
++++ b/crates/editor/src/managed_local_runtime.rs
+@@ -1036,8 +1036,7 @@ impl ManagedLocalRuntime {
+                 .join("artifacts")
+                 .join(PINNED_GOOSE_WINDOWS_ASSET),
+         };
+-        write_json(&staging_root.join("installation.json"), &installation)
+-            .map_err(runtime_io)?;
++        write_json(&staging_root.join("installation.json"), &installation).map_err(runtime_io)?;
+ 
+         if rollback_root.exists() {
+             fs::remove_dir_all(&rollback_root).map_err(runtime_io)?;
+@@ -3342,8 +3341,7 @@ mod tests {
+             .goose_runtime_root()
+             .join(format!("v{PINNED_GOOSE_VERSION}"));
+         let executable = final_root.join("goose-package").join("goose.exe");
+-        fs::create_dir_all(executable.parent().expect("executable parent"))
+-            .expect("goose parent");
++        fs::create_dir_all(executable.parent().expect("executable parent")).expect("goose parent");
+         fs::write(&executable, b"managed-goose-fixture").expect("goose fixture");
+         let executable_sha256 = sha256_via_platform(&executable).expect("fixture sha256");
+         let retained_artifact = final_root.join(PINNED_GOOSE_WINDOWS_ASSET);
+@@ -3393,7 +3391,9 @@ mod tests {
+             .set_goose_executable_override(None)
+             .expect("clear override");
+         assert_eq!(
+-            manager.goose_executable_override().expect("read cleared override"),
++            manager
++                .goose_executable_override()
++                .expect("read cleared override"),
+             None
+         );
+         let _ = fs::remove_dir_all(root);
