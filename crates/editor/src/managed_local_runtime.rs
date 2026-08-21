@@ -1036,8 +1036,7 @@ impl ManagedLocalRuntime {
                 .join("artifacts")
                 .join(PINNED_GOOSE_WINDOWS_ASSET),
         };
-        write_json(&staging_root.join("installation.json"), &installation)
-            .map_err(runtime_io)?;
+        write_json(&staging_root.join("installation.json"), &installation).map_err(runtime_io)?;
 
         if rollback_root.exists() {
             fs::remove_dir_all(&rollback_root).map_err(runtime_io)?;
@@ -3342,8 +3341,7 @@ mod tests {
             .goose_runtime_root()
             .join(format!("v{PINNED_GOOSE_VERSION}"));
         let executable = final_root.join("goose-package").join("goose.exe");
-        fs::create_dir_all(executable.parent().expect("executable parent"))
-            .expect("goose parent");
+        fs::create_dir_all(executable.parent().expect("executable parent")).expect("goose parent");
         fs::write(&executable, b"managed-goose-fixture").expect("goose fixture");
         let executable_sha256 = sha256_via_platform(&executable).expect("fixture sha256");
         let retained_artifact = final_root.join(PINNED_GOOSE_WINDOWS_ASSET);
@@ -3393,7 +3391,9 @@ mod tests {
             .set_goose_executable_override(None)
             .expect("clear override");
         assert_eq!(
-            manager.goose_executable_override().expect("read cleared override"),
+            manager
+                .goose_executable_override()
+                .expect("read cleared override"),
             None
         );
         let _ = fs::remove_dir_all(root);

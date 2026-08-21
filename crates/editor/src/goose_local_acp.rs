@@ -78,8 +78,7 @@ impl GooseLocalAcpRuntime {
     pub(crate) fn discover(config: GooseLocalAcpConfig) -> Result<Self, AcpRuntimeError> {
         let resolved = discover_goose_executable(&config.managed_model)?;
         let executable = resolved.executable;
-        let acp_identity =
-            AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(resolved.version));
+        let acp_identity = AcpRuntimeIdentity::stable(GOOSE_ACP_AGENT_NAME, Some(resolved.version));
         let identity = GooseLocalRuntimeIdentity {
             acp: acp_identity.clone(),
             managed_runtime: config.managed_model.benchmark_runtime_identity(),
@@ -526,9 +525,7 @@ fn resolve_goose_candidates(
 fn probe_goose_executable(executable: &Path) -> Result<String, AcpRuntimeError> {
     let version_output = command_output_with_timeout(executable, &["--version"])?;
     let version_text = first_nonempty_output_line(&version_output).ok_or_else(|| {
-        AcpRuntimeError::Transport(
-            "Goose executable did not report a version".to_owned(),
-        )
+        AcpRuntimeError::Transport("Goose executable did not report a version".to_owned())
     })?;
     let version = extract_semver(&version_text).ok_or_else(|| {
         AcpRuntimeError::Transport(format!(
