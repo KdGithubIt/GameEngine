@@ -677,6 +677,153 @@ impl AiStudioPanel {
                                 ui.spinner();
                             }
                         });
+                        let mut goose_status =
+                            self.managed_local_runtime.managed_goose_setup_status();
+                        if let Some(error) = self.status.as_deref().filter(|status| {
+                            status.contains("Goose setup failed")
+                                || status.contains("Managed Local ACP cannot start")
+                        }) {
+                            goose_status = ManagedGooseSetupStatus::Invalid(error.to_owned());
+                        }
+                        theme::card(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.strong("ACP agent runtime");
+                                ui.monospace(format!("Goose {PINNED_GOOSE_VERSION}"));
+                                match &goose_status {
+                                    ManagedGooseSetupStatus::Ready => {
+                                        theme::status_pill(ui, theme::StatusTone::Ready, "Ready");
+                                    }
+                                    ManagedGooseSetupStatus::NotInstalled => {
+                                        theme::status_pill(
+                                            ui,
+                                            theme::StatusTone::Blocked,
+                                            "Not installed",
+                                        );
+                                    }
+                                    ManagedGooseSetupStatus::Invalid(_) => {
+                                        theme::status_pill(
+                                            ui,
+                                            theme::StatusTone::Blocked,
+                                            "Needs repair",
+                                        );
+                                    }
+                                }
+                                if setup_busy {
+                                    ui.spinner();
+                                    ui.small("Setup in progress");
+                                }
+                            });
+                            match &goose_status {
+                                ManagedGooseSetupStatus::Ready => {
+                                    ui.small(
+                                        "GameEngine will use this managed Goose first for AI Studio, Benchmark Campaign, and other Managed Local ACP sessions.",
+                                    );
+                                }
+                                ManagedGooseSetupStatus::NotInstalled => {
+                                    ui.small(
+                                        "Managed Local conversations use Goose over ACP. GameEngine can download and verify the pinned Goose runtime; PATH and environment-variable setup are not required.",
+                                    );
+                                }
+                                ManagedGooseSetupStatus::Invalid(error) => {
+                                    ui.small(format!("Managed Goose needs repair: {error}"));
+                                }
+                            }
+                            if !matches!(&goose_status, ManagedGooseSetupStatus::Ready)
+                                && ui
+                                    .add_enabled(
+                                        !setup_busy,
+                                        egui::Button::new(if matches!(
+                                            &goose_status,
+                                            ManagedGooseSetupStatus::Invalid(_)
+                                        ) {
+                                            "Retry Goose setup"
+                                        } else {
+                                            "Install Goose"
+                                        }),
+                                    )
+                                    .clicked()
+                            {
+                                self.start_managed_setup(
+                                    ManagedSetupOperation::InstallGoose,
+                                    "Downloading, verifying, and activating the pinned Goose ACP runtime...",
+                                );
+                            }
+                            egui::CollapsingHeader::new("Advanced Goose executable override")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    let override_path = self
+                                        .managed_local_runtime
+                                        .goose_executable_override()
+                                        .ok()
+                                        .flatten();
+                                    match override_path.as_ref() {
+                                        Some(path) => ui.small(format!(
+                                            "Machine-local override: {}",
+                                            path.display()
+                                        )),
+                                        None => ui.small(
+                                            "No machine-local override. Managed Goose remains the normal path.",
+                                        ),
+                                    };
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                !setup_busy,
+                                                egui::Button::new("Choose Goose executable..."),
+                                            )
+                                            .clicked()
+                                            && let Some(path) = rfd::FileDialog::new()
+                                                .add_filter("Goose executable", &["exe"])
+                                                .pick_file()
+                                        {
+                                            match self
+                                                .managed_local_runtime
+                                                .set_goose_executable_override(Some(path))
+                                            {
+                                                Ok(()) => {
+                                                    self.status = Some(
+                                                        "Saved the machine-local Goose executable override."
+                                                            .to_owned(),
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    self.status = Some(format!(
+                                                        "Could not save Goose override: {error}"
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        if override_path.is_some()
+                                            && ui
+                                                .add_enabled(
+                                                    !setup_busy,
+                                                    egui::Button::new("Clear override"),
+                                                )
+                                                .clicked()
+                                        {
+                                            match self
+                                                .managed_local_runtime
+                                                .set_goose_executable_override(None)
+                                            {
+                                                Ok(()) => {
+                                                    self.status = Some(
+                                                        "Cleared the machine-local Goose executable override."
+                                                            .to_owned(),
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    self.status = Some(format!(
+                                                        "Could not clear Goose override: {error}"
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    });
+                                    ui.small(
+                                        "Discovery order is GameEngine-managed Goose, this machine-local override, GAMEENGINE_GOOSE_EXECUTABLE, PATH, then legacy home locations.",
+                                    );
+                                });
+                        });
                         if matches!(setup_status.as_ref(), Some(ManagedSetupStatus::RestartRequired))
                         {
                             ui.small(

@@ -202,6 +202,30 @@ freeze rejects them again if reached programmatically.
 `validation_repair_v1` remains supported through the existing initial validation
 failure -> ACP repair -> managed revalidation path.
 
+### Managed Local Goose executable lifecycle
+
+Managed Local's ACP route treats Goose as a GameEngine-owned machine-local runtime
+dependency rather than as a prerequisite the user must install manually. The
+existing ADR 0155 Managed Local state root and runtime-artifact policy own the
+pinned Windows Goose archive, verified archive digest, staged activation, active
+installation record, and executable digest. The normal UI installs or repairs
+that runtime without executing a remote installer script and without requiring
+PATH or environment-variable changes.
+
+All Managed Local Goose consumers use the same resolver. Its order is the
+GameEngine-managed installation, an explicit persisted machine-local executable
+override, `GAMEENGINE_GOOSE_EXECUTABLE`, PATH, then legacy home locations retained
+for compatibility. Explicit overrides fail closed when invalid; a corrupt managed
+installation may still yield to a valid explicit override. Every selected
+candidate must report a parseable Goose version and support `goose acp` before it
+becomes an ACP descriptor.
+
+AI Studio and Benchmark Campaign both resolve through `GooseLocalAcpRuntime`; no
+AI-Studio-only executable path exists. A missing or broken Goose runtime is an
+ACP setup failure and never authorizes a Legacy Native fallback. This lifecycle
+changes only machine-local adapter availability and does not transfer Agent Host,
+permission, MCP credential, completion, or persistence authority to Goose.
+
 ## Consequences
 
 - New ACP agents are registry entries rather than central architecture variants.
