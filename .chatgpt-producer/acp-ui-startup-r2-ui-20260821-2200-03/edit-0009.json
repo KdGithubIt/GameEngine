@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio/acp_startup.rs","old":"    Goose {\n        config: GooseLocalAcpConfig,\n    },","new":"    Goose {\n        config: Box<GooseLocalAcpConfig>,\n    },"}
