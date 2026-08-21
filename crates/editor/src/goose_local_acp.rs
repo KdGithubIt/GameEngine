@@ -838,19 +838,50 @@ fn first_nonempty_output_line(output: &Output) -> Option<String> {
 fn extract_semver(output: &str) -> Option<String> {
     output
         .split(|character: char| {
-            !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
+            !(character.is_ascii_alphanumeric()
+                || character == '.'
+                || character == '-'
+                || character == '+')
         })
         .map(|token| token.trim_start_matches('v'))
-        .find(|token| {
-            let mut parts = token.split('.');
-            let valid = (0..3).all(|_| {
-                parts.next().is_some_and(|part| {
-                    !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())
-                })
-            });
-            valid && parts.next().is_none()
-        })
+        .find(|token| is_semver(token))
         .map(str::to_owned)
+}
+
+fn is_semver(value: &str) -> bool {
+    let (core_and_prerelease, build_metadata) = match value.split_once('+') {
+        Some((core, metadata)) => (core, Some(metadata)),
+        None => (value, None),
+    };
+    if build_metadata.is_some_and(|metadata| !valid_semver_identifiers(metadata)) {
+        return false;
+    }
+
+    let (core, prerelease) = match core_and_prerelease.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (core_and_prerelease, None),
+    };
+    if prerelease.is_some_and(|value| !valid_semver_identifiers(value)) {
+        return false;
+    }
+
+    let mut parts = core.split('.');
+    let valid_core = (0..3).all(|_| {
+        parts.next().is_some_and(|part| {
+            !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+        })
+    });
+    valid_core && parts.next().is_none()
+}
+
+fn valid_semver_identifiers(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|identifier| {
+            !identifier.is_empty()
+                && identifier
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
 }
 
 #[cfg(test)]
@@ -858,8 +889,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn goose_version_parser_uses_semantic_version_only() {
+    fn goose_version_parser_preserves_managed_build_identity() {
         assert_eq!(extract_semver("goose 1.9.3"), Some("1.9.3".to_owned()));
+        assert_eq!(
+            extract_semver("goose 1.45.0+gameengine.ge-midturn-2"),
+            Some("1.45.0+gameengine.ge-midturn-2".to_owned())
+        );
+        assert_eq!(extract_semver("goose 1.45.0+"), None);
         assert_eq!(extract_semver("goose unknown"), None);
     }
 

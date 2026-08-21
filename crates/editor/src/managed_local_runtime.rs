@@ -26,13 +26,16 @@ pub(crate) const MANAGED_BACKEND_ID: &str = "gameengine-managed-llama-cpp";
 pub(crate) const PINNED_LLAMA_CPP_TAG: &str = "b10336";
 pub(crate) const PINNED_LLAMA_CPP_REVISION: &str = "f401bb1";
 /// Goose version pinned for the GameEngine-managed ACP agent runtime.
-pub(crate) const PINNED_GOOSE_VERSION: &str = "1.44.0";
-const PINNED_GOOSE_WINDOWS_ASSET: &str = "goose-x86_64-pc-windows-msvc.zip";
+pub(crate) const PINNED_GOOSE_VERSION: &str = "1.45.0+gameengine.ge-midturn-2";
+const PINNED_GOOSE_WINDOWS_ASSET: &str =
+    "gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip";
 const PINNED_GOOSE_WINDOWS_SHA256: &str =
-    "50ed0ee034355036b94718b65aad5b7a2ec4fd6d80f6ae4fc7f26e623aa5b193";
+    "b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a";
+const PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH: &str = "goose.exe";
 const PINNED_GOOSE_WINDOWS_URL: &str = concat!(
-    "https://github.com/block/goose/releases/download/v1.44.0/",
-    "goose-x86_64-pc-windows-msvc.zip"
+    "https://github.com/KdGithubIt/GameEngine/releases/download/",
+    "managed-goose-v1.45.0-ge-midturn-2/",
+    "gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip"
 );
 const GOOSE_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MANAGED_WSL_DISTRIBUTION: &str = "GameEngine-LocalAI";
@@ -1011,7 +1014,7 @@ impl ManagedLocalRuntime {
         let download = self
             .root
             .join("downloads")
-            .join(format!("goose-v{PINNED_GOOSE_VERSION}-windows-x86_64.zip"));
+            .join(PINNED_GOOSE_WINDOWS_ASSET);
         if download.is_file()
             && verify_file_sha256(
                 &download,
@@ -1036,12 +1039,12 @@ impl ManagedLocalRuntime {
         }
         fs::create_dir_all(&staging_root).map_err(runtime_io)?;
         expand_zip(&download, &staging_root)?;
-        let staged_executable = staging_root.join("goose-package").join("goose.exe");
+        let staged_executable = staging_root.join(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH);
         if !staged_executable.is_file() {
             let _ = fs::remove_dir_all(&staging_root);
             return Err(ManagedLocalRuntimeError::new(
                 ManagedDiagnosticLayer::RuntimeArtifactIntegrity,
-                "verified Goose archive does not contain goose-package/goose.exe",
+                "verified Goose archive does not contain goose.exe",
             ));
         }
         let executable_sha256 = sha256_via_platform(&staged_executable)?;
@@ -1062,7 +1065,7 @@ impl ManagedLocalRuntime {
             asset_sha256: PINNED_GOOSE_WINDOWS_SHA256.to_owned(),
             executable_sha256,
             installed_unix_ms: now_unix_ms(),
-            executable_path: final_root.join("goose-package").join("goose.exe"),
+            executable_path: final_root.join(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH),
             retained_artifact_path: final_root
                 .join("artifacts")
                 .join(PINNED_GOOSE_WINDOWS_ASSET),
@@ -3486,11 +3489,15 @@ mod tests {
         let final_root = manager
             .goose_runtime_root()
             .join(format!("v{PINNED_GOOSE_VERSION}"));
-        let executable = final_root.join("goose-package").join("goose.exe");
+        let executable = final_root.join(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH);
         fs::create_dir_all(executable.parent().expect("executable parent")).expect("goose parent");
         fs::write(&executable, b"managed-goose-fixture").expect("goose fixture");
         let executable_sha256 = sha256_via_platform(&executable).expect("fixture sha256");
-        let retained_artifact = final_root.join(PINNED_GOOSE_WINDOWS_ASSET);
+        let retained_artifact = final_root
+            .join("artifacts")
+            .join(PINNED_GOOSE_WINDOWS_ASSET);
+        fs::create_dir_all(retained_artifact.parent().expect("artifact parent"))
+            .expect("artifact directory");
         fs::write(&retained_artifact, b"managed-goose-archive-fixture")
             .expect("retained Goose fixture");
         let installation = ManagedGooseInstallation {
@@ -3517,6 +3524,27 @@ mod tests {
         fs::write(&executable, b"corrupt").expect("corrupt fixture");
         assert!(manager.managed_goose_executable().is_err());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_goose_pin_names_the_immutable_patched_release() {
+        assert_eq!(
+            PINNED_GOOSE_VERSION,
+            "1.45.0+gameengine.ge-midturn-2"
+        );
+        assert_eq!(
+            PINNED_GOOSE_WINDOWS_ASSET,
+            "gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            PINNED_GOOSE_WINDOWS_SHA256,
+            "b9ab2de08972b3cee38b3262a78702726fc1d5d87ffbccb9c166f208cbc0444a"
+        );
+        assert_eq!(
+            PINNED_GOOSE_WINDOWS_URL,
+            "https://github.com/KdGithubIt/GameEngine/releases/download/managed-goose-v1.45.0-ge-midturn-2/gameengine-managed-goose-v1.45.0-ge-midturn-2-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(PINNED_GOOSE_EXECUTABLE_RELATIVE_PATH, "goose.exe");
     }
 
     #[test]
