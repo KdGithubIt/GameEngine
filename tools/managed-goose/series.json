@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "distribution_id": "gameengine-managed-goose-v1.45.0-ge-midturn-1",
+  "patch_series_revision": "ge-midturn-1",
+  "release_tag": "managed-goose-v1.45.0-ge-midturn-1",
+  "upstream": {
+    "repository": "https://github.com/aaif-goose/goose",
+    "version": "v1.45.0",
+    "sha": "4dc0420f5704a92806c6628c8f0a3497d7a88759"
+  },
+  "selection_evidence": {
+    "gameengine_previous_pin": {
+      "version": "v1.44.0",
+      "sha": "876555f85b1bd0e15ed75eed7c5ac1163c1f097a"
+    },
+    "observed_upstream_main_sha": "45b322c1df30295caaceb23a8a043fc9fa032527",
+    "upstream_pull_request": {
+      "number": 11075,
+      "base_sha": "d6ee97b4ced58f6c59befd537adb356cc27c75cd",
+      "head_sha": "0786603fe8187ac52ed826bb07a48956976865f5",
+      "observed_state": "open-draft"
+    },
+    "baseline_reason": "Use the newest official stable Goose release compatible with the existing ACP path, then carry only the minimal fixes still absent from that release. This avoids tracking moving upstream main while reducing divergence from GameEngine's prior v1.44.0 pin."
+  },
+  "build": {
+    "rust_toolchain": "1.94.1",
+    "target": "x86_64-pc-windows-msvc",
+    "package": "goose-cli",
+    "binary": "goose",
+    "expected_version_output_fragment": "1.45.0+gameengine.ge-midturn-1"
+  },
+  "patches": [
+    {
+      "path": "tools/managed-goose/patches/0001-gameengine-distribution-identity.patch",
+      "sha256": "5d988614314064c56aa7026fab86b54fe557b137ab556138915cfc28e5237df9",
+      "allowed_paths": [
+        "crates/goose-cli/src/cli.rs"
+      ],
+      "origin": {
+        "type": "gameengine",
+        "reason": "Give patched Goose a runtime-visible distribution identity distinct from the official v1.45.0 binary."
+      }
+    },
+    {
+      "path": "tools/managed-goose/patches/0002-structured-context-overflow.patch",
+      "sha256": "cdc33a1838afe69257f8446e146f77af790c58cd6b6fc4e9ba4fc0698477d845",
+      "allowed_paths": [
+        "crates/goose-providers/src/http_status.rs"
+      ],
+      "origin": {
+        "type": "upstream-pr",
+        "pull_request": 11075,
+        "commit": "668c4b36b9395ce70d5d7bec0ffcd2ef5f1d0ae6"
+      },
+      "reason": "Structured 400 context-overflow responses must become ContextLengthExceeded so Goose compacts instead of retrying a deterministic overflow."
+    },
+    {
+      "path": "tools/managed-goose/patches/0003-compaction-truncation-retry.patch",
+      "sha256": "3b1e83b12f43e85faa5847f005761320402410b3e0ba267946ba305176b815b7",
+      "allowed_paths": [
+        "crates/goose/src/context_mgmt/mod.rs"
+      ],
+      "origin": {
+        "type": "upstream-pr",
+        "pull_request": 11075,
+        "commit": "2a7f92e7e938cf4b6157d0749a9c967e68195f7e"
+      },
+      "reason": "A summary cut off at the output limit must be retried on the bounded removal ladder instead of silently adopting truncated history."
+    },
+    {
+      "path": "tools/managed-goose/patches/0004-collect-stream-output-limit.patch",
+      "sha256": "4d8bd3b509b805fd5b3b4b36a4cb465cba7fbaef12030c01c8cb0ccf4557b1a1",
+      "allowed_paths": [
+        "crates/goose-provider-types/src/base.rs"
+      ],
+      "origin": {
+        "type": "upstream-pr",
+        "pull_request": 11075,
+        "commit": "b839703c8d53875e07f1cbc29b15be927dc41fd4"
+      },
+      "reason": "Preserve output_token_limit_reached across streamed chunks. Managed Local currently disables provider streaming, but this is the correctness prerequisite for the truncation recovery whenever streaming is enabled."
+    },
+    {
+      "path": "tools/managed-goose/patches/0005-mid-turn-compaction-and-regression.patch",
+      "sha256": "ff4e9c0005ae3860219b3f7dc37657272fcf4f0861f654bf3e8c3c2cfea809b2",
+      "allowed_paths": [
+        "crates/goose/src/agents/agent.rs",
+        "crates/goose/tests/compaction.rs"
+      ],
+      "origin": {
+        "type": "upstream-pr-adapted",
+        "pull_request": 11075,
+        "commit": "0786603fe8187ac52ed826bb07a48956976865f5",
+        "adaptation": "Only the legacy Agent-loop hunk applies to stable v1.45.0; the upstream state-machine hunk targets architecture not present in this baseline. GameEngine adds executable regression coverage."
+      },
+      "reason": "Re-check proactive compaction after tool results inside the same user turn, while never compacting between a pending assistant tool request and its response."
+    }
+  ],
+  "excluded_upstream_commits": [
+    {
+      "commit": "682ff0591d748fffe16d9675ff04c0ca8227ee46",
+      "reason": "GameEngine Managed Local already owns the exact context/output contract through llama-server, the custom provider definition, GOOSE_CONTEXT_LIMIT and GOOSE_MAX_TOKENS; importing a second precedence policy would duplicate responsibility."
+    },
+    {
+      "commit": "e25174857b3a93b4ced22e3a5ffd800e849e3044",
+      "reason": "The upstream desktop model-picker/token-bar precedence is outside the GameEngine ACP runtime path and duplicates GameEngine-owned context presentation/contract."
+    }
+  ]
+}
