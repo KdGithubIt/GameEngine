@@ -12,7 +12,7 @@
 use super::{CliError, CliRunResult, to_json};
 use engine_authoring::{
     AuthoringCapability, AuthoringCapabilityId, AuthoringCapabilityKind,
-    AuthoringCapabilityRegistry, Diagnostic,
+    AuthoringCapabilityRegistry, AuthoringCapabilitySummary, Diagnostic,
 };
 use serde::Serialize;
 
@@ -56,6 +56,11 @@ impl Verb {
 }
 
 #[derive(Debug, Serialize)]
+struct CapabilitySummaryListOutput {
+    capabilities: Vec<AuthoringCapabilitySummary>,
+}
+
+#[derive(Debug, Serialize)]
 struct CapabilityListOutput<'a> {
     capabilities: Vec<&'a AuthoringCapability>,
 }
@@ -68,6 +73,7 @@ struct CapabilityDescribeOutput<'a> {
 
 pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
     match args {
+        [domain, command] if domain == "authoring" && command == "list" => Some(list()),
         [domain, command] if domain == "authoring" && command == "capabilities" => {
             Some(capabilities())
         }
@@ -87,6 +93,14 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
         }
         _ => None,
     }
+}
+
+fn list() -> Result<CliRunResult, CliError> {
+    let registry = AuthoringCapabilityRegistry::builtin();
+    let output = CapabilitySummaryListOutput {
+        capabilities: registry.summaries().collect(),
+    };
+    Ok(CliRunResult::success(to_json(&output)?))
 }
 
 fn capabilities() -> Result<CliRunResult, CliError> {
@@ -247,6 +261,33 @@ mod tests {
                 .unwrap_or_default(),
             other => panic!("expected an authoring diagnostic, got {other}"),
         }
+    }
+
+    #[test]
+    fn list_command_reports_canonical_compact_summaries() {
+        let result = run_cli_with_status(["authoring".to_owned(), "list".to_owned()])
+            .expect("compact capability discovery");
+        let json: Value = serde_json::from_str(&result.output).expect("JSON output");
+        let expected = serde_json::to_value(CapabilitySummaryListOutput {
+            capabilities: AuthoringCapabilityRegistry::builtin().summaries().collect(),
+        })
+        .expect("canonical compact summaries must serialize");
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(json, expected);
+        assert!(json["capabilities"].as_array().is_some_and(|items| {
+            items.iter().all(|item| {
+                item.get("id").is_some()
+                    && item.get("domain").is_some()
+                    && item.get("kind").is_some()
+                    && item.get("exposure").is_some()
+                    && item.get("description").is_some()
+                    && item.get("input").is_none()
+                    && item.get("output").is_none()
+                    && item.get("permission").is_none()
+                    && item.get("transaction").is_none()
+            })
+        }));
     }
 
     #[test]

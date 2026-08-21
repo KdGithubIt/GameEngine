@@ -29,10 +29,10 @@ pub use ai_agent::{
 pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
 pub use capability::{
     AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL, AUTHORING_DESCRIBE_TOOL,
-    AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
+    AUTHORING_INSPECT_TOOL, AUTHORING_LIST_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
     AuthoringCapabilityMcpTools, AuthoringInvocationPlan, AuthoringVerb, CapabilityCoverage,
     CapabilityDescribeInput, CapabilityDescribeOutput, CapabilityInvokeInput, CapabilityListOutput,
-    CapabilityMcpError, capability_coverage, uncovered_capabilities,
+    CapabilityMcpError, CapabilitySummaryListOutput, capability_coverage, uncovered_capabilities,
 };
 pub use generic_authoring::{
     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput, GraphViewMutationInput,
