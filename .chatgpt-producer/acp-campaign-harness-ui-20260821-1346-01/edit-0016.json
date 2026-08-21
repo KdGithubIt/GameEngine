@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            execution_profile: CampaignExecutionProfile::Warm,\n            execution_environment: CampaignExecutionEnvironment::CompatibleBackend,\n            quality: QualityPreference::Balanced,\n",
+  "new": "            execution_profile: CampaignExecutionProfile::Warm,\n            execution_environment: CampaignExecutionEnvironment::CompatibleBackend,\n            harness_selection: CampaignHarnessSelection::recommended_for_environment(\n                CampaignExecutionEnvironment::CompatibleBackend,\n            ),\n            quality: QualityPreference::Balanced,\n"
+}
