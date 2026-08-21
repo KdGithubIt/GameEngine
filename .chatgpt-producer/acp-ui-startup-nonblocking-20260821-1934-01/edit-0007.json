@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::codex_acp_adapter::{\n    CODEX_ACP_DESCRIPTOR_ID, CodexAcpRuntime, CodexAcpSessionPreferences,\n};","new":"use crate::codex_acp_adapter::{CODEX_ACP_DESCRIPTOR_ID, CodexAcpSessionPreferences};"}
