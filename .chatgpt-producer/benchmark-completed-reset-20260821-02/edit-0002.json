@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "        assert!(\n            restored\n                .message\n                .as_deref()\n                .is_some_and(|message| message.contains(\"Restored a machine-local campaign checkpoint\"))\n        );",
+  "new": "        assert!(restored.message.as_deref().is_some_and(|message| {\n            message.contains(\"Restored a machine-local campaign checkpoint\")\n        }));"
+}
