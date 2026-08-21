@@ -44,6 +44,13 @@ impl AcpIntegration {
         &self.registry
     }
 
+    pub(crate) fn is_registered(&self, agent_id: &str) -> bool {
+        self.registry
+            .descriptors()
+            .into_iter()
+            .any(|descriptor| descriptor.id == agent_id)
+    }
+
     pub(crate) fn open_ask_session(
         &mut self,
         host: &AgentHost,
