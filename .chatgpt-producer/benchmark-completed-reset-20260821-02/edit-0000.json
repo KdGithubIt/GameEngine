@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            .ok_or_else(|| \"Benchmark campaign visual fixture has no registered model.\".to_owned())?;\n        let representation = model\n            .exact_representation()\n            .map(str::to_owned)\n            .ok_or_else(|| \"Benchmark campaign visual fixture has no exact GGUF identity.\".to_owned())?;",
+  "new": "            .ok_or_else(|| {\n                \"Benchmark campaign visual fixture has no registered model.\".to_owned()\n            })?;\n        let representation = model\n            .exact_representation()\n            .map(str::to_owned)\n            .ok_or_else(|| {\n                \"Benchmark campaign visual fixture has no exact GGUF identity.\".to_owned()\n            })?;"
+}
