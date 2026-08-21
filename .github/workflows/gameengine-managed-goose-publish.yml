@@ -1,0 +1,298 @@
+name: GameEngine Managed Goose Publish
+
+run-name: >-
+  Publish Managed Goose from trusted main artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Optional successful main Managed Goose Build run ID; blank uses the latest successful main push build
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: managed-goose-publish
+  cancel-in-progress: false
+
+jobs:
+  publish-release:
+    name: Publish existing managed-Goose artifact
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Resolve trusted source build
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+
+          workflow_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/gameengine-managed-goose-build.yml" --jq '.id')"
+
+          if [[ -n "$REQUESTED_RUN_ID" ]]; then
+            if [[ ! "$REQUESTED_RUN_ID" =~ ^[0-9]+$ ]]; then
+              echo "source_run_id must be a numeric GitHub Actions run ID" >&2
+              exit 1
+            fi
+            run_id="$REQUESTED_RUN_ID"
+          else
+            run_id="$(
+              gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs?branch=main&event=push&status=success&per_page=100" \
+                --jq '.workflow_runs[0].id // empty'
+            )"
+          fi
+
+          if [[ -z "$run_id" ]]; then
+            echo "No successful main-push Managed Goose Build run is available to publish" >&2
+            exit 1
+          fi
+
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id")"
+          observed_workflow_id="$(jq -r '.workflow_id' <<<"$run_json")"
+          event="$(jq -r '.event' <<<"$run_json")"
+          head_branch="$(jq -r '.head_branch' <<<"$run_json")"
+          head_sha="$(jq -r '.head_sha' <<<"$run_json")"
+          status="$(jq -r '.status' <<<"$run_json")"
+          conclusion="$(jq -r '.conclusion' <<<"$run_json")"
+          run_url="$(jq -r '.html_url' <<<"$run_json")"
+
+          if [[ "$observed_workflow_id" != "$workflow_id" ]]; then
+            echo "Source run belongs to workflow $observed_workflow_id, expected $workflow_id" >&2
+            exit 1
+          fi
+          if [[ "$event" != "push" || "$head_branch" != "main" ]]; then
+            echo "Source run must be a push run on main; observed event=$event branch=$head_branch" >&2
+            exit 1
+          fi
+          if [[ "$status" != "completed" || "$conclusion" != "success" ]]; then
+            echo "Source run must be completed successfully; observed status=$status conclusion=$conclusion" >&2
+            exit 1
+          fi
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Source run returned an invalid head SHA: $head_sha" >&2
+            exit 1
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.source.outputs.head_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve expected artifact identity
+        id: manifest
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path("tools/managed-goose/series.json").read_text(encoding="utf-8"))
+          source_sha = os.environ["SOURCE_SHA"]
+          values = {
+              "distribution_id": manifest["distribution_id"],
+              "release_tag": manifest["release_tag"],
+              "artifact_name": f"{manifest['distribution_id']}-{source_sha}",
+              "zip_name": f"{manifest['distribution_id']}-x86_64-pc-windows-msvc.zip",
+              "upstream_sha": manifest["upstream"]["sha"],
+          }
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8", newline="\n") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          PY
+
+      - name: Download exact source artifact
+        id: artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          ARTIFACT_NAME: ${{ steps.manifest.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+
+          artifacts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100")"
+          artifact_count="$(
+            jq --arg name "$ARTIFACT_NAME" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' \
+              <<<"$artifacts_json"
+          )"
+          if [[ "$artifact_count" != "1" ]]; then
+            echo "Expected exactly one non-expired artifact named $ARTIFACT_NAME; observed $artifact_count" >&2
+            exit 1
+          fi
+
+          artifact_id="$(
+            jq -r --arg name "$ARTIFACT_NAME" \
+              '.artifacts[] | select(.name == $name and .expired == false) | .id' \
+              <<<"$artifacts_json"
+          )"
+
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir managed-goose-dist
+
+          echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify promoted artifact integrity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.head_sha }}
+          SOURCE_RUN_URL: ${{ steps.source.outputs.run_url }}
+          ARTIFACT_NAME: ${{ steps.manifest.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          def require(condition: bool, message: str) -> None:
+              if not condition:
+                  raise SystemExit(message)
+
+          def sha256_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          root = Path("managed-goose-dist")
+          manifest_path = Path("tools/managed-goose/series.json")
+          manifest_bytes = manifest_path.read_bytes()
+          manifest = json.loads(manifest_bytes.decode("utf-8"))
+          source_sha = os.environ["SOURCE_SHA"]
+          source_run_url = os.environ["SOURCE_RUN_URL"]
+          artifact_name = os.environ["ARTIFACT_NAME"]
+
+          distribution_id = manifest["distribution_id"]
+          release_tag = manifest["release_tag"]
+          zip_name = f"{distribution_id}-x86_64-pc-windows-msvc.zip"
+          expected_files = {zip_name, "provenance.json", "SHA256SUMS.txt", "series.json"}
+          observed_files = {entry.name for entry in root.iterdir() if entry.is_file()}
+          require(observed_files == expected_files, f"Artifact file set mismatch: {sorted(observed_files)}")
+
+          promoted_manifest_path = root / "series.json"
+          require(promoted_manifest_path.read_bytes() == manifest_bytes, "Promoted series.json does not match the source revision")
+
+          zip_path = root / zip_name
+          zip_bytes = zip_path.read_bytes()
+          zip_hash = sha256_bytes(zip_bytes)
+
+          with zipfile.ZipFile(zip_path, "r") as archive:
+              names = archive.namelist()
+              require(names == ["goose.exe", "PROVENANCE.json"], f"Unexpected ZIP entries: {names}")
+              exe_bytes = archive.read("goose.exe")
+              embedded_provenance = json.loads(archive.read("PROVENANCE.json").decode("utf-8"))
+
+          exe_hash = sha256_bytes(exe_bytes)
+          expected_sums = f"{exe_hash}  goose.exe\n{zip_hash}  {zip_name}\n"
+          require((root / "SHA256SUMS.txt").read_text(encoding="utf-8") == expected_sums, "SHA256SUMS.txt does not match promoted bytes")
+
+          expected_embedded = {
+              "schema_version": 1,
+              "distribution_id": distribution_id,
+              "upstream": manifest["upstream"],
+              "patch_series_revision": manifest["patch_series_revision"],
+              "patches": [
+                  {
+                      "path": patch["path"],
+                      "sha256": patch["sha256"],
+                      "origin": patch["origin"],
+                  }
+                  for patch in manifest["patches"]
+              ],
+              "gameengine": {
+                  "repository": "https://github.com/KdGithubIt/GameEngine",
+                  "revision": source_sha,
+              },
+              "build": manifest["build"],
+              "goose_exe_sha256": exe_hash,
+          }
+          require(embedded_provenance == expected_embedded, "Embedded provenance does not match source manifest/revision")
+
+          external_provenance = json.loads((root / "provenance.json").read_text(encoding="utf-8"))
+          expected_external = {
+              **expected_embedded,
+              "generated_zip": {
+                  "filename": zip_name,
+                  "sha256": zip_hash,
+              },
+              "workflow": {
+                  "run_url": source_run_url,
+              },
+              "artifact": {
+                  "name": artifact_name,
+              },
+              "release": {
+                  "repository": "https://github.com/KdGithubIt/GameEngine",
+                  "tag": release_tag,
+                  "publication": "workflow_dispatch-only",
+              },
+          }
+          require(external_provenance == expected_external, "External provenance does not match the trusted source run")
+          PY
+
+      - name: Refuse release overwrite
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.manifest.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; immutable releases are never overwritten." >&2
+            exit 1
+          fi
+
+      - name: Publish immutable release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.manifest.outputs.release_tag }}
+          DISTRIBUTION_ID: ${{ steps.manifest.outputs.distribution_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.head_sha }}
+          SOURCE_RUN_URL: ${{ steps.source.outputs.run_url }}
+          UPSTREAM_SHA: ${{ steps.manifest.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF
+          GameEngine-managed patched Goose ACP distribution.
+
+          Trusted source build: ${SOURCE_RUN_URL}
+          GameEngine revision: ${SOURCE_SHA}
+          Upstream: aaif-goose/goose@${UPSTREAM_SHA}
+          Distribution: ${DISTRIBUTION_ID}
+
+          The release promotes the already-validated immutable main-build artifact without rebuilding Goose.
+          See provenance.json, SHA256SUMS.txt, and series.json in the release assets for exact identities and digests.
+          EOF
+
+          gh release create "$RELEASE_TAG" managed-goose-dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title "$DISTRIBUTION_ID" \
+            --notes-file release-notes.md
