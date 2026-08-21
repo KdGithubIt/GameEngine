@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/acp_agent_host_bridge.rs","old":"mod tests {\n    use super::*;\n    use crate::acp_agent_runtime::AcpPermissionOption;","new":"mod tests {\n    use super::*;\n    use crate::acp_agent_runtime::{\n        AcpAgentDescriptor, AcpAgentRuntime, AcpCapabilities, AcpPermissionOption,\n    };\n    use std::ffi::OsString;"}
