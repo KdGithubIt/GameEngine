@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "struct GooseLocalAcpSession {\n    inner: Box<dyn AcpAgentSession>,\n    lease: Option<ManagedLocalEndpointLease>,\n    ephemeral: Option<GooseEphemeralConfig>,\n    closed: bool,\n}",
+  "new": "struct GooseLocalAcpSession {\n    inner: Box<dyn AcpAgentSession>,\n    lease: Option<ManagedLocalEndpointLease>,\n    ephemeral: Option<GooseEphemeralConfig>,\n    pending_events: VecDeque<AcpNormalizedEvent>,\n    context_telemetry: AcpContextTelemetry,\n    closed: bool,\n}"
+}
