@@ -1,0 +1,53 @@
+diff --git a/crates/mcp-host/src/headless.rs b/crates/mcp-host/src/headless.rs
+index 887959e4a638fe3dbc3277309b678e39ee18afa1..b5e1892411f175a592f0329a1bc99fae8178568b 100644
+--- a/crates/mcp-host/src/headless.rs
++++ b/crates/mcp-host/src/headless.rs
+@@ -417,6 +417,14 @@ impl HeadlessAuthoringHost {
+         let behavior_tools = BehaviorTreeMcpTools::new();
+ 
+         match name {
++            "authoring.list" => {
++                require_empty(arguments)?;
++                to_value(
++                    capability_tools
++                        .list(&permissions)
++                        .map_err(capability_failure)?,
++                )
++            }
+             "authoring.capabilities" => {
+                 require_empty(arguments)?;
+                 to_value(
+@@ -1536,12 +1544,33 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn compact_authoring_discovery_is_executable_through_headless_host() {
++        let (_directory, path) = project();
++        let mut host =
++            HeadlessAuthoringHost::open_read_only(&path, HeadlessProjectSelection::default())
++                .expect("read-only host");
++
++        let listed = host
++            .handle_tool_call("authoring.list", json!({}))
++            .expect("compact discovery must execute through the advertised headless tool");
++        let capabilities = listed["capabilities"]
++            .as_array()
++            .expect("compact discovery capabilities");
++
++        assert!(!capabilities.is_empty());
++        assert!(capabilities.iter().any(|capability| {
++            capability["id"] == "scene.apply" && capability.get("input").is_none()
++        }));
++    }
++
+     #[test]
+     fn host_inventory_is_exactly_engine_mcp_inventory() {
+         let names = authoring_tool_descriptors()
+             .into_iter()
+             .map(|tool| tool.name)
+             .collect::<Vec<_>>();
++        assert!(names.contains(&"authoring.list".into()));
+         assert!(names.contains(&"scene.apply".into()));
+         assert!(names.contains(&"material.apply".into()));
+         assert!(names.contains(&"behavior_tree.apply".into()));
