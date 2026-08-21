@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -2297,6 +2297,59 @@ impl ManagedLocalRuntime {
         self.root.join("state").join("restart-required.txt")
     }
 
+    /// Returns the newest managed llama-server log lines without exposing
+    /// execution-environment-specific paths to AI Studio.
+    pub(crate) fn recent_server_log_lines(
+        &self,
+        environment: ManagedExecutionEnvironment,
+        max_lines: usize,
+    ) -> Result<Vec<String>, ManagedLocalRuntimeError> {
+        if max_lines == 0 {
+            return Ok(Vec::new());
+        }
+        match environment {
+            ManagedExecutionEnvironment::WindowsNative => {
+                let path = self.log_path(environment);
+                match read_recent_local_log_lines(&path, max_lines) {
+                    Ok(lines) => Ok(lines),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+                    Err(error) => Err(runtime_io(error)),
+                }
+            }
+            ManagedExecutionEnvironment::Wsl2Linux => {
+                let line_count = max_lines.to_string();
+                let log = wsl_server_log_path(environment);
+                let output = managed_wsl_command()
+                    .args(["tail", "-n", line_count.as_str(), log.as_str()])
+                    .output()
+                    .map_err(|error| {
+                        ManagedLocalRuntimeError::new(
+                            ManagedDiagnosticLayer::ManagedProcessStartup,
+                            format!("could not read managed WSL llama-server log: {error}"),
+                        )
+                    })?;
+                if output.status.success() {
+                    return Ok(recent_log_lines(&output.stdout, max_lines));
+                }
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                if message.contains("No such file or directory") {
+                    return Ok(Vec::new());
+                }
+                Err(ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::ManagedProcessStartup,
+                    if message.is_empty() {
+                        format!(
+                            "managed WSL llama-server log tail exited as {}",
+                            output.status
+                        )
+                    } else {
+                        format!("managed WSL llama-server log tail failed: {message}")
+                    },
+                ))
+            }
+        }
+    }
+
     fn process_state_path(&self) -> PathBuf {
         self.root.join("state").join("process.json")
     }
@@ -3236,6 +3289,38 @@ fn wsl_server_log_path(environment: ManagedExecutionEnvironment) -> String {
     )
 }
 
+const RECENT_LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+fn read_recent_local_log_lines(path: &Path, max_lines: usize) -> io::Result<Vec<String>> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    let start = length.saturating_sub(RECENT_LOG_TAIL_BYTES);
+    if start > 0 {
+        file.seek(SeekFrom::Start(start))?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if start > 0
+        && let Some(newline) = bytes.iter().position(|byte| *byte == b'\n')
+    {
+        bytes.drain(..=newline);
+    }
+    Ok(recent_log_lines(&bytes, max_lines))
+}
+
+fn recent_log_lines(bytes: &[u8], max_lines: usize) -> Vec<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines = text
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(max_lines)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    lines
+}
+
 fn wsl_server_launch_command(
     server_path: &str,
     model_path: &Path,
@@ -4070,6 +4155,17 @@ mod tests {
     }
 
     #[test]
+    fn windows_launch_uses_the_exact_managed_physical_context() {
+        let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
+        let arguments = windows_server_arguments(model, None, 18443, 8_192);
+        let context_flag = arguments
+            .iter()
+            .position(|argument| argument == "--ctx-size")
+            .expect("managed context flag");
+        assert_eq!(arguments.get(context_flag + 1), Some(&"8192".to_owned()));
+    }
+
+    #[test]
     fn windows_launch_contract_leaves_gpu_layers_to_memory_fitter() {
         let model = Path::new(r"C:\\models\\sample-Q4_K_M.gguf");
         let arguments = windows_server_arguments(model, None, 18443, 12_288);
@@ -4120,6 +4216,14 @@ mod tests {
             WslStatus::Available {
                 managed_distribution: false,
             }
+        );
+    }
+
+    #[test]
+    fn recent_log_lines_keep_only_the_newest_non_empty_entries() {
+        assert_eq!(
+            recent_log_lines(b"one\n\ntwo\nthree\n", 2),
+            vec!["two".to_owned(), "three".to_owned()]
         );
     }
 

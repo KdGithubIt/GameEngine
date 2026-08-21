@@ -591,7 +591,7 @@ async fn run_command_loop(
                             Err(error) => {
                                 send_event(
                                     &prompt_events,
-                                    AcpNormalizedEvent::ProtocolDiagnostic {
+                                    AcpNormalizedEvent::PromptFailed {
                                         message: format!("ACP session/prompt failed: {error}"),
                                     },
                                 )?;
