@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "context-token-telemetry-fmt-20260822-0140-05",
+  "target_branch": "chatgpt/gameengine-context-token-telemetry-20260822-v2",
+  "expected_head_sha": "8a7b90b406bd101515cb9a81c35bb99875b1864c",
+  "baseline_main_sha": "7384d9f759d4a086ef0b15ae85c15c677fcc05dd",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json"
+  ],
+  "commit_message": "Fix ACP context telemetry validation",
+  "pr_title": "GameEngine: add Managed Local ACP context telemetry",
+  "pr_body": "## Summary\n\n- preserve Managed Local physical/configured/effective context metadata across Goose ACP\n- normalize stable ACP usage and privacy-safe tool-result size diagnostics without estimating unavailable token breakdowns\n- classify provider-reported context overflow as backend failure evidence and surface context metadata in benchmark live activity / ACP diagnostics\n- document exact vs unavailable telemetry boundaries for Goose 1.44.0 and pinned llama.cpp b10336\n- fix provider context-overflow parsing and apply canonical rustfmt output\n\n## Privacy\n\nTelemetry retains counts, stable tool names, context settings, and failure classification only. It does not persist prompt bodies, MCP credentials, private file contents, or raw tool results.\n\n<!-- gameengine-visual-validation: editor -->"
+}
