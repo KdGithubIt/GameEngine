@@ -4911,7 +4911,8 @@ impl AiStudioPanel {
             AcpBridgePoll::Recorded { .. }
             | AcpBridgePoll::RecordedEvent { .. }
             | AcpBridgePoll::PermissionRequired { .. }
-            | AcpBridgePoll::ValidationReady { .. } => {
+            | AcpBridgePoll::ValidationReady { .. }
+            | AcpBridgePoll::TurnFailed { .. } => {
                 self.status = Some(
                     "ACP Ask received an unexpected run-bound bridge result and was not promoted to write authority."
                         .to_owned(),
@@ -7630,6 +7631,17 @@ impl AiStudioPanel {
             }
             AcpBridgePoll::ValidationReady { run_id } => {
                 self.finish_acp_provider_execution(&run_id, &acp_session_id);
+            }
+            AcpBridgePoll::TurnFailed { reason, .. } => {
+                self.active_acp_run_session = None;
+                self.pending_acp_permission = None;
+                let close_result = self.acp.close_session(&acp_session_id);
+                self.status = Some(match close_result {
+                    Ok(()) => reason,
+                    Err(error) => {
+                        format!("{reason} The ACP session also failed to close cleanly: {error}")
+                    }
+                });
             }
             AcpBridgePoll::AskEvent(_) => {
                 self.status =

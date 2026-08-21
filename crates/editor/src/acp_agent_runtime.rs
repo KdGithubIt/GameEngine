@@ -319,12 +319,26 @@ pub(crate) struct AcpPermissionOption {
 
 /// ACP permission request after classification into GameEngine authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AcpPermissionTarget {
+    /// Exact registered GameEngine MCP tool identity recovered from provider
+    /// metadata and normalized against the MCP inventory.
+    GameEngineMcpTool {
+        stable_name: String,
+        mutating: bool,
+    },
+    /// Non-MCP operation classified through ACP ToolKind into Agent Host policy.
+    AgentCapability(AgentCapability),
+    /// No trustworthy stable tool identity/capability could be established.
+    Unclassified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AcpPermissionRequest {
     pub(crate) request_id: String,
     pub(crate) acp_session_id: String,
     pub(crate) tool_call_id: String,
     pub(crate) title: String,
-    pub(crate) required_capability: AgentCapability,
+    pub(crate) target: AcpPermissionTarget,
     pub(crate) options: Vec<AcpPermissionOption>,
 }
 

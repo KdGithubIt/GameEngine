@@ -1,11 +1,12 @@
 use super::{
     ACP_STABLE_PROTOCOL_VERSION, AcpAgentDescriptor, AcpAgentRuntime, AcpAgentSession,
     AcpCapabilities, AcpNormalizedEvent, AcpPermissionOption, AcpPermissionOptionKind,
-    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpRuntimeError,
-    AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenMode, AcpSessionOpenRequest,
-    AcpToolCallStatus, validate_descriptor,
+    AcpPermissionOutcome, AcpPermissionRequest, AcpPermissionResolution, AcpPermissionTarget,
+    AcpRuntimeError, AcpRuntimeIdentity, AcpSessionBinding, AcpSessionOpenMode,
+    AcpSessionOpenRequest, AcpToolCallStatus, validate_descriptor,
 };
 use crate::agent_host::AgentCapability;
+use engine_mcp::{authoring_tool_descriptors, tool_is_mutating};
 use agent_client_protocol::schema::{
     ProtocolVersion,
     v1::{
@@ -32,6 +33,7 @@ use std::sync::{
 
 const GAMEENGINE_ACP_CLIENT_NAME: &str = "gameengine-ai-studio";
 const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
+const GAMEENGINE_MCP_TOOL_PREFIX: &str = "gameengine_editor__";
 const GAMEENGINE_AGENT_RUN_ID_HEADER: &str = "X-GameEngine-Agent-Run-Id";
 
 #[derive(Debug)]
@@ -59,6 +61,7 @@ struct TrackedToolCall {
     title: String,
     kind: ToolKind,
     status: AcpToolCallStatus,
+    stable_tool_name: Option<String>,
 }
 
 type PendingPermissions = Arc<Mutex<HashMap<String, oneshot::Sender<AcpPermissionOutcome>>>>;
@@ -67,11 +70,27 @@ type ToolCalls = Arc<Mutex<HashMap<String, TrackedToolCall>>>;
 /// Provider-neutral ACP subprocess runtime using the official Rust SDK.
 pub(crate) struct AcpProcessRuntime {
     descriptor: AcpAgentDescriptor,
+    tool_name_metadata_path: Vec<String>,
 }
 
 impl AcpProcessRuntime {
     pub(crate) fn new(descriptor: AcpAgentDescriptor) -> Result<Self, AcpRuntimeError> {
+        Self::new_with_tool_name_metadata_path(descriptor, &[])
+    }
+
+    pub(crate) fn new_with_tool_name_metadata_path(
+        descriptor: AcpAgentDescriptor,
+        tool_name_metadata_path: &[&str],
+    ) -> Result<Self, AcpRuntimeError> {
         validate_descriptor(&descriptor)?;
+        if tool_name_metadata_path
+            .iter()
+            .any(|segment| segment.trim().is_empty() || segment.trim() != *segment)
+        {
+            return Err(AcpRuntimeError::InvalidDescriptor(
+                "ACP tool-name metadata path segments must be non-empty and unpadded".to_owned(),
+            ));
+        }
         if descriptor.runtime_identity.protocol_version != ACP_STABLE_PROTOCOL_VERSION {
             return Err(AcpRuntimeError::Unsupported(format!(
                 "stable ACP core transport supports protocol v{ACP_STABLE_PROTOCOL_VERSION} only"
@@ -88,7 +107,13 @@ impl AcpProcessRuntime {
                     .to_owned(),
             ));
         }
-        Ok(Self { descriptor })
+        Ok(Self {
+            descriptor,
+            tool_name_metadata_path: tool_name_metadata_path
+                .iter()
+                .map(|segment| (*segment).to_owned())
+                .collect(),
+        })
     }
 }
 
@@ -105,6 +130,7 @@ impl AcpAgentRuntime for AcpProcessRuntime {
 
         let config = build_agent_config(&self.descriptor)?;
         let descriptor = self.descriptor.clone();
+        let tool_name_metadata_path = self.tool_name_metadata_path.clone();
         let binding = request.binding.clone();
         let (command_tx, command_rx) = async_mpsc::unbounded();
         let (event_tx, event_rx) = mpsc::channel();
@@ -128,6 +154,7 @@ impl AcpAgentRuntime for AcpProcessRuntime {
                     descriptor,
                     request,
                     config,
+                    tool_name_metadata_path,
                     command_rx,
                     thread_event_tx.clone(),
                     open_tx,
@@ -371,6 +398,7 @@ async fn run_connection(
     descriptor: AcpAgentDescriptor,
     request: AcpSessionOpenRequest,
     config: AcpAgentConfig,
+    tool_name_metadata_path: Vec<String>,
     command_rx: async_mpsc::UnboundedReceiver<RuntimeCommand>,
     event_tx: mpsc::Sender<AcpNormalizedEvent>,
     open_tx: mpsc::SyncSender<Result<OpenedSession, AcpRuntimeError>>,
@@ -385,10 +413,12 @@ async fn run_connection(
     let notification_session_id = Arc::clone(&active_session_id);
     let notification_tools = Arc::clone(&tool_calls);
     let notification_events = event_tx.clone();
+    let notification_tool_name_metadata_path = tool_name_metadata_path.clone();
 
     let permission_session_id = Arc::clone(&active_session_id);
     let permission_tools = Arc::clone(&tool_calls);
     let permission_events = event_tx.clone();
+    let permission_tool_name_metadata_path = tool_name_metadata_path;
     let permission_pending = Arc::clone(&pending_permissions);
     let permission_sequence_clone = Arc::clone(&permission_sequence);
 
@@ -407,6 +437,7 @@ async fn run_connection(
                     &notification_session_id,
                     &notification_tools,
                     &notification_events,
+                    &notification_tool_name_metadata_path,
                 )
                 .map_err(sdk_internal_error)
             },
@@ -421,6 +452,7 @@ async fn run_connection(
                     &permission_events,
                     &permission_pending,
                     &permission_sequence_clone,
+                    &permission_tool_name_metadata_path,
                 )
                 .await
                 .map_err(sdk_internal_error)?;
@@ -851,6 +883,7 @@ fn handle_session_notification(
     active_session_id: &Arc<Mutex<Option<String>>>,
     tool_calls: &ToolCalls,
     events: &mpsc::Sender<AcpNormalizedEvent>,
+    tool_name_metadata_path: &[String],
 ) -> Result<(), AcpRuntimeError> {
     let session_id = notification.session_id.to_string();
     let expected = active_session_id
@@ -889,6 +922,8 @@ fn handle_session_notification(
             },
         ),
         SessionUpdate::ToolCall(tool_call) => {
+            let stable_tool_name =
+                extract_tool_name_metadata(&tool_call, tool_name_metadata_path);
             let tool_call_id = tool_call.tool_call_id.to_string();
             let status = normalize_tool_status(tool_call.status);
             tool_calls
@@ -902,6 +937,7 @@ fn handle_session_notification(
                         title: tool_call.title.clone(),
                         kind: tool_call.kind,
                         status,
+                        stable_tool_name,
                     },
                 );
             send_normalized(
@@ -914,6 +950,8 @@ fn handle_session_notification(
             )
         }
         SessionUpdate::ToolCallUpdate(update) => {
+            let stable_tool_name =
+                extract_tool_name_metadata(&update, tool_name_metadata_path);
             let tool_call_id = update.tool_call_id.to_string();
             let mut tools = tool_calls.lock().map_err(|_| {
                 AcpRuntimeError::Transport("ACP tool state lock is poisoned".to_owned())
@@ -924,7 +962,11 @@ fn handle_session_notification(
                     title: "ACP tool call".to_owned(),
                     kind: ToolKind::Other,
                     status: AcpToolCallStatus::Pending,
+                    stable_tool_name: None,
                 });
+            if let Some(stable_tool_name) = stable_tool_name {
+                tracked.stable_tool_name = Some(stable_tool_name);
+            }
             if let Some(title) = update.fields.title {
                 tracked.title = title;
             }
@@ -1006,6 +1048,7 @@ async fn handle_permission_request(
     events: &mpsc::Sender<AcpNormalizedEvent>,
     pending_permissions: &PendingPermissions,
     sequence: &AtomicU64,
+    tool_name_metadata_path: &[String],
 ) -> Result<RequestPermissionResponse, AcpRuntimeError> {
     let session_id = request.session_id.to_string();
     let expected = active_session_id
@@ -1018,6 +1061,8 @@ async fn handle_permission_request(
         )));
     }
 
+    let request_stable_tool_name =
+        extract_tool_name_metadata(&request.tool_call, tool_name_metadata_path);
     let tool_call_id = request.tool_call.tool_call_id.to_string();
     let tracked = {
         let tools = tool_calls.lock().map_err(|_| {
@@ -1037,19 +1082,9 @@ async fn handle_permission_request(
         .fields
         .kind
         .or_else(|| tracked.as_ref().map(|tool| tool.kind));
-    let Some(required_capability) = kind.and_then(classify_tool_kind) else {
-        send_normalized(
-            events,
-            AcpNormalizedEvent::ProtocolDiagnostic {
-                message: format!(
-                    "ACP permission request for tool `{tool_call_id}` could not be safely classified"
-                ),
-            },
-        )?;
-        return Ok(RequestPermissionResponse::new(
-            RequestPermissionOutcome::Cancelled,
-        ));
-    };
+    let stable_tool_name = request_stable_tool_name
+        .or_else(|| tracked.as_ref().and_then(|tool| tool.stable_tool_name.clone()));
+    let target = classify_permission_target(stable_tool_name.as_deref(), kind);
 
     let request_id = format!("acp-permission-{}", sequence.fetch_add(1, Ordering::SeqCst));
     let options = request
@@ -1081,7 +1116,7 @@ async fn handle_permission_request(
             acp_session_id: session_id,
             tool_call_id,
             title,
-            required_capability,
+            target,
             options,
         }),
     )?;
@@ -1114,6 +1149,48 @@ async fn handle_permission_request(
             ))
         }
     }
+}
+
+fn extract_tool_name_metadata<T: serde::Serialize>(
+    value: &T,
+    path: &[String],
+) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let value = serde_json::to_value(value).ok()?;
+    let mut current = value.get("_meta")?;
+    for segment in path {
+        current = current.get(segment)?;
+    }
+    current
+        .as_str()
+        .filter(|name| !name.trim().is_empty() && name.trim() == *name)
+        .map(str::to_owned)
+}
+
+fn classify_permission_target(
+    stable_tool_name: Option<&str>,
+    kind: Option<ToolKind>,
+) -> AcpPermissionTarget {
+    if let Some(stable_tool_name) = stable_tool_name
+        && let Some(canonical_name) = stable_tool_name.strip_prefix(GAMEENGINE_MCP_TOOL_PREFIX)
+    {
+        let registered = authoring_tool_descriptors()
+            .into_iter()
+            .any(|descriptor| descriptor.name == canonical_name);
+        if registered {
+            return AcpPermissionTarget::GameEngineMcpTool {
+                stable_name: canonical_name.to_owned(),
+                mutating: tool_is_mutating(canonical_name),
+            };
+        }
+        return AcpPermissionTarget::Unclassified;
+    }
+
+    kind.and_then(classify_tool_kind)
+        .map(AcpPermissionTarget::AgentCapability)
+        .unwrap_or(AcpPermissionTarget::Unclassified)
 }
 
 fn classify_tool_kind(kind: ToolKind) -> Option<AgentCapability> {
@@ -1228,12 +1305,70 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_permission_kinds_are_not_classified() {
-        assert_eq!(classify_tool_kind(ToolKind::Search), None);
-        assert_eq!(classify_tool_kind(ToolKind::Other), None);
+    fn permission_classification_prefers_registered_gameengine_mcp_identity() {
+        let expected = AcpPermissionTarget::GameEngineMcpTool {
+            stable_name: "asset.search".to_owned(),
+            mutating: false,
+        };
         assert_eq!(
-            classify_tool_kind(ToolKind::Execute),
-            Some(AgentCapability::ArbitraryCommandExecution)
+            classify_permission_target(
+                Some("gameengine_editor__asset.search"),
+                Some(ToolKind::Search),
+            ),
+            expected
+        );
+        assert_eq!(
+            classify_permission_target(
+                Some("gameengine_editor__asset.search"),
+                Some(ToolKind::Other),
+            ),
+            expected,
+            "ACP call-instance state must not change the stable MCP permission identity"
+        );
+    }
+
+    #[test]
+    fn malformed_or_unknown_mcp_identity_fails_closed() {
+        assert_eq!(
+            classify_permission_target(
+                Some("gameengine_editor__not.registered"),
+                Some(ToolKind::Search),
+            ),
+            AcpPermissionTarget::Unclassified
+        );
+        assert_eq!(
+            classify_permission_target(None, Some(ToolKind::Search)),
+            AcpPermissionTarget::Unclassified
+        );
+        assert_eq!(
+            classify_permission_target(None, Some(ToolKind::Other)),
+            AcpPermissionTarget::Unclassified
+        );
+        assert_eq!(
+            classify_permission_target(None, Some(ToolKind::Execute)),
+            AcpPermissionTarget::AgentCapability(AgentCapability::ArbitraryCommandExecution)
+        );
+    }
+
+    #[test]
+    fn provider_metadata_path_recovers_stable_tool_name() {
+        let value = serde_json::json!({
+            "_meta": {
+                "goose": {
+                    "toolCall": {
+                        "toolName": "gameengine_editor__asset.search"
+                    }
+                }
+            }
+        });
+        let path = vec![
+            "goose".to_owned(),
+            "toolCall".to_owned(),
+            "toolName".to_owned(),
+        ];
+        assert_eq!(
+            extract_tool_name_metadata(&value, &path).as_deref(),
+            Some("gameengine_editor__asset.search")
         );
     }
 
