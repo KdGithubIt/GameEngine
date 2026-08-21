@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "                .map(|task| task.id.to_owned())\n                .collect(),\n            repetitions: self.benchmark_campaign.repetitions,\n",
+  "new": "                .map(|task| task.id.to_owned())\n                .collect(),\n            benchmark_runtime,\n            repetitions: self.benchmark_campaign.repetitions,\n"
+}
