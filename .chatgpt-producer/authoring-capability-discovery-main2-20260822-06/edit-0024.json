@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp/src/capability.rs","old":"        let expected = tools.registry().require(&id).expect(\"scene.apply registry entry\");","new":"        let expected = tools\n            .registry()\n            .require(&id)\n            .expect(\"scene.apply registry entry\");"}
