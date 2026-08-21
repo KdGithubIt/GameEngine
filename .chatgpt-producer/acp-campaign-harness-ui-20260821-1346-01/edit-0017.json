@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/benchmark_campaign_ui.rs",
+  "old": "            execution_profile: checkpoint.plan.execution_profile,\n            execution_environment: checkpoint.plan.execution_environment,\n            quality: checkpoint.plan.quality,\n",
+  "new": "            execution_profile: checkpoint.plan.execution_profile,\n            execution_environment: checkpoint.plan.execution_environment,\n            harness_selection: CampaignHarnessSelection::from_plan(&checkpoint.plan),\n            quality: checkpoint.plan.quality,\n"
+}
