@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "        fs::create_dir_all(executable.parent().expect(\"executable parent\"))\n            .expect(\"goose parent\");",
+  "new": "        fs::create_dir_all(executable.parent().expect(\"executable parent\")).expect(\"goose parent\");"
+}
