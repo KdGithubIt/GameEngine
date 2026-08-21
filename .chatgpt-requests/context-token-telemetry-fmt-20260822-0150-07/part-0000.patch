@@ -1,0 +1,135 @@
+diff --git a/crates/editor/src/acp_agent_runtime.rs b/crates/editor/src/acp_agent_runtime.rs
+index 765f9938e6b4e738850af04e5af0a063e490c10e..606edd301413c050397d16ef15df229d3b38f50d 100644
+--- a/crates/editor/src/acp_agent_runtime.rs
++++ b/crates/editor/src/acp_agent_runtime.rs
+@@ -456,7 +456,9 @@ impl AcpContextTelemetry {
+             number(breakdown.tool_definitions),
+             number(breakdown.tool_results),
+             largest_tool,
+-            self.compaction_threshold.as_deref().unwrap_or("unavailable"),
++            self.compaction_threshold
++                .as_deref()
++                .unwrap_or("unavailable"),
+             state(self.compaction_triggered),
+             number(self.compaction_before_tokens),
+             number(self.compaction_after_tokens),
+@@ -524,9 +526,9 @@ impl AcpNormalizedEvent {
+             | Self::SessionInfo { .. }
+             | Self::TurnFinished { .. } => AgentEventKind::SemanticProgress,
+             Self::ToolCall { .. } => AgentEventKind::ToolAction,
+-            Self::Usage { .. }
+-            | Self::ContextTelemetry(_)
+-            | Self::ProtocolDiagnostic { .. } => AgentEventKind::ProviderOutput,
++            Self::Usage { .. } | Self::ContextTelemetry(_) | Self::ProtocolDiagnostic { .. } => {
++                AgentEventKind::ProviderOutput
++            }
+             Self::PermissionRequest(_) => AgentEventKind::PermissionRequested,
+             Self::PromptFailed { .. } => AgentEventKind::Failure,
+         }
+diff --git a/crates/editor/src/acp_agent_runtime/transport.rs b/crates/editor/src/acp_agent_runtime/transport.rs
+index d58a47420781116e5407d8b8a1e24a4b3f099609..65be7a7ac75e2aa46ce14831e0560a0445b88778 100644
+--- a/crates/editor/src/acp_agent_runtime/transport.rs
++++ b/crates/editor/src/acp_agent_runtime/transport.rs
+@@ -1032,8 +1032,9 @@ fn handle_session_notification(
+                 return send_normalized(
+                     events,
+                     AcpNormalizedEvent::ProtocolDiagnostic {
+-                        message: "ACP usage update did not contain numeric used/context-limit fields"
+-                            .to_owned(),
++                        message:
++                            "ACP usage update did not contain numeric used/context-limit fields"
++                                .to_owned(),
+                     },
+                 );
+             };
+@@ -1044,7 +1045,7 @@ fn handle_session_notification(
+                     context_limit_tokens,
+                 },
+             )
+-        },
++        }
+         _ => send_normalized(
+             events,
+             AcpNormalizedEvent::ProtocolDiagnostic {
+@@ -1184,10 +1185,7 @@ fn acp_tool_result_payload_bytes<T: serde::Serialize>(fields: &T) -> Option<u64>
+ 
+ fn acp_usage_tokens<T: serde::Serialize>(usage: &T) -> Option<(u64, u64)> {
+     let value = serde_json::to_value(usage).ok()?;
+-    Some((
+-        value.get("used")?.as_u64()?,
+-        value.get("size")?.as_u64()?,
+-    ))
++    Some((value.get("used")?.as_u64()?, value.get("size")?.as_u64()?))
+ }
+ 
+ fn extract_tool_name_metadata<T: serde::Serialize>(value: &T, path: &[String]) -> Option<String> {
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+index 2da995b08bc2fc0bd3d0795245aba1006e0f5930..12da96495380e41ee2a45a5361912165d9a58681 100644
+--- a/crates/editor/src/ai_studio/benchmark_child.rs
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -612,9 +612,7 @@ fn benchmark_acp_live_summary(event: &AcpNormalizedEvent) -> String {
+         AcpNormalizedEvent::Usage {
+             used_tokens,
+             context_limit_tokens,
+-        } => format!(
+-            "context usage {used_tokens}/{context_limit_tokens} tokens (agent-reported)"
+-        ),
++        } => format!("context usage {used_tokens}/{context_limit_tokens} tokens (agent-reported)"),
+         AcpNormalizedEvent::ContextTelemetry(telemetry) => telemetry.diagnostic_summary(),
+         AcpNormalizedEvent::SessionInfo { .. } => "session metadata updated".to_owned(),
+         AcpNormalizedEvent::PromptFailed { .. } => "prompt failed".to_owned(),
+diff --git a/crates/editor/src/goose_local_acp.rs b/crates/editor/src/goose_local_acp.rs
+index ba155a1ba0fca72f49fb122b6f59819049e14843..219d616b447382cde37598c8cf3d51c82396a781 100644
+--- a/crates/editor/src/goose_local_acp.rs
++++ b/crates/editor/src/goose_local_acp.rs
+@@ -229,20 +229,15 @@ impl AcpAgentRuntime for GooseLocalAcpRuntime {
+ 
+         let compaction_threshold = goose_compaction_threshold();
+         let mut descriptor = self.descriptor.clone();
+-        descriptor.environment = goose_environment(
+-            &lease,
+-            &ephemeral,
+-            token_budget,
+-            &compaction_threshold,
+-        );
++        descriptor.environment =
++            goose_environment(&lease, &ephemeral, token_budget, &compaction_threshold);
+         let mut runtime = AcpProcessRuntime::new_with_tool_name_metadata_path(
+             descriptor,
+             &["goose", "toolCall", "toolName"],
+         )?;
+         match runtime.open_session(request) {
+             Ok(inner) => {
+-                let context_telemetry =
+-                    goose_context_telemetry(token_budget, compaction_threshold);
++                let context_telemetry = goose_context_telemetry(token_budget, compaction_threshold);
+                 Ok(Box::new(GooseLocalAcpSession {
+                     inner,
+                     lease: Some(lease),
+@@ -449,16 +444,18 @@ fn goose_context_telemetry(
+ }
+ 
+ pub(crate) fn parse_goose_context_overflow(message: &str) -> Option<AcpProviderContextFailure> {
+-    fn number_between(message: &str, prefix: &str, suffix: &str) -> Option<u64> {
+-        let value = message.split_once(prefix)?.1.split_once(suffix)?.0.trim();
+-        (!value.is_empty() && value.chars().all(|character| character.is_ascii_digit()))
+-            .then(|| value.parse::<u64>().ok())
+-            .flatten()
++    fn ascii_u64(value: &str) -> Option<u64> {
++        let value = value.trim();
++        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
++            return None;
++        }
++        value.parse::<u64>().ok()
+     }
+ 
+-    let requested_tokens = number_between(message, "request (", " tokens) exceeds")?;
+-    let available_context_tokens =
+-        number_between(message, "available context size (", " tokens)")?;
++    let (requested_side, available_side) =
++        message.split_once(" tokens) exceeds the available context size (")?;
++    let requested_tokens = ascii_u64(requested_side.rsplit_once("request (")?.1)?;
++    let available_context_tokens = ascii_u64(available_side.split_once(" tokens)")?.0)?;
+     Some(AcpProviderContextFailure {
+         requested_tokens,
+         available_context_tokens,
