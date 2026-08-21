@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/goose_local_acp.rs",
+  "old": "const GOOSE_CONTEXT_LIMIT_ENV: &str = \"GOOSE_CONTEXT_LIMIT\";\nconst GOOSE_MAX_TOKENS_ENV: &str = \"GOOSE_MAX_TOKENS\";",
+  "new": "const GOOSE_CONTEXT_LIMIT_ENV: &str = \"GOOSE_CONTEXT_LIMIT\";\nconst GOOSE_MAX_TOKENS_ENV: &str = \"GOOSE_MAX_TOKENS\";\nconst GOOSE_AUTO_COMPACT_THRESHOLD_ENV: &str = \"GOOSE_AUTO_COMPACT_THRESHOLD\";\nconst GOOSE_DEFAULT_AUTO_COMPACT_THRESHOLD: &str = \"0.8\";"
+}
