@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio/execution_routing.rs",
+  "old": "    #[test]\n    fn managed_model_identity_can_share_one_registered_route() {\n",
+  "new": "    #[test]\n    fn managed_acp_route_never_falls_back_when_goose_is_unavailable() {\n        let mut router = AiExecutionRouter::default();\n        router\n            .set_acp_route(\"model:managed_local\", \"goose.managed-local\")\n            .expect(\"route\");\n        router.sync_registry(&DescriptorRegistry { descriptors: Vec::new() });\n        let error = router\n            .resolve(\n                \"model:managed_local:model-a\",\n                \"model:managed_local\",\n            )\n            .expect_err(\"missing Goose must fail closed\");\n        assert!(matches!(error, AiExecutionRoutingError::AcpAgentUnavailable { .. }));\n    }\n\n    #[test]\n    fn managed_model_identity_can_share_one_registered_route() {\n"
+}
